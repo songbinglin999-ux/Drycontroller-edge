@@ -1,0 +1,230 @@
+# 工艺限制和报警配置
+
+# ==================== 温度限制 ====================
+temperature_limits:
+  dryer1:
+    in_temp:
+      min: 20
+      max: 180
+      alarm_high: 170
+      alarm_low: 30
+      
+    out_temp:
+      min: 40
+      max: 150
+      alarm_high: 145
+      alarm_low: 45
+      
+    chamber_temp:
+      min: 30
+      max: 160
+      alarm_high: 155
+      
+  dryer2:
+    in_temp:
+      min: 20
+      max: 150
+      
+    out_temp:
+      min: 30
+      max: 100
+      alarm_high: 95
+      alarm_low: 35
+      
+    chamber_temp:
+      min: 30
+      max: 120
+      
+  fermentation:
+    chamber_temp:
+      min: 20
+      max: 75
+      alarm_high: 70
+      optimal_range: [35, 45]
+      
+  exhaust:
+    temp:
+      min: 50
+      max: 300
+      alarm_high: 280
+      
+# ==================== 速度限制 ====================
+speed_limits:
+  dryer1:
+    chain_speed:
+      min: 0.5
+      max: 8.0
+      recommended: [2.0, 6.0]
+      emergency_stop: 10.0
+      
+  dryer2:
+    chain_speed:
+      min: 0.5
+      max: 8.0
+      recommended: [2.0, 6.0]
+      
+  # 速度约束
+  constraints:
+    - name: "speed_ratio"
+      description: "第二段链速 >= 第一段链速"
+      rule: "dryer2.chain_speed >= dryer1.chain_speed"
+      
+# ==================== 扭矩限制 ====================
+torque_limits:
+  dryer1:
+    normal_range: [50, 300]
+    warning: 400
+    critical: 450
+    max_allowed: 500
+    
+  dryer2:
+    normal_range: [40, 250]
+    warning: 350
+    critical: 400
+    max_allowed: 500
+    
+# ==================== 风机限制 ====================
+fan_limits:
+  dryer1:
+    frequency:
+      min: 0
+      max: 50
+      recommended: [20, 45]
+      
+  dryer2:
+    frequency:
+      min: 0
+      max: 50
+      recommended: [15, 40]
+      
+# ==================== 含水率限制 ====================
+moisture_limits:
+  target: 12.0  # %
+  tolerance: 2.0  # ±2%
+  min_acceptable: 8.0
+  max_acceptable: 16.0
+  alarm_high: 18.0
+  alarm_low: 6.0
+  
+# ==================== 湿度限制 ====================
+humidity_limits:
+  fermentation:
+    min: 30
+    max: 85
+    optimal: [50, 70]
+    
+# ==================== 报警配置 ====================
+alarms:
+  priorities:
+    info:
+      level: 0
+      color: "blue"
+      action: "log"
+      
+    warning:
+      level: 1
+      color: "yellow"
+      action: "notify"
+      auto_clear: true
+      
+    error:
+      level: 2
+      color: "orange"
+      action: "notify+log"
+      requires_acknowledgment: true
+      
+    critical:
+      level: 3
+      color: "red"
+      action: "notify+log+emergency_stop"
+      requires_acknowledgment: true
+      escalation_time: 300  # 秒
+      
+  # 报警规则
+  rules:
+    - name: "高温报警"
+      condition: "temperature > alarm_high"
+      priority: "error"
+      cooldown: 60  # 秒，防止重复报警
+      
+    - name: "低温报警"
+      condition: "temperature < alarm_low"
+      priority: "warning"
+      cooldown: 60
+      
+    - name: "扭矩过载"
+      condition: "torque > critical"
+      priority: "critical"
+      action: "emergency_stop"
+      
+    - name: "含水率异常"
+      condition: "moisture > alarm_high OR moisture < alarm_low"
+      priority: "warning"
+      
+    - name: "通信故障"
+      condition: "plc_connection_lost"
+      priority: "critical"
+      
+# ==================== 安全联锁 ====================
+interlocks:
+  - name: "紧急停机"
+    conditions:
+      - "torque_overload"
+      - "temperature_critical"
+      - "fire_alarm"
+    actions:
+      - "stop_all_chains"
+      - "stop_all_fans"
+      - "close_fuel_valve"
+      - "activate_alarm"
+      
+  - name: "过载保护"
+    conditions:
+      - "torque > critical_limit"
+    actions:
+      - "reduce_chain_speed_50%"
+      - "send_warning"
+      
+# ==================== 控制约束 ====================
+control_constraints:
+  # 变化率限制
+  rate_limits:
+    chain_speed:
+      max_increase_rate: 0.5  # m/min per second
+      max_decrease_rate: 1.0
+      
+    fan_speed:
+      max_increase_rate: 2.0  # Hz per second
+      max_decrease_rate: 3.0
+      
+    temperature_setpoint:
+      max_change_rate: 5.0  # °C per minute
+      
+  # 同时变化限制
+  simultaneous_changes:
+    max_variables: 2
+    min_interval: 30  # 秒
+    
+# ==================== 工艺参数推荐值 ====================
+recommended_parameters:
+  standard_operation:
+    dryer1:
+      chain_speed: 4.0
+      fan_speed: 35
+      target_out_temp: 110
+      
+    dryer2:
+      chain_speed: 4.5
+      fan_speed: 30
+      target_out_temp: 70
+      
+  high_moisture_material:
+    dryer1:
+      chain_speed: 3.0
+      fan_speed: 40
+      
+  low_moisture_material:
+    dryer1:
+      chain_speed: 5.0
+      fan_speed: 30
+

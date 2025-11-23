@@ -1,0 +1,159 @@
+# 服务质量配置 (Quality of Service)
+
+# ==================== 数据采集 QoS ====================
+data_acquisition:
+  scan_rate: 1.0  # Hz
+  max_latency: 0.5  # 秒
+  buffer_size: 1000
+  drop_policy: "oldest"  # oldest / newest
+  
+  retry:
+    max_attempts: 3
+    backoff: "exponential"  # linear / exponential
+    initial_delay: 1.0
+    max_delay: 10.0
+    
+# ==================== MQTT QoS ====================
+mqtt:
+  default_qos: 1
+  
+  topics:
+    # 实时数据 - QoS 0 (最快)
+    realtime_data:
+      qos: 0
+      pattern: "industrial/dryer/+/realtime"
+      
+    # AI 推理结果 - QoS 1 (至少一次)
+    ai_inference:
+      qos: 1
+      pattern: "industrial/dryer/ai/+"
+      
+    # 控制指令 - QoS 2 (恰好一次)
+    control_commands:
+      qos: 2
+      pattern: "industrial/dryer/control/+"
+      
+    # 报警 - QoS 2 (恰好一次)
+    alarms:
+      qos: 2
+      pattern: "industrial/dryer/alarm/+"
+      
+  connection:
+    keepalive: 60
+    clean_session: true
+    reconnect_delay_max: 60
+    
+# ==================== API 限流 ====================
+rate_limiting:
+  enabled: true
+  
+  # 按 IP 限流
+  by_ip:
+    requests_per_minute: 60
+    burst: 10
+    
+  # 按 API 端点限流
+  by_endpoint:
+    - path: "/api/v1/data/realtime"
+      requests_per_minute: 120
+      
+    - path: "/api/v1/control/*"
+      requests_per_minute: 10
+      
+    - path: "/api/v1/ai/*"
+      requests_per_minute: 30
+      
+# ==================== 数据库连接池 ====================
+database:
+  postgres:
+    pool_size: 10
+    max_overflow: 20
+    pool_timeout: 30
+    pool_recycle: 3600
+    
+  influxdb:
+    batch_size: 5000
+    flush_interval: 10  # 秒
+    retry_interval: 5
+    max_retries: 3
+    
+# ==================== 缓存策略 ====================
+cache:
+  enabled: true
+  backend: "redis"  # redis / memory
+  
+  strategies:
+    - name: "realtime_data"
+      ttl: 5  # 秒
+      
+    - name: "ai_predictions"
+      ttl: 60
+      
+    - name: "configuration"
+      ttl: 3600
+      
+# ==================== 数据保留策略 ====================
+data_retention:
+  influxdb:
+    # 原始数据
+    raw_data:
+      duration: "30d"
+      shard_duration: "1d"
+      
+    # 聚合数据 (1分钟)
+    aggregated_1m:
+      duration: "90d"
+      shard_duration: "7d"
+      
+    # 聚合数据 (1小时)
+    aggregated_1h:
+      duration: "1y"
+      shard_duration: "30d"
+      
+  postgres:
+    # 报警记录
+    alarms:
+      retention_days: 365
+      
+    # 审计日志
+    audit_logs:
+      retention_days: 180
+      
+    # 操作记录
+    operations:
+      retention_days: 90
+      
+# ==================== 性能监控阈值 ====================
+performance:
+  # API 响应时间
+  api_response_time:
+    target: 0.2  # 秒
+    warning: 0.5
+    critical: 1.0
+    
+  # 数据库查询时间
+  db_query_time:
+    target: 0.1
+    warning: 0.3
+    critical: 0.5
+    
+  # AI 推理时间
+  ai_inference_time:
+    target: 0.3
+    warning: 0.5
+    critical: 1.0
+    
+  # 系统资源
+  system_resources:
+    cpu_usage:
+      warning: 70  # %
+      critical: 85
+      
+    memory_usage:
+      warning: 75
+      critical: 90
+      
+    disk_usage:
+      warning: 80
+      critical: 95
+

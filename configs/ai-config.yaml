@@ -1,0 +1,141 @@
+# AI 模型配置文件
+
+# ==================== 软测量模型配置 ====================
+softsensor:
+  model_name: "moisture-predictor"
+  model_version: "v1.0.0"
+  model_path: "/app/models/softsensor.onnx"
+  
+  # 输入特征
+  input_features:
+    - DRYER1.IN.TEMP
+    - DRYER1.OUT.TEMP
+    - DRYER1.CHAIN.SPEED
+    - DRYER1.FAN.SPEED
+    - DRYER1.TORQUE
+    - DRYER2.IN.TEMP
+    - DRYER2.OUT.TEMP
+    - DRYER2.CHAIN.SPEED
+    - DRYER2.FAN.SPEED
+    - DRYER2.TORQUE
+    
+  # 输出
+  output:
+    name: "MOISTURE.PREDICTED"
+    unit: "%"
+    range: [0, 100]
+    
+  # 预处理配置
+  preprocessing:
+    method: "standard"  # standard / minmax / robust
+    scaler_path: "/app/models/scaler.pkl"
+    
+  # 推理配置
+  inference:
+    batch_size: 1
+    timeout: 0.5  # 秒
+    min_confidence: 0.7
+    
+  # 发布配置
+  publish:
+    mqtt_topic: "industrial/dryer/ai/moisture"
+    interval: 5.0  # 秒
+    
+# ==================== 控制优化模型配置 ====================
+optimizer:
+  model_name: "control-optimizer"
+  model_version: "v1.0.0"
+  model_path: "/app/models/optimizer.onnx"
+  
+  # 优化目标
+  objectives:
+    - name: "moisture_target"
+      target: 12.0  # 目标含水率 %
+      weight: 1.0
+      
+    - name: "energy_cost"
+      minimize: true
+      weight: 0.3
+      
+  # 控制变量
+  control_variables:
+    - name: "DRYER1.CHAIN.SPEED"
+      min: 0.5
+      max: 8.0
+      step: 0.1
+      
+    - name: "DRYER1.FAN.SPEED"
+      min: 20
+      max: 50
+      step: 1.0
+      
+    - name: "DRYER2.CHAIN.SPEED"
+      min: 0.5
+      max: 8.0
+      step: 0.1
+      
+    - name: "DRYER2.FAN.SPEED"
+      min: 20
+      max: 50
+      step: 1.0
+      
+  # 约束条件
+  constraints:
+    - type: "temperature"
+      tag: "DRYER1.OUT.TEMP"
+      max: 150
+      
+    - type: "temperature"
+      tag: "DRYER2.OUT.TEMP"
+      max: 100
+      
+    - type: "torque"
+      tag: "DRYER1.TORQUE"
+      max: 450
+      
+    - type: "speed_ratio"
+      description: "第二段链速必须 >= 第一段"
+      expression: "DRYER2.CHAIN.SPEED >= DRYER1.CHAIN.SPEED"
+      
+  # 优化配置
+  optimization:
+    algorithm: "pso"  # pso / genetic / gradient
+    max_iterations: 100
+    population_size: 30
+    convergence_threshold: 0.01
+    
+  # 执行配置
+  execution:
+    mode: "advisory"  # advisory / auto
+    interval: 60  # 秒
+    confidence_threshold: 0.8
+    
+  # 发布配置
+  publish:
+    mqtt_topic: "industrial/dryer/ai/control"
+    
+# ==================== 模型训练配置 ====================
+training:
+  data_source: "influxdb"
+  lookback_days: 90
+  train_test_split: 0.8
+  validation_split: 0.1
+  
+  hyperparameters:
+    learning_rate: 0.001
+    epochs: 100
+    batch_size: 32
+    early_stopping_patience: 10
+    
+# ==================== 模型评估指标 ====================
+metrics:
+  softsensor:
+    - mae  # 平均绝对误差
+    - rmse  # 均方根误差
+    - r2_score  # R² 分数
+    
+  optimizer:
+    - objective_value
+    - constraint_violations
+    - convergence_time
+

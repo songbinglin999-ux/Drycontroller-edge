@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+docs/
+README.md
+
+# Tests
+tests/
+**/tests/
+pytest_cache/
+.coverage
+
+# Database
+*.db
+*.sqlite
+
+# Other
+tmp/
+temp/
+backup/
+

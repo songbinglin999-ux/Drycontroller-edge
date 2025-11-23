@@ -1,0 +1,159 @@
+# PLC 标签配置 - 用于数据采集和MQTT发布
+tags:
+  # ==================== 第一段烘干机 ====================
+  dryer1:
+    temperature:
+      - name: DRYER1.IN.TEMP
+        address: 40001
+        type: float
+        unit: "°C"
+        description: "第一段进料温度"
+        range: [0, 200]
+        alarm_high: 180
+        alarm_low: 20
+        
+      - name: DRYER1.OUT.TEMP
+        address: 40002
+        type: float
+        unit: "°C"
+        description: "第一段出料温度"
+        range: [0, 200]
+        alarm_high: 150
+        alarm_low: 40
+        
+      - name: DRYER1.CHAMBER.TEMP
+        address: 40003
+        type: float
+        unit: "°C"
+        description: "第一段仓体温度"
+        range: [0, 200]
+        
+    speed:
+      - name: DRYER1.CHAIN.SPEED
+        address: 40010
+        type: float
+        unit: "m/min"
+        description: "第一段链速"
+        range: [0.5, 10]
+        control_enabled: true
+        
+    fan:
+      - name: DRYER1.FAN.SPEED
+        address: 40011
+        type: float
+        unit: "Hz"
+        description: "第一段抽风频率"
+        range: [0, 50]
+        control_enabled: true
+        
+    torque:
+      - name: DRYER1.TORQUE
+        address: 40012
+        type: float
+        unit: "Nm"
+        description: "第一段扭矩"
+        range: [0, 500]
+        
+  # ==================== 第二段烘干机 ====================
+  dryer2:
+    temperature:
+      - name: DRYER2.IN.TEMP
+        address: 40021
+        type: float
+        unit: "°C"
+        description: "第二段进料温度"
+        range: [0, 200]
+        
+      - name: DRYER2.OUT.TEMP
+        address: 40022
+        type: float
+        unit: "°C"
+        description: "第二段出料温度"
+        range: [0, 200]
+        alarm_high: 100
+        alarm_low: 30
+        
+      - name: DRYER2.CHAMBER.TEMP
+        address: 40023
+        type: float
+        unit: "°C"
+        description: "第二段仓体温度"
+        range: [0, 200]
+        
+    speed:
+      - name: DRYER2.CHAIN.SPEED
+        address: 40030
+        type: float
+        unit: "m/min"
+        description: "第二段链速"
+        range: [0.5, 10]
+        control_enabled: true
+        
+    fan:
+      - name: DRYER2.FAN.SPEED
+        address: 40031
+        type: float
+        unit: "Hz"
+        description: "第二段抽风频率"
+        range: [0, 50]
+        control_enabled: true
+        
+    torque:
+      - name: DRYER2.TORQUE
+        address: 40032
+        type: float
+        unit: "Nm"
+        description: "第二段扭矩"
+        range: [0, 500]
+        
+  # ==================== 发酵仓 ====================
+  fermentation:
+    temperature:
+      - name: FERM.CHAMBER.TEMP
+        address: 40041
+        type: float
+        unit: "°C"
+        description: "发酵仓温度"
+        range: [20, 80]
+        alarm_high: 75
+        
+    humidity:
+      - name: FERM.HUMIDITY
+        address: 40042
+        type: float
+        unit: "%"
+        description: "发酵仓湿度"
+        range: [0, 100]
+        
+  # ==================== 尾气余热 ====================
+  exhaust:
+    temperature:
+      - name: EXHAUST.TEMP
+        address: 40051
+        type: float
+        unit: "°C"
+        description: "尾气温度"
+        range: [0, 300]
+        
+    recovery:
+      - name: EXHAUST.RECOVERY.VALVE
+        address: 40052
+        type: float
+        unit: "%"
+        description: "余热回收阀门开度"
+        range: [0, 100]
+        control_enabled: true
+        
+# MQTT 发布配置
+mqtt:
+  base_topic: "industrial/dryer"
+  publish_interval: 1.0  # 秒
+  qos: 1
+  retain: false
+  
+# 采集配置
+acquisition:
+  scan_interval: 1.0  # 秒
+  batch_size: 100
+  timeout: 5.0
+

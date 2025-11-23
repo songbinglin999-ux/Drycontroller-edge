@@ -1,0 +1,24 @@
+# Modbus 通信
+pymodbus==3.5.4
+
+# MQTT
+paho-mqtt==1.6.1
+
+# InfluxDB
+influxdb-client==1.39.0
+
+# 配置和工具
+pyyaml==6.0.1
+python-dotenv==1.0.0
+
+# 日志
+structlog==24.1.0
+
+# 异步支持
+asyncio==3.4.3
+aiofiles==23.2.1
+
+# 测试
+pytest==7.4.4
+pytest-asyncio==0.23.3
+
