@@ -208,6 +208,8 @@ bash scripts/dev-start.sh
 docker-compose up -d
 ```
 
+> ✅ 默认 `.env` 配置齐全后，`docker-compose up -d` 将一次性拉起 edge-api、edge-daq、ai-softsensor、ai-ctrl-optimizer、license-service、edge-monitor、PostgreSQL、InfluxDB、Mosquitto 等全部服务。
+
 ### 4. 验证服务
 
 ```bash

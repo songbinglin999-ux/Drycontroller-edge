@@ -64,7 +64,7 @@ services:
       - edge-network
     restart: always
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 | grep -v Error || exit 1"]
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -u ${MQTT_USER} -P ${MQTT_PASSWORD} -t '$$SYS/#' -C 1 | grep -v Error || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

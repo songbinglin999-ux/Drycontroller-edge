@@ -30,6 +30,7 @@ env/
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
@@ -38,6 +39,7 @@ env/
 # Environment variables
 .env.local
 .env.*.local
+.env
 
 # Logs
 logs/**/*.log
