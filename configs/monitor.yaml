@@ -27,4 +27,20 @@ services:
     - name: "edge-monitor"
       url: "http://edge-monitor:8080/health"
       container: "edge-monitor"
+    - name: "edge-mosquitto"
+      container: "edge-mosquitto"
+      tcp:
+        host: "edge-mosquitto"
+        port: 1883
+    - name: "edge-influxdb"
+      url: "http://edge-influxdb:8086/health"
+      container: "edge-influxdb"
+      tcp:
+        host: "edge-influxdb"
+        port: 8086
+    - name: "edge-postgres"
+      container: "edge-postgres"
+      tcp:
+        host: "edge-postgres"
+        port: 5432
 

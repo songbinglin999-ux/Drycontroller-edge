@@ -7,7 +7,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import docker
 from docker import errors as docker_errors
@@ -27,6 +27,12 @@ event_recorder = setup_logging("edge-monitor")
 logger = structlog.get_logger(__name__)
 
 DEFAULT_CONFIG_PATH = Path(os.getenv("MONITOR_CONFIG", "/app/configs/monitor.yaml"))
+STATUS_PRIORITY = {
+    "unknown": 0,
+    "healthy": 1,
+    "degraded": 2,
+    "down": 3,
+}
 
 
 class MonitorService:
@@ -62,6 +68,7 @@ class MonitorService:
         self.influx_bucket = os.getenv("INFLUXDB_BUCKET", "industrial-data")
         self.system_measurement = os.getenv("MONITOR_SYSTEM_MEASUREMENT", "system_metrics")
         self.service_measurement = os.getenv("MONITOR_SERVICE_MEASUREMENT", "system_health")
+        self.status_schema = "edge.monitor.status.v1"
         
         self.mqtt_client = None
         self.influx_client = None
@@ -198,9 +205,15 @@ class MonitorService:
                     aggregated[name] = result
                 else:
                     aggregated[name] = {
-                        "status": "error",
-                        "detail": str(result),
+                        "name": name,
+                        "status": "down",
                         "timestamp": now,
+                        "checks": {
+                            "monitor": {
+                                "status": "down",
+                                "detail": str(result),
+                            }
+                        },
                     }
             self.service_status = aggregated
             self._write_service_health(aggregated)
@@ -213,7 +226,8 @@ class MonitorService:
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage(self.disk_path)
         load_avg = os.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
-        uptime = int(time.time() - psutil.boot_time())
+        captured_at = time.time()
+        uptime = int(captured_at - psutil.boot_time())
         
         metrics = {
             "cpu": {
@@ -236,49 +250,129 @@ class MonitorService:
                 "path": self.disk_path,
             },
             "uptime_sec": uptime,
+            "updated_at": int(captured_at),
         }
         logger.debug("system_metrics_collected", **metrics)
         return metrics
     
     async def _check_service(self, target: Dict[str, Any]) -> Dict[str, Any]:
         name = target.get("name", "unknown")
-        service_status = {
-            "status": "unknown",
-            "timestamp": int(time.time()),
-        }
-        url = target.get("url")
+        timestamp = int(time.time())
+        overall_status = "unknown"
+        checks: Dict[str, Any] = {}
+        
+        http_cfg = target.get("http", {})
+        http_url = http_cfg.get("url") or target.get("url")
+        if http_url:
+            http_result = await self._http_health_check(http_url)
+            checks["http"] = http_result
+            overall_status = self._merge_status(overall_status, http_result.get("status"))
+        
+        tcp_cfg = target.get("tcp")
+        if tcp_cfg:
+            tcp_result = await self._tcp_health_check(
+                host=tcp_cfg.get("host") or name,
+                port=tcp_cfg.get("port"),
+            )
+            checks["tcp"] = tcp_result
+            overall_status = self._merge_status(overall_status, tcp_result.get("status"))
+        
         container_name = target.get("container")
+        if container_name:
+            container_result = self._container_health_check(container_name)
+            checks["container"] = container_result
+            overall_status = self._merge_status(overall_status, container_result.get("status"))
         
-        if url and self.http_client:
-            try:
-                start = time.perf_counter()
-                response = await self.http_client.get(url)
-                latency_ms = (time.perf_counter() - start) * 1000
-                service_status["latency_ms"] = round(latency_ms, 2)
-                if response.status_code == 200:
-                    service_status["status"] = "healthy"
-                else:
-                    service_status["status"] = "degraded"
-                    service_status["detail"] = f"http {response.status_code}"
-            except Exception as exc:
-                service_status["status"] = "unreachable"
-                service_status["detail"] = str(exc)
+        if not checks:
+            checks["monitor"] = {
+                "status": "degraded",
+                "detail": "no_checks_configured",
+            }
         
-        if container_name and self.docker_client:
-            try:
-                container = self.docker_client.containers.get(container_name)
-                service_status["container_state"] = container.status
-                if service_status["status"] == "unknown":
-                    service_status["status"] = "healthy" if container.status == "running" else "degraded"
-            except docker_errors.NotFound:
-                service_status["container_state"] = "missing"
-                service_status["status"] = "down"
-            except docker_errors.DockerException as exc:
-                service_status["detail"] = f"docker:{exc}"
-                service_status.setdefault("container_state", "error")
+        if overall_status == "unknown":
+            overall_status = "degraded"
         
-        logger.info("service_check", service=name, status=service_status["status"])
-        return service_status
+        logger.info("service_check", service=name, status=overall_status)
+        return {
+            "name": name,
+            "status": overall_status,
+            "timestamp": timestamp,
+            "checks": checks,
+            "latency_ms": checks.get("http", {}).get("latency_ms"),
+            "container_state": checks.get("container", {}).get("state", ""),
+        }
+    
+    async def _http_health_check(self, url: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"status": "unknown", "url": url}
+        if not self.http_client:
+            result["status"] = "degraded"
+            result["detail"] = "http_client_not_ready"
+            return result
+        try:
+            start = time.perf_counter()
+            response = await self.http_client.get(url)
+            latency_ms = (time.perf_counter() - start) * 1000
+            result["latency_ms"] = round(latency_ms, 2)
+            result["status_code"] = response.status_code
+            if 200 <= response.status_code < 300:
+                result["status"] = "healthy"
+            else:
+                result["status"] = "degraded"
+                result["detail"] = f"http {response.status_code}"
+        except Exception as exc:
+            result["status"] = "down"
+            result["detail"] = str(exc)
+        return result
+    
+    async def _tcp_health_check(self, host: Optional[str], port: Optional[int]) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"status": "unknown", "host": host, "port": port}
+        if not host or port is None:
+            result["status"] = "degraded"
+            result["detail"] = "tcp_host_or_port_missing"
+            return result
+        try:
+            port_int = int(port)
+            start = time.perf_counter()
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port_int),
+                timeout=self.http_timeout,
+            )
+            writer.close()
+            if hasattr(writer, "wait_closed"):
+                await writer.wait_closed()
+            latency_ms = (time.perf_counter() - start) * 1000
+            result["latency_ms"] = round(latency_ms, 2)
+            result["status"] = "healthy"
+        except Exception as exc:
+            result["status"] = "down"
+            result["detail"] = str(exc)
+        return result
+    
+    def _container_health_check(self, container_name: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"status": "unknown", "name": container_name}
+        if not self.docker_client:
+            result["status"] = "degraded"
+            result["detail"] = "docker_client_not_ready"
+            return result
+        try:
+            container = self.docker_client.containers.get(container_name)
+            result["state"] = container.status
+            result["status"] = "healthy" if container.status == "running" else "degraded"
+        except docker_errors.NotFound:
+            result["state"] = "missing"
+            result["status"] = "down"
+            result["detail"] = "container_not_found"
+        except docker_errors.DockerException as exc:
+            result["status"] = "degraded"
+            result["detail"] = f"docker:{exc}"
+        return result
+    
+    def _merge_status(self, current: str, candidate: Optional[str]) -> str:
+        if not candidate:
+            return current
+        if STATUS_PRIORITY.get(candidate, 0) > STATUS_PRIORITY.get(current, 0):
+            return candidate
+        return current
     
     def _write_system_metrics(self, metrics: Dict[str, Any]):
         if not self.write_api:
@@ -314,8 +408,8 @@ class MonitorService:
         try:
             for name, status in statuses.items():
                 state = status.get("status", "unknown")
-                latency = status.get("latency_ms")
-                container_state = status.get("container_state", "")
+                latency = status.get("latency_ms") or status.get("checks", {}).get("http", {}).get("latency_ms")
+                container_state = status.get("container_state") or status.get("checks", {}).get("container", {}).get("state", "")
                 point = (
                     Point(self.service_measurement)
                     .tag("line", self.line_id)
@@ -340,12 +434,7 @@ class MonitorService:
     def _publish_status(self):
         if not self.mqtt_client:
             return
-        payload = {
-            "line": self.line_id,
-            "ts": int(time.time()),
-            "services": self.service_status,
-            "system": self.system_metrics,
-        }
+        payload = self._build_status_payload()
         try:
             self.mqtt_client.publish(self.status_topic, json.dumps(payload), qos=1)
         except Exception as exc:
@@ -356,6 +445,31 @@ class MonitorService:
                 fields={"error": str(exc)},
                 tags={"component": "edge-monitor"},
             )
+
+    def _build_status_payload(self) -> Dict[str, Any]:
+        services = []
+        for name in sorted(self.service_status.keys()):
+            record = self.service_status[name]
+            services.append(
+                {
+                    "name": name,
+                    "status": record.get("status", "unknown"),
+                    "checks": record.get("checks", {}),
+                    "latency_ms": record.get("latency_ms"),
+                    "container_state": record.get("container_state"),
+                    "updated_at": record.get("timestamp"),
+                }
+            )
+        return {
+            "schema": self.status_schema,
+            "line": self.line_id,
+            "timestamp": int(time.time()),
+            "services": services,
+            "system": {
+                "metrics": self.system_metrics,
+                "updated_at": self.system_metrics.get("updated_at"),
+            },
+        }
 
 
 monitor_service = MonitorService()
@@ -395,12 +509,9 @@ async def health():
 
 @app.get("/system/health")
 async def system_health():
-    return {
-        "success": True,
-        "line": monitor_service.line_id,
-        "services": monitor_service.service_status,
-        "timestamp": int(time.time()),
-    }
+    payload = monitor_service._build_status_payload()
+    payload["success"] = True
+    return payload
 
 
 @app.get("/system/metrics")

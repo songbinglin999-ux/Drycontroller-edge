@@ -33,7 +33,7 @@ class OptimizerService:
         await self._start_health_server()
         self.running = True
         self._loop_task = asyncio.create_task(self._optimizer_loop())
-        logger.info("ai_ctrl_optimizer_started")
+    logger.info("ai_ctrl_optimizer_started")
         event_recorder.record_event(
             "service_started",
             tags={"component": "ai-ctrl-optimizer"},
@@ -62,9 +62,9 @@ class OptimizerService:
         )
     
     async def _optimizer_loop(self):
-        # TODO: 实现控制优化逻辑
+    # TODO: 实现控制优化逻辑
         while self.running:
-            await asyncio.sleep(60)
+        await asyncio.sleep(60)
     
     async def _start_health_server(self):
         if self.health_runner:
