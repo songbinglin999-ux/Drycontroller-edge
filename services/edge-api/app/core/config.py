@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     INFLUXDB_TOKEN: str = ""
     INFLUXDB_ORG: str = "edge-org"
     INFLUXDB_BUCKET: str = "industrial-data"
+    TRAINING_MEASUREMENT: str = "softsensor_training_data"
+    SYSTEM_METRICS_MEASUREMENT: str = "system_metrics"
+    SYSTEM_HEALTH_MEASUREMENT: str = "system_health"
     
     # MQTT 配置
     MQTT_BROKER: str = "localhost"
@@ -66,6 +69,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
+        extra="allow",
     )
     
     @property

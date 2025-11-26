@@ -1,5 +1,25 @@
 """
 AI 软测量服务 - 含水率预测
+
+本服务实现基于 AI 模型的在线含水率软测量功能，主要用于：
+- 实时预测烘干后物料的含水率（替代离线化验）
+- 为控制优化提供实时反馈信号
+- 减少人工采样和化验的工作量
+
+工作原理：
+1. 订阅实时采集数据（温度、链速、风量等）
+2. 使用训练好的模型进行推理
+3. 将预测结果发布到 MQTT 供其他服务使用
+
+架构流程：
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│  MQTT 订阅   │ -> │ SoftSensorModel │ -> │  MQTT 发布   │
+│ (实时数据)    │    │  (模型推理)    │    │ (预测结果)   │
+└──────────────┘    └──────────────┘    └──────────────┘
+
+环境变量：
+- MQTT_BROKER/MQTT_PORT: MQTT 服务器配置
+- HEALTH_PORT: 健康检查端口（默认 8080）
 """
 
 import asyncio
@@ -21,19 +41,38 @@ logger = structlog.get_logger(__name__)
 
 
 class SoftSensorService:
-    """软测量服务"""
+    """
+    软测量服务主类
+    
+    协调模型加载、MQTT 通信和服务生命周期管理。
+    
+    Attributes:
+        running: 服务运行状态
+        model: 软测量模型实例
+        mqtt_handler: MQTT 消息处理器
+        config: 服务配置
+    """
     
     def __init__(self):
+        """初始化软测量服务"""
         self.running = False
         self.model = None
         self.mqtt_handler = None
         self.config = None
+        # 健康检查服务器
         self.health_runner = None
         self.health_site = None
         self.health_port = int(os.getenv("HEALTH_PORT", "8080"))
     
     async def load_config(self):
-        """加载配置"""
+        """
+        加载 AI 配置文件
+        
+        配置文件定义了模型路径、输入特征、输出配置等
+        
+        Returns:
+            加载的配置字典
+        """
         config_path = Path("/app/configs/ai-config.yaml")
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
@@ -42,7 +81,15 @@ class SoftSensorService:
         return self.config
     
     async def start(self):
-        """启动服务"""
+        """
+        启动软测量服务
+        
+        启动流程：
+        1. 加载配置文件
+        2. 启动健康检查服务
+        3. 初始化并加载 AI 模型
+        4. 连接 MQTT 并开始订阅数据
+        """
         logger.info("starting_softsensor_service")
         event_recorder.record_event(
             "service_starting",
@@ -52,12 +99,12 @@ class SoftSensorService:
         await self.load_config()
         await self._start_health_server()
         
-        # 初始化模型
+        # 初始化并加载模型
         model_config = self.config.get("softsensor", {})
         self.model = SoftSensorModel(model_config)
         await self.model.load()
         
-        # 初始化 MQTT 处理器
+        # 初始化 MQTT 处理器并连接
         self.mqtt_handler = MQTTHandler(self.model, self.config)
         await self.mqtt_handler.connect()
         
@@ -69,7 +116,11 @@ class SoftSensorService:
         )
     
     async def stop(self):
-        """停止服务"""
+        """
+        停止软测量服务
+        
+        按顺序清理资源：MQTT -> 健康检查服务
+        """
         logger.info("stopping_softsensor_service")
         event_recorder.record_event(
             "service_stopping",
@@ -78,9 +129,11 @@ class SoftSensorService:
         
         self.running = False
         
+        # 断开 MQTT 连接
         if self.mqtt_handler:
             await self.mqtt_handler.disconnect()
 
+        # 停止健康检查服务
         await self._stop_health_server()
         
         logger.info("softsensor_service_stopped")

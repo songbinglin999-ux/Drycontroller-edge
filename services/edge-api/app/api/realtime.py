@@ -10,18 +10,14 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import WebSocket, WebSocketDisconnect
 
-from app.services.influx import InfluxQueryService, get_influx_service
 from app.services.ws_stream import ws_stream
-from app.utils.tag_loader import get_all_tag_names
+from app.services.realtime_data import (
+    RealtimeDataService,
+    get_realtime_data_service,
+)
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
-
-
-def _resolve_tags(requested: Optional[List[str]]) -> List[str]:
-    if requested:
-        return [tag.strip() for tag in requested if tag.strip()]
-    return get_all_tag_names()
 
 
 @router.get("/realtime/latest")
@@ -34,27 +30,12 @@ async def realtime_latest(
         "5m",
         description="查询时间窗口，例如 5m/1h/1d",
     ),
-    influx: InfluxQueryService = Depends(get_influx_service),
+    service: RealtimeDataService = Depends(get_realtime_data_service),
 ):
-    tag_list = _resolve_tags(tags)
-    if not tag_list:
-        return {"success": True, "data": [], "timestamp": int(time.time())}
-
     try:
-        points = await influx.latest_points(tag_list, lookback=lookback)
+        return await service.get_latest_payload(tags, lookback=lookback)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-    payload_tags = {point["tag"] for point in points}
-    missing = sorted(set(tag_list) - payload_tags)
-
-    return {
-        "success": True,
-        "data": points,
-        "missing": missing,
-        "count": len(points),
-        "timestamp": int(time.time()),
-    }
 
 
 @router.get("/history")
@@ -66,10 +47,10 @@ async def history(
         "mean",
         description="聚合函数，可选 mean/max/min/sum/last/first",
     ),
-    influx: InfluxQueryService = Depends(get_influx_service),
+    service: RealtimeDataService = Depends(get_realtime_data_service),
 ):
     try:
-        values = await influx.history_points(
+        return await service.get_history_payload(
             tag=tag,
             period=period,
             window=window,
@@ -77,16 +58,6 @@ async def history(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-    return {
-        "success": True,
-        "data": {
-            "tag": tag,
-            "points": values,
-        },
-        "count": len(values),
-        "timestamp": int(time.time()),
-    }
 
 
 @router.websocket("/realtime/stream")
@@ -106,19 +77,20 @@ async def realtime_stream(websocket: WebSocket):
     except ValueError:
         interval_seconds = 1.0
 
-    influx = get_influx_service()
+    data_service = get_realtime_data_service()
     logger.info("realtime_stream_connected", tags=tags, interval=interval_seconds)
 
     try:
         while True:
-            tag_list = _resolve_tags(tags)
-            data = await influx.latest_points(tag_list, lookback=lookback)
+            tag_list = data_service.resolve_tags(tags)
+            payload = await data_service.get_latest_payload(tag_list, lookback=lookback)
             await websocket.send_json(
                 {
                     "type": "realtime",
                     "tags": tag_list,
-                    "data": data,
-                    "timestamp": int(time.time()),
+                    "data": payload["data"],
+                    "missing": payload.get("missing", []),
+                    "timestamp": payload["timestamp"],
                 }
             )
             await asyncio.sleep(interval_seconds)
@@ -179,7 +151,10 @@ async def websocket_realtime(
     line: Optional[str] = Query(None, description="按产线过滤，例如 L1"),
     tags: Optional[List[str]] = Query(None, description="按标签过滤，可多值"),
 ):
-    tag_set = {tag.strip() for tag in tags if tag.strip()} if tags else None
+    if tags:
+        tag_set = {tag.strip() for tag in tags if tag.strip()}
+    else:
+        tag_set = None
     predicate = _build_realtime_predicate(line, tag_set)
     await _stream_websocket(websocket, "realtime", predicate)
 

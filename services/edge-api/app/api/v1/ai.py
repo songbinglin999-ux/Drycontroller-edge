@@ -2,132 +2,113 @@
 AI 相关 API
 """
 
-from fastapi import APIRouter
-from datetime import datetime
+from typing import Optional
+
 import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from app.services.ai_softsensor import (
+    AISoftsensorService,
+    get_ai_softsensor_service,
+)
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
 
 
 @router.get("/moisture/current")
-async def get_current_moisture():
+async def get_current_moisture(
+    line: Optional[str] = Query(None, description="可选：按产线过滤，如 L1"),
+    service: AISoftsensorService = Depends(get_ai_softsensor_service),
+):
     """
-    获取当前含水率预测
-    
-    返回 AI 软测量模型的最新预测值
+    获取当前含水率预测（来自 ai-softsensor 实时流）
     """
-    # TODO: 从 MQTT 或 InfluxDB 获取最新预测值
-    return {
-        "success": True,
-        "data": {
-            "predicted_moisture": 12.3,
-            "confidence": 0.92,
-            "model_version": "v1.0.0",
-            "timestamp": datetime.now().isoformat(),
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    payload = service.get_current_moisture(line)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No AI moisture prediction available yet",
+        )
+    return payload
 
 
 @router.get("/moisture/history")
 async def get_moisture_history(
-    start_time: str = None,
-    end_time: str = None,
+    period: str = Query("1d", description="时间范围，例如 6h/12h/1d"),
+    window: str = Query("5m", description="聚合窗口，例如 1m/5m/1h"),
+    aggregation: str = Query(
+        "mean",
+        description="聚合函数：mean/max/min/sum/last/first",
+    ),
+    service: AISoftsensorService = Depends(get_ai_softsensor_service),
 ):
     """
-    获取含水率历史预测
-    
-    - **start_time**: 开始时间
-    - **end_time**: 结束时间
+    查询历史含水率预测（来自 Influx）
     """
-    # TODO: 从 InfluxDB 查询历史预测值
-    return {
-        "success": True,
-        "data": {
-            "values": [
-                {"time": "2025-01-01T00:00:00Z", "moisture": 12.5, "confidence": 0.91},
-                {"time": "2025-01-01T00:05:00Z", "moisture": 12.3, "confidence": 0.93},
-            ],
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    try:
+        return await service.get_moisture_history(
+            period=period,
+            window=window,
+            aggregation=aggregation,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/lab/samples")
+async def get_lab_samples(
+    start: str = Query("-7d", description="Flux range start，例如 -7d"),
+    stop: str = Query("now()", description="Flux range stop，默认 now()"),
+    line: Optional[str] = Query(None, description="可选：按产线过滤"),
+    require_lab: bool = Query(True, description="仅返回已录入 LAB 的样本"),
+    limit: int = Query(200, ge=1, le=2000, description="最多返回的数据条数"),
+    service: AISoftsensorService = Depends(get_ai_softsensor_service),
+):
+    """
+    查询 softsensor 训练数据中的样本（便于导出训练集或对齐 LAB）
+    """
+    return await service.get_lab_samples(
+        start=start,
+        stop=stop,
+        line=line,
+        require_lab=require_lab,
+        limit=limit,
+    )
 
 
 @router.get("/optimization/recommendation")
 async def get_optimization_recommendation():
     """
-    获取控制优化建议
-    
-    返回 AI 优化模型的控制参数建议
+    控制优化建议（占位）
     """
-    # TODO: 从优化服务获取建议
-    return {
-        "success": True,
-        "data": {
-            "recommendations": {
-                "DRYER1.CHAIN.SPEED": 4.2,
-                "DRYER1.FAN.SPEED": 35.0,
-                "DRYER2.CHAIN.SPEED": 4.5,
-                "DRYER2.FAN.SPEED": 30.0,
-            },
-            "expected_moisture": 12.0,
-            "energy_savings": 5.2,  # %
-            "confidence": 0.88,
-            "timestamp": datetime.now().isoformat(),
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Optimizer recommendation API not implemented yet",
+    )
 
 
 @router.post("/optimization/apply")
 async def apply_optimization():
     """
-    应用优化建议
-    
-    将 AI 优化建议应用到实际控制
+    应用优化建议（占位）
     """
-    logger.info("applying_ai_optimization")
-    
-    # TODO: 应用优化建议到控制系统
-    return {
-        "success": True,
-        "message": "Optimization applied successfully",
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Optimization apply API not implemented yet",
+    )
 
 
 @router.get("/models")
-async def get_models():
+async def get_models(service: AISoftsensorService = Depends(get_ai_softsensor_service)):
     """
-    获取 AI 模型信息
-    
-    返回当前部署的模型版本和性能指标
+    获取 ai-config.yaml 中的软测量/优化器模型信息
     """
-    # TODO: 从数据库查询模型信息
-    return {
-        "success": True,
-        "data": {
-            "softsensor": {
-                "name": "moisture-predictor",
-                "version": "v1.0.0",
-                "deployed_at": "2025-01-01T00:00:00Z",
-                "metrics": {
-                    "mae": 0.5,
-                    "rmse": 0.8,
-                    "r2_score": 0.95,
-                },
-            },
-            "optimizer": {
-                "name": "control-optimizer",
-                "version": "v1.0.0",
-                "deployed_at": "2025-01-01T00:00:00Z",
-                "metrics": {
-                    "objective_value": 0.92,
-                    "convergence_time": 2.3,
-                },
-            },
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    payload = service.get_models_info()
+    if not payload.get("data"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AI config not available",
+        )
+    return payload
 

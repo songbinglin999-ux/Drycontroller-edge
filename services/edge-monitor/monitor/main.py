@@ -1,5 +1,24 @@
 """
 系统监控服务
+
+本模块实现边缘节点的系统监控功能，包括：
+- 系统指标采集：CPU、内存、磁盘使用率
+- 服务健康检查：HTTP/TCP/容器状态探活
+- 状态发布：通过 MQTT 推送、写入 InfluxDB
+
+监控架构：
+┌────────────────┐    ┌─────────────────┐    ┌─────────────┐
+│  系统指标采集   │ -> │                 │ -> │   MQTT      │
+│  (psutil)      │    │ MonitorService  │    │  (实时推送)  │
+└────────────────┘    │                 │    └─────────────┘
+                      │                 │
+┌────────────────┐    │                 │    ┌─────────────┐
+│  服务健康检查   │ -> │                 │ -> │  InfluxDB   │
+│  (HTTP/TCP/容器)│    └─────────────────┘    │  (历史存储)  │
+└────────────────┘                            └─────────────┘
+
+状态级别优先级：
+- unknown(0) < healthy(1) < degraded(2) < down(3)
 """
 
 import asyncio
@@ -22,82 +41,143 @@ from influxdb_client.client.write_api import ASYNCHRONOUS
 import paho.mqtt.client as mqtt
 
 from common.logging import setup_logging
+from monitor.self_heal import SelfHealManager
 
 event_recorder = setup_logging("edge-monitor")
 logger = structlog.get_logger(__name__)
 
+# 监控配置文件路径
 DEFAULT_CONFIG_PATH = Path(os.getenv("MONITOR_CONFIG", "/app/configs/monitor.yaml"))
+
+# 状态优先级映射：数值越大表示问题越严重
 STATUS_PRIORITY = {
-    "unknown": 0,
-    "healthy": 1,
-    "degraded": 2,
-    "down": 3,
+    "unknown": 0,    # 未知状态
+    "healthy": 1,    # 健康
+    "degraded": 2,   # 降级（部分功能受影响）
+    "down": 3,       # 宕机（完全不可用）
 }
 
 
 class MonitorService:
-    """负责系统指标采集、服务探活与状态发布"""
+    """
+    系统监控服务
+    
+    负责边缘节点的系统指标采集、服务健康检查和状态发布。
+    
+    主要功能：
+    - 周期性采集 CPU/内存/磁盘指标
+    - 并行检查多个服务的健康状态（HTTP/TCP/容器）
+    - 将监控数据写入 InfluxDB
+    - 通过 MQTT 发布实时状态
+    
+    Attributes:
+        system_metrics: 最新的系统指标数据
+        service_status: 各服务的健康状态
+        system_interval: 系统指标采集间隔（秒）
+        service_interval: 服务健康检查间隔（秒）
+    """
     
     def __init__(self):
+        """
+        初始化监控服务
+        
+        从配置文件和环境变量读取所有配置参数
+        """
+        # 加载配置文件
         self.config = self._load_config()
         self.line_id = self.config.get("line_id") or os.getenv("LINE_ID", "L1")
         
+        # 系统监控配置
         system_cfg = self.config.get("system", {})
         service_cfg = self.config.get("services", {})
         
-        self.system_interval = int(system_cfg.get("interval", 30))
-        self.service_interval = int(service_cfg.get("interval", 20))
-        self.disk_path = system_cfg.get("disk_path", "/")
-        self.service_targets: List[Dict[str, Any]] = service_cfg.get("targets", [])
-        self.http_timeout = float(service_cfg.get("http_timeout", 5))
-        self.publish_mqtt = bool(system_cfg.get("publish_mqtt", True))
+        self.system_interval = int(system_cfg.get("interval", 30))   # 系统指标采集间隔
+        self.service_interval = int(service_cfg.get("interval", 20)) # 服务检查间隔
+        self.disk_path = system_cfg.get("disk_path", "/")            # 磁盘监控路径
+        self.service_targets: List[Dict[str, Any]] = service_cfg.get("targets", [])  # 要监控的服务列表
+        self.http_timeout = float(service_cfg.get("http_timeout", 5))  # HTTP 检查超时
+        self.publish_mqtt = bool(system_cfg.get("publish_mqtt", True)) # 是否发布到 MQTT
+
+        self.service_failure_threshold = int(service_cfg.get("failure_threshold", 3))
+        self.service_recovery_observe = int(service_cfg.get("recovery_observe", 6))
+        self.service_max_restart_per_hour = int(service_cfg.get("max_restart_per_hour", 5))
+        global_self_heal_cfg = service_cfg.get("self_heal") or {}
+        self.self_heal_defaults = {
+            "enabled": bool(global_self_heal_cfg.get("enabled", True)),
+            "failure_threshold": self.service_failure_threshold,
+            "recovery_observe": self.service_recovery_observe,
+            "max_restart_per_hour": self.service_max_restart_per_hour,
+        }
+        self.service_health_state: Dict[str, Any] = {}
+        self.self_heal_manager = SelfHealManager()
         
+        # MQTT 配置
         self.mqtt_broker = os.getenv("MQTT_BROKER", "localhost")
         self.mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
         self.mqtt_user = os.getenv("MQTT_USER", "")
         self.mqtt_password = os.getenv("MQTT_PASSWORD", "")
         self.status_topic = os.getenv(
             "MQTT_TOPIC_STATUS",
-            f"system/{self.line_id}/status",
+            f"system/{self.line_id}/status",  # 状态发布主题
         )
         
+        # InfluxDB 配置
         self.influx_host = os.getenv("INFLUXDB_HOST", "localhost")
         self.influx_port = os.getenv("INFLUXDB_PORT", "8086")
         self.influx_token = os.getenv("INFLUXDB_TOKEN", "")
         self.influx_org = os.getenv("INFLUXDB_ORG", "edge-org")
         self.influx_bucket = os.getenv("INFLUXDB_BUCKET", "industrial-data")
-        self.system_measurement = os.getenv("MONITOR_SYSTEM_MEASUREMENT", "system_metrics")
-        self.service_measurement = os.getenv("MONITOR_SERVICE_MEASUREMENT", "system_health")
-        self.status_schema = "edge.monitor.status.v1"
+        self.system_measurement = os.getenv("MONITOR_SYSTEM_MEASUREMENT", "system_metrics")   # 系统指标表
+        self.service_measurement = os.getenv("MONITOR_SERVICE_MEASUREMENT", "system_health")  # 服务健康表
+        self.status_schema = "edge.monitor.status.v1"  # 状态消息 schema 版本
         
+        # 客户端实例
         self.mqtt_client = None
         self.influx_client = None
         self.write_api = None
         self.http_client: httpx.AsyncClient | None = None
         self.docker_client = None
+        
+        # 运行状态
         self._running = False
         self._tasks: List[asyncio.Task] = []
+        
+        # 缓存的监控数据
         self.system_metrics: Dict[str, Any] = {}
         self.service_status: Dict[str, Any] = {}
         
+        # 预热 CPU 使用率采集（首次调用会阻塞）
         psutil.cpu_percent(interval=None)
     
     async def start(self):
+        """
+        启动监控服务
+        
+        启动流程：
+        1. 连接 MQTT、InfluxDB、HTTP 客户端、Docker
+        2. 启动系统指标采集循环
+        3. 启动服务健康检查循环
+        """
         logger.info("edge_monitor_starting", line=self.line_id)
         event_recorder.record_event(
             "service_starting",
             tags={"component": "edge-monitor", "line": self.line_id},
         )
+        
+        # 初始化各种客户端连接
         self._connect_mqtt()
         self._connect_influx()
         await self._connect_http()
         self._connect_docker()
+        self.self_heal_manager.set_docker_client_getter(self._get_docker_client)
         
+        # 启动两个并行的监控循环
         self._running = True
         self._tasks = [
-            asyncio.create_task(self._system_metrics_loop()),
-            asyncio.create_task(self._service_health_loop()),
+            asyncio.create_task(self._system_metrics_loop()),   # 系统指标采集
+            asyncio.create_task(self._service_health_loop()),   # 服务健康检查
         ]
+        
         logger.info("edge_monitor_started")
         event_recorder.record_event(
             "service_started",
@@ -105,6 +185,11 @@ class MonitorService:
         )
     
     async def stop(self):
+        """
+        停止监控服务
+        
+        按顺序清理资源：后台任务 -> HTTP客户端 -> InfluxDB -> MQTT -> Docker
+        """
         logger.info("edge_monitor_stopping")
         event_recorder.record_event(
             "service_stopping",
@@ -112,24 +197,29 @@ class MonitorService:
         )
         self._running = False
         
+        # 取消所有后台任务
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         
+        # 关闭 HTTP 客户端
         if self.http_client:
             await self.http_client.aclose()
             self.http_client = None
         
+        # 关闭 InfluxDB 客户端
         if self.write_api and self.influx_client:
             self.influx_client.close()
             self.write_api = None
         
+        # 关闭 MQTT 客户端
         if self.mqtt_client:
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
             self.mqtt_client = None
         
+        # 关闭 Docker 客户端
         if self.docker_client:
             self.docker_client.close()
             self.docker_client = None
@@ -141,6 +231,12 @@ class MonitorService:
         )
     
     def _load_config(self) -> Dict[str, Any]:
+        """
+        加载监控配置文件
+        
+        Returns:
+            配置字典，如果文件不存在返回空字典
+        """
         if DEFAULT_CONFIG_PATH.exists():
             with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
@@ -148,6 +244,7 @@ class MonitorService:
         return {}
     
     def _connect_mqtt(self):
+        """连接到 MQTT Broker"""
         try:
             self.mqtt_client = mqtt.Client(client_id="edge-monitor")
             if self.mqtt_user and self.mqtt_password:
@@ -160,6 +257,7 @@ class MonitorService:
             self.mqtt_client = None
     
     def _connect_influx(self):
+        """连接到 InfluxDB"""
         try:
             url = f"http://{self.influx_host}:{self.influx_port}"
             self.influx_client = InfluxDBClient(
@@ -175,35 +273,64 @@ class MonitorService:
             self.write_api = None
     
     async def _connect_http(self):
+        """初始化 HTTP 客户端（用于服务健康检查）"""
         self.http_client = httpx.AsyncClient(timeout=self.http_timeout)
     
     def _connect_docker(self):
+        """连接到本地 Docker daemon（用于容器状态检查）"""
         try:
             self.docker_client = docker.from_env()
         except docker_errors.DockerException as exc:
             logger.error("monitor_docker_connect_failed", error=str(exc))
             self.docker_client = None
+
+    def _get_docker_client(self):
+        """提供当前 Docker 客户端实例"""
+        return self.docker_client
     
     async def _system_metrics_loop(self):
+        """
+        系统指标采集主循环
+        
+        按配置的间隔周期性采集 CPU、内存、磁盘等系统指标，
+        并将数据写入 InfluxDB 和/或发布到 MQTT。
+        """
         while self._running:
+            # 采集系统指标
             metrics = self._collect_system_metrics()
             self.system_metrics = metrics
+            
+            # 写入 InfluxDB
             self._write_system_metrics(metrics)
+            
+            # 发布到 MQTT（如果启用）
             if self.publish_mqtt:
                 self._publish_status()
+            
             await asyncio.sleep(self.system_interval)
     
     async def _service_health_loop(self):
+        """
+        服务健康检查主循环
+        
+        并行检查所有配置的服务目标（HTTP/TCP/容器），
+        汇总状态后写入数据库并发布。
+        """
         while self._running:
+            # 并行执行所有服务的健康检查
             tasks = [self._check_service(target) for target in self.service_targets]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # 汇总检查结果
             now = int(time.time())
             aggregated = {}
             for target, result in zip(self.service_targets, results):
                 name = target.get("name", "unknown")
                 if isinstance(result, dict):
+                    # 正常返回的检查结果
                     aggregated[name] = result
                 else:
+                    # 检查过程中发生异常
                     aggregated[name] = {
                         "name": name,
                         "status": "down",
@@ -215,17 +342,49 @@ class MonitorService:
                             }
                         },
                     }
+            
+            # 更新自愈状态缓存
+            state_snapshot = self._update_service_states(aggregated)
+            for name, state in state_snapshot.items():
+                aggregated[name]["self_heal"] = {"state": state}
+
+            await self._process_self_heal(aggregated)
+
+            # 更新缓存并持久化
             self.service_status = aggregated
             self._write_service_health(aggregated)
+            
+            # 发布到 MQTT
             if self.publish_mqtt:
                 self._publish_status()
+            
             await asyncio.sleep(self.service_interval)
     
     def _collect_system_metrics(self) -> Dict[str, Any]:
+        """
+        采集系统指标
+        
+        使用 psutil 库获取以下指标：
+        - CPU 使用率和负载均衡
+        - 内存使用情况
+        - 磁盘使用情况
+        - 系统运行时间
+        
+        Returns:
+            包含所有指标的字典
+        """
+        # CPU 指标
         cpu_percent = psutil.cpu_percent(interval=0.1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage(self.disk_path)
+        # 系统负载（1/5/15 分钟平均）
         load_avg = os.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
+        
+        # 内存指标
+        memory = psutil.virtual_memory()
+        
+        # 磁盘指标
+        disk = psutil.disk_usage(self.disk_path)
+        
+        # 系统运行时间
         captured_at = time.time()
         uptime = int(captured_at - psutil.boot_time())
         
@@ -256,11 +415,28 @@ class MonitorService:
         return metrics
     
     async def _check_service(self, target: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        检查单个服务的健康状态
+        
+        支持三种检查方式（可组合）：
+        - HTTP 健康检查：访问指定 URL 检查返回状态码
+        - TCP 端口检查：尝试建立 TCP 连接
+        - 容器状态检查：查询 Docker 容器运行状态
+        
+        综合所有检查结果，取最严重的状态作为最终状态。
+        
+        Args:
+            target: 服务配置，包含 name、http、tcp、container 等字段
+            
+        Returns:
+            服务状态字典，包含 name、status、checks 等
+        """
         name = target.get("name", "unknown")
         timestamp = int(time.time())
         overall_status = "unknown"
         checks: Dict[str, Any] = {}
         
+        # HTTP 健康检查
         http_cfg = target.get("http", {})
         http_url = http_cfg.get("url") or target.get("url")
         if http_url:
@@ -268,6 +444,7 @@ class MonitorService:
             checks["http"] = http_result
             overall_status = self._merge_status(overall_status, http_result.get("status"))
         
+        # TCP 端口检查
         tcp_cfg = target.get("tcp")
         if tcp_cfg:
             tcp_result = await self._tcp_health_check(
@@ -277,18 +454,21 @@ class MonitorService:
             checks["tcp"] = tcp_result
             overall_status = self._merge_status(overall_status, tcp_result.get("status"))
         
+        # 容器状态检查
         container_name = target.get("container")
         if container_name:
             container_result = self._container_health_check(container_name)
             checks["container"] = container_result
             overall_status = self._merge_status(overall_status, container_result.get("status"))
         
+        # 如果没有配置任何检查方式，标记为降级
         if not checks:
             checks["monitor"] = {
                 "status": "degraded",
                 "detail": "no_checks_configured",
             }
         
+        # 未知状态默认为降级
         if overall_status == "unknown":
             overall_status = "degraded"
         
@@ -303,81 +483,301 @@ class MonitorService:
         }
     
     async def _http_health_check(self, url: str) -> Dict[str, Any]:
+        """
+        执行 HTTP 健康检查
+        
+        访问指定 URL 并根据响应状态码判断服务健康状态：
+        - 2xx: healthy（健康）
+        - 其他: degraded（降级）
+        - 异常: down（宕机）
+        
+        Args:
+            url: 健康检查 URL（通常是 /health 端点）
+            
+        Returns:
+            检查结果字典，包含 status、latency_ms、status_code 等
+        """
         result: Dict[str, Any] = {"status": "unknown", "url": url}
+        
+        # 检查 HTTP 客户端是否就绪
         if not self.http_client:
             result["status"] = "degraded"
             result["detail"] = "http_client_not_ready"
             return result
+        
         try:
+            # 记录请求延迟
             start = time.perf_counter()
             response = await self.http_client.get(url)
             latency_ms = (time.perf_counter() - start) * 1000
+            
             result["latency_ms"] = round(latency_ms, 2)
             result["status_code"] = response.status_code
+            
+            # 根据状态码判断健康状态
             if 200 <= response.status_code < 300:
                 result["status"] = "healthy"
             else:
                 result["status"] = "degraded"
                 result["detail"] = f"http {response.status_code}"
         except Exception as exc:
+            # 请求失败（连接超时、拒绝等）
             result["status"] = "down"
             result["detail"] = str(exc)
+        
         return result
     
     async def _tcp_health_check(self, host: Optional[str], port: Optional[int]) -> Dict[str, Any]:
+        """
+        执行 TCP 端口健康检查
+        
+        尝试建立 TCP 连接来验证服务是否可达。
+        适用于没有 HTTP 接口的服务（如数据库、消息队列）。
+        
+        Args:
+            host: 目标主机地址
+            port: 目标端口
+            
+        Returns:
+            检查结果字典，包含 status、latency_ms 等
+        """
         result: Dict[str, Any] = {"status": "unknown", "host": host, "port": port}
+        
+        # 参数校验
         if not host or port is None:
             result["status"] = "degraded"
             result["detail"] = "tcp_host_or_port_missing"
             return result
+        
         try:
             port_int = int(port)
             start = time.perf_counter()
+            
+            # 尝试建立 TCP 连接（带超时）
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port_int),
                 timeout=self.http_timeout,
             )
+            
+            # 立即关闭连接
             writer.close()
             if hasattr(writer, "wait_closed"):
                 await writer.wait_closed()
+            
+            # 计算连接延迟
             latency_ms = (time.perf_counter() - start) * 1000
             result["latency_ms"] = round(latency_ms, 2)
             result["status"] = "healthy"
+            
         except Exception as exc:
+            # 连接失败（超时、拒绝、主机不可达等）
             result["status"] = "down"
             result["detail"] = str(exc)
+        
         return result
     
     def _container_health_check(self, container_name: str) -> Dict[str, Any]:
+        """
+        检查 Docker 容器运行状态
+        
+        通过 Docker API 查询容器状态，判断服务是否正常运行。
+        
+        Args:
+            container_name: Docker 容器名称
+            
+        Returns:
+            检查结果字典，包含 status、state 等
+        """
         result: Dict[str, Any] = {"status": "unknown", "name": container_name}
+        
+        # 检查 Docker 客户端是否就绪
         if not self.docker_client:
             result["status"] = "degraded"
             result["detail"] = "docker_client_not_ready"
             return result
+        
         try:
+            # 获取容器信息
             container = self.docker_client.containers.get(container_name)
             result["state"] = container.status
+            # running 状态为健康，其他（paused、exited 等）为降级
             result["status"] = "healthy" if container.status == "running" else "degraded"
+            
         except docker_errors.NotFound:
+            # 容器不存在
             result["state"] = "missing"
             result["status"] = "down"
             result["detail"] = "container_not_found"
+            
         except docker_errors.DockerException as exc:
+            # Docker API 错误
             result["status"] = "degraded"
             result["detail"] = f"docker:{exc}"
+        
         return result
     
     def _merge_status(self, current: str, candidate: Optional[str]) -> str:
+        """
+        合并状态，取最严重的状态
+        
+        根据状态优先级，返回更严重的状态。
+        优先级：unknown < healthy < degraded < down
+        
+        Args:
+            current: 当前状态
+            candidate: 候选状态
+            
+        Returns:
+            合并后的状态（取更严重的）
+        """
         if not candidate:
             return current
+        # 比较优先级，取更高的（更严重的）
         if STATUS_PRIORITY.get(candidate, 0) > STATUS_PRIORITY.get(current, 0):
             return candidate
         return current
+
+    def _resolve_self_heal_config(self, target: Dict[str, Any]) -> Dict[str, Any]:
+        """合并目标的自愈配置与全局默认值"""
+        target_cfg = target.get("self_heal") or {}
+        return {
+            "enabled": bool(target_cfg.get("enabled", self.self_heal_defaults["enabled"])),
+            "failure_threshold": int(
+                target_cfg.get("failure_threshold", self.self_heal_defaults["failure_threshold"])
+            ),
+            "recovery_observe": int(
+                target_cfg.get("recovery_observe", self.self_heal_defaults["recovery_observe"])
+            ),
+            "max_restart_per_hour": int(
+                target_cfg.get("max_restart_per_hour", self.self_heal_defaults["max_restart_per_hour"])
+            ),
+        }
+
+    def _update_service_states(self, aggregated: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        根据最新检测结果维护各服务的故障计数与自愈上下文
+        """
+        snapshot: Dict[str, Any] = {}
+        now = int(time.time())
+
+        for target in self.service_targets:
+            name = target.get("name", "unknown")
+            record = aggregated.get(name)
+            if not record:
+                continue
+
+            status = (record.get("status") or "unknown").lower()
+            resolved_cfg = self._resolve_self_heal_config(target)
+            state = self.service_health_state.get(
+                name,
+                {
+                    "consecutive_failures": 0,
+                    "last_success": None,
+                    "last_failure": None,
+                    "restart_window_start": now,
+                    "restart_count_hour": 0,
+                    "cooldown_until": None,
+                    "last_action": None,
+                    "last_action_reason": None,
+                    "last_action_details": None,
+                    "last_action_at": None,
+                },
+            )
+
+            window_start = state.get("restart_window_start") or now
+            if now - window_start >= 3600:
+                state["restart_window_start"] = now
+                state["restart_count_hour"] = 0
+
+            fail_count = int(state.get("consecutive_failures", 0))
+            if status in ("healthy", "ok"):
+                fail_count = 0
+                state["last_success"] = now
+            elif status in ("down", "fail", "failed", "degraded"):
+                fail_count += 1
+                state["last_failure"] = now
+
+            state["consecutive_failures"] = fail_count
+            state["status"] = status
+            state["updated_at"] = now
+            state["thresholds"] = resolved_cfg
+            state["self_heal_enabled"] = resolved_cfg["enabled"]
+            state["recovery_observe"] = resolved_cfg["recovery_observe"]
+            state["recovery_duration_sec"] = resolved_cfg["recovery_observe"] * self.service_interval
+            state["service_interval_sec"] = self.service_interval
+
+            snapshot[name] = {
+                "enabled": resolved_cfg["enabled"],
+                "status": status,
+                "consecutive_failures": fail_count,
+                "failure_threshold": resolved_cfg["failure_threshold"],
+                "recovery_observe": resolved_cfg["recovery_observe"],
+                "max_restart_per_hour": resolved_cfg["max_restart_per_hour"],
+                "last_success": state.get("last_success"),
+                "last_failure": state.get("last_failure"),
+                "restart_count_hour": state.get("restart_count_hour", 0),
+                "restart_window_start": state.get("restart_window_start"),
+                "cooldown_until": state.get("cooldown_until"),
+                "last_action": state.get("last_action"),
+                "last_action_reason": state.get("last_action_reason"),
+                "last_action_at": state.get("last_action_at"),
+                "updated_at": now,
+            }
+
+            self.service_health_state[name] = state
+
+        return snapshot
+
+    async def _process_self_heal(self, aggregated: Dict[str, Any]):
+        """
+        根据最新状态执行自愈策略
+        """
+        for target in self.service_targets:
+            name = target.get("name", "unknown")
+            state = self.service_health_state.get(name)
+            if not state:
+                continue
+
+            try:
+                outcome = await self.self_heal_manager.evaluate_and_execute(
+                    name=name,
+                    target=target,
+                    state=state,
+                    observe_interval_sec=self.service_interval,
+                )
+            except Exception as exc:  # pragma: no cover - 保护主循环
+                logger.error("self_heal_evaluation_failed", service=name, error=str(exc))
+                continue
+
+            if outcome.state_updates:
+                state.update(outcome.state_updates)
+                self.service_health_state[name] = state
+                current_state = aggregated.get(name, {}).get("self_heal", {}).get("state")
+                if isinstance(current_state, dict):
+                    current_state.update(outcome.state_updates)
+
+            aggregated.setdefault(name, {}).setdefault("self_heal", {})
+            aggregated[name]["self_heal"]["last_outcome"] = outcome.to_dict()
     
     def _write_system_metrics(self, metrics: Dict[str, Any]):
+        """
+        将系统指标写入 InfluxDB
+        
+        写入的字段包括：
+        - cpu_percent: CPU 使用率
+        - load_1m/5m/15m: 系统负载
+        - memory_percent: 内存使用率
+        - disk_percent: 磁盘使用率
+        - uptime_sec: 系统运行时间
+        
+        Args:
+            metrics: 采集到的系统指标字典
+        """
         if not self.write_api:
             return
+        
         try:
+            # 构建 InfluxDB 数据点
             point = (
                 Point(self.system_measurement)
                 .tag("line", self.line_id)
@@ -388,9 +788,10 @@ class MonitorService:
                 .field("memory_percent", metrics["memory"]["percent"])
                 .field("disk_percent", metrics["disk"]["percent"])
                 .field("uptime_sec", metrics["uptime_sec"])
-                .time(int(time.time() * 1e9))
+                .time(int(time.time() * 1e9))  # 纳秒时间戳
             )
             self.write_api.write(self.influx_bucket, self.influx_org, point)
+            
         except Exception as exc:
             logger.error("system_metrics_write_failed", error=str(exc))
             event_recorder.record_event(
@@ -401,15 +802,32 @@ class MonitorService:
             )
     
     def _write_service_health(self, statuses: Dict[str, Any]):
+        """
+        将服务健康状态写入 InfluxDB
+        
+        为每个服务写入一个数据点，包含：
+        - status: 健康状态
+        - latency_ms: 响应延迟
+        - container_state: 容器状态
+        
+        Args:
+            statuses: 各服务的健康状态字典
+        """
         if not self.write_api:
             return
+        
         points = []
-        now = int(time.time() * 1e9)
+        now = int(time.time() * 1e9)  # 纳秒时间戳
+        
         try:
+            # 为每个服务构建数据点
             for name, status in statuses.items():
                 state = status.get("status", "unknown")
+                # 获取延迟（优先从顶层获取，其次从 http 检查结果获取）
                 latency = status.get("latency_ms") or status.get("checks", {}).get("http", {}).get("latency_ms")
+                # 获取容器状态
                 container_state = status.get("container_state") or status.get("checks", {}).get("container", {}).get("state", "")
+                
                 point = (
                     Point(self.service_measurement)
                     .tag("line", self.line_id)
@@ -420,8 +838,11 @@ class MonitorService:
                     .time(now)
                 )
                 points.append(point)
+            
+            # 批量写入
             if points:
                 self.write_api.write(self.influx_bucket, self.influx_org, points)
+                
         except Exception as exc:
             logger.error("service_health_write_failed", error=str(exc))
             event_recorder.record_event(
@@ -432,10 +853,20 @@ class MonitorService:
             )
     
     def _publish_status(self):
+        """
+        发布状态到 MQTT
+        
+        将系统指标和服务健康状态打包成 JSON 消息发布到 MQTT 主题，
+        供前端大屏和其他服务订阅。
+        """
         if not self.mqtt_client:
             return
+        
+        # 构建状态消息
         payload = self._build_status_payload()
+        
         try:
+            # 发布到 MQTT（QoS=1 确保送达）
             self.mqtt_client.publish(self.status_topic, json.dumps(payload), qos=1)
         except Exception as exc:
             logger.error("status_publish_failed", error=str(exc))
@@ -447,6 +878,24 @@ class MonitorService:
             )
 
     def _build_status_payload(self) -> Dict[str, Any]:
+        """
+        构建状态消息载荷
+        
+        将系统指标和服务状态组装成标准化的 JSON 结构。
+        
+        消息结构：
+        {
+            "schema": "edge.monitor.status.v1",
+            "line": "L1",
+            "timestamp": 1234567890,
+            "services": [...],
+            "system": {...}
+        }
+        
+        Returns:
+            状态消息字典
+        """
+        # 构建服务状态列表（按名称排序）
         services = []
         for name in sorted(self.service_status.keys()):
             record = self.service_status[name]
@@ -458,13 +907,17 @@ class MonitorService:
                     "latency_ms": record.get("latency_ms"),
                     "container_state": record.get("container_state"),
                     "updated_at": record.get("timestamp"),
+                    "self_heal": record.get("self_heal")
+                    or self.service_health_state.get(name),
                 }
             )
+        
+        # 组装完整消息
         return {
-            "schema": self.status_schema,
-            "line": self.line_id,
-            "timestamp": int(time.time()),
-            "services": services,
+            "schema": self.status_schema,  # 消息 schema 版本
+            "line": self.line_id,           # 产线标识
+            "timestamp": int(time.time()),  # 消息时间戳
+            "services": services,           # 服务状态列表
             "system": {
                 "metrics": self.system_metrics,
                 "updated_at": self.system_metrics.get("updated_at"),
@@ -472,12 +925,21 @@ class MonitorService:
         }
 
 
+# ============================================================
+# FastAPI 应用配置
+# ============================================================
+
+# 全局监控服务实例
 monitor_service = MonitorService()
 
+# 创建 FastAPI 应用
 app = FastAPI(
     title="Edge Monitor Service",
+    description="边缘节点监控服务 - 系统指标采集与服务健康检查",
     version="1.0.0",
 )
+
+# 配置 CORS 中间件（允许跨域访问）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -487,18 +949,36 @@ app.add_middleware(
 )
 
 
+# ============================================================
+# 应用生命周期事件
+# ============================================================
+
 @app.on_event("startup")
 async def on_startup():
+    """应用启动时初始化监控服务"""
     await monitor_service.start()
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    """应用关闭时停止监控服务"""
     await monitor_service.stop()
 
 
+# ============================================================
+# API 端点
+# ============================================================
+
 @app.get("/health")
 async def health():
+    """
+    健康检查端点
+    
+    供 K8s/Docker 探活使用，返回服务运行状态。
+    
+    Returns:
+        包含服务状态的 JSON 响应
+    """
     return {
         "success": True,
         "service": "edge-monitor",
@@ -509,6 +989,16 @@ async def health():
 
 @app.get("/system/health")
 async def system_health():
+    """
+    系统健康状态端点
+    
+    返回完整的系统状态信息，包括：
+    - 系统指标（CPU/内存/磁盘）
+    - 各服务的健康状态
+    
+    Returns:
+        包含完整状态信息的 JSON 响应
+    """
     payload = monitor_service._build_status_payload()
     payload["success"] = True
     return payload
@@ -516,6 +1006,14 @@ async def system_health():
 
 @app.get("/system/metrics")
 async def system_metrics():
+    """
+    系统指标端点
+    
+    返回最新的系统指标数据。
+    
+    Returns:
+        包含 CPU、内存、磁盘等指标的 JSON 响应
+    """
     return {
         "success": True,
         "line": monitor_service.line_id,
@@ -524,9 +1022,14 @@ async def system_metrics():
     }
 
 
+# ============================================================
+# 主函数入口
+# ============================================================
+
 if __name__ == "__main__":
     import uvicorn
     
+    # 使用 uvicorn 启动 FastAPI 应用
     uvicorn.run(
         "monitor.main:app",
         host="0.0.0.0",

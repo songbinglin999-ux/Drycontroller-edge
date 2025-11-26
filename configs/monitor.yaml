@@ -8,10 +8,18 @@ system:
 services:
   interval: 20            # 秒
   http_timeout: 5         # 秒
+  failure_threshold: 3    # 连续失败次数（默认）
+  recovery_observe: 6     # 重启后观察周期
+  max_restart_per_hour: 5 # 单服务每小时最大自愈次数
+  self_heal:
+    enabled: true         # 全局自愈开关
   targets:
     - name: "edge-api"
       url: "http://edge-api:8000/health"
       container: "edge-api"
+      self_heal:
+        failure_threshold: 2
+        max_restart_per_hour: 3
     - name: "edge-daq"
       url: "http://edge-daq:8080/health"
       container: "edge-daq"
@@ -32,6 +40,8 @@ services:
       tcp:
         host: "edge-mosquitto"
         port: 1883
+      self_heal:
+        enabled: false
     - name: "edge-influxdb"
       url: "http://edge-influxdb:8086/health"
       container: "edge-influxdb"

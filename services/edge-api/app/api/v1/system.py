@@ -2,140 +2,105 @@
 系统管理 API
 """
 
-from fastapi import APIRouter
-from datetime import datetime
+from typing import Optional
+
 import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from app.services.system_status import (
+    SystemStatusService,
+    get_system_status_service,
+)
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
 
 
 @router.get("/status")
-async def get_system_status():
+async def get_system_status(
+    line: Optional[str] = Query(None, description="可选：按产线过滤，如 L1"),
+    service: SystemStatusService = Depends(get_system_status_service),
+):
     """
-    获取系统状态
-    
-    返回各服务的健康状态
+    获取系统状态（订阅 edge-monitor）
     """
-    # TODO: 检查各服务状态
-    return {
-        "success": True,
-        "data": {
-            "services": {
-                "edge-api": {"status": "healthy", "uptime": 86400},
-                "edge-daq": {"status": "healthy", "uptime": 86400},
-                "ai-softsensor": {"status": "healthy", "uptime": 86400},
-                "ai-ctrl-optimizer": {"status": "healthy", "uptime": 86400},
-                "license-service": {"status": "healthy", "uptime": 86400},
-                "edge-monitor": {"status": "healthy", "uptime": 86400},
-            },
-            "infrastructure": {
-                "postgres": {"status": "connected", "latency_ms": 2.3},
-                "influxdb": {"status": "connected", "latency_ms": 5.1},
-                "mqtt": {"status": "connected", "latency_ms": 1.2},
-            },
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    payload = service.get_status_payload(line)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No system status available yet",
+        )
+    return payload
 
 
 @router.get("/metrics")
-async def get_system_metrics():
+async def get_system_metrics(
+    line: Optional[str] = Query(None, description="可选：按产线过滤"),
+    service: SystemStatusService = Depends(get_system_status_service),
+):
     """
     获取系统性能指标
-    
-    返回 CPU、内存、磁盘等资源使用情况
     """
-    # TODO: 获取实际系统指标
-    return {
-        "success": True,
-        "data": {
-            "cpu": {
-                "usage_percent": 35.2,
-                "cores": 4,
-            },
-            "memory": {
-                "total_mb": 8192,
-                "used_mb": 4096,
-                "usage_percent": 50.0,
-            },
-            "disk": {
-                "total_gb": 500,
-                "used_gb": 200,
-                "usage_percent": 40.0,
-            },
-            "network": {
-                "bytes_sent": 1024000000,
-                "bytes_recv": 2048000000,
-            },
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    payload = service.get_metrics_payload(line)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No system metrics available yet",
+        )
+    return payload
+
+
+@router.get("/metrics/trend")
+async def get_system_metric_trend(
+    field: str = Query("cpu_percent", description="指标字段，例如 cpu_percent"),
+    period: str = Query("6h", description="时间范围，例如 6h/12h/1d"),
+    window: str = Query("5m", description="聚合窗口，例如 1m/5m/1h"),
+    line: Optional[str] = Query(None, description="可选：按产线过滤"),
+    service: SystemStatusService = Depends(get_system_status_service),
+):
+    """
+    获取系统指标趋势（来自 Influx 聚合）
+    """
+    try:
+        return await service.get_metric_trend(
+            field=field,
+            period=period,
+            window=window,
+            line=line,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.get("/config")
 async def get_system_config():
     """
-    获取系统配置
-    
-    返回当前系统配置参数
+    系统配置（占位）
     """
-    # TODO: 读取配置文件
-    return {
-        "success": True,
-        "data": {
-            "system_name": "Industrial Dryer Control System",
-            "version": "1.0.0",
-            "auto_control_enabled": False,
-            "data_retention_days": 90,
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="System config API not implemented yet",
+    )
 
 
 @router.post("/config")
-async def update_system_config(config: dict):
+async def update_system_config():
     """
-    更新系统配置
-    
-    - **config**: 配置参数字典
+    更新配置（占位）
     """
-    logger.info("updating_system_config", config=config)
-    
-    # TODO: 更新配置到数据库
-    return {
-        "success": True,
-        "message": "Configuration updated successfully",
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="System config update API not implemented yet",
+    )
 
 
 @router.get("/logs")
-async def get_system_logs(
-    service: str = None,
-    level: str = None,
-    limit: int = 100,
-):
+async def get_system_logs():
     """
-    获取系统日志
-    
-    - **service**: 服务名称过滤
-    - **level**: 日志级别过滤
-    - **limit**: 返回条数限制
+    系统日志（占位）
     """
-    # TODO: 查询日志文件
-    return {
-        "success": True,
-        "data": {
-            "logs": [
-                {
-                    "time": "2025-01-01T12:00:00Z",
-                    "level": "INFO",
-                    "service": "edge-api",
-                    "message": "Request completed",
-                },
-            ],
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="System logs API not implemented yet",
+    )
 

@@ -17,6 +17,7 @@ from app.api.v1 import router as api_v1_router
 from app.api import realtime as realtime_router
 from app.core.database import engine, Base
 from app.core.mqtt_client import mqtt_manager
+from app.services.event_bus import event_bus
 from app.services.ws_stream import ws_stream
 
 # 设置日志
@@ -39,8 +40,9 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
-    # 连接 MQTT
+    # 连接 MQTT & 启动事件总线
     await mqtt_manager.connect()
+    await event_bus.start()
     
     # 启动 MQTT → WS 转发
     await ws_stream.start()
@@ -62,10 +64,10 @@ async def lifespan(app: FastAPI):
         tags={"component": "edge-api"},
     )
     
-    # 断开 MQTT
-    await mqtt_manager.disconnect()
-    
+    # 断开子模块
     await ws_stream.stop()
+    await event_bus.stop()
+    await mqtt_manager.disconnect()
     
     # 关闭数据库连接
     await engine.dispose()

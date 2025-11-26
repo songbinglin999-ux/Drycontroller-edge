@@ -2,6 +2,11 @@
 
 > 版本：v1.0  
 > 关联文档：`system-overview.md` 第 6 章、自监控服务 `edge-monitor`
+>
+> ⚠️ **当前状态说明**  
+> - `edge-monitor` 已落地系统/服务健康检测、指标写入和 MQTT/Inﬂux 上报。  
+> - 自动自愈动作（容器重启、AI 降级、OTA 回滚等）尚未实现，仍处设计阶段。  
+> - 下文各章节区分 “当前实现” 与 “计划完善”，避免误判实际能力。
 
 ---
 
@@ -37,47 +42,44 @@
 
 ### 3.1 健康检查规范
 
-- 每个服务必须暴露 `GET /health` 接口，返回：
-
-```json
-{
-  "status": "ok | degraded | fail",
-  "service": "edge-api",
-  "uptime_seconds": 12345,
-  "dependencies": {
-    "postgres": "ok",
-    "mqtt": "ok",
-    "influxdb": "ok"
-  }
-}
-```
-
-- `status` 约定：
-  - `ok`：完全健康
-  - `degraded`：功能受限（例如：某些外部依赖暂时不可用）
-  - `fail`：服务无法正常对外提供业务能力
+- **当前实现**
+  - 各服务已提供 `/health`，返回 `success/status/service/version` 等轻量信息。
+  - `/ready` 仍保留 TODO，尚未真实检测数据库、MQTT、InfluxDB 等依赖。
+- **计划完善**
+  - **统一响应契约**：`{"success":true,"status":"ok|degraded|fail","service":"edge-api","uptime_seconds":12345,"dependencies":{"postgres":"ok","mqtt":"fail","influxdb":"ok"}}`；所有服务在 1.2 版本前完成改造。
+  - **依赖检测器**：在每个服务内部增加轻量探测（DB ping、MQTT 检查、Influx write/read），并将结果写入 `dependencies` 字段及 Prometheus/MQTT。
+  - **readiness 联动**：`/ready` 依赖上述探测，当任一关键依赖为 `fail` 时直接返回 503，并通过 MQTT 通知 `edge-monitor`。
 
 ### 3.2 周期性检查
 
-- 由 `edge-monitor` 统一调度：
-  - 周期：默认 **10s**（可配置）
-  - 连续 N 次 `fail`（默认 N=3）视为服务故障
+- **当前实现**：`configs/monitor.yaml` 中配置 `system.interval=30s`、`services.interval=20s`，仅执行 HTTP/TCP/Docker 状态采集。
+- **计划完善**：
+  - `configs/monitor.yaml` 扩展：
+    ```yaml
+    services:
+      interval: 20
+      failure_threshold: 3   # N
+      recovery_observe: 6    # M
+      max_restart_per_hour: 5
+      targets:
+        - name: edge-api
+          url: ...
+          self_heal:
+            enabled: true
+            failure_threshold: 2   # 支持覆盖
+            max_restart_per_hour: 3
+    ```
+  - `edge-monitor` 内部维护每个 target 的连续失败计数、最后恢复时间，供策略模块使用。
 
 ### 3.3 重启策略
 
-当服务被判定为故障时：
-
-1. 记录事件到日志与 MQTT 事件主题：`events/system/self_heal`
-2. 通过 Docker API / CLI 执行 **单容器重启**（不动其它服务）
-3. 重启后再次观察 M 个周期（默认 M=6）：
-   - 若恢复为 `ok` 或 `degraded` → 记录“自愈成功”事件
-   - 若仍为 `fail` → 标记为 **自愈失败**，停止进一步自动重启，并发出高等级告警
-
-防抖与熔断：
-
-- 任一服务 **1 小时内自动重启次数 > K（默认 K=5）**：
-  - 自动进入 **自愈熔断状态**，不再对该服务做自动重启
-  - 推送告警至运维（MQTT / 大屏）
+- **当前实现**：尚未在 `edge-monitor` 中实现自动重启，只做检测与上报。
+- **计划完善**：
+  1. **检测层**：在 `_service_health_loop` 中调用 `SelfHealDetector`，输出 `status/fail_count/last_success`。
+  2. **策略层**：`SelfHealPolicy` 根据配置计算动作为 `noop | restart | escalate`，并生成原因、冷却时间。
+  3. **执行层**：`SelfHealExecutor` 通过 Docker SDK 重启指定容器，之后锁定该服务 M 个周期进行观察。
+  4. **熔断层**：记录每小时重启次数，超过 `max_restart_per_hour` 将动作降级为 `escalate`，并推送高等级告警至 MQTT `events/system/self_heal`.
+  5. **审计**：所有动作写入 structlog、Influx measurement `self_heal_events` 与 PostgreSQL `self_heal_history`（计划新增表）。
 
 ---
 
@@ -85,33 +87,27 @@
 
 ### 4.1 PLC 连接
 
-- 由 `edge-daq` 维护与 PLC 的 Modbus/TCP 连接
-- 自愈措施：
-  - 读写失败时，按退避策略重试（例如 1s / 2s / 5s / 10s）
-  - 超过最大重试次数后：
-    - 报告状态至 `edge-monitor`（通过 MQTT 或专用 API）
-    - 在大屏上显示 **“PLC 断连”**，并根据降级策略保持 setpoint 不变
+- **当前实现**：`edge-daq` 只在日志中记录读写错误，无统一退避策略，也没有向 `edge-monitor` 上报 “PLC 断连”。
+- **计划完善**：
+  - `edge-daq` 在 `ModbusClient` 中实现指数退避，最大等待 60s，并将每次失败通过 MQTT `system/edge-daq/plc_status` 上报。
+  - 当退避次数超过阈值时，向 `edge-monitor` 发出 `plc_disconnected` 事件，大屏同步展示并锁住控制参数（保持最近一次 setpoint）。
+  - 计划引入 `plc_status` API，允许运维查看最近的连接错误、自动重连进度。
 
 ### 4.2 MQTT 连接
 
-- 所有 MQTT 客户端（`edge-daq` / `ai-softsensor` / `ai-ctrl-optimizer` / `edge-api`）都必须实现：
-  - 断线自动重连
-  - 会话恢复（QoS、保留消息视具体配置）
-- `edge-monitor` 通过订阅系统主题（如 `$SYS/#` 或自定义监控主题）感知 Broker 状态。
+- **当前实现**：客户端依赖各自库自带的自动重连；`edge-monitor` 对 mosquitto 仅做 TCP 探测，未订阅 `$SYS/#`。
+- **计划完善**：
+  - 在 `common` 目录新增 `mqtt/connection_manager.py`，统一封装重连、心跳、TLS 配置。
+  - `edge-monitor` 订阅 `$SYS/#` 与 `system/+/status`，当 Broker 状态异常或 retain 消息延迟时触发报警。
+  - 所有服务的 MQTT handler 增加 “最大重连次数 + 通知 edge-monitor” 的回调，以便监控侧掌握具体客户端状态。
 
 ### 4.3 时序与业务数据库
 
-- InfluxDB 不可用时：
-  - **关键实时功能不受影响**（软测量、控制）  
-  - 历史曲线暂不可用，API 层返回明确错误码与错误信息
-- PostgreSQL 不可用时：
-  - 点位表、模型版本表、报警规则等配置读取失败  
-  - 系统进入 **只读 / 稳态模式**，不再修改配置
-
-数据自愈策略：
-
-- 定期对数据库做 **连通性检测**（简单 `SELECT 1` / 写入测试点）
-- 连续 N 次失败后记录事件，尝试重连，若仍失败则标记为 `degraded`
+- **当前实现**：`edge-monitor` 仅对 Influx/Postgres 做 HTTP/TCP 检测；`edge-api` 若依赖不可用只会抛异常，尚未进入只读模式。
+- **计划完善**：
+  - `edge-api` 增加数据库守护协程：定期 `SELECT 1`/写测试点失败时自动切换到只读模式，暂停写操作。
+  - Influx 异常时启用本地缓存（暂存在文件/SQLite），待恢复后补写。
+  - 将 “数据库状态” 通过事件总线推送到 `edge-monitor`，同步 `service_status` 为 `degraded/fail`。
 
 ---
 
@@ -119,40 +115,19 @@
 
 ### 5.1 模型加载与回滚
 
-- 模型目录结构：
-
-```text
-models/
-  v1.0.0/
-  v1.1.0/
-  v1.2.0/
-```
-
-- 规则：
-  - 所有模型必须为 **ONNX 格式**
-  - 当前使用版本记录在：
-    - 配置文件：`configs/ai-config.yaml`，或  
-    - PostgreSQL 表：`ai_models`（推荐）
-
-加载逻辑：
-
-1. 启动或热切换时，加载“当前版本”模型
-2. 加载失败 → 尝试回退到“上一稳定版本”
-3. 若连续两次加载失败 → 标记服务为 `fail`，停止推理并上报事件
+- **当前实现**：`ai-softsensor` 只在启动时加载单一 ONNX 模型，若失败直接抛异常并终止；没有模型版本登记与回滚。
+- **计划完善**：
+  1. 在 PostgreSQL 增加 `ai_model_versions` 表，字段：`version`, `path`, `checksum`, `status`, `created_at`。
+  2. `ai-config.yaml` 仅保存 “当前激活版本 ID”，`ai-softsensor` 启动时根据 ID 查表并加载模型、核对 checksum。
+  3. 加载失败则回退到上一个 `status=stable` 的版本，并记录事件；若两次回退都失败，则标记服务 `fail` 并停机待人工处理。
 
 ### 5.2 推理结果校验与降级
 
-- 每次推理后必须做结果合法性校验：
-  - 含水率范围是否在 \[0, 100\]% 内
-  - 与最近几分钟人工标定值偏差是否在可接受区间内
-  - 波动是否过于剧烈（根据 `limits.yaml` 中配置）
-
-若不满足校验规则：
-
-- 第一次触发：仅记录告警（`degraded`）
-- 连续 N 次触发：
-  - 自动切换为 **简单规则模型** / **经验公式**（内置兜底逻辑）
-  - 标记 AI 推理状态为 `degraded`，通知大屏显示 “AI 已降级”
+- **当前实现**：没有范围/波动校验；推理异常仅写日志。
+- **计划完善**：
+  - 在推理 pipeline 中增加 `ResultGuard`，基于 `limits.yaml` 配置检查范围、delta、斜率。
+  - 出现异常时按以下步骤降级：`warn → degraded（触发 MQTT 告警） → fallback_model（例如线性模型/经验公式） → fail（停止推理）`。
+  - 降级状态通过 MQTT `ai/status` 发布，edge-api 在对外接口中体现当前模式。
 
 ---
 
@@ -160,43 +135,40 @@ models/
 
 ### 6.1 升级流程关键点
 
-- 所有升级通过 `scripts/ota-update.sh` 或运维 API 触发
-- 使用 Docker 镜像进行原子化升级：
-  - 先拉取新镜像
-  - 起新容器进行健康检查
-  - 健康通过后，再替换旧容器
+- **当前实现**：
+  - `scripts/ota-update.sh` 流程：备份 → `docker-compose pull` → `docker-compose up -d` → 检查 `docker-compose ps`。
+  - 未启用影子容器/蓝绿发布，也未在通过前阻断对外服务。
+- **计划完善**：
+  - OTA 流程升级为 **蓝绿发布**：`pull -> docker compose up new stack (edge-api-blue)`，通过 `/health` & 冒烟脚本验证后，切换 `docker-compose.override.yml` 指向新 stack。
+  - 在 `scripts/ota-update.sh` 中新增 `--operator` 参数，将操作人、版本、时间写入 `logs/ota-history.json` 并同步至 PostgreSQL。
 
 ### 6.2 失败检测与回滚
 
-- 升级失败判定条件（任一满足即视为失败）：
-  - 新容器在 T 秒内 `/health` 未返回 `ok`
-  - `edge-monitor` 在观察窗口内检测到 `fail` / 大量 error 日志
-  - 关键链路（PLC → MQTT → AI → API）中断
-
-失败处理：
-
-1. 自动停止新容器，重新启动旧版本容器
-2. 记录 **OTA 回滚事件** 到日志与 PostgreSQL
-3. 将本次版本标记为 “不可用”，禁止再次自动升级到该版本
+- **当前实现**：若脚本检测到 `unhealthy/exit` 容器，只提示人工执行 `rollback`。
+- **计划完善**：
+  1. 以 `edge-monitor` 收集到的系统状态为信号，若在观察窗口内出现 `fail` 或链路中断则自动判定升级失败。
+  2. 失败时调用 `docker-compose -f docker-compose.blue.yml down` 并重新启用旧 stack，同时写入 `ota_history` 表与 MQTT 告警。
+  3. 记录最新失败版本，防止自动任务再次升级到同版本。
 
 ---
 
 ## 7. 配置与策略管理
 
-自愈相关配置建议集中在：
-
-```text
-configs/
-  qos.yaml        # 自愈频率、重试策略、超时时间
-  limits.yaml     # 工艺上限/下限、AI 结果约束
-  ai-config.yaml  # 模型版本、自愈开关
-```
-
-所有配置变更必须：
-
-- 通过统一配置 API 或工具完成  
-- 写入 PostgreSQL 中的“配置变更日志”表  
-- 支持在线 reload（不需重启服务）
+- **当前实现**
+  - 与自愈相关的配置仅存在于 `configs/monitor.yaml`（采集频率、检测目标、容器名）。
+  - `qos.yaml` 尚未描述自愈频率/重试策略，配置更新需手动修改文件并重启。
+- **计划完善**
+  - 新增 `configs/qos.yaml` 结构：
+    ```yaml
+    self_heal:
+      default_failure_threshold: 3
+      default_recovery_observe: 6
+      default_max_restart_per_hour: 5
+      notify_topics:
+        - events/system/self_heal
+    ```
+    并允许 target 级别覆盖。
+  - 构建 `config-service` 或在 PostgreSQL 增设 `config_changes` 表，所有配置变更需经 API / CLI 工具记录，并通过事件总线通知在线服务热加载。
 
 ---
 

@@ -24,14 +24,21 @@ class MQTTHandler:
         self.write_api = None
         self.data_cache = {}
         
+        softsensor_cfg = self.config.get("softsensor", {})
+        
         self.mqtt_broker = os.getenv("MQTT_BROKER", "localhost")
         self.mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
         self.mqtt_user = os.getenv("MQTT_USER", "")
         self.mqtt_password = os.getenv("MQTT_PASSWORD", "")
         self.line_id = os.getenv("LINE_ID", "L1")
-        self.model_version = self.config.get("softsensor", {}).get("model_version", "v1.0.0")
+        self.model_version = softsensor_cfg.get("model_version", "v1.0.0")
+        self.inference_source = softsensor_cfg.get("inference_source", "ai-softsensor")
+        batch_id_keys = softsensor_cfg.get("batch_id_keys", ["BATCH.ID", "batch_id", "BATCH_ID"])
+        if isinstance(batch_id_keys, str):
+            batch_id_keys = [batch_id_keys]
+        self.batch_id_keys = batch_id_keys
         
-        publish_cfg = self.config.get("softsensor", {}).get("publish", {})
+        publish_cfg = softsensor_cfg.get("publish", {})
         topic_template = publish_cfg.get("mqtt_topic", "ai/{line}/moisture")
         self.ai_topic = topic_template.format(line=self.line_id)
         self.realtime_topic = os.getenv(
@@ -45,6 +52,7 @@ class MQTTHandler:
         self.influx_org = os.getenv("INFLUXDB_ORG", "edge-org")
         self.influx_bucket = os.getenv("INFLUXDB_BUCKET", "industrial-data")
         self.measurement = os.getenv("INFLUXDB_MEASUREMENT", "industrial_data")
+        self.training_measurement = os.getenv("INFLUXDB_TRAIN_MEASUREMENT", "softsensor_training_data")
     
     async def connect(self):
         """连接 MQTT"""
@@ -107,7 +115,9 @@ class MQTTHandler:
                 
                 # 检查是否收集到所有需要的特征
                 if self._has_all_features():
-                    self._run_inference()
+                    feature_snapshot = self._snapshot_features()
+                    if feature_snapshot:
+                        self._run_inference(feature_snapshot)
         
         except Exception as e:
             logger.error("message_processing_error", error=str(e))
@@ -122,15 +132,15 @@ class MQTTHandler:
         
         return True
     
-    def _run_inference(self):
+    def _run_inference(self, feature_snapshot: dict):
         """运行推理"""
-        result = self.model.inference(self.data_cache)
+        result = self.model.inference(feature_snapshot)
         
         if result:
             # 发布推理结果
-            self._publish_result(result)
+            self._publish_result(result, feature_snapshot)
     
-    def _publish_result(self, result: dict):
+    def _publish_result(self, result: dict, feature_snapshot: dict):
         """发布推理结果到 MQTT 与 InfluxDB"""
         timestamp = time.time()
         payload = {
@@ -147,6 +157,7 @@ class MQTTHandler:
             self.client.publish(self.ai_topic, json.dumps(payload), qos=1)
         
         self._write_influx(payload, timestamp)
+        self._write_training_measurement(payload, feature_snapshot, timestamp, result)
             
         logger.info(
             "inference_result_published",
@@ -175,4 +186,73 @@ class MQTTHandler:
             )
         except Exception as exc:
             logger.error("softsensor_influx_write_failed", error=str(exc))
+
+    def _write_training_measurement(self, payload: dict, feature_snapshot: dict, timestamp: float, result: dict):
+        """将推理输入、输出写入训练数据 measurement"""
+        if not self.write_api or not self.training_measurement:
+            return
+        
+        try:
+            point = (
+                Point(self.training_measurement)
+                .tag("line_id", self.line_id)
+                .tag("model_version", self.model_version)
+                .tag("inference_source", self.inference_source)
+            )
+            
+            batch_id = self._extract_batch_id()
+            if batch_id:
+                point.tag("batch_id", batch_id)
+            
+            point.field("moisture_predicted", payload["value"])
+            point.field("moisture_confidence", payload["confidence"])
+            
+            inference_time = result.get("inference_time_ms")
+            safe_inference_time = self._safe_float(inference_time)
+            if safe_inference_time is not None:
+                point.field("inference_time_ms", safe_inference_time)
+            
+            for feature_name, feature_value in feature_snapshot.items():
+                safe_value = self._safe_float(feature_value)
+                if safe_value is not None:
+                    point.field(feature_name, safe_value)
+            
+            point.time(int(timestamp * 1e9))
+            
+            self.write_api.write(
+                bucket=self.influx_bucket,
+                org=self.influx_org,
+                record=point,
+            )
+        except Exception as exc:
+            logger.error("softsensor_training_influx_write_failed", error=str(exc))
+
+    def _snapshot_features(self):
+        """当前特征快照，确保写入 training measurement 时一致"""
+        if not self.model.input_features:
+            return {}
+        
+        snapshot = {}
+        for feature in self.model.input_features:
+            if feature not in self.data_cache:
+                return None
+            snapshot[feature] = self.data_cache[feature]
+        return snapshot
+
+    @staticmethod
+    def _safe_float(value):
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _extract_batch_id(self):
+        """从缓存数据中提取批次编号（若存在）"""
+        for key in self.batch_id_keys:
+            value = self.data_cache.get(key)
+            if value not in (None, "", "null", "None"):
+                return str(value)
+        return None
 

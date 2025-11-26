@@ -1,11 +1,13 @@
 """
-报警管理 API
+报警管理 API（只读）
 """
 
-from fastapi import APIRouter
 from typing import Optional
-from datetime import datetime
+
 import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from app.services.alarm import AlarmService, get_alarm_service
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
@@ -13,102 +15,44 @@ logger = structlog.get_logger(__name__)
 
 @router.get("/active")
 async def get_active_alarms(
-    priority: Optional[str] = None,
+    period: str = Query("10m", description="时间范围，例如 10m"),
+    severity: Optional[str] = Query(None, description="筛选状态：degraded/down"),
+    service: AlarmService = Depends(get_alarm_service),
 ):
     """
-    获取活动报警
-    
-    - **priority**: 优先级过滤 (info, warning, error, critical)
+    获取活动报警（基于 system_health measurement）
     """
-    # TODO: 从数据库查询活动报警
-    return {
-        "success": True,
-        "data": {
-            "total": 2,
-            "alarms": [
-                {
-                    "id": "alarm-001",
-                    "type": "temperature_high",
-                    "priority": "warning",
-                    "tag": "DRYER1.OUT.TEMP",
-                    "message": "出料温度偏高",
-                    "value": 155.0,
-                    "threshold": 150.0,
-                    "created_at": "2025-01-01T12:00:00Z",
-                },
-            ],
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    return await service.get_active_alarms(period=period, severity=severity)
 
 
 @router.post("/{alarm_id}/acknowledge")
 async def acknowledge_alarm(alarm_id: str):
     """
-    确认报警
-    
-    - **alarm_id**: 报警 ID
+    确认报警（占位，仅记录日志）
     """
-    logger.info("alarm_acknowledged", alarm_id=alarm_id)
-    
-    # TODO: 更新报警确认状态
-    return {
-        "success": True,
-        "message": "Alarm acknowledged",
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    logger.info("alarm_ack_placeholder", alarm_id=alarm_id)
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Alarm acknowledgement is not yet available",
+    )
 
 
 @router.get("/history")
 async def get_alarm_history(
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    priority: Optional[str] = None,
+    period: str = Query("24h", description="时间范围，例如 24h"),
+    severity: Optional[str] = Query(None, description="筛选状态"),
+    service: AlarmService = Depends(get_alarm_service),
 ):
     """
-    获取历史报警
-    
-    - **start_time**: 开始时间
-    - **end_time**: 结束时间
-    - **priority**: 优先级过滤
+    获取历史报警（只读）
     """
-    # TODO: 查询历史报警记录
-    return {
-        "success": True,
-        "data": {
-            "total": 10,
-            "alarms": [],
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    return await service.get_alarm_history(period=period, severity=severity)
 
 
 @router.get("/statistics")
 async def get_alarm_statistics():
-    """
-    获取报警统计
-    
-    返回报警数量统计和趋势
-    """
-    # TODO: 统计报警数据
-    return {
-        "success": True,
-        "data": {
-            "today": {
-                "total": 15,
-                "critical": 0,
-                "error": 2,
-                "warning": 10,
-                "info": 3,
-            },
-            "this_week": {
-                "total": 89,
-                "critical": 1,
-                "error": 12,
-                "warning": 56,
-                "info": 20,
-            },
-        },
-        "timestamp": int(datetime.now().timestamp()),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Alarm statistics endpoint not implemented yet",
+    )
 
