@@ -10,6 +10,9 @@ import time
 import structlog
 from aiohttp import web
 
+from common.logging import setup_logging
+
+event_recorder = setup_logging("ai-ctrl-optimizer")
 logger = structlog.get_logger(__name__)
 
 
@@ -23,16 +26,28 @@ class OptimizerService:
     
     async def start(self):
         logger.info("starting_ai_ctrl_optimizer")
+        event_recorder.record_event(
+            "service_starting",
+            tags={"component": "ai-ctrl-optimizer"},
+        )
         await self._start_health_server()
         self.running = True
         self._loop_task = asyncio.create_task(self._optimizer_loop())
         logger.info("ai_ctrl_optimizer_started")
+        event_recorder.record_event(
+            "service_started",
+            tags={"component": "ai-ctrl-optimizer"},
+        )
     
     async def stop(self):
         if not self.running and not self.health_runner:
             return
         
         logger.info("stopping_ai_ctrl_optimizer")
+        event_recorder.record_event(
+            "service_stopping",
+            tags={"component": "ai-ctrl-optimizer"},
+        )
         self.running = False
         
         if self._loop_task:
@@ -41,6 +56,10 @@ class OptimizerService:
         
         await self._stop_health_server()
         logger.info("ai_ctrl_optimizer_stopped")
+        event_recorder.record_event(
+            "service_stopped",
+            tags={"component": "ai-ctrl-optimizer"},
+        )
     
     async def _optimizer_loop(self):
         # TODO: 实现控制优化逻辑
@@ -95,6 +114,12 @@ async def main():
             await asyncio.sleep(1)
     except Exception as exc:
         logger.error("optimizer_error", error=str(exc), exc_info=True)
+        event_recorder.record_event(
+            "service_error",
+            severity="error",
+            fields={"error": str(exc)},
+            tags={"component": "ai-ctrl-optimizer"},
+        )
     finally:
         await service.stop()
 

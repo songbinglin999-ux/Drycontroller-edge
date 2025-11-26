@@ -3,9 +3,11 @@
 """
 
 import json
-import structlog
-import paho.mqtt.client as mqtt
 import os
+from typing import Optional
+
+import paho.mqtt.client as mqtt
+import structlog
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
 
@@ -132,7 +134,7 @@ class DataPublisher:
         """MQTT 断开回调"""
         logger.warning("mqtt_publisher_disconnected", return_code=rc)
     
-    async def publish_tag_data(self, tag_name: str, value: float, unit: str = "", timestamp: float = None):
+    async def publish_tag_data(self, tag_name: str, value: float, unit: str = "", timestamp: Optional[float] = None):
         """
         发布标签数据
         
@@ -143,8 +145,7 @@ class DataPublisher:
             timestamp: 时间戳
         """
         import time
-        if timestamp is None:
-            timestamp = time.time()
+        ts = time.time() if timestamp is None else timestamp
         
         # 构造数据
         data = {
@@ -152,7 +153,7 @@ class DataPublisher:
             "tag": tag_name,
             "value": value,
             "unit": unit,
-            "ts": int(timestamp),
+            "ts": int(ts),
         }
         
         # 发布到 MQTT
@@ -160,7 +161,7 @@ class DataPublisher:
         self._publish_mqtt(topic, data)
         
         # 写入 InfluxDB
-        self._write_influxdb(tag_name, value, unit, timestamp)
+        self._write_influxdb(tag_name, value, unit, ts)
     
     def _publish_mqtt(self, topic: str, data: dict, qos: int = 1):
         """发布 MQTT 消息"""

@@ -7,18 +7,18 @@
 """
 
 import asyncio
-import importlib
+from importlib import import_module, util
 import logging
 import math
 import os
 import random
 import signal
 import time
-from typing import Dict, List
+from typing import Any, Dict, List
 
-_structlog_spec = importlib.util.find_spec("structlog")
+_structlog_spec = util.find_spec("structlog")
 if _structlog_spec:
-    structlog = importlib.import_module("structlog")
+    structlog = import_module("structlog")
 else:  # pragma: no cover
     class _StructLogShim:
         @staticmethod
@@ -30,7 +30,7 @@ else:  # pragma: no cover
 
 from daq.publisher import DataPublisher
 
-logger = structlog.get_logger(__name__)
+logger: Any = structlog.get_logger(__name__)
 
 
 DEFAULT_TAG_PROFILES: List[Dict] = [

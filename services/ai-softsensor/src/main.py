@@ -12,18 +12,11 @@ from pathlib import Path
 
 from aiohttp import web
 
+from common.logging import setup_logging
 from src.infer import SoftSensorModel
 from src.mqtt_handler import MQTTHandler
 
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    logger_factory=structlog.stdlib.LoggerFactory(),
-)
-
+event_recorder = setup_logging("ai-softsensor")
 logger = structlog.get_logger(__name__)
 
 
@@ -51,6 +44,10 @@ class SoftSensorService:
     async def start(self):
         """启动服务"""
         logger.info("starting_softsensor_service")
+        event_recorder.record_event(
+            "service_starting",
+            tags={"component": "ai-softsensor"},
+        )
         
         await self.load_config()
         await self._start_health_server()
@@ -66,10 +63,18 @@ class SoftSensorService:
         
         self.running = True
         logger.info("softsensor_service_started")
+        event_recorder.record_event(
+            "service_started",
+            tags={"component": "ai-softsensor"},
+        )
     
     async def stop(self):
         """停止服务"""
         logger.info("stopping_softsensor_service")
+        event_recorder.record_event(
+            "service_stopping",
+            tags={"component": "ai-softsensor"},
+        )
         
         self.running = False
         
@@ -79,6 +84,10 @@ class SoftSensorService:
         await self._stop_health_server()
         
         logger.info("softsensor_service_stopped")
+        event_recorder.record_event(
+            "service_stopped",
+            tags={"component": "ai-softsensor"},
+        )
 
     async def _start_health_server(self):
         if self.health_runner:
@@ -137,6 +146,12 @@ async def main():
     
     except Exception as e:
         logger.error("service_error", error=str(e), exc_info=True)
+        event_recorder.record_event(
+            "service_error",
+            severity="error",
+            fields={"error": str(e)},
+            tags={"component": "ai-softsensor"},
+        )
     
     finally:
         await service.stop()

@@ -1,0 +1,15 @@
+{
+  "pythonVersion": "3.11",
+  "venvPath": ".",
+  "venv": ".venv",
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "executionEnvironments": [
+    { "root": "services/edge-api" },
+    { "root": "services/edge-daq" },
+    { "root": "services/ai-softsensor" },
+    { "root": "services/ai-ctrl-optimizer" },
+    { "root": "services/edge-monitor" }
+  ]
+}
+

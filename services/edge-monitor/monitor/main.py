@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import docker
+from docker import errors as docker_errors
 import httpx
 import psutil
 import structlog
@@ -20,6 +21,9 @@ from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
 import paho.mqtt.client as mqtt
 
+from common.logging import setup_logging
+
+event_recorder = setup_logging("edge-monitor")
 logger = structlog.get_logger(__name__)
 
 DEFAULT_CONFIG_PATH = Path(os.getenv("MONITOR_CONFIG", "/app/configs/monitor.yaml"))
@@ -73,6 +77,10 @@ class MonitorService:
     
     async def start(self):
         logger.info("edge_monitor_starting", line=self.line_id)
+        event_recorder.record_event(
+            "service_starting",
+            tags={"component": "edge-monitor", "line": self.line_id},
+        )
         self._connect_mqtt()
         self._connect_influx()
         await self._connect_http()
@@ -84,9 +92,17 @@ class MonitorService:
             asyncio.create_task(self._service_health_loop()),
         ]
         logger.info("edge_monitor_started")
+        event_recorder.record_event(
+            "service_started",
+            tags={"component": "edge-monitor", "line": self.line_id},
+        )
     
     async def stop(self):
         logger.info("edge_monitor_stopping")
+        event_recorder.record_event(
+            "service_stopping",
+            tags={"component": "edge-monitor", "line": self.line_id},
+        )
         self._running = False
         
         for task in self._tasks:
@@ -112,6 +128,10 @@ class MonitorService:
             self.docker_client = None
         
         logger.info("edge_monitor_stopped")
+        event_recorder.record_event(
+            "service_stopped",
+            tags={"component": "edge-monitor", "line": self.line_id},
+        )
     
     def _load_config(self) -> Dict[str, Any]:
         if DEFAULT_CONFIG_PATH.exists():
@@ -153,7 +173,7 @@ class MonitorService:
     def _connect_docker(self):
         try:
             self.docker_client = docker.from_env()
-        except docker.errors.DockerException as exc:
+        except docker_errors.DockerException as exc:
             logger.error("monitor_docker_connect_failed", error=str(exc))
             self.docker_client = None
     
@@ -250,10 +270,10 @@ class MonitorService:
                 service_status["container_state"] = container.status
                 if service_status["status"] == "unknown":
                     service_status["status"] = "healthy" if container.status == "running" else "degraded"
-            except docker.errors.NotFound:
+            except docker_errors.NotFound:
                 service_status["container_state"] = "missing"
                 service_status["status"] = "down"
-            except docker.errors.DockerException as exc:
+            except docker_errors.DockerException as exc:
                 service_status["detail"] = f"docker:{exc}"
                 service_status.setdefault("container_state", "error")
         
@@ -279,6 +299,12 @@ class MonitorService:
             self.write_api.write(self.influx_bucket, self.influx_org, point)
         except Exception as exc:
             logger.error("system_metrics_write_failed", error=str(exc))
+            event_recorder.record_event(
+                "system_metrics_write_failed",
+                severity="error",
+                fields={"error": str(exc)},
+                tags={"component": "edge-monitor"},
+            )
     
     def _write_service_health(self, statuses: Dict[str, Any]):
         if not self.write_api:
@@ -304,6 +330,12 @@ class MonitorService:
                 self.write_api.write(self.influx_bucket, self.influx_org, points)
         except Exception as exc:
             logger.error("service_health_write_failed", error=str(exc))
+            event_recorder.record_event(
+                "service_health_write_failed",
+                severity="error",
+                fields={"error": str(exc)},
+                tags={"component": "edge-monitor"},
+            )
     
     def _publish_status(self):
         if not self.mqtt_client:
@@ -318,6 +350,12 @@ class MonitorService:
             self.mqtt_client.publish(self.status_topic, json.dumps(payload), qos=1)
         except Exception as exc:
             logger.error("status_publish_failed", error=str(exc))
+            event_recorder.record_event(
+                "status_publish_failed",
+                severity="error",
+                fields={"error": str(exc)},
+                tags={"component": "edge-monitor"},
+            )
 
 
 monitor_service = MonitorService()

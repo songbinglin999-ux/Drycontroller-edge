@@ -2,11 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY services/license-service/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY license/ ./license/
-RUN mkdir -p /app/logs
+COPY common/ ./common/
+COPY services/license-service/license/ ./license/
+
+RUN mkdir -p /logs/license-service
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app

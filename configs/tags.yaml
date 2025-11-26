@@ -1,4 +1,31 @@
 # PLC 标签配置 - 用于数据采集和MQTT发布
+naming:
+  format: "{EQUIPMENT}.{SECTION}.{METRIC}"
+  separator: "."
+  notes:
+    - EQUIPMENT 固定为以下枚举：DRYER1、DRYER2、FERM、EXHAUST
+    - SECTION 表示工艺位置或部件：IN / OUT / CHAMBER / CHAIN / FAN / RECOVERY 等
+    - METRIC 使用全大写英文缩写，例如 TEMP、SPEED、HUMIDITY、TORQUE
+  equipment:
+    DRYER1: "第一段烘干机"
+    DRYER2: "第二段烘干机"
+    FERM: "发酵仓"
+    EXHAUST: "尾气系统"
+  section_alias:
+    IN: "入口/进料"
+    OUT: "出口/出料"
+    CHAMBER: "仓体"
+    CHAIN: "链条/链速"
+    FAN: "风机"
+    HUMIDITY: "湿度"
+    TORQUE: "扭矩"
+    RECOVERY: "余热回收"
+  examples:
+    - "DRYER1.IN.TEMP"
+    - "DRYER2.CHAIN.SPEED"
+    - "FERM.HUMIDITY"
+    - "EXHAUST.RECOVERY.VALVE"
+
 tags:
   # ==================== 第一段烘干机 ====================
   dryer1:

@@ -72,8 +72,8 @@ services:
   # ==================== 边缘 API 服务 ====================
   edge-api:
     build:
-      context: ./services/edge-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/edge-api/Dockerfile
     container_name: edge-api
     environment:
       - POSTGRES_HOST=${POSTGRES_HOST}
@@ -92,7 +92,7 @@ services:
       - MQTT_PASSWORD=${MQTT_PASSWORD}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
-      - ./logs/edge-api:/app/logs
+      - ./logs/edge-api:/logs/edge-api
       - ./configs:/app/configs:ro
     ports:
       - "${EDGE_API_PORT}:8000"
@@ -110,8 +110,8 @@ services:
   # ==================== 数据采集服务 ====================
   edge-daq:
     build:
-      context: ./services/edge-daq
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/edge-daq/Dockerfile
     container_name: edge-daq
     environment:
       - PLC_HOST=${PLC_HOST}
@@ -130,7 +130,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - HEALTH_PORT=8080
     volumes:
-      - ./logs/edge-daq:/app/logs
+      - ./logs/edge-daq:/logs/edge-daq
       - ./configs:/app/configs:ro
     networks:
       - edge-network
@@ -142,8 +142,8 @@ services:
   # ==================== AI 软测量服务 ====================
   ai-softsensor:
     build:
-      context: ./services/ai-softsensor
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/ai-softsensor/Dockerfile
     container_name: ai-softsensor
     environment:
       - MQTT_BROKER=${MQTT_BROKER}
@@ -159,7 +159,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - HEALTH_PORT=8080
     volumes:
-      - ./logs/ai-softsensor:/app/logs
+      - ./logs/ai-softsensor:/logs/ai-softsensor
       - ./configs:/app/configs:ro
       - ./services/ai-softsensor/models:/app/models
     networks:
@@ -172,8 +172,8 @@ services:
   # ==================== AI 控制优化服务 ====================
   ai-ctrl-optimizer:
     build:
-      context: ./services/ai-ctrl-optimizer
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/ai-ctrl-optimizer/Dockerfile
     container_name: ai-ctrl-optimizer
     environment:
       - MQTT_BROKER=${MQTT_BROKER}
@@ -189,7 +189,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - HEALTH_PORT=8080
     volumes:
-      - ./logs/ai-ctrl-optimizer:/app/logs
+      - ./logs/ai-ctrl-optimizer:/logs/ai-ctrl-optimizer
       - ./configs:/app/configs:ro
       - ./services/ai-ctrl-optimizer/models:/app/models
     networks:
@@ -203,8 +203,8 @@ services:
   # ==================== 授权服务 ====================
   license-service:
     build:
-      context: ./services/license-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/license-service/Dockerfile
     container_name: license-service
     environment:
       - POSTGRES_HOST=${POSTGRES_HOST}
@@ -214,9 +214,14 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - LICENSE_CHECK_ENABLED=${LICENSE_CHECK_ENABLED}
       - LICENSE_EXPIRY_DAYS=${LICENSE_EXPIRY_DAYS}
+      - INFLUXDB_HOST=${INFLUXDB_HOST}
+      - INFLUXDB_PORT=${INFLUXDB_PORT}
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}
+      - INFLUXDB_ORG=${INFLUXDB_ORG}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
-      - ./logs/license-service:/app/logs
+      - ./logs/license-service:/logs/license-service
       - /dev/bus/usb:/dev/bus/usb  # USB 设备映射（加密狗）
     ports:
       - "${LICENSE_SERVICE_PORT}:8000"
@@ -230,8 +235,8 @@ services:
   # ==================== 系统监控服务 ====================
   edge-monitor:
     build:
-      context: ./services/edge-monitor
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/edge-monitor/Dockerfile
     container_name: edge-monitor
     environment:
       - MQTT_BROKER=${MQTT_BROKER}
@@ -245,8 +250,8 @@ services:
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
-      - ./logs/edge-monitor:/app/logs
-      - ./logs:/app/monitor_logs:ro
+      - ./logs/edge-monitor:/logs/edge-monitor
+      - ./logs:/logs:ro
       - ./configs:/app/configs:ro
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

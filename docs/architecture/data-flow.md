@@ -129,6 +129,34 @@ edge-api → WebSocket / REST → 大屏
 
 ---
 
+## 4.4 WebSocket 推流总线
+
+```
+edge-daq / AI / edge-monitor → MQTT (realtime/#, ai/#, system/#)
+                                        │
+                                        ▼
+                               edge-api WS Relay
+                                        │
+               ┌────────────────────────┼────────────────────────┐
+               │                        │                        │
+         /api/ws/realtime         /api/ws/ai              /api/ws/system
+```
+
+- WebSocket 推送与 MQTT 保持相同消息结构 `{line, tag, value, ts}`；
+- 支持按 `line`、`tags` 过滤，默认订阅所有产线；
+- 最新系统健康可以通过 REST `/api/system/health` 拉取，也可以订阅 `/api/ws/system` 获取实时状态；
+- 典型订阅示例：
+
+```
+websocat ws://edge-api:8000/api/ws/realtime?line=L1&tags=DRYER1.IN.TEMP
+websocat ws://edge-api:8000/api/ws/ai?line=L1
+websocat ws://edge-api:8000/api/ws/system
+```
+
+大屏或第三方应用只需依赖 edge-api，即可同时获取 HTTP 历史数据与 WS 实时数据。
+
+---
+
 ## 5. 配置与管理链路
 
 ### 5.1 配置来源

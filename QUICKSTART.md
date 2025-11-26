@@ -112,7 +112,22 @@ mosquitto_sub -h localhost -t "realtime/+/tags" -v
 mosquitto_sub -h localhost -t "ai/+/moisture" -v
 ```
 
-### 方式 3: 查询 InfluxDB
+### 方式 3: WebSocket 推送
+
+```bash
+# 安装 websocat: brew install websocat
+
+# 实时点位（可加 line/tags 查询参数）
+websocat ws://localhost:8000/api/ws/realtime
+
+# AI 推理结果
+websocat ws://localhost:8000/api/ws/ai?line=L1
+
+# 系统健康状态
+websocat ws://localhost:8000/api/ws/system
+```
+
+### 方式 4: 查询 InfluxDB
 
 访问 InfluxDB Web UI：
 

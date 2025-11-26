@@ -17,70 +17,89 @@
 
 - 容器内：
   - 标准输出（stdout）——便于 `docker logs` 查看  
-  - 可选：写入 `/logs/{service}/app.log`
+  - **必选**：结构化日志文件 ` /logs/{service}/app.log`
 - 宿主机：
-  - 通过 Docker log driver 或 sidecar 将日志汇聚到统一目录
+  - `./logs/{service}` 通过 volume 映射到容器的 `/logs/{service}`，所有日志统一收集
 
 ---
 
 ## 3. 日志格式
 
-- 推荐使用 **JSON Lines** 格式：每行一个 JSON 对象  
-- 基本字段：
-  - `timestamp`：时间（ISO8601）  
-  - `level`：`DEBUG` / `INFO` / `WARN` / `ERROR`  
-  - `service`：服务名（如 `edge-api`、`edge-daq`）  
-  - `module`：代码模块（可选）  
-  - `message`：简要说明  
-  - `trace_id` / `request_id`：链路标识（如有）  
-  - `extra`：扩展字段（字典）
+- 统一使用 **JSON Lines**：每行一个 JSON 对象  
+- 必填字段：
+  - `timestamp`：ISO8601 时间戳（UTC）  
+  - `level`：日志级别  
+  - `service`：服务名（自动注入）  
+  - `module`：发出日志的 Python 模块  
+  - `message`：事件名称（`logger.info("event_name", **context)`）  
+  - `env` / `instance`：环境与实例 ID  
+  - `extra`：扩展字段（自动来自 `**context`）
+- 通过 `common.logging.setup_logging("<service-name>")` 自动配置：
 
-示例：
+```python
+from common.logging import setup_logging
+import structlog
+
+event_recorder = setup_logging("edge-api")
+logger = structlog.get_logger(__name__)
+
+logger.info("request_completed", request_id="abc", status=200)
+event_recorder.record_event("service_started")
+```
+
+- JSON 由 `structlog` 统一序列化，禁止手工 `json.dumps`。
+
+示例输出：
 
 ```json
-{
-  "timestamp": "2025-01-01T12:00:00Z",
-  "level": "INFO",
-  "service": "edge-daq",
-  "module": "plc_reader",
-  "message": "Read tags from PLC",
-  "extra": {
-    "tags_count": 128,
-    "duration_ms": 35
-  }
-}
+{"timestamp":"2025-01-01T12:00:00Z","level":"info","service":"edge-daq","module":"daq.plc_reader","message":"read_tags","tags_count":128,"duration_ms":35}
 ```
+
+> 注：`common.logging.setup_logging` 会同时写入 stdout 与 `/logs/{service}/app.log`，并注入 `service`、`env`、`instance` 等公共字段。
+  
+## 4. 关键事件写入 InfluxDB
+
+- `setup_logging` 会返回 `EventRecorder`，并自动使用 `INFLUXDB_*` 环境变量建立连接。
+- 使用 `event_recorder.record_event("service_started", severity="info", fields={"version": "1.0.0"})` 将关键事件写入 measurement `service_events`。
+- 事件数据结构：
+  - Tag：`service`、`event`、`severity`、自定义 `tags`
+  - Field：`value`（默认 1）及自定义 `fields`
+- 所有服务需至少记录以下事件：
+  - `service_starting` / `service_started`
+  - `service_stopping` / `service_stopped`
+  - `service_error`（含 error 信息）
+- Edge Monitor 额外记录 `system_metrics_write_failed` / `service_health_write_failed` 等异常，以支撑自愈与告警。
 
 ---
 
-## 4. 各服务关键日志点
+## 5. 各服务关键日志点
 
-### 4.1 edge-daq
+### 5.1 edge-daq
 
 - PLC 连接成功/失败  
 - 采集循环耗时异常（超出阈值）  
 - Tag 解析错误 / 值越界（与 `limits.yaml` 比较）
 
-### 4.2 ai-softsensor
+### 5.2 ai-softsensor
 
 - 模型加载/切换/回滚  
 - 推理延迟统计  
 - 结果异常（含水率超范围、偏差过大）
 
-### 4.3 edge-api
+### 5.3 edge-api
 
 - API 请求访问日志（方法、路径、状态码、耗时）  
 - 控制指令下发与结果  
 - 配置变更操作（谁、改了什么）
 
-### 4.4 edge-monitor
+### 5.4 edge-monitor
 
 - 自愈动作记录（哪个服务、重启/熔断原因）  
 - 资源使用超阈值事件（CPU/RAM/Disk）
 
 ---
 
-## 5. 日志级别使用约定
+## 6. 日志级别使用约定
 
 - `DEBUG`：调试信息，默认生产环境可关闭  
 - `INFO`：正常流程关键节点，如服务启动、定期统计  
@@ -90,7 +109,7 @@
 
 ---
 
-## 6. 日志轮转与保留策略
+## 7. 日志轮转与保留策略
 
 - 推荐策略（见 `deployment-guide.md` 中 logrotate 示例）：
   - 每日切分  

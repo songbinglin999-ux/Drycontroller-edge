@@ -12,22 +12,15 @@ from pathlib import Path
 
 from aiohttp import web
 
+from common.logging import setup_logging
+
+event_recorder = setup_logging("edge-daq")
+logger = structlog.get_logger(__name__)
+
 from daq.modbus_client import ModbusClient
 from daq.plc_reader import PLCReader
 from daq.publisher import DataPublisher
 from daq.simulator import PLCSimulator
-
-# 设置日志
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    logger_factory=structlog.stdlib.LoggerFactory(),
-)
-
-logger = structlog.get_logger(__name__)
 
 
 class DAQService:
@@ -61,6 +54,10 @@ class DAQService:
     async def start(self):
         """启动服务"""
         logger.info("starting_daq_service")
+        event_recorder.record_event(
+            "service_starting",
+            tags={"component": "edge-daq"},
+        )
         
         # 加载配置
         await self.load_config()
@@ -93,10 +90,18 @@ class DAQService:
         await self.plc_reader.start()
         
         logger.info("daq_service_started")
+        event_recorder.record_event(
+            "service_started",
+            tags={"component": "edge-daq"},
+        )
     
     async def stop(self):
         """停止服务"""
         logger.info("stopping_daq_service")
+        event_recorder.record_event(
+            "service_stopping",
+            tags={"component": "edge-daq"},
+        )
         
         self.running = False
         
@@ -112,6 +117,10 @@ class DAQService:
         await self._stop_health_server()
         
         logger.info("daq_service_stopped")
+        event_recorder.record_event(
+            "service_stopped",
+            tags={"component": "edge-daq"},
+        )
 
     async def _start_health_server(self):
         """启动健康检查服务器"""
@@ -174,6 +183,12 @@ async def main():
     
     except Exception as e:
         logger.error("service_error", error=str(e), exc_info=True)
+        event_recorder.record_event(
+            "service_error",
+            severity="error",
+            fields={"error": str(e)},
+            tags={"component": "edge-daq"},
+        )
     
     finally:
         await service.stop()

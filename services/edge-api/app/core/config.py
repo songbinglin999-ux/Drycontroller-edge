@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     
     # 日志配置
     LOG_LEVEL: str = "INFO"
-    LOG_FILE: str = "/app/logs/edge-api.log"
+    LOG_DIR: str = "/logs/edge-api"
+    LOG_FILE: str = "/logs/edge-api/app.log"
     
     # 数据库配置
     POSTGRES_HOST: str = "localhost"

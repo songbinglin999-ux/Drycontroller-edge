@@ -385,6 +385,20 @@ curl "http://localhost:8000/api/realtime/latest?tags=DRYER1.IN.TEMP&lookback=10m
 curl "http://localhost:8000/api/history?tag=DRYER1.IN.TEMP&period=6h&window=5m&aggregation=mean"
 ```
 
+**WebSocket 推送：**
+
+- `/api/ws/realtime?line=L1&tags=DRYER1.IN.TEMP`：订阅实时点位（默认全量）
+- `/api/ws/ai?line=L1`：订阅 AI 软测量结果
+- `/api/ws/system?line=L1`：订阅系统健康状态
+
+可使用 `websocat` 或浏览器直接接收推送：
+
+```bash
+websocat ws://localhost:8000/api/ws/realtime
+websocat ws://localhost:8000/api/ws/ai?line=L1
+websocat ws://localhost:8000/api/ws/system
+```
+
 **详细 API 文档：** 启动服务后访问 http://localhost:8000/docs
 
 ---
@@ -433,6 +447,8 @@ tags:
         range: [0, 200]
         alarm_high: 180
 ```
+
+> 验证命名是否符合 `{EQUIPMENT}.{SECTION}.{METRIC}`：`python scripts/validate-tags.py`
 
 ### AI 配置 (configs/ai-config.yaml)
 
@@ -522,6 +538,7 @@ sudo systemctl enable docker
 
 - 架构概览：`docs/architecture/system-overview.md`
 - 部署细节：`docs/ops/deployment-guide.md`
+- 大屏接入：`docs/architecture/big-screen-integration.md`
 - 更多基础设施配置（MQTT/PostgreSQL 等）：`infra/` 目录  
   （已预留 `infra/influxdb/` 与 `infra/nginx/` 目录，可按现场需要补充配置）
 

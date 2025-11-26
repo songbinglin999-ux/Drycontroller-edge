@@ -17,9 +17,10 @@ from app.api.v1 import router as api_v1_router
 from app.api import realtime as realtime_router
 from app.core.database import engine, Base
 from app.core.mqtt_client import mqtt_manager
+from app.services.ws_stream import ws_stream
 
 # 设置日志
-setup_logging()
+event_recorder = setup_logging()
 logger = structlog.get_logger(__name__)
 
 
@@ -28,6 +29,11 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
     logger.info("starting_edge_api", version=settings.VERSION)
+    event_recorder.record_event(
+        "service_starting",
+        fields={"version": settings.VERSION},
+        tags={"component": "edge-api"},
+    )
     
     # 创建数据库表
     async with engine.begin() as conn:
@@ -36,20 +42,40 @@ async def lifespan(app: FastAPI):
     # 连接 MQTT
     await mqtt_manager.connect()
     
+    # 启动 MQTT → WS 转发
+    await ws_stream.start()
+    
     logger.info("edge_api_started")
+    event_recorder.record_event(
+        "service_started",
+        fields={"version": settings.VERSION},
+        tags={"component": "edge-api"},
+    )
     
     yield
     
     # 关闭时执行
     logger.info("shutting_down_edge_api")
+    event_recorder.record_event(
+        "service_stopping",
+        fields={"version": settings.VERSION},
+        tags={"component": "edge-api"},
+    )
     
     # 断开 MQTT
     await mqtt_manager.disconnect()
+    
+    await ws_stream.stop()
     
     # 关闭数据库连接
     await engine.dispose()
     
     logger.info("edge_api_shutdown_complete")
+    event_recorder.record_event(
+        "service_stopped",
+        fields={"version": settings.VERSION},
+        tags={"component": "edge-api"},
+    )
 
 
 # 创建 FastAPI 应用
@@ -133,6 +159,15 @@ async def global_exception_handler(request: Request, exc: Exception):
         method=request.method,
         error=str(exc),
         exc_info=True,
+    )
+    event_recorder.record_event(
+        "unhandled_exception",
+        severity="error",
+        fields={
+            "path": request.url.path,
+            "method": request.method,
+        },
+        tags={"component": "edge-api"},
     )
     
     return JSONResponse(

@@ -121,6 +121,25 @@ check_postgres
 check_influx
 check_mqtt
 
+check_latest_realtime() {
+  log_step "Edge API 最新数据"
+  local body
+  body="$(curl -fsS "http://localhost:${EDGE_API_PORT}/api/realtime/latest?tags=DRYER1.IN.TEMP&lookback=2m")"
+  echo "响应：$(echo "$body" | tr -d '\n' | cut -c1-160)"
+  log_ok "/api/realtime/latest 正常"
+}
+
+check_system_health_ws_cache() {
+  log_step "Edge API 系统健康缓存"
+  local body
+  body="$(curl -fsS "http://localhost:${EDGE_API_PORT}/api/system/health")"
+  echo "响应：$(echo "$body" | tr -d '\n' | cut -c1-160)"
+  log_ok "/api/system/health 正常"
+}
+
+check_latest_realtime
+check_system_health_ws_cache
+
 printf '\n🎉 烟雾测试全部通过！\n'
 
 

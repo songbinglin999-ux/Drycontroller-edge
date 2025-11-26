@@ -2,10 +2,13 @@
 MQTT 客户端管理
 """
 
+import json
+from collections import defaultdict
+from typing import Callable, Dict, List, Optional
+
 import paho.mqtt.client as mqtt
 import structlog
-import json
-from typing import Callable, Optional
+
 from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
@@ -17,7 +20,7 @@ class MQTTManager:
     def __init__(self):
         self.client: Optional[mqtt.Client] = None
         self.connected = False
-        self.message_callbacks = {}
+        self.message_callbacks: Dict[str, List[Callable]] = defaultdict(list)
     
     async def connect(self):
         """连接到 MQTT Broker"""
@@ -96,9 +99,17 @@ class MQTTManager:
             )
             
             # 调用注册的回调函数
-            for pattern, callback in self.message_callbacks.items():
+            for pattern, callbacks in list(self.message_callbacks.items()):
                 if self._topic_matches(pattern, topic):
-                    callback(topic, payload)
+                    for callback in list(callbacks):
+                        try:
+                            callback(topic, payload)
+                        except Exception:
+                            logger.exception(
+                                "mqtt_callback_failed",
+                                pattern=pattern,
+                                topic=topic,
+                            )
         
         except Exception as e:
             logger.error(
@@ -128,8 +139,22 @@ class MQTTManager:
     
     def register_callback(self, topic_pattern: str, callback: Callable):
         """注册消息回调函数"""
-        self.message_callbacks[topic_pattern] = callback
+        self.message_callbacks[topic_pattern].append(callback)
         logger.info("mqtt_callback_registered", pattern=topic_pattern)
+        return callback
+    
+    def unregister_callback(self, topic_pattern: str, callback: Callable):
+        """注销消息回调"""
+        callbacks = self.message_callbacks.get(topic_pattern)
+        if not callbacks:
+            return
+        try:
+            callbacks.remove(callback)
+            logger.info("mqtt_callback_unregistered", pattern=topic_pattern)
+        except ValueError:
+            return
+        if not callbacks:
+            self.message_callbacks.pop(topic_pattern, None)
     
     @staticmethod
     def _topic_matches(pattern: str, topic: str) -> bool:

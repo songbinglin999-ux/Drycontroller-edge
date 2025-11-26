@@ -142,12 +142,12 @@ class MQTTHandler:
             "ts": int(timestamp),
             "model_version": self.model_version,
         }
-        
+            
         if self.client:
             self.client.publish(self.ai_topic, json.dumps(payload), qos=1)
         
         self._write_influx(payload, timestamp)
-        
+            
         logger.info(
             "inference_result_published",
             moisture=payload["value"],

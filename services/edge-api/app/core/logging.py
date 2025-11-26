@@ -1,38 +1,15 @@
 """
-结构化日志配置
+Edge API 日志封装。
 """
 
-import structlog
-import logging
-import sys
-from pathlib import Path
+from common.logging import setup_logging as _setup_logging, get_event_recorder
+
+__all__ = ["setup_logging", "get_event_recorder"]
 
 
 def setup_logging():
-    """配置结构化日志"""
-    
-    # 配置 structlog
-    structlog.configure(
-        processors=[
-            structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer(),
-        ],
-        context_class=dict,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
-    )
-    
-    # 配置标准库 logging
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stdout,
-        level=logging.INFO,
-    )
+    """
+    对 Edge API 启用统一日志配置。
+    """
+    return _setup_logging("edge-api")
 
