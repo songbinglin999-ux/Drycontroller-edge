@@ -26,12 +26,23 @@ class DataPublisher:
         self.mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
         self.mqtt_user = os.getenv("MQTT_USER", "")
         self.mqtt_password = os.getenv("MQTT_PASSWORD", "")
+        self.line_id = os.getenv("LINE_ID", "L1")
         
         self.influx_host = os.getenv("INFLUXDB_HOST", "localhost")
         self.influx_port = os.getenv("INFLUXDB_PORT", "8086")
         self.influx_token = os.getenv("INFLUXDB_TOKEN", "")
         self.influx_org = os.getenv("INFLUXDB_ORG", "edge-org")
         self.influx_bucket = os.getenv("INFLUXDB_BUCKET", "industrial-data")
+        self.measurement = os.getenv("INFLUXDB_MEASUREMENT", "industrial_data")
+
+        self.realtime_topic = os.getenv(
+            "MQTT_TOPIC_REALTIME",
+            f"realtime/{self.line_id}/tags",
+        )
+        self.alarm_topic = os.getenv(
+            "MQTT_TOPIC_ALARM",
+            f"system/{self.line_id}/alarms",
+        )
     
     async def connect(self):
         """连接到 MQTT 和 InfluxDB"""
@@ -137,14 +148,15 @@ class DataPublisher:
         
         # 构造数据
         data = {
+            "line": self.line_id,
             "tag": tag_name,
             "value": value,
             "unit": unit,
-            "timestamp": timestamp,
+            "ts": int(timestamp),
         }
         
         # 发布到 MQTT
-        topic = f"industrial/dryer/realtime/{tag_name}"
+        topic = self.realtime_topic
         self._publish_mqtt(topic, data)
         
         # 写入 InfluxDB
@@ -179,7 +191,7 @@ class DataPublisher:
             return
         
         try:
-            point = Point("industrial_data") \
+            point = Point(self.measurement) \
                 .tag("tag", tag_name) \
                 .field("value", value) \
                 .field("unit", unit) \
@@ -211,14 +223,15 @@ class DataPublisher:
         import time
         
         alarm_data = {
+            "line": self.line_id,
             "tag": tag_name,
             "type": alarm_type,
             "value": value,
             "threshold": threshold,
-            "timestamp": time.time(),
+            "ts": int(time.time()),
         }
         
-        topic = f"industrial/dryer/alarm/{tag_name}"
+        topic = self.alarm_topic
         self._publish_mqtt(topic, alarm_data, qos=2)
         
         logger.warning(

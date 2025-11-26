@@ -128,6 +128,7 @@ services:
       - INFLUXDB_ORG=${INFLUXDB_ORG}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - LOG_LEVEL=${LOG_LEVEL}
+      - HEALTH_PORT=8080
     volumes:
       - ./logs/edge-daq:/app/logs
       - ./configs:/app/configs:ro
@@ -156,6 +157,7 @@ services:
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - AI_MODEL_PATH=${AI_MODEL_PATH}
       - LOG_LEVEL=${LOG_LEVEL}
+      - HEALTH_PORT=8080
     volumes:
       - ./logs/ai-softsensor:/app/logs
       - ./configs:/app/configs:ro
@@ -185,6 +187,7 @@ services:
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - AI_MODEL_PATH=${AI_MODEL_PATH}
       - LOG_LEVEL=${LOG_LEVEL}
+      - HEALTH_PORT=8080
     volumes:
       - ./logs/ai-ctrl-optimizer:/app/logs
       - ./configs:/app/configs:ro
@@ -244,6 +247,7 @@ services:
     volumes:
       - ./logs/edge-monitor:/app/logs
       - ./logs:/app/monitor_logs:ro
+      - ./configs:/app/configs:ro
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - edge-network

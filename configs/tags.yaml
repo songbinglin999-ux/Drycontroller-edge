@@ -146,7 +146,7 @@ tags:
         
 # MQTT 发布配置
 mqtt:
-  base_topic: "industrial/dryer"
+  base_topic: "realtime"
   publish_interval: 1.0  # 秒
   qos: 1
   retain: false

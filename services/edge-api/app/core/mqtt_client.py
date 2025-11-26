@@ -72,7 +72,9 @@ class MQTTManager:
             logger.info("mqtt_connected")
             
             # 订阅默认主题
-            self.subscribe("industrial/dryer/#")
+            self.subscribe("realtime/#")
+            self.subscribe("ai/#")
+            self.subscribe("system/#")
         else:
             logger.error("mqtt_connection_failed", return_code=rc)
     

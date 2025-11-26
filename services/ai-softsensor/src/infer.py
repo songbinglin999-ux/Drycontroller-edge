@@ -5,6 +5,7 @@ AI 软测量推理模块
 import structlog
 import numpy as np
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 logger = structlog.get_logger(__name__)
 
@@ -16,7 +17,12 @@ class SoftSensorModel:
         self.config = config
         self.model = None
         self.scaler = None
-        self.input_features = config.get("input_features", [])
+        self.input_features: List[str] = config.get("input_features", [])
+        output_cfg = config.get("output", {})
+        self.output_tag = output_cfg.get("name", "MOISTURE.PREDICTED")
+        self.output_unit = output_cfg.get("unit", "%")
+        self.output_range: Tuple[float, float] = tuple(output_cfg.get("range", [0.0, 100.0]))
+        self.target_moisture = output_cfg.get("target", 12.0)
         
     async def load(self):
         """加载模型"""
@@ -35,12 +41,6 @@ class SoftSensorModel:
     def preprocess(self, data: dict) -> np.ndarray:
         """
         数据预处理
-        
-        Args:
-            data: 输入数据字典
-            
-        Returns:
-            预处理后的特征数组
         """
         features = []
         
@@ -56,22 +56,12 @@ class SoftSensorModel:
         
         return features_array
     
-    def predict(self, features: np.ndarray):
+    def predict(self, features: np.ndarray, raw_data: Dict[str, float]):
         """
-        执行预测
-        
-        Args:
-            features: 预处理后的特征
-            
-        Returns:
-            预测结果字典
+        执行预测（当前阶段使用可解释公式模拟）
         """
-        # TODO: 实际模型推理
-        # output = self.model.run(None, {"input": features})[0]
-        
-        # 模拟预测结果
-        moisture = 12.3 + np.random.randn() * 0.5
-        confidence = 0.92
+        moisture = self._simulate_formula(raw_data)
+        confidence = self._estimate_confidence(moisture)
         
         return {
             "predicted_moisture": float(moisture),
@@ -81,22 +71,13 @@ class SoftSensorModel:
     def inference(self, data: dict):
         """
         完整推理流程
-        
-        Args:
-            data: 输入数据
-            
-        Returns:
-            预测结果
         """
         import time
         start_time = time.time()
         
         try:
-            # 预处理
             features = self.preprocess(data)
-            
-            # 推理
-            result = self.predict(features)
+            result = self.predict(features, data)
             
             inference_time = (time.time() - start_time) * 1000
             result["inference_time_ms"] = inference_time
@@ -113,4 +94,31 @@ class SoftSensorModel:
         except Exception as e:
             logger.error("inference_failed", error=str(e), exc_info=True)
             return None
+    
+    def _simulate_formula(self, data: Dict[str, float]) -> float:
+        """
+        根据工艺经验的公式估算含水率
+        """
+        dryer2_out = float(data.get("DRYER2.OUT.TEMP", 70.0))
+        dryer2_in = float(data.get("DRYER2.IN.TEMP", dryer2_out))
+        dryer2_chain = float(data.get("DRYER2.CHAIN.SPEED", 4.5))
+        dryer2_fan = float(data.get("DRYER2.FAN.SPEED", 30.0))
+        dryer2_torque = float(data.get("DRYER2.TORQUE", 220.0))
+        dryer1_out = float(data.get("DRYER1.OUT.TEMP", 95.0))
+        
+        base = 35.0 - (dryer2_out - 70.0) * 0.2
+        base -= (dryer1_out - dryer2_out) * 0.05
+        base += (4.5 - dryer2_chain) * 1.4
+        base -= (dryer2_fan - 30.0) * 0.04
+        base += (dryer2_torque - 220.0) * 0.003
+        base += (dryer2_in - dryer2_out) * 0.04
+        
+        low, high = self.output_range
+        return max(low if low is not None else 0.0, min(high if high is not None else 100.0, base))
+    
+    def _estimate_confidence(self, moisture: float) -> float:
+        """根据偏差估算置信度"""
+        deviation = abs(moisture - self.target_moisture)
+        confidence = 1.0 - min(deviation / 25.0, 0.6)
+        return max(0.5, min(0.99, confidence))
 

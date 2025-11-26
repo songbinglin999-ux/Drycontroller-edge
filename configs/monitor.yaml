@@ -1,0 +1,30 @@
+line_id: "L1"
+
+system:
+  interval: 30            # 秒
+  disk_path: "/"
+  publish_mqtt: true
+
+services:
+  interval: 20            # 秒
+  http_timeout: 5         # 秒
+  targets:
+    - name: "edge-api"
+      url: "http://edge-api:8000/health"
+      container: "edge-api"
+    - name: "edge-daq"
+      url: "http://edge-daq:8080/health"
+      container: "edge-daq"
+    - name: "ai-softsensor"
+      url: "http://ai-softsensor:8080/health"
+      container: "ai-softsensor"
+    - name: "ai-ctrl-optimizer"
+      url: "http://ai-ctrl-optimizer:8080/health"
+      container: "ai-ctrl-optimizer"
+    - name: "license-service"
+      url: "http://license-service:8000/health"
+      container: "license-service"
+    - name: "edge-monitor"
+      url: "http://edge-monitor:8080/health"
+      container: "edge-monitor"
+

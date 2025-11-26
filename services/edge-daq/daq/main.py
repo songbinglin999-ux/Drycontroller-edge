@@ -7,7 +7,10 @@ import signal
 import structlog
 import yaml
 import os
+import time
 from pathlib import Path
+
+from aiohttp import web
 
 from daq.modbus_client import ModbusClient
 from daq.plc_reader import PLCReader
@@ -37,6 +40,9 @@ class DAQService:
         self.publisher = None
         self.simulator = None
         self.config = None
+        self.health_runner = None
+        self.health_site = None
+        self.health_port = int(os.getenv("HEALTH_PORT", "8080"))
         
     async def load_config(self):
         """加载配置文件"""
@@ -58,6 +64,9 @@ class DAQService:
         
         # 加载配置
         await self.load_config()
+
+        # 启动健康检查 HTTP 服务
+        await self._start_health_server()
         
         # 获取环境变量
         plc_host = os.getenv("PLC_HOST", "192.168.1.100")
@@ -99,8 +108,47 @@ class DAQService:
         
         if self.modbus_client:
             await self.modbus_client.disconnect()
+
+        await self._stop_health_server()
         
         logger.info("daq_service_stopped")
+
+    async def _start_health_server(self):
+        """启动健康检查服务器"""
+        if self.health_runner:
+            return
+
+        app = web.Application()
+
+        async def health_handler(request):
+            return web.json_response(self._health_payload())
+
+        app.router.add_get("/health", health_handler)
+        self.health_runner = web.AppRunner(app)
+        await self.health_runner.setup()
+        self.health_site = web.TCPSite(self.health_runner, "0.0.0.0", self.health_port)
+        await self.health_site.start()
+        logger.info("health_server_started", port=self.health_port)
+
+    async def _stop_health_server(self):
+        if self.health_runner:
+            await self.health_runner.cleanup()
+            self.health_runner = None
+            self.health_site = None
+            logger.info("health_server_stopped")
+
+    def _health_payload(self):
+        """构建健康状态"""
+        return {
+            "success": True,
+            "service": "edge-daq",
+            "status": "running" if self.running else "starting",
+            "timestamp": int(time.time()),
+            "details": {
+                "publisher_connected": bool(self.publisher and self.publisher.connected),
+                "use_simulator": self.simulator is not None,
+            },
+        }
 
 
 async def main():

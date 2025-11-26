@@ -21,22 +21,22 @@ mqtt:
     # 实时数据 - QoS 0 (最快)
     realtime_data:
       qos: 0
-      pattern: "industrial/dryer/+/realtime"
+      pattern: "realtime/+/tags"
       
     # AI 推理结果 - QoS 1 (至少一次)
     ai_inference:
       qos: 1
-      pattern: "industrial/dryer/ai/+"
+      pattern: "ai/+/+"
       
     # 控制指令 - QoS 2 (恰好一次)
     control_commands:
       qos: 2
-      pattern: "industrial/dryer/control/+"
+      pattern: "control/+/+"
       
     # 报警 - QoS 2 (恰好一次)
     alarms:
       qos: 2
-      pattern: "industrial/dryer/alarm/+"
+      pattern: "system/+/alarms"
       
   connection:
     keepalive: 60

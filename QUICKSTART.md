@@ -106,10 +106,10 @@ curl "http://localhost:8000/api/v1/data/realtime?tags=DRYER1.OUT.TEMP,DRYER1.CHA
 # Ubuntu: sudo apt-get install mosquitto-clients
 
 # 订阅实时数据
-mosquitto_sub -h localhost -t "industrial/dryer/realtime/#" -v
+mosquitto_sub -h localhost -t "realtime/+/tags" -v
 
 # 订阅 AI 预测结果
-mosquitto_sub -h localhost -t "industrial/dryer/ai/#" -v
+mosquitto_sub -h localhost -t "ai/+/moisture" -v
 ```
 
 ### 方式 3: 查询 InfluxDB

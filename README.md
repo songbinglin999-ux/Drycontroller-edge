@@ -223,6 +223,17 @@ open http://localhost:8000/docs
 docker-compose logs -f edge-api
 ```
 
+### 没有 PLC 也能联调
+
+> 仍在对接 PLC 点位或现场不可用时，可运行内置模拟器生成实时曲线：
+
+```bash
+# 依赖 .env 中的 MQTT / InfluxDB 配置
+python services/edge-daq/simulator.py
+```
+
+模拟器会每秒发布一整批温度、湿度、链速、抽风频率等典型点位到 MQTT，并写入 InfluxDB，便于大屏与后端立即看到连贯的实时/历史曲线。
+
 ### 5. 访问服务
 
 | 服务 | 地址 | 说明 |
@@ -254,6 +265,9 @@ docker-compose logs -f edge-api
 ```
 GET  /api/v1/data/realtime       # 实时数据
 GET  /api/v1/data/history        # 历史数据
+GET  /api/realtime/latest        # Influx 最新点位
+WS   /api/realtime/stream        # WebSocket 实时流
+GET  /api/history                # 指定标签历史
 POST /api/v1/control/set         # 控制指令
 GET  /api/v1/ai/moisture/current # AI 含水率
 GET  /api/v1/alarms/active       # 活动报警
@@ -316,6 +330,8 @@ GET  /api/v1/system/status       # 系统状态
 - 🐳 Docker 容器监控
 - 📊 指标采集上报
 - 🚨 异常报警
+- 🌐 HTTP 接口：`/health`、`/system/health`、`/system/metrics`
+- 🔔 MQTT 状态：`system/<LINE>/status`
 
 ---
 
@@ -361,6 +377,12 @@ curl -X POST http://localhost:8000/api/v1/control/set \
 
 # 查询历史数据
 curl "http://localhost:8000/api/v1/data/history?tag=DRYER1.OUT.TEMP&start_time=2025-01-01T00:00:00Z&end_time=2025-01-01T23:59:59Z"
+
+# 获取最新点位（面向大屏）
+curl "http://localhost:8000/api/realtime/latest?tags=DRYER1.IN.TEMP&lookback=10m"
+
+# 查询历史曲线（自动聚合）
+curl "http://localhost:8000/api/history?tag=DRYER1.IN.TEMP&period=6h&window=5m&aggregation=mean"
 ```
 
 **详细 API 文档：** 启动服务后访问 http://localhost:8000/docs

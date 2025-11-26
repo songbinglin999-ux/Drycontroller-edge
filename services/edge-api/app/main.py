@@ -14,6 +14,7 @@ import time
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.api.v1 import router as api_v1_router
+from app.api import realtime as realtime_router
 from app.core.database import engine, Base
 from app.core.mqtt_client import mqtt_manager
 
@@ -147,6 +148,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # 注册路由
 app.include_router(api_v1_router, prefix="/api/v1")
+app.include_router(realtime_router.router, prefix="/api", tags=["Realtime"])
 
 
 # 根路径

@@ -7,7 +7,10 @@ import signal
 import structlog
 import yaml
 import os
+import time
 from pathlib import Path
+
+from aiohttp import web
 
 from src.infer import SoftSensorModel
 from src.mqtt_handler import MQTTHandler
@@ -32,6 +35,9 @@ class SoftSensorService:
         self.model = None
         self.mqtt_handler = None
         self.config = None
+        self.health_runner = None
+        self.health_site = None
+        self.health_port = int(os.getenv("HEALTH_PORT", "8080"))
     
     async def load_config(self):
         """加载配置"""
@@ -47,6 +53,7 @@ class SoftSensorService:
         logger.info("starting_softsensor_service")
         
         await self.load_config()
+        await self._start_health_server()
         
         # 初始化模型
         model_config = self.config.get("softsensor", {})
@@ -68,8 +75,45 @@ class SoftSensorService:
         
         if self.mqtt_handler:
             await self.mqtt_handler.disconnect()
+
+        await self._stop_health_server()
         
         logger.info("softsensor_service_stopped")
+
+    async def _start_health_server(self):
+        if self.health_runner:
+            return
+
+        app = web.Application()
+
+        async def health_handler(request):
+            return web.json_response(self._health_payload())
+
+        app.router.add_get("/health", health_handler)
+        self.health_runner = web.AppRunner(app)
+        await self.health_runner.setup()
+        self.health_site = web.TCPSite(self.health_runner, "0.0.0.0", self.health_port)
+        await self.health_site.start()
+        logger.info("health_server_started", port=self.health_port)
+
+    async def _stop_health_server(self):
+        if self.health_runner:
+            await self.health_runner.cleanup()
+            self.health_runner = None
+            self.health_site = None
+            logger.info("health_server_stopped")
+
+    def _health_payload(self):
+        return {
+            "success": True,
+            "service": "ai-softsensor",
+            "status": "running" if self.running else "starting",
+            "timestamp": int(time.time()),
+            "details": {
+                "model_loaded": self.model is not None,
+                "mqtt_connected": bool(self.mqtt_handler and self.mqtt_handler.client),
+            },
+        }
 
 
 async def main():
