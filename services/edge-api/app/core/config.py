@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     AI_CONFIG: str = "/app/configs/ai-config.yaml"
     QOS_CONFIG: str = "/app/configs/qos.yaml"
     LIMITS_CONFIG: str = "/app/configs/limits.yaml"
+    MONITOR_CONFIG: str = "/app/configs/monitor.yaml"
+    MONITOR_API_BASE: str = "http://edge-monitor:8080"
     
     model_config = SettingsConfigDict(
         env_file=".env",

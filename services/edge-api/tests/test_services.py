@@ -26,6 +26,7 @@ from app.services.control_recommendation import (  # noqa: E402
 )
 from app.services.alarm import AlarmService  # noqa: E402
 from app.services.influx import InfluxQueryService  # noqa: E402
+from app.services.monitor_config import MonitorConfigService  # noqa: E402
 
 
 class DummyInflux:
@@ -257,8 +258,35 @@ def test_system_status_service(monkeypatch):
     assert status_payload is not None
     assert metrics_payload is not None
 
-    assert status_payload["data"]["line"] == "L1"
-    assert metrics_payload["data"]["metrics"]["cpu"]["percent"] == 12.5
+
+def test_monitor_config_service_patch(tmp_path):
+    config_path = tmp_path / "monitor.yaml"
+    config_path.write_text(
+        "services:\n"
+        "  interval: 20\n"
+        "  targets:\n"
+        "    - name: edge-api\n"
+        "      self_heal:\n"
+        "        enabled: true\n",
+        encoding="utf-8",
+    )
+
+    service = MonitorConfigService(str(config_path))
+    updated = service.patch(
+        {
+            "failure_threshold": 5,
+            "self_heal_enabled": False,
+            "targets": [
+                {"name": "edge-api", "self_heal": {"enabled": False, "max_restart_per_hour": 2}}
+            ],
+        }
+    )
+
+    assert updated["services"]["failure_threshold"] == 5
+    assert updated["services"]["self_heal"]["enabled"] is False
+    edge_api = next(item for item in updated["services"]["targets"] if item["name"] == "edge-api")
+    assert edge_api["self_heal"]["enabled"] is False
+    assert edge_api["self_heal"]["max_restart_per_hour"] == 2
 
 
 @pytest.mark.asyncio

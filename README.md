@@ -244,6 +244,25 @@ python services/edge-daq/simulator.py
 | PostgreSQL | localhost:5432 | 业务数据库 |
 | MQTT Broker | localhost:1883 | MQTT 服务 |
 
+### 运维控制台（Svelte Ops Console）
+
+如需查看统一的运维看板，可启动新建的 Svelte 前端：
+
+```bash
+cd ops-console
+npm install
+npm run dev
+```
+
+默认会代理到 `http://localhost:8000`。若要指向远程环境，可在 `ops-console/.env` 中设置：
+
+```bash
+VITE_API_BASE=http://edge-host:8000
+VITE_WS_BASE=ws://edge-host:8000
+```
+
+控制台会展示系统状态、服务健康、自愈事件等信息，方便巡检与手动排查。
+
 ---
 
 ## 🧩 服务说明
@@ -257,6 +276,7 @@ python services/edge-daq/simulator.py
 - 📈 历史数据查询  
 - 🎛️ 控制指令下发
 - 🤖 AI 推理结果查询
+- 🛠 运维接口（自愈开关、服务重启、monitor 配置管理）
 - 🚨 报警管理
 - ⚙️ 系统配置
 
@@ -330,8 +350,10 @@ GET  /api/v1/system/status       # 系统状态
 - 🐳 Docker 容器监控
 - 📊 指标采集上报
 - 🚨 异常报警
+- 🛡 自愈策略：依据 `configs/monitor.yaml` 中的阈值（`failure_threshold` / `recovery_observe` / `max_restart_per_hour`）自动重启异常容器并熔断防抖
 - 🌐 HTTP 接口：`/health`、`/system/health`、`/system/metrics`
 - 🔔 MQTT 状态：`system/<LINE>/status`
+- 🔧 自愈模块位于 `services/edge-monitor/monitor/self_heal.py`，测试脚本见 `services/edge-monitor/tests/`
 
 ---
 
@@ -475,6 +497,37 @@ temperature_limits:
       alarm_high: 145
 ```
 
+### 监控与自愈配置 (configs/monitor.yaml)
+
+集中管理监控与自愈策略：
+
+```yaml
+services:
+  interval: 20
+  failure_threshold: 3     # 连续失败次数
+  recovery_observe: 6      # 自愈后观察周期（单位：轮询周期）
+  max_restart_per_hour: 5  # 每小时最大自动重启次数
+  self_heal:
+    enabled: true
+  targets:
+    - name: edge-api
+      url: http://edge-api:8000/health
+      container: edge-api
+      self_heal:
+        failure_threshold: 2   # 覆盖默认阈值
+        max_restart_per_hour: 3
+    - name: edge-mosquitto
+      tcp:
+        host: edge-mosquitto
+        port: 1883
+      self_heal:
+        enabled: false         # 对 MQTT 仅做告警，不自动重启
+```
+
+> Monitor 服务会把上述阈值写入 `services/edge-monitor/monitor/main.py` 的 `service_health_state`，并在 MQTT `system/<LINE>/status` 报文中附带自愈状态。
+>
+> 可通过环境变量 `MQTT_TOPIC_SELF_HEAL`（默认 `events/system/self_heal`）指定自愈事件主题，订阅后可实时获知每次自动重启或熔断结果。
+
 ---
 
 ## 🚢 部署指南
@@ -616,6 +669,23 @@ pytest services/edge-api/tests/
 
 # 生成覆盖率报告
 pytest --cov=services --cov-report=html
+```
+
+### 创建测试虚拟环境
+
+macOS 默认开启 PEP 668 保护，建议在仓库根目录创建虚拟环境安装依赖：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r services/edge-monitor/requirements.txt pytest
+```
+
+### 示例：运行 edge-monitor 自愈测试
+
+```bash
+source .venv/bin/activate
+python -m pytest services/edge-monitor/tests
 ```
 
 ### 测试类型

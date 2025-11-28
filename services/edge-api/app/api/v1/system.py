@@ -94,13 +94,39 @@ async def update_system_config():
     )
 
 
-@router.get("/logs")
-async def get_system_logs():
+@router.get("/container/logs")
+async def get_container_logs(
+    container: str = Query(..., description="容器名称"),
+    lines: int = Query(200, description="日志行数"),
+    service: SystemStatusService = Depends(get_system_status_service),
+):
     """
-    系统日志（占位）
+    获取容器日志
     """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="System logs API not implemented yet",
-    )
+    # Note: In a real implementation, this would likely need to proxy to edge-monitor 
+    # or read from a centralized log aggregation system.
+    # Since edge-api doesn't have direct access to other containers' logs via Docker socket usually,
+    # we might need to expose this in edge-monitor and proxy it here.
+    # For now, we'll implement a simple placeholder or direct docker access if permitted.
+    
+    import docker
+    try:
+        client = docker.from_env()
+        container_obj = client.containers.get(container)
+        logs = container_obj.logs(tail=lines, timestamps=True).decode("utf-8")
+        
+        # Parse logs into structured format
+        parsed_logs = []
+        for line in logs.splitlines():
+            if not line.strip(): continue
+            parts = line.split(" ", 1)
+            if len(parts) == 2:
+                parsed_logs.append({"ts": parts[0], "msg": parts[1], "level": "INFO"}) # Default level
+            else:
+                parsed_logs.append({"ts": "", "msg": line, "level": "INFO"})
+                
+        return {"success": True, "data": parsed_logs}
+    except Exception as e:
+        logger.error("fetch_container_logs_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to fetch logs: {str(e)}")
 

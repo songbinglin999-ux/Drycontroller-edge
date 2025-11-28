@@ -94,6 +94,7 @@ services:
     volumes:
       - ./logs/edge-api:/logs/edge-api
       - ./configs:/app/configs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${EDGE_API_PORT}:8000"
     networks:

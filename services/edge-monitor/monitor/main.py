@@ -34,14 +34,21 @@ import httpx
 import psutil
 import structlog
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
 import paho.mqtt.client as mqtt
+from pydantic import BaseModel
 
 from common.logging import setup_logging
-from monitor.self_heal import SelfHealManager
+from monitor.audit import SelfHealAuditor
+from monitor.self_heal import (
+    SelfHealDecision,
+    SelfHealExecutor,
+    SelfHealManager,
+    SelfHealOutcome,
+)
 
 event_recorder = setup_logging("edge-monitor")
 logger = structlog.get_logger(__name__)
@@ -56,6 +63,15 @@ STATUS_PRIORITY = {
     "degraded": 2,   # 降级（部分功能受影响）
     "down": 3,       # 宕机（完全不可用）
 }
+
+
+class SelfHealToggleRequest(BaseModel):
+    service: str
+    enabled: bool
+
+
+class SelfHealRestartRequest(BaseModel):
+    service: str
 
 
 class MonitorService:
@@ -110,6 +126,7 @@ class MonitorService:
         }
         self.service_health_state: Dict[str, Any] = {}
         self.self_heal_manager = SelfHealManager()
+        self.self_heal_auditor: SelfHealAuditor | None = None
         
         # MQTT 配置
         self.mqtt_broker = os.getenv("MQTT_BROKER", "localhost")
@@ -119,6 +136,16 @@ class MonitorService:
         self.status_topic = os.getenv(
             "MQTT_TOPIC_STATUS",
             f"system/{self.line_id}/status",  # 状态发布主题
+        )
+        self.self_heal_topic = os.getenv(
+            "MQTT_TOPIC_SELF_HEAL",
+            "events/system/self_heal",
+        )
+        self.self_heal_auditor = SelfHealAuditor(
+            line_id=self.line_id,
+            event_recorder=event_recorder,
+            mqtt_client_getter=self._get_mqtt_client,
+            topic=self.self_heal_topic,
         )
         
         # InfluxDB 配置
@@ -287,6 +314,10 @@ class MonitorService:
     def _get_docker_client(self):
         """提供当前 Docker 客户端实例"""
         return self.docker_client
+
+    def _get_mqtt_client(self):
+        """提供当前 MQTT 客户端实例"""
+        return self.mqtt_client
     
     async def _system_metrics_loop(self):
         """
@@ -349,7 +380,7 @@ class MonitorService:
                 aggregated[name]["self_heal"] = {"state": state}
 
             await self._process_self_heal(aggregated)
-
+            
             # 更新缓存并持久化
             self.service_status = aggregated
             self._write_service_health(aggregated)
@@ -592,7 +623,7 @@ class MonitorService:
         
         # 检查 Docker 客户端是否就绪
         if not self.docker_client:
-            result["status"] = "degraded"
+            result["status"] = "unknown"
             result["detail"] = "docker_client_not_ready"
             return result
         
@@ -611,7 +642,7 @@ class MonitorService:
             
         except docker_errors.DockerException as exc:
             # Docker API 错误
-            result["status"] = "degraded"
+            result["status"] = "unknown"
             result["detail"] = f"docker:{exc}"
         
         return result
@@ -728,6 +759,32 @@ class MonitorService:
 
         return snapshot
 
+    def _find_service_target(self, name: str) -> Optional[Dict[str, Any]]:
+        for target in self.service_targets:
+            if target.get("name") == name:
+                return target
+        return None
+
+    def _ensure_state_entry(self, name: str) -> Dict[str, Any]:
+        state = self.service_health_state.get(name)
+        if state:
+            return state
+        default_cfg = self._resolve_self_heal_config({"self_heal": {}})
+        state = {
+            "consecutive_failures": 0,
+            "last_success": None,
+            "last_failure": None,
+            "restart_window_start": int(time.time()),
+            "restart_count_hour": 0,
+            "cooldown_until": None,
+            "self_heal_enabled": default_cfg["enabled"],
+            "failure_threshold": default_cfg["failure_threshold"],
+            "recovery_observe": default_cfg["recovery_observe"],
+            "max_restart_per_hour": default_cfg["max_restart_per_hour"],
+        }
+        self.service_health_state[name] = state
+        return state
+
     async def _process_self_heal(self, aggregated: Dict[str, Any]):
         """
         根据最新状态执行自愈策略
@@ -758,6 +815,46 @@ class MonitorService:
 
             aggregated.setdefault(name, {}).setdefault("self_heal", {})
             aggregated[name]["self_heal"]["last_outcome"] = outcome.to_dict()
+
+            if self.self_heal_auditor:
+                self.self_heal_auditor.emit(name, outcome)
+
+    async def manual_restart(self, service_name: str) -> dict:
+        target = self._find_service_target(service_name)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"service {service_name} not found")
+        container_name = target.get("container")
+        if not container_name:
+            raise HTTPException(status_code=400, detail="service does not define container name")
+
+        result = await self.self_heal_manager.executor.restart_container(container_name)
+        outcome = SelfHealOutcome(
+            timestamp=int(time.time()),
+            decision=SelfHealDecision(
+                action="manual_restart",
+                reason="manual_command",
+                details={"initiator": "ops-console"},
+            ),
+            executed=True,
+            success=result.success,
+            execution=result,
+            state_updates={"manual": True},
+        )
+        if self.self_heal_auditor:
+            self.self_heal_auditor.emit(service_name, outcome)
+
+        if not result.success:
+            raise HTTPException(status_code=500, detail=result.error or "restart failed")
+        return {"success": True, "service": service_name}
+
+    def set_self_heal_enabled(self, service_name: str, enabled: bool) -> dict:
+        target = self._find_service_target(service_name)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"service {service_name} not found")
+        state = self._ensure_state_entry(service_name)
+        state["self_heal_enabled"] = enabled
+        self.service_health_state[service_name] = state
+        return {"success": True, "service": service_name, "enabled": enabled}
     
     def _write_system_metrics(self, metrics: Dict[str, Any]):
         """
@@ -1020,6 +1117,17 @@ async def system_metrics():
         "metrics": monitor_service.system_metrics,
         "timestamp": int(time.time()),
     }
+
+
+@app.post("/ops/self-heal/restart")
+async def manual_self_heal_restart(req: SelfHealRestartRequest):
+    result = await monitor_service.manual_restart(req.service)
+    return result
+
+
+@app.post("/ops/self-heal/toggle")
+async def manual_self_heal_toggle(req: SelfHealToggleRequest):
+    return monitor_service.set_self_heal_enabled(req.service, req.enabled)
 
 
 # ============================================================

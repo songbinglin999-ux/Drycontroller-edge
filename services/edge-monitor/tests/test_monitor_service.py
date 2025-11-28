@@ -18,7 +18,10 @@ for path in {str(ROOT), str(SERVICE_ROOT)}:
     if path not in sys.path:
         sys.path.append(path)
 
+from typing import cast
+
 from monitor.main import MonitorService
+from monitor.self_heal import SelfHealExecutionResult, SelfHealExecutor
 
 
 def _new_service():
@@ -171,3 +174,29 @@ def test_container_health_check_without_docker():
     result = service._container_health_check("edge-api")
     assert result["status"] == "degraded"
     assert result["detail"] == "docker_client_not_ready"
+
+
+@pytest.mark.asyncio
+async def test_manual_restart(monkeypatch):
+    service = _new_service()
+    service.service_targets = [{"name": "edge-api", "container": "edge-api"}]
+
+    class DummyExecutor(SelfHealExecutor):
+        async def restart_container(self, container_name, timeout=15):
+            assert container_name == "edge-api"
+            return SelfHealExecutionResult(success=True)
+
+    service.self_heal_manager.executor = cast(SelfHealExecutor, DummyExecutor())
+    service.self_heal_auditor = None
+
+    result = await service.manual_restart("edge-api")
+    assert result["success"] is True
+
+
+def test_set_self_heal_enabled():
+    service = _new_service()
+    service.service_targets = [{"name": "edge-api"}]
+
+    resp = service.set_self_heal_enabled("edge-api", False)
+    assert resp["enabled"] is False
+    assert service.service_health_state["edge-api"]["self_heal_enabled"] is False
