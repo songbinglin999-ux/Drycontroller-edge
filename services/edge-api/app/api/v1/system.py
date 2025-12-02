@@ -4,9 +4,12 @@
 
 from typing import Optional
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.core.config import settings
+from app.core.security import require_admin_api_key
 from app.services.system_status import (
     SystemStatusService,
     get_system_status_service,
@@ -73,7 +76,9 @@ async def get_system_metric_trend(
 
 
 @router.get("/config")
-async def get_system_config():
+async def get_system_config(
+    _: str = Depends(require_admin_api_key),
+):
     """
     系统配置（占位）
     """
@@ -84,7 +89,9 @@ async def get_system_config():
 
 
 @router.post("/config")
-async def update_system_config():
+async def update_system_config(
+    _: str = Depends(require_admin_api_key),
+):
     """
     更新配置（占位）
     """
@@ -97,36 +104,44 @@ async def update_system_config():
 @router.get("/container/logs")
 async def get_container_logs(
     container: str = Query(..., description="容器名称"),
-    lines: int = Query(200, description="日志行数"),
-    service: SystemStatusService = Depends(get_system_status_service),
+    lines: int = Query(200, description="日志行数", ge=1, le=2000),
+    _: str = Depends(require_admin_api_key),
 ):
     """
-    获取容器日志
+    获取容器日志（代理 edge-monitor）
     """
-    # Note: In a real implementation, this would likely need to proxy to edge-monitor 
-    # or read from a centralized log aggregation system.
-    # Since edge-api doesn't have direct access to other containers' logs via Docker socket usually,
-    # we might need to expose this in edge-monitor and proxy it here.
-    # For now, we'll implement a simple placeholder or direct docker access if permitted.
+    monitor_base = settings.MONITOR_API_BASE.rstrip("/")
+    url = f"{monitor_base}/ops/logs/{container}"
     
-    import docker
     try:
-        client = docker.from_env()
-        container_obj = client.containers.get(container)
-        logs = container_obj.logs(tail=lines, timestamps=True).decode("utf-8")
-        
-        # Parse logs into structured format
-        parsed_logs = []
-        for line in logs.splitlines():
-            if not line.strip(): continue
-            parts = line.split(" ", 1)
-            if len(parts) == 2:
-                parsed_logs.append({"ts": parts[0], "msg": parts[1], "level": "INFO"}) # Default level
-            else:
-                parsed_logs.append({"ts": "", "msg": line, "level": "INFO"})
-                
-        return {"success": True, "data": parsed_logs}
-    except Exception as e:
-        logger.error("fetch_container_logs_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to fetch logs: {str(e)}")
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url, params={"lines": lines})
+    except httpx.RequestError as exc:
+        logger.error("monitor_log_proxy_failed", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="edge-monitor unreachable",
+        )
+    
+    if response.status_code >= 400:
+        detail = None
+        if response.headers.get("content-type", "").startswith("application/json"):
+            try:
+                detail = response.json().get("detail")
+            except ValueError:
+                detail = None
+        if not detail:
+            detail = response.text
+        raise HTTPException(status_code=response.status_code, detail=detail or "Failed to fetch logs")
+    
+    try:
+        payload = response.json()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="edge-monitor returned invalid payload",
+        )
+    if "success" not in payload:
+        payload = {"success": True, "data": payload}
+    return payload
 

@@ -2,9 +2,13 @@
 应用配置管理
 """
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from pathlib import Path
 import os
+import secrets
+from typing import List
+
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -48,11 +52,18 @@ class Settings(BaseSettings):
     # API 配置
     API_PREFIX: str = "/api/v1"
     CORS_ORIGINS: List[str] = ["*"]
+    CORS_ALLOW_CREDENTIALS: bool = False
     
     # JWT 配置
-    SECRET_KEY: str = "your-secret-key-here-change-in-production"
+    SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+    SECRET_KEY_FILE: str | None = None
+
+    # API Key 鉴权
+    API_KEY_HEADER: str = "X-API-Key"
+    CONTROL_API_KEYS: List[str] = []
+    ADMIN_API_KEYS: List[str] = []
     
     # 限流配置
     RATE_LIMIT_ENABLED: bool = True
@@ -83,6 +94,33 @@ class Settings(BaseSettings):
     def influxdb_url(self) -> str:
         """获取 InfluxDB 连接字符串"""
         return f"http://{self.INFLUXDB_HOST}:{self.INFLUXDB_PORT}"
+
+    @property
+    def api_security_enabled(self) -> bool:
+        return bool(self.CONTROL_API_KEYS or self.ADMIN_API_KEYS)
+
+    @field_validator("CONTROL_API_KEYS", "ADMIN_API_KEYS", mode="before")
+    @classmethod
+    def _split_api_keys(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value or []
+
+    @model_validator(mode="after")
+    def _ensure_secret_key(self):
+        secret = self.SECRET_KEY.strip() if isinstance(self.SECRET_KEY, str) else ""
+        if secret:
+            return self
+
+        if self.SECRET_KEY_FILE:
+            candidate = Path(self.SECRET_KEY_FILE)
+            if candidate.exists():
+                self.SECRET_KEY = candidate.read_text(encoding="utf-8").strip()
+                if self.SECRET_KEY:
+                    return self
+
+        self.SECRET_KEY = secrets.token_urlsafe(32)
+        return self
 
 
 # 创建全局配置实例

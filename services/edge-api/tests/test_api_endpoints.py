@@ -19,6 +19,10 @@ from app.api.v1.ai import router as ai_router, get_ai_softsensor_service
 from app.api.v1.system import router as system_router, get_system_status_service
 from app.api.v1.control import router as control_router, get_control_recommendation_service
 from app.api.v1.alarms import router as alarm_router, get_alarm_service
+from app.core.config import settings
+
+settings.CONTROL_API_KEYS = ["test-control"]
+settings.ADMIN_API_KEYS = ["test-admin"]
 
 
 class DummyAISvc:
@@ -83,7 +87,10 @@ def test_system_metric_trend_endpoint():
 
 
 def test_control_recommend_endpoint():
-    resp = client.get("/api/v1/control/recommend")
+    resp = client.get(
+        "/api/v1/control/recommend",
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
     assert resp.status_code == 200
     assert "recommendations" in resp.json()["data"]
 

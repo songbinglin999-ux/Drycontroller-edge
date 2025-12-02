@@ -94,7 +94,6 @@ services:
     volumes:
       - ./logs/edge-api:/logs/edge-api
       - ./configs:/app/configs:ro
-      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${EDGE_API_PORT}:8000"
     networks:
@@ -255,8 +254,11 @@ services:
       - ./logs:/logs:ro
       - ./configs:/app/configs:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./infra/discovery:/app/bootstrap
     networks:
       - edge-network
+    ports:
+      - "${EDGE_MONITOR_PORT:-8080}:8080"
     depends_on:
       - mosquitto
       - influxdb

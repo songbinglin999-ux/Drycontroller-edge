@@ -7,12 +7,13 @@ from typing import Optional
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.core.security import require_control_api_key
 from app.services.control_recommendation import (
     ControlRecommendationService,
     get_control_recommendation_service,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_control_api_key)])
 logger = structlog.get_logger(__name__)
 
 

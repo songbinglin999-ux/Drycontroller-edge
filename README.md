@@ -137,6 +137,23 @@ graph LR
 
 ---
 
+## 🧭 企业级现状评估（2025-12）
+
+### ✅ 已具备
+- `edge-api` 统一生命周期钩子：启动阶段自动建表、接入 MQTT / 事件总线 / WS 转发，配合 Structlog + 事件审计记录关键状态。
+- `edge-monitor` 形成“策略 + 执行器 + 审计”的自愈闭环，可在 Docker 级别执行熔断重启并推送 MQTT 事件。
+- 完整的 Docker Compose 拆分（API / 采集 / 推理 / 授权 / 监控 / DB / MQ），支持一键联调与模拟器。
+
+### ⚠️ 待补齐
+- `/ready` 仍为硬编码常量，未真实探测数据库、MQTT、Influx 等依赖，CI/CD 与编排层无法凭此判断可用性。
+- API 口完全未鉴权：`SECRET_KEY` 为示例值、CORS 允许任意来源、控制/日志接口均未做 RBAC 与审计，不符合工业现场安全要求。
+- `edge-api`、`edge-monitor` 直接挂载 `/var/run/docker.sock` 并开放 `/api/v1/system/container/logs`，等价授予容器 root 权限，需改为受控 sidecar。
+- 自动化测试覆盖薄弱：除少量 stub 路由测试外，AI/DAQ/监控等服务缺乏单元与契约测试，无法防止模型加载、MQTT 序列回归。
+
+> 📌 建议将上述事项收敛到安全基线、健康探活、CI 测试、最小权限治理四大里程碑，并在 `docs/architecture/` 与运行手册里同步记录。
+
+---
+
 ## 🛠 技术栈
 
 ### 后端框架

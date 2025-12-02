@@ -18,6 +18,7 @@ from app.api import realtime as realtime_router
 from app.core.database import engine, Base
 from app.core.mqtt_client import mqtt_manager
 from app.services.event_bus import event_bus
+from app.services.health import get_system_readiness
 from app.services.ws_stream import ws_stream
 
 # 设置日志
@@ -95,7 +96,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -218,16 +219,12 @@ async def health_check():
 @app.get("/ready")
 async def readiness_check():
     """就绪检查端点"""
-    # TODO: 检查数据库、MQTT 等依赖服务的连接状态
-    
+    report = await get_system_readiness()
+    healthy = all(dep.get("status") == "healthy" for dep in report.values())
     return {
-        "success": True,
-        "status": "ready",
-        "dependencies": {
-            "database": "connected",
-            "mqtt": "connected",
-            "influxdb": "connected",
-        },
+        "success": healthy,
+        "status": "ready" if healthy else "degraded",
+        "dependencies": report,
         "timestamp": int(time.time()),
     }
 

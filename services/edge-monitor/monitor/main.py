@@ -22,6 +22,7 @@
 """
 
 import asyncio
+from collections import deque
 import json
 import os
 import time
@@ -34,7 +35,7 @@ import httpx
 import psutil
 import structlog
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
@@ -43,6 +44,7 @@ from pydantic import BaseModel
 
 from common.logging import setup_logging
 from monitor.audit import SelfHealAuditor
+from monitor.discovery import DiscoveryAgent
 from monitor.self_heal import (
     SelfHealDecision,
     SelfHealExecutor,
@@ -113,6 +115,7 @@ class MonitorService:
         self.service_targets: List[Dict[str, Any]] = service_cfg.get("targets", [])  # 要监控的服务列表
         self.http_timeout = float(service_cfg.get("http_timeout", 5))  # HTTP 检查超时
         self.publish_mqtt = bool(system_cfg.get("publish_mqtt", True)) # 是否发布到 MQTT
+        self.log_root = Path(os.getenv("LOG_ROOT", "/logs"))
 
         self.service_failure_threshold = int(service_cfg.get("failure_threshold", 3))
         self.service_recovery_observe = int(service_cfg.get("recovery_observe", 6))
@@ -127,6 +130,8 @@ class MonitorService:
         self.service_health_state: Dict[str, Any] = {}
         self.self_heal_manager = SelfHealManager()
         self.self_heal_auditor: SelfHealAuditor | None = None
+        self.discovery_agent = DiscoveryAgent(line_id=self.line_id)
+        self.discovery_agent.set_mqtt_client_supplier(self._get_mqtt_client)
         
         # MQTT 配置
         self.mqtt_broker = os.getenv("MQTT_BROKER", "localhost")
@@ -197,6 +202,7 @@ class MonitorService:
         await self._connect_http()
         self._connect_docker()
         self.self_heal_manager.set_docker_client_getter(self._get_docker_client)
+        await self.discovery_agent.start()
         
         # 启动两个并行的监控循环
         self._running = True
@@ -250,6 +256,8 @@ class MonitorService:
         if self.docker_client:
             self.docker_client.close()
             self.docker_client = None
+
+        await self.discovery_agent.stop()
         
         logger.info("edge_monitor_stopped")
         event_recorder.record_event(
@@ -269,6 +277,43 @@ class MonitorService:
                 return yaml.safe_load(f) or {}
         logger.warning("monitor_config_missing", path=str(DEFAULT_CONFIG_PATH))
         return {}
+
+    def read_service_logs(self, name: str, lines: int = 200) -> List[Dict[str, str]]:
+        """
+        读取指定服务的日志尾部
+        """
+        log_file = self._resolve_log_file(name)
+        if not log_file or not log_file.exists():
+            raise FileNotFoundError(f"log file for {name} not found")
+        max_lines = max(1, min(lines, 2000))
+        buffer: deque[str] = deque(maxlen=max_lines)
+        with log_file.open("r", encoding="utf-8", errors="ignore") as handle:
+            for raw_line in handle:
+                buffer.append(raw_line.rstrip("\n"))
+        entries: List[Dict[str, str]] = []
+        for raw in buffer:
+            if not raw:
+                continue
+            parts = raw.split(" ", 1)
+            if len(parts) == 2:
+                ts, msg = parts
+            else:
+                ts, msg = "", raw
+            entries.append({"ts": ts, "msg": msg, "level": "INFO"})
+        return entries
+
+    def _resolve_log_file(self, name: str) -> Optional[Path]:
+        """
+        根据服务名推断日志文件位置
+        """
+        candidates = [
+            self.log_root / name / "app.log",
+            self.log_root / f"{name}.log",
+        ]
+        for path in candidates:
+            if path.exists():
+                return path
+        return None
     
     def _connect_mqtt(self):
         """连接到 MQTT Broker"""
@@ -1084,6 +1129,17 @@ async def health():
     }
 
 
+@app.get("/.well-known/drycontroller/bootstrap.json")
+async def discovery_bootstrap():
+    payload = monitor_service.discovery_agent.get_payload()
+    if not payload:
+        raise HTTPException(
+            status_code=503,
+            detail="discovery agent not ready",
+        )
+    return payload
+
+
 @app.get("/system/health")
 async def system_health():
     """
@@ -1128,6 +1184,21 @@ async def manual_self_heal_restart(req: SelfHealRestartRequest):
 @app.post("/ops/self-heal/toggle")
 async def manual_self_heal_toggle(req: SelfHealToggleRequest):
     return monitor_service.set_self_heal_enabled(req.service, req.enabled)
+
+
+@app.get("/ops/logs/{service}")
+async def fetch_service_logs(
+    service: str,
+    lines: int = Query(200, ge=1, le=2000),
+):
+    try:
+        data = monitor_service.read_service_logs(service, lines)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="log_file_not_found")
+    except Exception as exc:  # pragma: no cover - 文件 IO
+        logger.error("log_read_failed", service=service, error=str(exc))
+        raise HTTPException(status_code=500, detail="log_read_failed")
+    return {"success": True, "service": service, "count": len(data), "data": data}
 
 
 # ============================================================
