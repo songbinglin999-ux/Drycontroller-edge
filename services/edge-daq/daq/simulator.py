@@ -126,3 +126,9 @@ class PLCSimulator:
         
         return True
 
+    async def write_float(self, address: int, value: float):
+        """写入浮点数（模拟控制）"""
+        self.data[address] = float(value)
+        logger.info("simulator_write_float", address=address, value=value)
+        return True
+
