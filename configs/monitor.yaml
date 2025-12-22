@@ -15,13 +15,13 @@ services:
     enabled: true         # 全局自愈开关
   targets:
     - name: "edge-api"
-      url: "http://edge-api:8000/health"
+      url: "http://edge-api:8000/ready"
       container: "edge-api"
       self_heal:
         failure_threshold: 2
         max_restart_per_hour: 3
     - name: "edge-daq"
-      url: "http://edge-daq:8080/health"
+      url: "http://edge-daq:8080/ready"
       container: "edge-daq"
     - name: "ai-softsensor"
       url: "http://ai-softsensor:8080/health"

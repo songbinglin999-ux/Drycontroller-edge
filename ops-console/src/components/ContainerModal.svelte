@@ -14,6 +14,30 @@
   let logRefreshTimer: ReturnType<typeof setInterval> | null = null;
   let autoScroll = true;
 
+  function fmtUpdatedAt(ts?: number) {
+    if (!ts) return "—";
+    return new Date(ts * 1000).toLocaleString();
+  }
+
+  function checkStatus(v: any) {
+    return v?.status ?? "unknown";
+  }
+  function checkLatency(v: any) {
+    return v?.latency_ms ?? "—";
+  }
+  function checkUrl(v: any) {
+    return v?.url;
+  }
+  function checkStatusCode(v: any) {
+    return v?.status_code;
+  }
+  function checkState(v: any) {
+    return v?.state;
+  }
+  function checkDetail(v: any) {
+    return v?.detail;
+  }
+
   async function loadLogs() {
     if (loadingLogs) return;
     loadingLogs = true;
@@ -100,6 +124,53 @@
             <div class="status-row">
               <span class="label">容器状态:</span>
               <span class="value">{service.container_state ?? "未知"}</span>
+            </div>
+            <div class="status-row">
+              <span class="label">更新时间:</span>
+              <span class="value">{fmtUpdatedAt(service.updated_at)}</span>
+            </div>
+
+            <div class="checks-panel">
+              <h4>探针详情（checks）</h4>
+              {#if !service.checks || Object.keys(service.checks).length === 0}
+                <div class="checks-empty">暂无 checks（可能是旧版 monitor 或未启用对应探针）</div>
+              {:else}
+                <table class="checks-table">
+                  <thead>
+                    <tr>
+                      <th>类型</th>
+                      <th>状态</th>
+                      <th>延迟(ms)</th>
+                      <th>细节</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each Object.entries(service.checks) as [k, v]}
+                      <tr>
+                        <td class="mono">{k}</td>
+                        <td>
+                          <span class="pill status-{checkStatus(v)}">{checkStatus(v)}</span>
+                        </td>
+                        <td class="mono">{checkLatency(v)}</td>
+                        <td class="detail">
+                          {#if checkUrl(v)}
+                            <div><span class="muted">url:</span> <span class="mono">{checkUrl(v)}</span></div>
+                          {/if}
+                          {#if checkStatusCode(v) !== undefined}
+                            <div><span class="muted">code:</span> <span class="mono">{checkStatusCode(v)}</span></div>
+                          {/if}
+                          {#if checkState(v)}
+                            <div><span class="muted">state:</span> <span class="mono">{checkState(v)}</span></div>
+                          {/if}
+                          {#if checkDetail(v)}
+                            <div><span class="muted">detail:</span> <span class="mono">{checkDetail(v)}</span></div>
+                          {/if}
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              {/if}
             </div>
             
             <div class="actions-group">
@@ -258,6 +329,30 @@
   .btn-action.restart:hover { background: #eff6ff; border-color: #2563eb; color: #2563eb; }
   .btn-action.stop:hover { background: #fef2f2; border-color: #dc2626; color: #dc2626; }
   .btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Checks */
+  .checks-panel {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+  }
+  .checks-panel h4 { margin: 0 0 1rem 0; font-size: 0.9rem; color: #64748b; text-transform: uppercase; }
+  .checks-empty { color: #64748b; font-size: 0.95rem; }
+  .checks-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  .checks-table th, .checks-table td { border-top: 1px solid #e2e8f0; padding: 0.75rem 0.5rem; vertical-align: top; }
+  .checks-table th { color: #64748b; font-weight: 600; text-align: left; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.9rem; }
+  .muted { color: #64748b; }
+  .pill {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid #e2e8f0;
+    background: #f8fafc;
+    font-size: 0.85rem;
+  }
+  .detail > div { margin: 0.1rem 0; }
 
   /* Logs Panel */
   .logs-panel {

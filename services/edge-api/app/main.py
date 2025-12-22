@@ -3,7 +3,7 @@
 工业烘干智能控制系统
 """
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -221,12 +221,18 @@ async def readiness_check():
     """就绪检查端点"""
     report = await get_system_readiness()
     healthy = all(dep.get("status") == "healthy" for dep in report.values())
-    return {
+    payload = {
         "success": healthy,
         "status": "ready" if healthy else "degraded",
         "dependencies": report,
         "timestamp": int(time.time()),
     }
+    # 不就绪应返回 503，便于编排系统/监控系统正确判定“不可用”
+    # 否则会出现“接口返回 degraded 但 http 仍是 200”的误判
+    return JSONResponse(
+        status_code=200 if healthy else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=payload,
+    )
 
 
 if __name__ == "__main__":

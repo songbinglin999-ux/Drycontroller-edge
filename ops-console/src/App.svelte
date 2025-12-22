@@ -84,6 +84,8 @@
       status: info.status,
       latency_ms: info.latency_ms,
       container_state: info.container_state,
+      updated_at: (info as any).updated_at,
+      checks: (info as any).checks,
       self_heal: (info as any).self_heal
     }));
   }
