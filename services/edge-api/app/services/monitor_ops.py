@@ -33,6 +33,19 @@ class MonitorOpsClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def list_alerts(self, severity: Optional[str], service: Optional[str], state: Optional[str]) -> dict:
+        params = {}
+        if severity:
+            params["severity"] = severity
+        if service:
+            params["service"] = service
+        if state:
+            params["state"] = state
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{self.base_url}/ops/alerts", params=params)
+            resp.raise_for_status()
+            return resp.json()
+
 
 _monitor_ops_client: MonitorOpsClient | None = None
 

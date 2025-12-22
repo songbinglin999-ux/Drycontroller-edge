@@ -7,6 +7,9 @@ paho-mqtt==1.6.1
 # InfluxDB
 influxdb-client==1.39.0
 
+# Metrics
+prometheus-client==0.20.0
+
 # 配置和工具
 pyyaml==6.0.1
 python-dotenv==1.0.0

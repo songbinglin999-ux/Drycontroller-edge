@@ -56,6 +56,19 @@ class SelfHealToggleRequest(BaseModel):
     enabled: bool
 
 
+@router.get("/alerts")
+async def list_alerts(
+    severity: str | None = None,
+    service: str | None = None,
+    state: str | None = "active",
+    client: MonitorOpsClient = Depends(get_monitor_ops_client),
+):
+    """
+    代理 edge-monitor 的 /ops/alerts，供前端展示告警。
+    """
+    return await client.list_alerts(severity=severity, service=service, state=state)
+
+
 @router.get("/monitor-config")
 async def get_monitor_config(service: MonitorConfigService = Depends(get_monitor_config_service)):
     try:

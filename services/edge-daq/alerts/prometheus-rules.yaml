@@ -1,0 +1,178 @@
+groups:
+  - name: edge-daq-modbus
+    rules:
+      - alert: ModbusReadFailuresHigh
+        expr: sum(increase(modbus_read_failure_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Modbus 读失败率升高"
+          description: "edge-daq 在 5 分钟内出现 {{ $value }} 次读失败，请检查 PLC 连接或网络。"
+
+      - alert: ModbusWriteFailuresHigh
+        expr: sum(increase(modbus_write_failure_total[5m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Modbus 写失败率升高"
+          description: "edge-daq 在 5 分钟内出现 {{ $value }} 次写失败，控制下发可能异常。"
+
+      - alert: ModbusDisconnected
+        expr: modbus_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Modbus 连接中断"
+          description: "edge-daq 与 PLC 断连超过 1 分钟。"
+
+      - alert: ModbusLatencyHigh
+        expr: avg_over_time(modbus_last_latency_ms{op="read"}[5m]) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Modbus 读延迟升高"
+          description: "5 分钟平均读延迟超过 300ms，可能存在网络或 PLC 负载问题。"
+
+      - alert: PlcHeartbeatMissing
+        expr: increase(plc_heartbeat_missing_total[3m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PLC 心跳丢失"
+          description: "3 分钟内检测到 PLC 心跳缺失。"
+
+      - alert: ModbusCircuitOpen
+        expr: increase(modbus_circuit_open_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Modbus 熔断触发"
+          description: "5 分钟内触发了 Modbus 熔断，请检查 PLC 或网络。"
+
+  - name: edge-daq-control
+    rules:
+      - alert: ControlWriteFailuresHigh
+        expr: sum(increase(control_write_failure_total[5m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "控制写入失败"
+          description: "5 分钟内控制写入失败次数 {{ $value }}，请检查控制链路。"
+
+      - alert: ControlRateLimited
+        expr: increase(control_rate_limited_total[5m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "控制指令被频率限制"
+          description: "5 分钟内有 {{ $value }} 条控制指令因限流被丢弃。"
+
+      - alert: ControlAuthMissing
+        expr: increase(control_auth_missing_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "控制链路缺少鉴权"
+          description: "10 分钟内检测到未开启控制鉴权的实例。"
+
+      - alert: ControlReplayDropped
+        expr: increase(control_replay_dropped_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "控制指令被判定为重放/重复"
+          description: "10 分钟内有 {{ $value }} 条控制指令因重放/重复被丢弃。"
+
+      - alert: ControlAckFailures
+        expr: increase(control_ack_sent_total{status="error"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "控制指令执行失败并返回错误"
+          description: "10 分钟内有 {{ $value }} 条控制指令执行失败（ack=error）。"
+
+  - name: edge-daq-publisher
+    rules:
+      - alert: MqttDisconnected
+        expr: mqtt_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MQTT 断连"
+          description: "edge-daq 与 MQTT Broker 断连超过 1 分钟。"
+
+      - alert: MqttPublishFailuresHigh
+        expr: increase(mqtt_publish_failure_total[5m]) > 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MQTT 发布失败率升高"
+          description: "5 分钟内 MQTT 发布失败 {{ $value }} 次。"
+
+      - alert: MqttBufferBacklog
+        expr: mqtt_buffer_size > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MQTT 缓冲堆积"
+          description: "MQTT 缓冲队列堆积 {{ $value }} 条消息，请检查下游。"
+
+      - alert: InfluxDisconnected
+        expr: influx_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "InfluxDB 断连"
+          description: "edge-daq 无法连接 InfluxDB 超过 1 分钟。"
+
+      - alert: InfluxWriteFailuresHigh
+        expr: increase(influx_write_failure_total[5m]) > 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Influx 写入失败率升高"
+          description: "5 分钟内 Influx 写入失败 {{ $value }} 次。"
+
+      - alert: InfluxBufferBacklog
+        expr: influx_buffer_size > 200
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Influx 缓冲堆积"
+          description: "Influx 缓冲队列堆积 {{ $value }} 条数据，可能有下游写入问题。"
+
+      - alert: MqttBufferStale
+        expr: mqtt_buffer_oldest_age_sec > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MQTT 缓冲滞留过久"
+          description: "最老 MQTT 缓冲消息滞留超过 {{ $value }} 秒。"
+
+      - alert: InfluxBufferStale
+        expr: influx_buffer_oldest_age_sec > 120
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Influx 缓冲滞留过久"
+          description: "最老 Influx 缓冲数据滞留超过 {{ $value }} 秒。"
+

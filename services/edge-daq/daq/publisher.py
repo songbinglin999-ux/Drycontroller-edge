@@ -22,16 +22,34 @@
 - LINE_ID: 产线标识（用于消息路由）
 """
 
+import asyncio
 import json
 import os
+import time
 from typing import Optional
+from collections import deque
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 import structlog
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
+from prometheus_client import Counter, Gauge
 
 logger = structlog.get_logger(__name__)
+
+MQTT_PUBLISH_FAILURE = Counter("mqtt_publish_failure_total", "MQTT publish failures", ["reason"])
+MQTT_PUBLISH_RETRY = Counter("mqtt_publish_retry_total", "MQTT publish retry attempts")
+MQTT_RECONNECT_TOTAL = Counter("mqtt_reconnect_total", "MQTT reconnect attempts")
+MQTT_CONNECTED = Gauge("mqtt_connected", "MQTT connection state")
+
+INFLUX_WRITE_FAILURE = Counter("influx_write_failure_total", "InfluxDB write failures", ["reason"])
+INFLUX_WRITE_RETRY = Counter("influx_write_retry_total", "InfluxDB write retry attempts")
+INFLUX_CONNECTED = Gauge("influx_connected", "InfluxDB connection state")
+MQTT_BUFFER_SIZE = Gauge("mqtt_buffer_size", "MQTT pending buffer size")
+INFLUX_BUFFER_SIZE = Gauge("influx_buffer_size", "Influx pending buffer size")
+MQTT_BUFFER_OLDEST_AGE_SEC = Gauge("mqtt_buffer_oldest_age_sec", "Oldest MQTT buffered message age (s)")
+INFLUX_BUFFER_OLDEST_AGE_SEC = Gauge("influx_buffer_oldest_age_sec", "Oldest Influx buffered point age (s)")
 
 
 class DataPublisher:
@@ -58,12 +76,23 @@ class DataPublisher:
         self.influx_client = None
         self.write_api = None
         self.connected = False
-        
+        self._mqtt_reconnect_backoff = 1.0
+        self._mqtt_reconnect_backoff_max = 30.0
+        self.mqtt_connected = False
+        self.influx_connected = False
+        self.last_mqtt_error: Optional[str] = None
+        self.last_influx_error: Optional[str] = None
+        self.mqtt_buffer = deque(maxlen=int(os.getenv("MQTT_BUFFER_MAX", "1000") or "1000"))
+        self.influx_buffer = deque(maxlen=int(os.getenv("INFLUX_BUFFER_MAX", "2000") or "2000"))
         # MQTT 配置
         self.mqtt_broker = os.getenv("MQTT_BROKER", "localhost")
         self.mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
         self.mqtt_user = os.getenv("MQTT_USER", "")
         self.mqtt_password = os.getenv("MQTT_PASSWORD", "")
+        self.mqtt_tls = os.getenv("MQTT_TLS", "false").lower() == "true"
+        self.mqtt_tls_insecure = os.getenv("MQTT_TLS_INSECURE", "false").lower() == "true"
+        self.mqtt_allow_insecure = os.getenv("MQTT_ALLOW_INSECURE", "false").lower() == "true"
+        self.mqtt_require_auth = os.getenv("MQTT_REQUIRE_AUTH", "true").lower() == "true"
         
         # 产线标识：用于区分不同生产线的数据
         self.line_id = os.getenv("LINE_ID", "L1")
@@ -71,10 +100,12 @@ class DataPublisher:
         # InfluxDB 配置
         self.influx_host = os.getenv("INFLUXDB_HOST", "localhost")
         self.influx_port = os.getenv("INFLUXDB_PORT", "8086")
+        self.influx_scheme = os.getenv("INFLUXDB_SCHEME", "http")
         self.influx_token = os.getenv("INFLUXDB_TOKEN", "")
         self.influx_org = os.getenv("INFLUXDB_ORG", "edge-org")
         self.influx_bucket = os.getenv("INFLUXDB_BUCKET", "industrial-data")
         self.measurement = os.getenv("INFLUXDB_MEASUREMENT", "industrial_data")
+        self.influx_require_auth = os.getenv("INFLUX_REQUIRE_AUTH", "true").lower() == "true"
 
         # MQTT 主题配置
         self.realtime_topic = os.getenv(
@@ -85,6 +116,14 @@ class DataPublisher:
             "MQTT_TOPIC_ALARM",
             f"system/{self.line_id}/alarms",  # 报警主题
         )
+        # 缓冲落盘配置
+        self.buffer_dir = Path(os.getenv("BUFFER_DIR", "/data/edge-daq"))
+        self.buffer_dir.mkdir(parents=True, exist_ok=True)
+        self.mqtt_buffer_file = self.buffer_dir / "mqtt_buffer.jsonl"
+        self.influx_buffer_file = self.buffer_dir / "influx_buffer.jsonl"
+        self.persist_mqtt_buffer = os.getenv("MQTT_BUFFER_PERSIST", "true").lower() == "true"
+        self.persist_influx_buffer = os.getenv("INFLUX_BUFFER_PERSIST", "true").lower() == "true"
+        self._load_persisted_buffers()
     
     async def connect(self):
         """
@@ -107,12 +146,17 @@ class DataPublisher:
         
         停止 MQTT 网络循环并关闭 InfluxDB 客户端
         """
+        await self.flush_buffers()
         if self.mqtt_client:
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
+            MQTT_CONNECTED.set(0)
+            self.mqtt_connected = False
         
         if self.influx_client:
             self.influx_client.close()
+            INFLUX_CONNECTED.set(0)
+            self.influx_connected = False
         
         self.connected = False
         logger.info("data_publisher_disconnected")
@@ -124,6 +168,10 @@ class DataPublisher:
         配置认证、回调并启动后台网络循环
         """
         try:
+            if not self.mqtt_tls and not self.mqtt_allow_insecure:
+                raise RuntimeError("MQTT TLS is required. Set MQTT_TLS=true or explicitly allow insecure via MQTT_ALLOW_INSECURE=true.")
+            if self.mqtt_require_auth and not (self.mqtt_user and self.mqtt_password):
+                raise RuntimeError("MQTT auth required. Provide MQTT_USER/MQTT_PASSWORD or set MQTT_REQUIRE_AUTH=false explicitly.")
             self.mqtt_client = mqtt.Client(client_id="edge-daq")
             
             # 配置用户名密码认证
@@ -133,6 +181,12 @@ class DataPublisher:
                     self.mqtt_password,
                 )
             
+            # TLS
+            if self.mqtt_tls:
+                self.mqtt_client.tls_set()
+                if self.mqtt_tls_insecure:
+                    self.mqtt_client.tls_insecure_set(True)
+
             # 设置连接状态回调
             self.mqtt_client.on_connect = self._on_mqtt_connect
             self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
@@ -146,6 +200,7 @@ class DataPublisher:
             
             # 启动后台线程处理网络通信
             self.mqtt_client.loop_start()
+            self._mqtt_reconnect_backoff = 1.0
             
             logger.info(
                 "mqtt_publisher_connected",
@@ -155,6 +210,8 @@ class DataPublisher:
         
         except Exception as e:
             logger.error("mqtt_connect_error", error=str(e))
+            self.connected = False
+            self.last_mqtt_error = str(e)
     
     async def _connect_influxdb(self):
         """
@@ -163,13 +220,15 @@ class DataPublisher:
         创建异步写入 API 以提高写入性能
         """
         try:
-            url = f"http://{self.influx_host}:{self.influx_port}"
+            url = f"{self.influx_scheme}://{self.influx_host}:{self.influx_port}"
             
             self.influx_client = InfluxDBClient(
                 url=url,
                 token=self.influx_token,
                 org=self.influx_org,
             )
+            if self.influx_require_auth and not self.influx_token:
+                raise RuntimeError("InfluxDB token is required. Set INFLUXDB_TOKEN or INFLUX_REQUIRE_AUTH=false explicitly.")
             
             # 使用异步写入模式，提高吞吐量
             self.write_api = self.influx_client.write_api(write_options=ASYNCHRONOUS)
@@ -180,20 +239,55 @@ class DataPublisher:
                 org=self.influx_org,
                 bucket=self.influx_bucket,
             )
+            INFLUX_CONNECTED.set(1)
+            self.influx_connected = True
         
         except Exception as e:
             logger.error("influxdb_connect_error", error=str(e))
+            self.connected = False
+            self.last_influx_error = str(e)
+            INFLUX_CONNECTED.set(0)
+            self.influx_connected = False
+
+    async def _ensure_mqtt(self):
+        """
+        确保 MQTT 客户端处于连接状态，失败时按指数退避重连。
+        """
+        if self.mqtt_client and getattr(self.mqtt_client, "is_connected", lambda: False)():
+            return True
+        backoff = self._mqtt_reconnect_backoff
+        await self._connect_mqtt()
+        # 逐步增大退避时间，避免连接风暴
+        self._mqtt_reconnect_backoff = min(self._mqtt_reconnect_backoff * 2, self._mqtt_reconnect_backoff_max)
+        if self.mqtt_client and getattr(self.mqtt_client, "is_connected", lambda: False)():
+            return True
+        # 等待退避时间后由调用方决定是否继续
+        await asyncio.sleep(backoff)
+        return False
+    
+    async def flush_buffers(self):
+        """尽力刷新缓冲队列，避免停机丢数据。"""
+        await self._flush_mqtt_buffer()
+        await self._flush_influx_buffer()
     
     def _on_mqtt_connect(self, client, userdata, flags, rc):
         """MQTT 连接成功回调"""
         if rc == 0:
             logger.info("mqtt_publisher_connected_callback")
+            self.mqtt_connected = True
+            MQTT_CONNECTED.set(1)
+            MQTT_RECONNECT_TOTAL.inc()
         else:
             logger.error("mqtt_connection_failed", return_code=rc)
+            self.last_mqtt_error = f"rc={rc}"
+            MQTT_CONNECTED.set(0)
+            self.mqtt_connected = False
     
     def _on_mqtt_disconnect(self, client, userdata, rc):
         """MQTT 断开连接回调"""
         logger.warning("mqtt_publisher_disconnected", return_code=rc)
+        MQTT_CONNECTED.set(0)
+        self.mqtt_connected = False
     
     async def publish_tag_data(self, tag_name: str, value: float, unit: str = "", timestamp: Optional[float] = None):
         """
@@ -207,7 +301,6 @@ class DataPublisher:
             unit: 工程单位（如 ℃、%）
             timestamp: 时间戳（默认当前时间）
         """
-        import time
         ts = time.time() if timestamp is None else timestamp
         
         # 构造消息数据
@@ -226,7 +319,7 @@ class DataPublisher:
         # 写入 InfluxDB（供历史查询）
         self._write_influxdb(tag_name, value, unit, ts)
     
-    def _publish_mqtt(self, topic: str, data: dict, qos: int = 1):
+    def _publish_mqtt(self, topic: str, data: dict, qos: int = 1, retries: int = 2):
         """
         发布消息到 MQTT 主题
         
@@ -238,25 +331,53 @@ class DataPublisher:
         if not self.mqtt_client:
             return
         
-        try:
-            payload = json.dumps(data)
-            result = self.mqtt_client.publish(topic, payload, qos)
-            
-            if result.rc != mqtt.MQTT_ERR_SUCCESS:
+        attempt = 0
+        while attempt <= retries:
+            attempt += 1
+            try:
+                payload = json.dumps(data)
+                result = self.mqtt_client.publish(topic, payload, qos)
+                
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    return
+
+                reason = str(result.rc)
+                MQTT_PUBLISH_FAILURE.labels(reason).inc()
                 logger.error(
                     "mqtt_publish_failed",
                     topic=topic,
                     rc=result.rc,
+                    attempt=attempt,
                 )
+            except Exception as e:
+                reason = e.__class__.__name__
+                MQTT_PUBLISH_FAILURE.labels(reason).inc()
+                self.last_mqtt_error = str(e)
+                logger.error(
+                    "mqtt_publish_error",
+                    topic=topic,
+                    error=str(e),
+                    attempt=attempt,
+                )
+
+            # 确保连接并退避后重试
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._ensure_mqtt())
+                else:
+                    loop.run_until_complete(self._ensure_mqtt())
+            except RuntimeError:
+                # 没有事件循环时创建新的
+                asyncio.run(self._ensure_mqtt())
+
+            MQTT_PUBLISH_RETRY.inc()
+            time.sleep(min(0.2 * (2 ** (attempt - 1)), 2.0))
         
-        except Exception as e:
-            logger.error(
-                "mqtt_publish_error",
-                topic=topic,
-                error=str(e),
-            )
+        # 超过重试仍失败，写入缓冲
+        self._buffer_mqtt(topic, data, qos)
     
-    def _write_influxdb(self, tag_name: str, value: float, unit: str, timestamp: float):
+    def _write_influxdb(self, tag_name: str, value: float, unit: str, timestamp: float, retries: int = 2):
         """
         写入数据到 InfluxDB
         
@@ -271,26 +392,189 @@ class DataPublisher:
         if not self.write_api:
             return
         
-        try:
-            # 构建数据点
-            point = Point(self.measurement) \
-                .tag("tag", tag_name) \
-                .field("value", value) \
-                .field("unit", unit) \
-                .time(int(timestamp * 1e9))  # 转换为纳秒
+        for attempt in range(1, retries + 2):
+            try:
+                # 构建数据点
+                point = Point(self.measurement) \
+                    .tag("tag", tag_name) \
+                    .field("value", value) \
+                    .field("unit", unit) \
+                    .time(int(timestamp * 1e9))  # 转换为纳秒
+                
+                self.write_api.write(
+                    bucket=self.influx_bucket,
+                    org=self.influx_org,
+                    record=point,
+                )
+                return
             
-            self.write_api.write(
-                bucket=self.influx_bucket,
-                org=self.influx_org,
-                record=point,
-            )
+            except Exception as e:
+                reason = e.__class__.__name__
+                INFLUX_WRITE_FAILURE.labels(reason).inc()
+                self.last_influx_error = str(e)
+                logger.error(
+                    "influxdb_write_error",
+                    tag=tag_name,
+                    attempt=attempt,
+                    error=str(e),
+                )
+                if attempt <= retries:
+                    INFLUX_WRITE_RETRY.inc()
+                time.sleep(min(0.2 * (2 ** (attempt - 1)), 2.0))
         
+        # 超过重试后缓冲，避免丢数据
+        self._buffer_influx(tag_name, value, unit, timestamp)
+
+    def _buffer_mqtt(self, topic: str, data: dict, qos: int):
+        """将 MQTT 消息加入缓冲，超过上限会丢弃最旧并告警。"""
+        if len(self.mqtt_buffer) >= self.mqtt_buffer.maxlen:
+            logger.warning("mqtt_buffer_dropped_oldest", maxlen=self.mqtt_buffer.maxlen)
+            self.mqtt_buffer.popleft()
+        entry = {"topic": topic, "data": data, "qos": qos, "ts": int(time.time())}
+        self.mqtt_buffer.append(entry)
+        MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
+        self._persist_buffer(self.mqtt_buffer_file, entry, enable=self.persist_mqtt_buffer)
+        self._update_buffer_age_metrics()
+
+    def _buffer_influx(self, tag_name: str, value: float, unit: str, timestamp: float):
+        """将 Influx 数据加入缓冲。"""
+        if len(self.influx_buffer) >= self.influx_buffer.maxlen:
+            logger.warning("influx_buffer_dropped_oldest", maxlen=self.influx_buffer.maxlen)
+            self.influx_buffer.popleft()
+        entry = {"tag": tag_name, "value": value, "unit": unit, "ts": timestamp}
+        self.influx_buffer.append(entry)
+        INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
+        self._persist_buffer(self.influx_buffer_file, entry, enable=self.persist_influx_buffer)
+        self._update_buffer_age_metrics()
+
+    async def _flush_mqtt_buffer(self):
+        """重放 MQTT 缓冲队列。"""
+        if not self.mqtt_buffer:
+            return
+        if not (self.mqtt_client and getattr(self.mqtt_client, "is_connected", lambda: False)()):
+            await self._ensure_mqtt()
+        flushed = 0
+        for _ in range(len(self.mqtt_buffer)):
+            item = self.mqtt_buffer.popleft()
+            MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
+            try:
+                payload = json.dumps(item["data"])
+                result = self.mqtt_client.publish(item["topic"], payload, item["qos"])
+                if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                    # 失败则重新放回末尾
+                    self.mqtt_buffer.append(item)
+                    MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
+                    break
+                flushed += 1
+            except Exception as e:
+                self.last_mqtt_error = str(e)
+                self.mqtt_buffer.append(item)
+                MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
+                break
+        if flushed:
+            logger.info("mqtt_buffer_flushed", count=flushed)
+            self._persist_full_buffer(self.mqtt_buffer_file, list(self.mqtt_buffer), enable=self.persist_mqtt_buffer)
+            self._update_buffer_age_metrics()
+
+    async def _flush_influx_buffer(self):
+        """重放 Influx 缓冲队列。"""
+        if not self.influx_buffer or not self.write_api:
+            return
+        flushed = 0
+        for _ in range(len(self.influx_buffer)):
+            item = self.influx_buffer.popleft()
+            INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
+            try:
+                point = Point(self.measurement) \
+                    .tag("tag", item["tag"]) \
+                    .field("value", item["value"]) \
+                    .field("unit", item["unit"]) \
+                    .time(int(item["ts"] * 1e9))
+                self.write_api.write(
+                    bucket=self.influx_bucket,
+                    org=self.influx_org,
+                    record=point,
+                )
+                flushed += 1
+            except Exception as e:
+                self.last_influx_error = str(e)
+                self.influx_buffer.append(item)
+                INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
+                break
+        if flushed:
+            logger.info("influx_buffer_flushed", count=flushed)
+            self._persist_full_buffer(self.influx_buffer_file, list(self.influx_buffer), enable=self.persist_influx_buffer)
+            self._update_buffer_age_metrics()
+
+    def _persist_buffer(self, path: Path, entry: dict, enable: bool):
+        if not enable:
+            return
+        try:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
         except Exception as e:
-            logger.error(
-                "influxdb_write_error",
-                tag=tag_name,
-                error=str(e),
-            )
+            logger.warning("buffer_persist_failed", path=str(path), error=str(e))
+
+    def _persist_full_buffer(self, path: Path, entries: list, enable: bool):
+        if not enable:
+            return
+        try:
+            with path.open("w", encoding="utf-8") as f:
+                for entry in entries:
+                    f.write(json.dumps(entry) + "\n")
+        except Exception as e:
+            logger.warning("buffer_persist_full_failed", path=str(path), error=str(e))
+
+    def _load_persisted_buffers(self):
+        """启动时加载持久化缓冲。"""
+        def load_file(path: Path, target: deque, maxlen: int):
+            if not path.exists():
+                return
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                            target.append(obj)
+                            if len(target) > maxlen:
+                                target.popleft()
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.warning("buffer_load_failed", path=str(path), error=str(e))
+        load_file(self.mqtt_buffer_file, self.mqtt_buffer, self.mqtt_buffer.maxlen)
+        load_file(self.influx_buffer_file, self.influx_buffer, self.influx_buffer.maxlen)
+        MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
+        INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
+        self._update_buffer_age_metrics()
+
+    def _update_buffer_age_metrics(self):
+        now = time.time()
+        if self.mqtt_buffer:
+            oldest = self.mqtt_buffer[0].get("ts") or now
+            MQTT_BUFFER_OLDEST_AGE_SEC.set(max(0, now - oldest))
+        else:
+            MQTT_BUFFER_OLDEST_AGE_SEC.set(0)
+        if self.influx_buffer:
+            oldest = self.influx_buffer[0].get("ts") or now
+            INFLUX_BUFFER_OLDEST_AGE_SEC.set(max(0, now - oldest))
+        else:
+            INFLUX_BUFFER_OLDEST_AGE_SEC.set(0)
+
+    def get_status(self) -> dict:
+        """返回发布通路的健康状态摘要，供健康检查使用。"""
+        return {
+            "mqtt_connected": self.mqtt_connected,
+            "influx_connected": self.influx_connected,
+            "last_mqtt_error": self.last_mqtt_error,
+            "last_influx_error": self.last_influx_error,
+            "mqtt_backoff": self._mqtt_reconnect_backoff,
+            "mqtt_buffer_size": len(self.mqtt_buffer),
+            "influx_buffer_size": len(self.influx_buffer),
+        }
     
     async def publish_alarm(self, tag_name: str, alarm_type: str, value: float, threshold: float):
         """

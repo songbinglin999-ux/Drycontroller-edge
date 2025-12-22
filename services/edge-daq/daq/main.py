@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from aiohttp import web
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from common.logging import setup_logging
 
@@ -38,6 +39,7 @@ from daq.modbus_client import ModbusClient
 from daq.plc_reader import PLCReader
 from daq.publisher import DataPublisher
 from daq.simulator import PLCSimulator
+from daq.control import ControlSubscriber
 
 
 class DAQService:
@@ -64,10 +66,15 @@ class DAQService:
         self.publisher = None
         self.simulator = None
         self.config = None
+        self.control_subscriber = None
         # 健康检查 HTTP 服务器
         self.health_runner = None
         self.health_site = None
         self.health_port = int(os.getenv("HEALTH_PORT", "8080"))
+        self.validation_errors = []
+        # 心跳状态
+        self.heartbeat_miss_count = 0
+        self.heartbeat_fail_count = 0
         
     async def load_config(self):
         """
@@ -112,6 +119,10 @@ class DAQService:
         
         # 加载标签配置
         await self.load_config()
+        self.validation_errors = self._validate_config(self.config)
+        if self.validation_errors:
+            logger.error("config_validation_failed", errors=self.validation_errors)
+            raise RuntimeError(f"config validation failed: {self.validation_errors}")
 
         # 启动健康检查 HTTP 服务
         await self._start_health_server()
@@ -119,7 +130,11 @@ class DAQService:
         # 读取 PLC 连接配置
         plc_host = os.getenv("PLC_HOST", "192.168.1.100")
         plc_port = int(os.getenv("PLC_PORT", "502"))
-        use_simulator = os.getenv("USE_SIMULATOR", "true").lower() == "true"
+        plc_slave_id = int(os.getenv("PLC_SLAVE_ID", "1"))
+        plc_connect_timeout = int(os.getenv("PLC_CONNECT_TIMEOUT", "5"))
+        use_simulator = os.getenv("USE_SIMULATOR", "false").lower() == "true"
+        heartbeat_interval = float(os.getenv("PLC_HEARTBEAT_INTERVAL", "5") or "5")
+        heartbeat_timeout_cycles = int(os.getenv("PLC_HEARTBEAT_TIMEOUT_CYCLES", "3") or "3")
         
         # 初始化数据发布器（连接 MQTT 和 InfluxDB）
         self.publisher = DataPublisher()
@@ -132,9 +147,28 @@ class DAQService:
             self.plc_reader = PLCReader(self.simulator, self.publisher, self.config)
         else:
             logger.info("connecting_to_plc", host=plc_host, port=plc_port)
-            self.modbus_client = ModbusClient(plc_host, plc_port)
+            self.modbus_client = ModbusClient(
+                host=plc_host,
+                port=plc_port,
+                slave_id=plc_slave_id,
+                connect_timeout=plc_connect_timeout,
+            )
             await self.modbus_client.connect()
-            self.plc_reader = PLCReader(self.modbus_client, self.publisher, self.config)
+            self.plc_reader = PLCReader(
+                self.modbus_client,
+                self.publisher,
+                self.config,
+                heartbeat_interval=heartbeat_interval,
+                heartbeat_timeout_cycles=heartbeat_timeout_cycles,
+                heartbeat_state=self,
+            )
+            # 启动控制订阅
+            self.control_subscriber = ControlSubscriber(
+                modbus_client=self.modbus_client,
+                config=self.config,
+                line_id=self.publisher.line_id,
+            )
+            await self.control_subscriber.start()
         
         # 启动数据采集循环
         self.running = True
@@ -166,11 +200,17 @@ class DAQService:
         
         # 断开发布器连接
         if self.publisher:
+            await self.publisher.flush_buffers()
             await self.publisher.disconnect()
         
         # 断开 PLC 连接
         if self.modbus_client:
             await self.modbus_client.disconnect()
+
+        # 停止控制订阅
+        if self.control_subscriber:
+            await self.control_subscriber.stop()
+            self.control_subscriber = None
 
         # 停止健康检查服务
         await self._stop_health_server()
@@ -196,7 +236,13 @@ class DAQService:
             """处理健康检查请求"""
             return web.json_response(self._health_payload())
 
+        async def metrics_handler(request):
+            """Prometheus 指标"""
+            data = generate_latest()
+            return web.Response(body=data, content_type=CONTENT_TYPE_LATEST)
+
         app.router.add_get("/health", health_handler)
+        app.router.add_get("/metrics", metrics_handler)
         self.health_runner = web.AppRunner(app)
         await self.health_runner.setup()
         self.health_site = web.TCPSite(self.health_runner, "0.0.0.0", self.health_port)
@@ -226,8 +272,57 @@ class DAQService:
             "details": {
                 "publisher_connected": bool(self.publisher and self.publisher.connected),
                 "use_simulator": self.simulator is not None,
+                "modbus": self.modbus_client.get_status() if self.modbus_client else None,
+                "scan_interval": getattr(self.plc_reader, "scan_interval", None),
+                "config_errors": len(self.validation_errors),
+                "heartbeat_miss_count": getattr(self, "heartbeat_miss_count", None),
+                "heartbeat_fail_count": getattr(self, "heartbeat_fail_count", None),
+                "publisher": self.publisher.get_status() if self.publisher else None,
             },
         }
+
+    def _validate_config(self, config: dict) -> list:
+        """
+        基础配置校验：必填字段、重复地址、range 结构。
+        返回错误列表，不抛异常，便于健康检查上报。
+        """
+        errors = []
+        tags_cfg = (config or {}).get("tags", {})
+        seen = {}
+        for section, categories in tags_cfg.items():
+            if not isinstance(categories, dict):
+                continue
+            for category, tags in categories.items():
+                if not isinstance(tags, list):
+                    continue
+                for tag in tags:
+                    name = tag.get("name")
+                    addr = tag.get("address")
+                    t = tag.get("type")
+                    if not name or addr is None or not t:
+                        errors.append(f"missing_field:{section}.{category}")
+                        continue
+                    function_code = int(tag.get("function_code", 3) or 3)
+                    if function_code not in (3, 4, 16):
+                        errors.append(f"invalid_function_code:{name}:{function_code}")
+                    byte_order = tag.get("byte_order", "big")
+                    if byte_order not in ("big", "little"):
+                        errors.append(f"invalid_byte_order:{name}:{byte_order}")
+                    key = (addr, function_code)
+                    if key in seen:
+                        errors.append(f"duplicate_address:{addr}")
+                    else:
+                        seen[key] = name
+                    rng = tag.get("range")
+                    if rng and (not isinstance(rng, (list, tuple)) or len(rng) != 2):
+                        errors.append(f"invalid_range:{name}")
+                    alarm_high = tag.get("alarm_high")
+                    alarm_low = tag.get("alarm_low")
+                    if alarm_high is not None and alarm_low is not None and alarm_low > alarm_high:
+                        errors.append(f"invalid_alarm_range:{name}")
+                    if t not in ("float", "int", "int32", "uint32", "bool"):
+                        errors.append(f"invalid_type:{name}:{t}")
+        return errors
 
 
 async def main():

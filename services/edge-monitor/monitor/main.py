@@ -162,6 +162,11 @@ class MonitorService:
         self.system_measurement = os.getenv("MONITOR_SYSTEM_MEASUREMENT", "system_metrics")   # 系统指标表
         self.service_measurement = os.getenv("MONITOR_SERVICE_MEASUREMENT", "system_health")  # 服务健康表
         self.status_schema = "edge.monitor.status.v1"  # 状态消息 schema 版本
+        # Alertmanager 配置（用于 ops-console 告警聚合）
+        self.alertmanager_base = os.getenv("ALERTMANAGER_BASE_URL", "").rstrip("/")
+        self.alertmanager_timeout = float(os.getenv("ALERTMANAGER_TIMEOUT", "5") or "5")
+        self.alertmanager_user = os.getenv("ALERTMANAGER_USERNAME", "")
+        self.alertmanager_pass = os.getenv("ALERTMANAGER_PASSWORD", "")
         
         # 客户端实例
         self.mqtt_client = None
@@ -363,6 +368,39 @@ class MonitorService:
     def _get_mqtt_client(self):
         """提供当前 MQTT 客户端实例"""
         return self.mqtt_client
+    
+    async def _fetch_alertmanager_alerts(self, severity: str | None, service: str | None, state: str | None) -> list:
+        """
+        从 Alertmanager 拉取告警，支持按 severity/service/state 过滤。
+        """
+        if not self.alertmanager_base:
+            raise HTTPException(status_code=503, detail="alertmanager not configured")
+        if not self.http_client:
+            await self._connect_http()
+        params = []
+        if severity:
+            params.append(("filter", f"severity={severity}"))
+        if service:
+            params.append(("filter", f"service={service}"))
+        # Alertmanager v2 支持 active/silenced/inhibited 查询参数
+        state = (state or "active").lower()
+        params.append(("active", "true" if state == "active" else "false"))
+        params.append(("silenced", "true" if state == "silenced" else "false"))
+        params.append(("inhibited", "true" if state == "inhibited" else "false"))
+        auth = None
+        if self.alertmanager_user and self.alertmanager_pass:
+            auth = (self.alertmanager_user, self.alertmanager_pass)
+        url = f"{self.alertmanager_base}/api/v2/alerts"
+        try:
+            resp = await self.http_client.get(url, params=params, auth=auth, timeout=self.alertmanager_timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            logger.error("alertmanager_http_error", status=exc.response.status_code, detail=str(exc))
+            raise HTTPException(status_code=exc.response.status_code, detail="alertmanager error")
+        except Exception as exc:
+            logger.error("alertmanager_fetch_failed", error=str(exc))
+            raise HTTPException(status_code=502, detail="failed to fetch alerts")
     
     async def _system_metrics_loop(self):
         """
@@ -1199,6 +1237,20 @@ async def fetch_service_logs(
         logger.error("log_read_failed", service=service, error=str(exc))
         raise HTTPException(status_code=500, detail="log_read_failed")
     return {"success": True, "service": service, "count": len(data), "data": data}
+
+
+@app.get("/ops/alerts")
+async def list_alerts(
+    severity: str | None = Query(None, description="过滤 severity，如 critical/warning"),
+    service: str | None = Query(None, description="过滤 service 标签"),
+    state: str | None = Query("active", description="active/silenced/inhibited"),
+):
+    """
+    代理 Alertmanager，提供运维告警聚合给 ops-console 使用。
+    需要配置 ALERTMANAGER_BASE_URL，支持 basic auth。
+    """
+    alerts = await monitor_service._fetch_alertmanager_alerts(severity=severity, service=service, state=state)
+    return {"success": True, "count": len(alerts), "alerts": alerts}
 
 
 # ============================================================

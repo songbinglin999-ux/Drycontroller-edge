@@ -8,10 +8,12 @@
     updateMonitorConfig,
     restartService,
     toggleSelfHeal,
+    fetchAlerts,
     type ServiceStatus,
     type SystemStatusPayload,
     type SystemMetricsPayload,
-    type MonitorConfig
+    type MonitorConfig,
+    type AlertItem
   } from "./lib/api";
 
   import Timeline from "./components/Timeline.svelte";
@@ -31,6 +33,11 @@
   let services: ServiceStatus[] = [];
   let events: any[] = [];
   let monitorConfig: MonitorConfig | null = null;
+  let alerts: AlertItem[] = [];
+  let alertsLoading = true;
+  let alertsError = "";
+  let alertSeverity = "";
+  let alertState = "active";
   
   // Config State
   let showConfig = false;
@@ -55,10 +62,17 @@
 
   let disconnectStream: (() => void) | null = null;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  let alertsTimer: ReturnType<typeof setInterval> | null = null;
   let currentTime = new Date().toLocaleTimeString();
 
   function updateClock() {
     currentTime = new Date().toLocaleTimeString();
+  }
+
+  function formatTime(ts?: string) {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    return `${d.toLocaleDateString()} ${d.toLocaleTimeString()}`;
   }
 
   function normalizeServices(payload: SystemStatusPayload | null): ServiceStatus[] {
@@ -121,6 +135,22 @@
     }
   }
 
+  async function loadAlerts() {
+    alertsLoading = true;
+    alertsError = "";
+    try {
+      const resp = await fetchAlerts({
+        severity: alertSeverity || undefined,
+        state: alertState || "active"
+      });
+      alerts = resp.alerts || [];
+    } catch (error) {
+      alertsError = (error as Error).message;
+    } finally {
+      alertsLoading = false;
+    }
+  }
+
   function startPolling() {
     if (refreshTimer) {
       clearInterval(refreshTimer);
@@ -128,6 +158,12 @@
     refreshTimer = setInterval(() => {
       loadStatus();
       loadMetrics();
+    }, REFRESH_INTERVAL);
+    if (alertsTimer) {
+      clearInterval(alertsTimer);
+    }
+    alertsTimer = setInterval(() => {
+      loadAlerts();
     }, REFRESH_INTERVAL);
   }
 
@@ -205,6 +241,7 @@
     loadStatus();
     loadMetrics();
     loadMonitorConfig();
+    loadAlerts();
     startPolling();
     startStream();
     
@@ -214,6 +251,9 @@
       clearInterval(clockTimer);
       if (refreshTimer) {
         clearInterval(refreshTimer);
+      }
+      if (alertsTimer) {
+        clearInterval(alertsTimer);
       }
       if (disconnectStream) {
         disconnectStream();
@@ -365,6 +405,55 @@
       </div>
 
       <div class="side-column">
+        <!-- Alerts Panel -->
+        <section class="events-section">
+          <div class="section-header">
+            <h2>告警</h2>
+            <div class="filters">
+              <select bind:value={alertSeverity} on:change={loadAlerts}>
+                <option value="">全部严重性</option>
+                <option value="critical">critical</option>
+                <option value="warning">warning</option>
+              </select>
+              <select bind:value={alertState} on:change={loadAlerts}>
+                <option value="active">active</option>
+                <option value="silenced">silenced</option>
+                <option value="inhibited">inhibited</option>
+              </select>
+            </div>
+          </div>
+          {#if alertsLoading}
+            <div class="loading-state small">加载告警...</div>
+          {:else if alertsError}
+            <div class="error-msg small">{alertsError}</div>
+          {:else if alerts.length === 0}
+            <div class="empty-state small">暂无告警</div>
+          {:else}
+            <div class="alerts-list">
+              {#each alerts as alert}
+                <div class="alert-item">
+                  <div class="alert-header">
+                    <span class="badge badge-{alert.labels?.severity || 'unknown'}">
+                      {alert.labels?.severity || "unknown"}
+                    </span>
+                    <span class="alert-service">{alert.labels?.service || alert.labels?.job || "n/a"}</span>
+                  </div>
+                  <div class="alert-summary">
+                    {alert.annotations?.summary || alert.labels?.alertname || "告警"}
+                  </div>
+                  {#if alert.annotations?.description}
+                    <div class="alert-desc">{alert.annotations.description}</div>
+                  {/if}
+                  <div class="alert-footer">
+                    <span>起始：{formatTime(alert.startsAt)}</span>
+                    <span>状态：{alert.status?.state || "active"}</span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+
         <!-- Events Feed -->
         <section class="events-section">
           <div class="section-header">
@@ -488,5 +577,60 @@
     .side-column {
       position: static;
     }
+  }
+
+  .alerts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .alert-item {
+    background: #1f2937;
+    border: 1px solid #2f3b4f;
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  }
+  .alert-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .badge-critical { background: #7f1d1d; color: #fca5a5; }
+  .badge-warning { background: #78350f; color: #fcd34d; }
+  .badge-unknown { background: #374151; color: #e5e7eb; }
+  .alert-service {
+    color: #d1d5db;
+    font-weight: 600;
+  }
+  .alert-summary { color: #e5e7eb; font-weight: 500; }
+  .alert-desc { color: #9ca3af; font-size: 0.9rem; margin-top: 0.25rem; }
+  .alert-footer {
+    margin-top: 0.35rem;
+    font-size: 0.8rem;
+    color: #9ca3af;
+    display: flex;
+    justify-content: space-between;
+  }
+  .filters {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .filters select {
+    background: #111827;
+    border: 1px solid #374151;
+    color: #e5e7eb;
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
   }
 </style>

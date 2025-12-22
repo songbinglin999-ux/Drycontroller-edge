@@ -1,0 +1,10 @@
+{
+  "version": "bootstrap.v1",
+  "line_id": "L1",
+  "hostname": "16eb114a5f28",
+  "api_base_url": "http://edge-api:8000/api",
+  "ws_base_url": "ws://edge-api:8000/api",
+  "generated_at": 1764688997,
+  "expires_at": 1764689027,
+  "nonce": "e826948829e5b0c6"
+}
