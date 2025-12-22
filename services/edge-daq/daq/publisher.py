@@ -42,6 +42,7 @@ MQTT_PUBLISH_FAILURE = Counter("mqtt_publish_failure_total", "MQTT publish failu
 MQTT_PUBLISH_RETRY = Counter("mqtt_publish_retry_total", "MQTT publish retry attempts")
 MQTT_RECONNECT_TOTAL = Counter("mqtt_reconnect_total", "MQTT reconnect attempts")
 MQTT_CONNECTED = Gauge("mqtt_connected", "MQTT connection state")
+MQTT_ACTIVE_BROKER = Gauge("mqtt_active_broker", "MQTT active broker index (0=primary,1=backup)")
 
 INFLUX_WRITE_FAILURE = Counter("influx_write_failure_total", "InfluxDB write failures", ["reason"])
 INFLUX_WRITE_RETRY = Counter("influx_write_retry_total", "InfluxDB write retry attempts")
@@ -97,6 +98,10 @@ class DataPublisher:
         self.mqtt_tls_insecure = os.getenv("MQTT_TLS_INSECURE", "false").lower() == "true"
         self.mqtt_allow_insecure = os.getenv("MQTT_ALLOW_INSECURE", "false").lower() == "true"
         self.mqtt_require_auth = os.getenv("MQTT_REQUIRE_AUTH", "true").lower() == "true"
+        # MQTT 备链路（故障切换）
+        self.mqtt_broker_backup = os.getenv("MQTT_BROKER_BACKUP", "")
+        self.mqtt_port_backup = int(os.getenv("MQTT_PORT_BACKUP", self.mqtt_port) or self.mqtt_port)
+        self._active_mqtt_is_backup = False
         
         # 产线标识：用于区分不同生产线的数据
         self.line_id = os.getenv("LINE_ID", "L1")
@@ -223,41 +228,35 @@ class DataPublisher:
                 raise RuntimeError("MQTT TLS is required. Set MQTT_TLS=true or explicitly allow insecure via MQTT_ALLOW_INSECURE=true.")
             if self.mqtt_require_auth and not (self.mqtt_user and self.mqtt_password):
                 raise RuntimeError("MQTT auth required. Provide MQTT_USER/MQTT_PASSWORD or set MQTT_REQUIRE_AUTH=false explicitly.")
-            self.mqtt_client = mqtt.Client(client_id="edge-daq")
-            
-            # 配置用户名密码认证
-            if self.mqtt_user and self.mqtt_password:
-                self.mqtt_client.username_pw_set(
-                    self.mqtt_user,
-                    self.mqtt_password,
+            def _connect(broker: str, port: int, is_backup: bool):
+                cli = mqtt.Client(client_id="edge-daq")
+                if self.mqtt_user and self.mqtt_password:
+                    cli.username_pw_set(self.mqtt_user, self.mqtt_password)
+                if self.mqtt_tls:
+                    cli.tls_set()
+                    if self.mqtt_tls_insecure:
+                        cli.tls_insecure_set(True)
+                cli.on_connect = self._on_mqtt_connect
+                cli.on_disconnect = self._on_mqtt_disconnect
+                cli.connect(broker, port, keepalive=60)
+                cli.loop_start()
+                self._active_mqtt_is_backup = is_backup
+                MQTT_ACTIVE_BROKER.set(1 if is_backup else 0)
+                logger.info(
+                    "mqtt_publisher_connected",
+                    broker=broker,
+                    port=port,
+                    active="backup" if is_backup else "primary",
                 )
-            
-            # TLS
-            if self.mqtt_tls:
-                self.mqtt_client.tls_set()
-                if self.mqtt_tls_insecure:
-                    self.mqtt_client.tls_insecure_set(True)
+                return cli
 
-            # 设置连接状态回调
-            self.mqtt_client.on_connect = self._on_mqtt_connect
-            self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
-            
-            # 连接到 Broker
-            self.mqtt_client.connect(
-                self.mqtt_broker,
-                self.mqtt_port,
-                keepalive=60,
-            )
-            
-            # 启动后台线程处理网络通信
-            self.mqtt_client.loop_start()
-            self._mqtt_reconnect_backoff = 1.0
-            
-            logger.info(
-                "mqtt_publisher_connected",
-                broker=self.mqtt_broker,
-                port=self.mqtt_port,
-            )
+            try:
+                self.mqtt_client = _connect(self.mqtt_broker, self.mqtt_port, is_backup=False)
+            except Exception as primary_err:
+                if not self.mqtt_broker_backup:
+                    raise
+                logger.warning("mqtt_primary_connect_failed_try_backup", error=str(primary_err))
+                self.mqtt_client = _connect(self.mqtt_broker_backup, self.mqtt_port_backup, is_backup=True)
         
         except Exception as e:
             logger.error("mqtt_connect_error", error=str(e))
@@ -709,6 +708,7 @@ class DataPublisher:
             "mqtt_backoff": self._mqtt_reconnect_backoff,
             "mqtt_buffer_size": len(self.mqtt_buffer),
             "influx_buffer_size": len(self.influx_buffer),
+            "mqtt_active_broker": "backup" if self._active_mqtt_is_backup else "primary",
         }
     
     async def publish_alarm(self, tag_name: str, alarm_type: str, value: float, threshold: float):
