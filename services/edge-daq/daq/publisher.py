@@ -46,7 +46,9 @@ MQTT_ACTIVE_BROKER = Gauge("mqtt_active_broker", "MQTT active broker index (0=pr
 
 INFLUX_WRITE_FAILURE = Counter("influx_write_failure_total", "InfluxDB write failures", ["reason"])
 INFLUX_WRITE_RETRY = Counter("influx_write_retry_total", "InfluxDB write retry attempts")
+INFLUX_RECONNECT_TOTAL = Counter("influx_reconnect_total", "InfluxDB reconnect attempts")
 INFLUX_CONNECTED = Gauge("influx_connected", "InfluxDB connection state")
+INFLUX_ACTIVE_HOST = Gauge("influx_active_host", "InfluxDB active host index (0=primary,1=backup)")
 MQTT_BUFFER_SIZE = Gauge("mqtt_buffer_size", "MQTT pending buffer size")
 INFLUX_BUFFER_SIZE = Gauge("influx_buffer_size", "Influx pending buffer size")
 MQTT_BUFFER_OLDEST_AGE_SEC = Gauge("mqtt_buffer_oldest_age_sec", "Oldest MQTT buffered message age (s)")
@@ -83,6 +85,8 @@ class DataPublisher:
         self.connected = False
         self._mqtt_reconnect_backoff = 1.0
         self._mqtt_reconnect_backoff_max = 30.0
+        self._influx_reconnect_backoff = 1.0
+        self._influx_reconnect_backoff_max = 30.0
         self.mqtt_connected = False
         self.influx_connected = False
         self.last_mqtt_error: Optional[str] = None
@@ -163,6 +167,7 @@ class DataPublisher:
         self.influx_buffer_warn = int(os.getenv("INFLUX_BUFFER_WARN", "1600") or "1600")
         self._buffer_warned_mqtt = False
         self._buffer_warned_influx = False
+        self._active_influx_is_backup = False
     
     async def connect(self):
         """
@@ -170,6 +175,9 @@ class DataPublisher:
         
         同时连接 MQTT Broker 和 InfluxDB
         """
+        # 标记 publisher 已启动（即使后端暂时不可用，也让缓冲/重放循环运行）
+        self.connected = True
+
         # 连接 MQTT
         await self._connect_mqtt()
         
@@ -178,7 +186,6 @@ class DataPublisher:
 
         # 注意：connected 表示 publisher 服务已启动（flush loop 等后台任务运行）
         # 具体通路是否已连通请看 mqtt_connected/influx_connected 或 get_status()
-        self.connected = True
         # 启动后台缓冲冲刷，避免长时间堆积
         if self.buffer_flush_interval > 0:
             loop = asyncio.get_running_loop()
@@ -219,6 +226,13 @@ class DataPublisher:
         try:
             while self.connected:
                 await asyncio.sleep(self.buffer_flush_interval)
+                # Influx：若有待写/缓冲，则先确保连接可用
+                if self.influx_pending_batch or self.influx_buffer:
+                    await self._ensure_influx()
+                # MQTT：若有缓冲，则尝试确保连接可用（避免 flush 时才发现离线）
+                if self.mqtt_buffer:
+                    await self._ensure_mqtt()
+
                 self._flush_influx_pending_batch()
                 await self.flush_buffers()
         except asyncio.CancelledError:
@@ -267,8 +281,9 @@ class DataPublisher:
         
         except Exception as e:
             logger.error("mqtt_connect_error", error=str(e))
-            self.connected = False
             self.last_mqtt_error = str(e)
+            self.mqtt_connected = False
+            MQTT_CONNECTED.set(0)
     
     async def _connect_influxdb(self):
         """
@@ -297,7 +312,10 @@ class DataPublisher:
             client = None
             try:
                 url, client = _connect_one(self.influx_host, self.influx_port, self.influx_scheme)
-                client.health()
+                # health() 是同步 IO，放到线程池避免阻塞事件循环
+                await asyncio.to_thread(client.health)
+                self._active_influx_is_backup = False
+                INFLUX_ACTIVE_HOST.set(0)
             except Exception as primary_err:
                 if not self.influx_host_backup:
                     raise primary_err
@@ -307,7 +325,9 @@ class DataPublisher:
                     self.influx_port_backup or self.influx_port,
                     self.influx_scheme_backup,
                 )
-                client.health()
+                await asyncio.to_thread(client.health)
+                self._active_influx_is_backup = True
+                INFLUX_ACTIVE_HOST.set(1)
 
             self.influx_client = client
             self.write_api = self.influx_client.write_api(write_options=ASYNCHRONOUS)
@@ -323,10 +343,11 @@ class DataPublisher:
 
         except Exception as e:
             logger.error("influxdb_connect_error", error=str(e))
-            self.connected = False
             self.last_influx_error = str(e)
             INFLUX_CONNECTED.set(0)
             self.influx_connected = False
+            self.influx_client = None
+            self.write_api = None
 
     async def _ensure_mqtt(self):
         """
@@ -344,6 +365,34 @@ class DataPublisher:
             self._mqtt_reconnect_backoff = 1.0
             return True
         # 等待退避时间后由调用方决定是否继续
+        await asyncio.sleep(backoff)
+        return False
+
+    async def _ensure_influx(self):
+        """
+        确保 InfluxDB 客户端可用，失败时按指数退避重连。
+        """
+        if self.influx_client and self.write_api:
+            try:
+                await asyncio.to_thread(self.influx_client.health)
+                self._influx_reconnect_backoff = 1.0
+                if not self.influx_connected:
+                    INFLUX_RECONNECT_TOTAL.inc()
+                self.influx_connected = True
+                INFLUX_CONNECTED.set(1)
+                return True
+            except Exception as e:
+                self.last_influx_error = str(e)
+                self.influx_connected = False
+                INFLUX_CONNECTED.set(0)
+
+        backoff = self._influx_reconnect_backoff
+        await self._connect_influxdb()
+        self._influx_reconnect_backoff = min(self._influx_reconnect_backoff * 2, self._influx_reconnect_backoff_max)
+        if self.influx_client and self.write_api and self.influx_connected:
+            self._influx_reconnect_backoff = 1.0
+            INFLUX_RECONNECT_TOTAL.inc()
+            return True
         await asyncio.sleep(backoff)
         return False
     
@@ -571,6 +620,8 @@ class DataPublisher:
                 flushed += 1
             except Exception as e:
                 self.last_influx_error = str(e)
+                self.influx_connected = False
+                INFLUX_CONNECTED.set(0)
                 self.influx_buffer.append(item)
                 INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
                 break

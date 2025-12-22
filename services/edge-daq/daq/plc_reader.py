@@ -21,7 +21,7 @@ import asyncio
 import os
 import structlog
 import time
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge, Histogram
 from prometheus_client.registry import REGISTRY
 
 logger = structlog.get_logger(__name__)
@@ -29,6 +29,48 @@ if "plc_heartbeat_missing_total" in REGISTRY._names_to_collectors:
     PLC_HEARTBEAT_MISSING = REGISTRY._names_to_collectors["plc_heartbeat_missing_total"]
 else:
     PLC_HEARTBEAT_MISSING = Counter("plc_heartbeat_missing_total", "PLC heartbeat missing detected")
+
+
+def _get_or_create_collector(name: str, factory, *args, **kwargs):
+    """
+    避免在单测/热重载场景重复注册 Prometheus 指标。
+    """
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return factory(name, *args, **kwargs)
+
+
+PLC_SCAN_LOOP_ERROR = _get_or_create_collector(
+    "plc_scan_loop_error_total",
+    Counter,
+    "PLC scan loop errors",
+)
+PLC_SCAN_OVERRUN = _get_or_create_collector(
+    "plc_scan_overrun_total",
+    Counter,
+    "PLC scan cycle overrun (duration > scan_interval)",
+)
+PLC_SCAN_SKIPPED = _get_or_create_collector(
+    "plc_scan_skipped_total",
+    Counter,
+    "PLC scan cycles skipped due to sustained overrun",
+)
+PLC_SCAN_LAG_SEC = _get_or_create_collector(
+    "plc_scan_lag_seconds",
+    Gauge,
+    "PLC scan start lag vs scheduled time (monotonic seconds)",
+)
+PLC_SCAN_SLEEP_SEC = _get_or_create_collector(
+    "plc_scan_sleep_seconds",
+    Gauge,
+    "PLC scan loop sleep duration (seconds)",
+)
+PLC_SCAN_DURATION_SEC = _get_or_create_collector(
+    "plc_scan_duration_seconds",
+    Histogram,
+    "PLC scan duration (seconds)",
+    buckets=(0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10),
+)
 
 
 class PLCReader:
@@ -103,32 +145,55 @@ class PLCReader:
         
         按固定周期执行扫描，自动补偿采集耗时
         """
-        next_heartbeat_ts = time.time()
+        # 工业级调度：使用 monotonic，避免系统时间跳变导致采样抖动
+        scan_interval = float(self.scan_interval or 1.0)
+        if scan_interval <= 0:
+            scan_interval = 1.0
+
+        next_run = time.monotonic()
+        next_heartbeat = time.monotonic() + float(self.heartbeat_interval or 5.0)
 
         while self.running:
-            start_time = time.time()
-            
-            try:
-                # 读取所有配置的标签
-                await self._read_all_tags()
+            scheduled = next_run
+            start_mono = time.monotonic()
+            PLC_SCAN_LAG_SEC.set(max(0.0, start_mono - scheduled))
 
-                # 心跳读写
-                now = time.time()
-                if now >= next_heartbeat_ts:
-                    await self._heartbeat_cycle()
-                    next_heartbeat_ts = now + self.heartbeat_interval
-            
-            except Exception as e:
-                logger.error("scan_error", error=str(e), exc_info=True)
+            try:
+                with PLC_SCAN_DURATION_SEC.time():
+                    # 读取所有配置的标签
+                    await self._read_all_tags()
+
+                    # 心跳读写（用 monotonic 调度）
+                    now_mono = time.monotonic()
+                    if now_mono >= next_heartbeat:
+                        await self._heartbeat_cycle()
+                        # 避免长时间阻塞后“补写多次”引发风暴：只推进到下一次
+                        next_heartbeat = now_mono + float(self.heartbeat_interval or 5.0)
+
             except asyncio.CancelledError:
                 logger.info("scan_loop_cancelled")
                 self.running = False
                 break
-            
-            # 计算实际耗时，补偿睡眠时间以保持稳定的扫描周期
-            elapsed = time.time() - start_time
-            sleep_time = max(0, self.scan_interval - elapsed)
-            
+            except Exception as e:
+                PLC_SCAN_LOOP_ERROR.inc()
+                logger.error("scan_error", error=str(e), exc_info=True)
+
+            # 固定周期推进；若持续超时则跳过已过期周期并计数
+            end_mono = time.monotonic()
+            duration = end_mono - start_mono
+            if duration > scan_interval:
+                PLC_SCAN_OVERRUN.inc()
+
+            next_run = scheduled + scan_interval
+            now_mono = time.monotonic()
+            if next_run < now_mono:
+                # 计算“跳过了多少周期”
+                missed = int((now_mono - next_run) // scan_interval) + 1
+                PLC_SCAN_SKIPPED.inc(missed)
+                next_run = now_mono
+
+            sleep_time = max(0.0, next_run - time.monotonic())
+            PLC_SCAN_SLEEP_SEC.set(sleep_time)
             if sleep_time > 0:
                 await asyncio.sleep(sleep_time)
     

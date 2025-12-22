@@ -245,7 +245,10 @@ class DAQService:
         """
         启动健康检查 HTTP 服务器
         
-        提供 /health 端点供 K8s/Docker 探活使用
+        提供：
+        - /health：liveness（进程活着 + 关键状态摘要）
+        - /ready：readiness（依赖通路满足生产条件才返回 200）
+        - /metrics：Prometheus 指标
         """
         if self.health_runner:
             return
@@ -256,12 +259,19 @@ class DAQService:
             """处理健康检查请求"""
             return web.json_response(self._health_payload())
 
+        async def ready_handler(request):
+            """处理就绪检查请求（不就绪返回 503）"""
+            payload = self._ready_payload()
+            status = 200 if payload.get("ready") else 503
+            return web.json_response(payload, status=status)
+
         async def metrics_handler(request):
             """Prometheus 指标"""
             data = generate_latest()
             return web.Response(body=data, content_type=CONTENT_TYPE_LATEST)
 
         app.router.add_get("/health", health_handler)
+        app.router.add_get("/ready", ready_handler)
         app.router.add_get("/metrics", metrics_handler)
         self.health_runner = web.AppRunner(app)
         await self.health_runner.setup()
@@ -310,6 +320,39 @@ class DAQService:
                 "heartbeat_fail_count": getattr(self, "heartbeat_fail_count", None),
                 "publisher": self.publisher.get_status() if (self.publisher and hasattr(self.publisher, "get_status")) else None,
                 "control_suspended": self.control_suspended,
+            },
+        }
+
+    def _ready_payload(self):
+        """
+        就绪探针：用于编排系统（K8s / docker-compose healthcheck）判断服务是否可以对外提供“有效数据”。
+        """
+        # 服务主循环已启动
+        running = bool(self.running)
+
+        # 数据源：模拟器即认为可用；真实 PLC 则要求 modbus 连接可用
+        modbus_ok = True if self.simulator is not None else bool(self.modbus_client and self.modbus_client.get_status().get("connected"))
+
+        # 发布通路：至少一个（MQTT/Influx）在线，避免“看似健康但实际没出数”
+        pub_ok = False
+        pub_details = None
+        if self.publisher:
+            pub_details = self.publisher.get_status() if hasattr(self.publisher, "get_status") else None
+            pub_ok = bool(getattr(self.publisher, "mqtt_connected", False) or getattr(self.publisher, "influx_connected", False))
+
+        ready = running and modbus_ok and pub_ok and not self.control_suspended and not self.validation_errors
+
+        return {
+            "ready": ready,
+            "service": "edge-daq",
+            "timestamp": int(time.time()),
+            "details": {
+                "running": running,
+                "modbus_ok": modbus_ok,
+                "publisher_ok": pub_ok,
+                "control_suspended": self.control_suspended,
+                "config_errors": len(self.validation_errors),
+                "publisher": pub_details,
             },
         }
 
