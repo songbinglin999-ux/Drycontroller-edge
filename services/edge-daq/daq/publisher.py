@@ -26,6 +26,8 @@ import asyncio
 import json
 import os
 import time
+import hashlib
+import errno
 from typing import Optional
 from collections import deque
 from pathlib import Path
@@ -57,6 +59,14 @@ INFLUX_PENDING_BATCH_SIZE = Gauge("influx_pending_batch_size", "Pending batch po
 INFLUX_WRITE_RATE_LIMITED = Counter("influx_write_rate_limited_total", "Influx writes deferred by rate limit")
 INFLUX_BUFFER_WARN = Counter("influx_buffer_warn_total", "Influx buffer exceeded warn threshold")
 MQTT_BUFFER_WARN = Counter("mqtt_buffer_warn_total", "MQTT buffer exceeded warn threshold")
+
+# 工业级运维：背压/落盘/丢弃监控
+BUFFER_PERSIST_FAILURE = Counter("buffer_persist_failure_total", "Buffer persist failures", ["type", "reason"])
+BUFFER_PERSIST_DISABLED = Gauge("buffer_persist_disabled", "Buffer persist disabled state (1=disabled)", ["type"])
+BUFFER_DROPPED_TOTAL = Counter("buffer_dropped_total", "Buffered entries dropped due to maxlen", ["type"])
+BUFFER_DEADLETTER_TOTAL = Counter("buffer_deadletter_total", "Dead-letter entries written", ["type"])
+PUBLISHER_DRAIN_TIMEOUT = Counter("publisher_drain_timeout_total", "Publisher drain timed out")
+PUBLISHER_DRAIN_SUCCESS = Counter("publisher_drain_success_total", "Publisher drain success")
 
 
 class DataPublisher:
@@ -168,6 +178,113 @@ class DataPublisher:
         self._buffer_warned_mqtt = False
         self._buffer_warned_influx = False
         self._active_influx_is_backup = False
+
+        # 幂等/去重：给每条数据生成稳定 id（下游可用来去重）
+        # 注意：QoS1/2 仍可能导致“至少一次”投递；id 用于消费端幂等处理
+        self.id_prefix = os.getenv("PUBLISH_ID_PREFIX", self.line_id)
+
+        # 磁盘保护：低剩余空间/磁盘满时停止落盘，避免打爆节点
+        self.buffer_min_free_bytes = int(os.getenv("BUFFER_MIN_FREE_BYTES", "0") or "0")
+        self.disable_persist_on_enospc = os.getenv("DISABLE_PERSIST_ON_ENOSPC", "true").lower() == "true"
+        self._persist_disabled = {"mqtt": False, "influx": False}
+
+        # 背压：采集侧可读取该建议延迟以适度放慢（避免下游长期不可用导致缓冲爆炸）
+        self.backpressure_enabled = os.getenv("BACKPRESSURE_ENABLED", "true").lower() == "true"
+        self.backpressure_max_delay_sec = float(os.getenv("BACKPRESSURE_MAX_DELAY_SEC", "1.0") or "1.0")
+        self.backpressure_ratio_threshold = float(os.getenv("BACKPRESSURE_RATIO_THRESHOLD", "0.9") or "0.9")
+
+    def get_backpressure_delay(self) -> float:
+        """
+        给采集侧的“建议延迟”（秒）。当缓冲接近满时返回一个小延迟。
+        """
+        if not self.backpressure_enabled:
+            return 0.0
+        try:
+            mqtt_ratio = len(self.mqtt_buffer) / float(self.mqtt_buffer.maxlen or 1)
+            influx_ratio = len(self.influx_buffer) / float(self.influx_buffer.maxlen or 1)
+            ratio = max(mqtt_ratio, influx_ratio)
+            if ratio < self.backpressure_ratio_threshold:
+                return 0.0
+            span = max(1e-6, (1.0 - self.backpressure_ratio_threshold))
+            return max(
+                0.0,
+                min(
+                    self.backpressure_max_delay_sec,
+                    (ratio - self.backpressure_ratio_threshold) / span * self.backpressure_max_delay_sec,
+                ),
+            )
+        except Exception:
+            return 0.0
+
+    def _disk_free_bytes(self) -> int:
+        try:
+            st = os.statvfs(str(self.buffer_dir))
+            return int(st.f_bavail) * int(st.f_frsize)
+        except Exception:
+            return 0
+
+    def _make_msg_id(self, kind: str, tag: str, ts_ns: int) -> str:
+        """
+        生成稳定消息 ID，避免 payload 过长：sha1(kind:line:tag:ts_ns) 截断。
+        """
+        base = f"{kind}:{self.id_prefix}:{tag}:{ts_ns}"
+        return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+
+    def _to_ts_ns(self, timestamp: Optional[float]) -> int:
+        """
+        将秒级时间戳（float）转换为纳秒（int）。
+        若 timestamp 为 None，使用 time.time_ns()。
+        """
+        if timestamp is None:
+            return time.time_ns()
+        try:
+            return int(float(timestamp) * 1_000_000_000)
+        except Exception:
+            return time.time_ns()
+
+    def _influx_entry_ts_sec(self, entry: dict) -> float:
+        """
+        兼容旧/新落盘格式：
+        - 新：ts_ns=int
+        - 旧：ts=float(seconds) 或 ts=int(seconds)
+        """
+        if not entry:
+            return time.time()
+        ts_ns = entry.get("ts_ns")
+        if ts_ns is not None:
+            try:
+                return float(int(ts_ns)) / 1_000_000_000
+            except Exception:
+                pass
+        ts = entry.get("ts")
+        try:
+            ts_f = float(ts)
+            # 兼容：若旧 entry 错把纳秒塞进 ts，则按纳秒处理
+            if ts_f > 1_000_000_000_000:  # ~2001-09-09 之后的纳秒量级
+                return ts_f / 1_000_000_000
+            return ts_f
+        except Exception:
+            return time.time()
+
+    def _to_ts_ns_any(self, ts: object) -> int:
+        """
+        兼容输入：
+        - None -> time.time_ns()
+        - float/int(秒) -> 转 ns
+        - int(ns) -> 原样（通过数量级判断）
+        """
+        if ts is None:
+            return time.time_ns()
+        try:
+            if isinstance(ts, int):
+                # 粗略判断：>1e12 基本可视为 ns
+                if ts > 1_000_000_000_000:
+                    return int(ts)
+                return int(ts) * 1_000_000_000
+            # float seconds
+            return int(float(ts) * 1_000_000_000)
+        except Exception:
+            return time.time_ns()
     
     async def connect(self):
         """
@@ -433,7 +550,9 @@ class DataPublisher:
             unit: 工程单位（如 ℃、%）
             timestamp: 时间戳（默认当前时间）
         """
-        ts = time.time() if timestamp is None else timestamp
+        ts_ns = self._to_ts_ns(timestamp)
+        ts_sec = int(ts_ns // 1_000_000_000)
+        msg_id = self._make_msg_id("tag", tag_name, ts_ns)
         
         # 构造消息数据
         data = {
@@ -441,7 +560,9 @@ class DataPublisher:
             "tag": tag_name,         # 标签名
             "value": value,          # 数值
             "unit": unit,            # 单位
-            "ts": int(ts),           # 时间戳（秒）
+            "ts": ts_sec,            # 时间戳（秒）
+            "ts_ns": ts_ns,          # 时间戳（纳秒）
+            "id": msg_id,            # 幂等 ID（下游可用于去重）
         }
         
         # 发布到 MQTT（供实时订阅者消费）
@@ -449,7 +570,7 @@ class DataPublisher:
         await self._publish_mqtt(topic, data, qos=1)
         
         # 写入 InfluxDB（供历史查询）
-        self._write_influxdb(tag_name, value, unit, ts)
+        self._write_influxdb(tag_name, value, unit, ts_ns)
     
     async def _publish_mqtt(self, topic: str, data: dict, qos: int = 1):
         """
@@ -500,7 +621,7 @@ class DataPublisher:
         except RuntimeError:
             pass
     
-    def _write_influxdb(self, tag_name: str, value: float, unit: str, timestamp: float, retries: int = 2):
+    def _write_influxdb(self, tag_name: str, value: float, unit: str, ts_ns: int, retries: int = 2):
         """
         写入数据到 InfluxDB
         
@@ -510,24 +631,27 @@ class DataPublisher:
             tag_name: 标签名（作为 tag）
             value: 数值（作为 field）
             unit: 单位（作为 field）
-            timestamp: 时间戳（纳秒精度）
+            ts_ns: 时间戳（纳秒）
         """
         if not self.write_api:
-            self._buffer_influx(tag_name, value, unit, timestamp)
+            self._buffer_influx(tag_name, value, unit, ts_ns)
             return
 
-        now = time.time()
-        if self.ts_max_skew_sec > 0 and abs(now - timestamp) > self.ts_max_skew_sec:
-            logger.warning("ts_skew_detected", tag=tag_name, ts=timestamp, now=now, skew=now - timestamp)
+        now_ns = time.time_ns()
+        if self.ts_max_skew_sec > 0:
+            skew_sec = abs(now_ns - int(ts_ns)) / 1_000_000_000
+            if skew_sec > self.ts_max_skew_sec:
+                logger.warning("ts_skew_detected", tag=tag_name, ts_ns=ts_ns, now_ns=now_ns, skew_sec=skew_sec)
 
         # 速率限制：超过速率则缓冲，避免打爆写入
+        now = time.time()
         if self.influx_max_points_per_sec > 0:
             if now - self._rate_window_start >= 1:
                 self._rate_window_start = now
                 self._rate_points = 0
             if self._rate_points >= self.influx_max_points_per_sec:
                 INFLUX_WRITE_RATE_LIMITED.inc()
-                self._buffer_influx(tag_name, value, unit, timestamp)
+                self._buffer_influx(tag_name, value, unit, ts_ns)
                 return
             self._rate_points += 1
 
@@ -535,7 +659,7 @@ class DataPublisher:
             .tag("tag", tag_name) \
             .field("value", value) \
             .field("unit", unit) \
-            .time(int(timestamp * 1e9))  # 转换为纳秒
+            .time(int(ts_ns))  # 直接使用纳秒时间戳（幂等）
 
         self.influx_pending_batch.append(point)
         INFLUX_PENDING_BATCH_SIZE.set(len(self.influx_pending_batch))
@@ -548,6 +672,7 @@ class DataPublisher:
         if len(self.mqtt_buffer) >= self.mqtt_buffer.maxlen:
             oldest = self.mqtt_buffer.popleft()
             logger.warning("mqtt_buffer_dropped_oldest", maxlen=self.mqtt_buffer.maxlen)
+            BUFFER_DROPPED_TOTAL.labels("mqtt").inc()
             self._dead_letter(self.mqtt_dead_letter, oldest)
         entry = {"topic": topic, "data": data, "qos": qos, "ts": int(time.time())}
         self.mqtt_buffer.append(entry)
@@ -556,13 +681,16 @@ class DataPublisher:
         self._update_buffer_age_metrics()
         self._check_buffer_thresholds()
 
-    def _buffer_influx(self, tag_name: str, value: float, unit: str, timestamp: float):
+    def _buffer_influx(self, tag_name: str, value: float, unit: str, timestamp):
         """将 Influx 数据加入缓冲。"""
         if len(self.influx_buffer) >= self.influx_buffer.maxlen:
             oldest = self.influx_buffer.popleft()
             logger.warning("influx_buffer_dropped_oldest", maxlen=self.influx_buffer.maxlen)
+            BUFFER_DROPPED_TOTAL.labels("influx").inc()
             self._dead_letter(self.influx_dead_letter, oldest)
-        entry = {"tag": tag_name, "value": value, "unit": unit, "ts": timestamp}
+        # 统一使用 ts_ns，保证重放写入幂等（相同 measurement+tag+timestamp 会覆盖）
+        ts_ns = self._to_ts_ns_any(timestamp)
+        entry = {"tag": tag_name, "value": value, "unit": unit, "ts_ns": int(ts_ns)}
         self.influx_buffer.append(entry)
         INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
         self._persist_buffer(self.influx_buffer_file, entry, enable=self.persist_influx_buffer)
@@ -607,11 +735,15 @@ class DataPublisher:
             item = self.influx_buffer.popleft()
             INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
             try:
+                ts_sec = self._influx_entry_ts_sec(item)
+                ts_ns = item.get("ts_ns")
+                if ts_ns is None:
+                    ts_ns = int(ts_sec * 1_000_000_000)
                 point = Point(self.measurement) \
                     .tag("tag", item["tag"]) \
                     .field("value", item["value"]) \
                     .field("unit", item["unit"]) \
-                    .time(int(item["ts"] * 1e9))
+                    .time(int(ts_ns))
                 self.write_api.write(
                     bucket=self.influx_bucket,
                     org=self.influx_org,
@@ -641,8 +773,16 @@ class DataPublisher:
                     tag_name = tag.get("tag")
                     val = pt._fields.get("value")
                     unit = pt._fields.get("unit", "")
-                    ts = pt._time / 1e9
-                    self._buffer_influx(tag_name, val, unit, ts)
+                    # pt._time 可能是纳秒或 datetime；兜底用当前时间
+                    ts_ns = None
+                    try:
+                        if isinstance(pt._time, int):
+                            ts_ns = int(pt._time)
+                    except Exception:
+                        ts_ns = None
+                    if ts_ns is None:
+                        ts_ns = time.time_ns()
+                    self._buffer_influx(tag_name, val, unit, ts_ns)
                 except Exception:
                     continue
             self.influx_pending_batch.clear()
@@ -668,8 +808,15 @@ class DataPublisher:
                     tag_name = tag.get("tag")
                     val = pt._fields.get("value")
                     unit = pt._fields.get("unit", "")
-                    ts = pt._time / 1e9
-                    self._buffer_influx(tag_name, val, unit, ts)
+                    ts_ns = None
+                    try:
+                        if isinstance(pt._time, int):
+                            ts_ns = int(pt._time)
+                    except Exception:
+                        ts_ns = None
+                    if ts_ns is None:
+                        ts_ns = time.time_ns()
+                    self._buffer_influx(tag_name, val, unit, ts_ns)
                 except Exception:
                     continue
             self.influx_pending_batch.clear()
@@ -679,21 +826,69 @@ class DataPublisher:
     def _persist_buffer(self, path: Path, entry: dict, enable: bool):
         if not enable:
             return
+        buf_type = "mqtt" if "mqtt" in path.name else "influx"
+        if self._persist_disabled.get(buf_type):
+            BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
+            return
+        if self.buffer_min_free_bytes > 0:
+            free_b = self._disk_free_bytes()
+            if free_b and free_b < self.buffer_min_free_bytes:
+                BUFFER_PERSIST_FAILURE.labels(buf_type, "low_disk").inc()
+                BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
+                self._persist_disabled[buf_type] = True
+                logger.error(
+                    "buffer_persist_disabled_low_disk",
+                    type=buf_type,
+                    free_bytes=free_b,
+                    min_free_bytes=self.buffer_min_free_bytes,
+                )
+                return
         try:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception as e:
+            reason = e.__class__.__name__
+            if isinstance(e, OSError) and getattr(e, "errno", None) == errno.ENOSPC:
+                reason = "ENOSPC"
+                if self.disable_persist_on_enospc:
+                    self._persist_disabled[buf_type] = True
+                    BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
             logger.warning("buffer_persist_failed", path=str(path), error=str(e))
+            BUFFER_PERSIST_FAILURE.labels(buf_type, reason).inc()
 
     def _persist_full_buffer(self, path: Path, entries: list, enable: bool):
         if not enable:
             return
+        buf_type = "mqtt" if "mqtt" in path.name else "influx"
+        if self._persist_disabled.get(buf_type):
+            BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
+            return
+        if self.buffer_min_free_bytes > 0:
+            free_b = self._disk_free_bytes()
+            if free_b and free_b < self.buffer_min_free_bytes:
+                BUFFER_PERSIST_FAILURE.labels(buf_type, "low_disk").inc()
+                BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
+                self._persist_disabled[buf_type] = True
+                logger.error(
+                    "buffer_persist_disabled_low_disk",
+                    type=buf_type,
+                    free_bytes=free_b,
+                    min_free_bytes=self.buffer_min_free_bytes,
+                )
+                return
         try:
             with path.open("w", encoding="utf-8") as f:
                 for entry in entries:
                     f.write(json.dumps(entry) + "\n")
         except Exception as e:
+            reason = e.__class__.__name__
+            if isinstance(e, OSError) and getattr(e, "errno", None) == errno.ENOSPC:
+                reason = "ENOSPC"
+                if self.disable_persist_on_enospc:
+                    self._persist_disabled[buf_type] = True
+                    BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
             logger.warning("buffer_persist_full_failed", path=str(path), error=str(e))
+            BUFFER_PERSIST_FAILURE.labels(buf_type, reason).inc()
 
     def _load_persisted_buffers(self):
         """启动时加载持久化缓冲。"""
@@ -729,8 +924,8 @@ class DataPublisher:
         else:
             MQTT_BUFFER_OLDEST_AGE_SEC.set(0)
         if self.influx_buffer:
-            oldest = self.influx_buffer[0].get("ts") or now
-            INFLUX_BUFFER_OLDEST_AGE_SEC.set(max(0, now - oldest))
+            oldest_sec = self._influx_entry_ts_sec(self.influx_buffer[0])
+            INFLUX_BUFFER_OLDEST_AGE_SEC.set(max(0, now - oldest_sec))
         else:
             INFLUX_BUFFER_OLDEST_AGE_SEC.set(0)
 
@@ -739,6 +934,10 @@ class DataPublisher:
         try:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
+            if "mqtt" in path.name:
+                BUFFER_DEADLETTER_TOTAL.labels("mqtt").inc()
+            else:
+                BUFFER_DEADLETTER_TOTAL.labels("influx").inc()
         except Exception as e:
             logger.warning("dead_letter_write_failed", path=str(path), error=str(e))
 
@@ -771,7 +970,32 @@ class DataPublisher:
             "mqtt_buffer_size": len(self.mqtt_buffer),
             "influx_buffer_size": len(self.influx_buffer),
             "mqtt_active_broker": "backup" if self._active_mqtt_is_backup else "primary",
+            "influx_active_host": "backup" if self._active_influx_is_backup else "primary",
+            "persist_disabled": dict(self._persist_disabled),
         }
+
+    async def drain(self, timeout_sec: float = 10.0, interval_sec: float = 0.2) -> bool:
+        """
+        停机前尽力清空缓冲队列（超时可控）。
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout_sec or 0.0))
+        while time.monotonic() < deadline:
+            pending = bool(self.mqtt_buffer) or bool(self.influx_buffer) or bool(self.influx_pending_batch)
+            if not pending:
+                PUBLISHER_DRAIN_SUCCESS.inc()
+                return True
+
+            if self.mqtt_buffer:
+                await self._ensure_mqtt()
+            if self.influx_buffer or self.influx_pending_batch:
+                await self._ensure_influx()
+
+            self._flush_influx_pending_batch()
+            await self.flush_buffers()
+            await asyncio.sleep(interval_sec)
+
+        PUBLISHER_DRAIN_TIMEOUT.inc()
+        return False
     
     async def publish_alarm(self, tag_name: str, alarm_type: str, value: float, threshold: float):
         """
@@ -785,15 +1009,18 @@ class DataPublisher:
             value: 触发时的数值
             threshold: 报警阈值
         """
-        import time
-        
+        ts_ns = self._to_ts_ns(None)
+        msg_id = self._make_msg_id(f"alarm:{alarm_type}", tag_name, ts_ns)
+
         alarm_data = {
             "line": self.line_id,
             "tag": tag_name,
             "type": alarm_type,
             "value": value,
             "threshold": threshold,
-            "ts": int(time.time()),
+            "ts": int(ts_ns // 1_000_000_000),
+            "ts_ns": ts_ns,
+            "id": msg_id,
         }
         
         # 使用 QoS=2 确保报警消息可靠送达（至少一次送达语义；最终可靠性由缓冲重放兜底）

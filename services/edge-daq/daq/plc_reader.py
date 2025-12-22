@@ -71,6 +71,16 @@ PLC_SCAN_DURATION_SEC = _get_or_create_collector(
     "PLC scan duration (seconds)",
     buckets=(0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10),
 )
+PLC_SCAN_BACKPRESSURE_DELAY_SEC = _get_or_create_collector(
+    "plc_scan_backpressure_delay_seconds",
+    Gauge,
+    "PLC scan backpressure delay applied (seconds)",
+)
+PLC_SCAN_BACKPRESSURE_TOTAL = _get_or_create_collector(
+    "plc_scan_backpressure_total",
+    Counter,
+    "PLC scan cycles delayed due to downstream backpressure",
+)
 
 
 class PLCReader:
@@ -154,6 +164,20 @@ class PLCReader:
         next_heartbeat = time.monotonic() + float(self.heartbeat_interval or 5.0)
 
         while self.running:
+            # 背压：下游长期不可用时适度放慢采集，避免缓冲爆炸
+            bp_delay = 0.0
+            try:
+                if self.publisher and hasattr(self.publisher, "get_backpressure_delay"):
+                    bp_delay = float(self.publisher.get_backpressure_delay() or 0.0)
+            except Exception:
+                bp_delay = 0.0
+            if bp_delay > 0:
+                PLC_SCAN_BACKPRESSURE_TOTAL.inc()
+                PLC_SCAN_BACKPRESSURE_DELAY_SEC.set(bp_delay)
+                await asyncio.sleep(bp_delay)
+            else:
+                PLC_SCAN_BACKPRESSURE_DELAY_SEC.set(0)
+
             scheduled = next_run
             start_mono = time.monotonic()
             PLC_SCAN_LAG_SEC.set(max(0.0, start_mono - scheduled))

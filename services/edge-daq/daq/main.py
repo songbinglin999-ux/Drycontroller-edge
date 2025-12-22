@@ -220,6 +220,13 @@ class DAQService:
         
         # 断开发布器连接
         if self.publisher:
+            # 停机尽力重放缓冲（超时可控）
+            try:
+                drain_timeout = float(os.getenv("PUBLISHER_DRAIN_TIMEOUT_SEC", "10") or "10")
+            except Exception:
+                drain_timeout = 10.0
+            if hasattr(self.publisher, "drain"):
+                await self.publisher.drain(timeout_sec=drain_timeout)
             await self.publisher.flush_buffers()
             await self.publisher.disconnect()
         

@@ -176,3 +176,113 @@ groups:
           summary: "Influx 缓冲滞留过久"
           description: "最老 Influx 缓冲数据滞留超过 {{ $value }} 秒。"
 
+      - alert: MqttSwitchedToBackup
+        expr: mqtt_active_broker == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MQTT 已切换到备链路"
+          description: "edge-daq 已连续 5 分钟使用 MQTT 备 broker（可能主 broker 异常）。"
+
+      - alert: InfluxSwitchedToBackup
+        expr: influx_active_host == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "InfluxDB 已切换到备链路"
+          description: "edge-daq 已连续 5 分钟使用 InfluxDB 备 host（可能主 Influx 异常）。"
+
+      - alert: InfluxReconnectStorm
+        expr: increase(influx_reconnect_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "InfluxDB 频繁重连"
+          description: "5 分钟内 InfluxDB 重连次数 {{ $value }}，请检查网络/Influx 稳定性。"
+
+      - alert: BufferPersistDisabled
+        expr: max by (type) (buffer_persist_disabled) == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "缓冲落盘已被禁用"
+          description: "type={{ $labels.type }} 的缓冲落盘被禁用（可能磁盘空间不足/ENOSPC），断网时可能增加数据丢失风险。"
+
+      - alert: BufferPersistFailures
+        expr: sum by (type, reason) (increase(buffer_persist_failure_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "缓冲落盘失败"
+          description: "5 分钟内 type={{ $labels.type }} reason={{ $labels.reason }} 发生落盘失败 {{ $value }} 次。"
+
+      - alert: BufferDropped
+        expr: sum by (type) (increase(buffer_dropped_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "缓冲队列发生丢弃"
+          description: "5 分钟内 type={{ $labels.type }} 缓冲因队列满丢弃 {{ $value }} 条（已写死信）。"
+
+      - alert: DeadletterWritten
+        expr: sum by (type) (increase(buffer_deadletter_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "产生死信数据"
+          description: "5 分钟内 type={{ $labels.type }} 写入死信 {{ $value }} 条，请检查下游与缓冲策略。"
+
+      - alert: PublisherDrainTimeout
+        expr: increase(publisher_drain_timeout_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "停机 drain 超时"
+          description: "10 分钟内出现 drain 超时，停机可能未完全重放缓冲数据。"
+
+  - name: edge-daq-acquisition
+    rules:
+      - alert: PlcScanOverrunHigh
+        expr: increase(plc_scan_overrun_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "采集周期超时（overrun）频繁"
+          description: "5 分钟内采集周期 overrun {{ $value }} 次，可能采集点过多或下游背压/网络异常。"
+
+      - alert: PlcScanSkipped
+        expr: increase(plc_scan_skipped_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "采集跳周期"
+          description: "5 分钟内出现采集跳周期（missed cycles）{{ $value }} 次，数据连续性受影响。"
+
+      - alert: PlcScanLagHigh
+        expr: max_over_time(plc_scan_lag_seconds[5m]) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "采集启动抖动（lag）过大"
+          description: "5 分钟内采集启动 lag 最大值超过 {{ $value }} 秒，可能存在系统负载/事件循环阻塞。"
+
+      - alert: PlcScanBackpressureActive
+        expr: increase(plc_scan_backpressure_total[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "采集触发背压降速"
+          description: "10 分钟内采集因下游背压被降速 {{ $value }} 次，请检查 MQTT/Influx 下游与缓冲水位。"
+
