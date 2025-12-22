@@ -1,4 +1,4 @@
-.PHONY: help dev build start stop restart logs clean test
+.PHONY: help dev build start stop restart logs clean test validate
 
 help:
 	@echo "工业烘干智能控制系统 - 常用命令"
@@ -11,6 +11,7 @@ help:
 	@echo "make logs      - 查看日志"
 	@echo "make clean     - 清理容器和数据"
 	@echo "make test      - 运行测试"
+	@echo "make validate  - 校验 edge-daq 配置（tags.yaml）"
 	@echo ""
 
 dev:
@@ -45,4 +46,8 @@ clean:
 test:
 	@echo "运行测试..."
 	pytest
+
+validate:
+	@echo "校验 edge-daq 配置..."
+	python scripts/validate-daq-config.py --file configs/tags.yaml
 
