@@ -50,6 +50,10 @@ MQTT_BUFFER_SIZE = Gauge("mqtt_buffer_size", "MQTT pending buffer size")
 INFLUX_BUFFER_SIZE = Gauge("influx_buffer_size", "Influx pending buffer size")
 MQTT_BUFFER_OLDEST_AGE_SEC = Gauge("mqtt_buffer_oldest_age_sec", "Oldest MQTT buffered message age (s)")
 INFLUX_BUFFER_OLDEST_AGE_SEC = Gauge("influx_buffer_oldest_age_sec", "Oldest Influx buffered point age (s)")
+INFLUX_PENDING_BATCH_SIZE = Gauge("influx_pending_batch_size", "Pending batch points before write")
+INFLUX_WRITE_RATE_LIMITED = Counter("influx_write_rate_limited_total", "Influx writes deferred by rate limit")
+INFLUX_BUFFER_WARN = Counter("influx_buffer_warn_total", "Influx buffer exceeded warn threshold")
+MQTT_BUFFER_WARN = Counter("mqtt_buffer_warn_total", "MQTT buffer exceeded warn threshold")
 
 
 class DataPublisher:
@@ -106,6 +110,13 @@ class DataPublisher:
         self.influx_bucket = os.getenv("INFLUXDB_BUCKET", "industrial-data")
         self.measurement = os.getenv("INFLUXDB_MEASUREMENT", "industrial_data")
         self.influx_require_auth = os.getenv("INFLUX_REQUIRE_AUTH", "true").lower() == "true"
+        self.influx_host_backup = os.getenv("INFLUXDB_HOST_BACKUP", "")
+        self.influx_port_backup = os.getenv("INFLUXDB_PORT_BACKUP", "")
+        self.influx_scheme_backup = os.getenv("INFLUXDB_SCHEME_BACKUP", self.influx_scheme)
+        self.influx_tls_ca = os.getenv("INFLUXDB_TLS_CA", "")
+        self.influx_tls_cert = os.getenv("INFLUXDB_TLS_CERT", "")
+        self.influx_tls_key = os.getenv("INFLUXDB_TLS_KEY", "")
+        self.influx_verify_ssl = os.getenv("INFLUXDB_VERIFY_SSL", "true").lower() == "true"
 
         # MQTT 主题配置
         self.realtime_topic = os.getenv(
@@ -124,6 +135,24 @@ class DataPublisher:
         self.persist_mqtt_buffer = os.getenv("MQTT_BUFFER_PERSIST", "true").lower() == "true"
         self.persist_influx_buffer = os.getenv("INFLUX_BUFFER_PERSIST", "true").lower() == "true"
         self._load_persisted_buffers()
+        # 缓冲自动重放设置
+        self.buffer_flush_interval = float(os.getenv("BUFFER_FLUSH_INTERVAL", "5") or "5")
+        self._flush_task = None
+        # Influx 批量与速率控制
+        self.influx_batch_max = int(os.getenv("INFLUX_BATCH_MAX", "500") or "500")
+        self.influx_flush_interval = float(os.getenv("INFLUX_FLUSH_INTERVAL", "2") or "2")
+        self.influx_max_points_per_sec = int(os.getenv("INFLUX_MAX_POINTS_PER_SEC", "0") or "0")
+        self.influx_pending_batch = []
+        self._last_influx_flush_ts = time.time()
+        self._rate_window_start = time.time()
+        self._rate_points = 0
+        # 时间戳质量控制
+        self.ts_max_skew_sec = float(os.getenv("TS_MAX_SKEW_SEC", "300") or "300")
+        # 缓冲告警阈值
+        self.mqtt_buffer_warn = int(os.getenv("MQTT_BUFFER_WARN", "800") or "800")
+        self.influx_buffer_warn = int(os.getenv("INFLUX_BUFFER_WARN", "1600") or "1600")
+        self._buffer_warned_mqtt = False
+        self._buffer_warned_influx = False
     
     async def connect(self):
         """
@@ -138,6 +167,10 @@ class DataPublisher:
         await self._connect_influxdb()
         
         self.connected = True
+        # 启动后台缓冲冲刷，避免长时间堆积
+        if self.buffer_flush_interval > 0:
+            loop = asyncio.get_running_loop()
+            self._flush_task = loop.create_task(self._flush_loop(), name="publisher_flush_loop")
         logger.info("data_publisher_connected")
     
     async def disconnect(self):
@@ -146,6 +179,14 @@ class DataPublisher:
         
         停止 MQTT 网络循环并关闭 InfluxDB 客户端
         """
+        self.connected = False
+        if self._flush_task:
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+            self._flush_task = None
         await self.flush_buffers()
         if self.mqtt_client:
             self.mqtt_client.loop_stop()
@@ -160,6 +201,16 @@ class DataPublisher:
         
         self.connected = False
         logger.info("data_publisher_disconnected")
+    
+    async def _flush_loop(self):
+        """后台定时重放缓冲，连接恢复后自动补数据。"""
+        try:
+            while self.connected:
+                await asyncio.sleep(self.buffer_flush_interval)
+                self._flush_influx_pending_batch()
+                await self.flush_buffers()
+        except asyncio.CancelledError:
+            return
     
     async def _connect_mqtt(self):
         """
@@ -220,19 +271,41 @@ class DataPublisher:
         创建异步写入 API 以提高写入性能
         """
         try:
-            url = f"{self.influx_scheme}://{self.influx_host}:{self.influx_port}"
-            
-            self.influx_client = InfluxDBClient(
-                url=url,
-                token=self.influx_token,
-                org=self.influx_org,
-            )
+            def _connect_one(host, port, scheme):
+                url = f"{scheme}://{host}:{port}"
+                client = InfluxDBClient(
+                    url=url,
+                    token=self.influx_token,
+                    org=self.influx_org,
+                    ssl_ca_cert=self.influx_tls_ca or None,
+                    ssl_cert_file=self.influx_tls_cert or None,
+                    ssl_key_file=self.influx_tls_key or None,
+                    verify_ssl=self.influx_verify_ssl,
+                )
+                return url, client
+
             if self.influx_require_auth and not self.influx_token:
                 raise RuntimeError("InfluxDB token is required. Set INFLUXDB_TOKEN or INFLUX_REQUIRE_AUTH=false explicitly.")
-            
-            # 使用异步写入模式，提高吞吐量
+
+            url = None
+            client = None
+            try:
+                url, client = _connect_one(self.influx_host, self.influx_port, self.influx_scheme)
+                client.health()
+            except Exception as primary_err:
+                if not self.influx_host_backup:
+                    raise primary_err
+                logger.warning("influx_primary_connect_failed_try_backup", error=str(primary_err))
+                url, client = _connect_one(
+                    self.influx_host_backup,
+                    self.influx_port_backup or self.influx_port,
+                    self.influx_scheme_backup,
+                )
+                client.health()
+
+            self.influx_client = client
             self.write_api = self.influx_client.write_api(write_options=ASYNCHRONOUS)
-            
+
             logger.info(
                 "influxdb_publisher_connected",
                 url=url,
@@ -241,7 +314,7 @@ class DataPublisher:
             )
             INFLUX_CONNECTED.set(1)
             self.influx_connected = True
-        
+
         except Exception as e:
             logger.error("influxdb_connect_error", error=str(e))
             self.connected = False
@@ -267,6 +340,7 @@ class DataPublisher:
     
     async def flush_buffers(self):
         """尽力刷新缓冲队列，避免停机丢数据。"""
+        self._flush_influx_pending_batch()
         await self._flush_mqtt_buffer()
         await self._flush_influx_buffer()
     
@@ -390,40 +464,35 @@ class DataPublisher:
             timestamp: 时间戳（纳秒精度）
         """
         if not self.write_api:
+            self._buffer_influx(tag_name, value, unit, timestamp)
             return
-        
-        for attempt in range(1, retries + 2):
-            try:
-                # 构建数据点
-                point = Point(self.measurement) \
-                    .tag("tag", tag_name) \
-                    .field("value", value) \
-                    .field("unit", unit) \
-                    .time(int(timestamp * 1e9))  # 转换为纳秒
-                
-                self.write_api.write(
-                    bucket=self.influx_bucket,
-                    org=self.influx_org,
-                    record=point,
-                )
+
+        now = time.time()
+        if self.ts_max_skew_sec > 0 and abs(now - timestamp) > self.ts_max_skew_sec:
+            logger.warning("ts_skew_detected", tag=tag_name, ts=timestamp, now=now, skew=now - timestamp)
+
+        # 速率限制：超过速率则缓冲，避免打爆写入
+        if self.influx_max_points_per_sec > 0:
+            if now - self._rate_window_start >= 1:
+                self._rate_window_start = now
+                self._rate_points = 0
+            if self._rate_points >= self.influx_max_points_per_sec:
+                INFLUX_WRITE_RATE_LIMITED.inc()
+                self._buffer_influx(tag_name, value, unit, timestamp)
                 return
-            
-            except Exception as e:
-                reason = e.__class__.__name__
-                INFLUX_WRITE_FAILURE.labels(reason).inc()
-                self.last_influx_error = str(e)
-                logger.error(
-                    "influxdb_write_error",
-                    tag=tag_name,
-                    attempt=attempt,
-                    error=str(e),
-                )
-                if attempt <= retries:
-                    INFLUX_WRITE_RETRY.inc()
-                time.sleep(min(0.2 * (2 ** (attempt - 1)), 2.0))
-        
-        # 超过重试后缓冲，避免丢数据
-        self._buffer_influx(tag_name, value, unit, timestamp)
+            self._rate_points += 1
+
+        point = Point(self.measurement) \
+            .tag("tag", tag_name) \
+            .field("value", value) \
+            .field("unit", unit) \
+            .time(int(timestamp * 1e9))  # 转换为纳秒
+
+        self.influx_pending_batch.append(point)
+        INFLUX_PENDING_BATCH_SIZE.set(len(self.influx_pending_batch))
+
+        if len(self.influx_pending_batch) >= self.influx_batch_max or (now - self._last_influx_flush_ts) >= self.influx_flush_interval:
+            self._flush_influx_pending_batch()
 
     def _buffer_mqtt(self, topic: str, data: dict, qos: int):
         """将 MQTT 消息加入缓冲，超过上限会丢弃最旧并告警。"""
@@ -435,6 +504,7 @@ class DataPublisher:
         MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
         self._persist_buffer(self.mqtt_buffer_file, entry, enable=self.persist_mqtt_buffer)
         self._update_buffer_age_metrics()
+        self._check_buffer_thresholds()
 
     def _buffer_influx(self, tag_name: str, value: float, unit: str, timestamp: float):
         """将 Influx 数据加入缓冲。"""
@@ -446,6 +516,7 @@ class DataPublisher:
         INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
         self._persist_buffer(self.influx_buffer_file, entry, enable=self.persist_influx_buffer)
         self._update_buffer_age_metrics()
+        self._check_buffer_thresholds()
 
     async def _flush_mqtt_buffer(self):
         """重放 MQTT 缓冲队列。"""
@@ -506,6 +577,52 @@ class DataPublisher:
             self._persist_full_buffer(self.influx_buffer_file, list(self.influx_buffer), enable=self.persist_influx_buffer)
             self._update_buffer_age_metrics()
 
+    def _flush_influx_pending_batch(self):
+        """将待写批次写入 Influx，失败则缓冲。"""
+        if not self.influx_pending_batch:
+            return
+        if not self.write_api:
+            for pt in self.influx_pending_batch:
+                try:
+                    tag = getattr(pt, "tags", {}) or {}
+                    tag_name = tag.get("tag")
+                    val = pt._fields.get("value")
+                    unit = pt._fields.get("unit", "")
+                    ts = pt._time / 1e9
+                    self._buffer_influx(tag_name, val, unit, ts)
+                except Exception:
+                    continue
+            self.influx_pending_batch.clear()
+            INFLUX_PENDING_BATCH_SIZE.set(0)
+            return
+        try:
+            self.write_api.write(
+                bucket=self.influx_bucket,
+                org=self.influx_org,
+                record=list(self.influx_pending_batch),
+            )
+            self.influx_pending_batch.clear()
+            INFLUX_PENDING_BATCH_SIZE.set(0)
+            self._last_influx_flush_ts = time.time()
+        except Exception as e:
+            reason = e.__class__.__name__
+            INFLUX_WRITE_FAILURE.labels(reason).inc()
+            self.last_influx_error = str(e)
+            logger.error("influxdb_batch_write_error", error=str(e), batch_size=len(self.influx_pending_batch))
+            for pt in self.influx_pending_batch:
+                try:
+                    tag = getattr(pt, "tags", {}) or {}
+                    tag_name = tag.get("tag")
+                    val = pt._fields.get("value")
+                    unit = pt._fields.get("unit", "")
+                    ts = pt._time / 1e9
+                    self._buffer_influx(tag_name, val, unit, ts)
+                except Exception:
+                    continue
+            self.influx_pending_batch.clear()
+            INFLUX_PENDING_BATCH_SIZE.set(0)
+            self._last_influx_flush_ts = time.time()
+
     def _persist_buffer(self, path: Path, entry: dict, enable: bool):
         if not enable:
             return
@@ -563,6 +680,24 @@ class DataPublisher:
             INFLUX_BUFFER_OLDEST_AGE_SEC.set(max(0, now - oldest))
         else:
             INFLUX_BUFFER_OLDEST_AGE_SEC.set(0)
+
+    def _check_buffer_thresholds(self):
+        """缓冲水位预警，便于监控接入报警。"""
+        if self.mqtt_buffer_warn > 0 and len(self.mqtt_buffer) >= self.mqtt_buffer_warn:
+            if not self._buffer_warned_mqtt:
+                logger.warning("mqtt_buffer_warn_threshold", size=len(self.mqtt_buffer), warn=self.mqtt_buffer_warn)
+                MQTT_BUFFER_WARN.inc()
+                self._buffer_warned_mqtt = True
+        else:
+            self._buffer_warned_mqtt = False
+
+        if self.influx_buffer_warn > 0 and len(self.influx_buffer) >= self.influx_buffer_warn:
+            if not self._buffer_warned_influx:
+                logger.warning("influx_buffer_warn_threshold", size=len(self.influx_buffer), warn=self.influx_buffer_warn)
+                INFLUX_BUFFER_WARN.inc()
+                self._buffer_warned_influx = True
+        else:
+            self._buffer_warned_influx = False
 
     def get_status(self) -> dict:
         """返回发布通路的健康状态摘要，供健康检查使用。"""

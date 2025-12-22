@@ -75,6 +75,7 @@ class DAQService:
         # 心跳状态
         self.heartbeat_miss_count = 0
         self.heartbeat_fail_count = 0
+        self.control_suspended = False
         
     async def load_config(self):
         """
@@ -278,6 +279,7 @@ class DAQService:
                 "heartbeat_miss_count": getattr(self, "heartbeat_miss_count", None),
                 "heartbeat_fail_count": getattr(self, "heartbeat_fail_count", None),
                 "publisher": self.publisher.get_status() if self.publisher else None,
+                "control_suspended": self.control_suspended,
             },
         }
 
@@ -288,6 +290,25 @@ class DAQService:
         """
         errors = []
         tags_cfg = (config or {}).get("tags", {})
+        acquisition = (config or {}).get("acquisition", {})
+        if acquisition:
+            scan_interval = acquisition.get("scan_interval")
+            if scan_interval is not None and float(scan_interval) <= 0:
+                errors.append("invalid_scan_interval")
+            batch_size = acquisition.get("batch_size")
+            if batch_size is not None and int(batch_size) < 0:
+                errors.append("invalid_batch_size")
+        heartbeat_cfg = (config or {}).get("heartbeat", {})
+        if heartbeat_cfg:
+            fc = int(heartbeat_cfg.get("function_code", 3) or 3)
+            if fc not in (3, 4, 16):
+                errors.append("invalid_heartbeat_function_code")
+            for field in ("read_address", "write_address"):
+                if heartbeat_cfg.get(field) is not None:
+                    try:
+                        int(heartbeat_cfg.get(field))
+                    except Exception:
+                        errors.append(f"invalid_heartbeat_{field}")
         seen = {}
         for section, categories in tags_cfg.items():
             if not isinstance(categories, dict):
@@ -323,6 +344,27 @@ class DAQService:
                     if t not in ("float", "int", "int32", "uint32", "bool"):
                         errors.append(f"invalid_type:{name}:{t}")
         return errors
+    
+    async def on_plc_heartbeat_timeout(self):
+        """
+        PLC 心跳超时的降级处理：
+        - 停止控制订阅，避免误下发
+        - 记录事件，供监控告警
+        """
+        if self.control_suspended:
+            return
+        logger.error("plc_heartbeat_timeout_triggered")
+        event_recorder.record_event(
+            "plc_heartbeat_timeout",
+            severity="error",
+            tags={"component": "edge-daq"},
+        )
+        self.control_suspended = True
+        if self.control_subscriber:
+            try:
+                await self.control_subscriber.stop()
+            finally:
+                self.control_subscriber = None
 
 
 async def main():

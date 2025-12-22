@@ -348,6 +348,10 @@ class PLCReader:
                             if self.heartbeat_state.heartbeat_miss_count >= self.heartbeat_timeout_cycles:
                                 logger.error("plc_heartbeat_missing", read_address=read_addr)
                                 PLC_HEARTBEAT_MISSING.inc()
+                                # 心跳超时触发降级与报警
+                                await self._publish_alarm("PLC_HEARTBEAT", "missing", val, 0)
+                                if hasattr(self.heartbeat_state, "on_plc_heartbeat_timeout"):
+                                    await self.heartbeat_state.on_plc_heartbeat_timeout()
                     else:
                         self.last_plc_heartbeat = val
                         if self.heartbeat_state:
