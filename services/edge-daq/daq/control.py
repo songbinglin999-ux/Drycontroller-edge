@@ -7,6 +7,7 @@
 import json
 import os
 import time
+import asyncio
 from typing import Any, Dict, Optional
 from collections import deque
 import hmac
@@ -79,17 +80,24 @@ class ControlSubscriber:
         self.idempotency_window_sec = float(os.getenv("CONTROL_IDEMPOTENCY_WINDOW_SEC", "30") or "30")
         self.require_timestamp = os.getenv("CONTROL_REQUIRE_TIMESTAMP", "true").lower() == "true"
         self.require_id = os.getenv("CONTROL_REQUIRE_ID", "true").lower() == "true"
-        self.require_signature = os.getenv("CONTROL_REQUIRE_SIGNATURE", "false").lower() == "true"
+        self.require_signature = os.getenv("CONTROL_REQUIRE_SIGNATURE", "true").lower() == "true"
         self.signature_secret = os.getenv("CONTROL_SIGNATURE_SECRET", "")
         cache_size = int(os.getenv("CONTROL_ID_CACHE_SIZE", "1000") or "1000")
         self._id_cache = deque(maxlen=cache_size)
         self._id_cache_set = set()
+        # asyncio 主事件循环（用于从 MQTT 回调线程安全调度协程）
+        self._loop = None
 
     async def start(self):
         """
         启动 MQTT 订阅
         """
         try:
+            # 记录启动时的事件循环，便于从 paho 网络线程回调里调度写入
+            try:
+                self._loop = asyncio.get_running_loop()
+            except Exception:
+                self._loop = None
             if not self.mqtt_tls and not self.mqtt_allow_insecure:
                 raise RuntimeError("MQTT TLS is required. Set MQTT_TLS=true or explicitly allow insecure via MQTT_ALLOW_INSECURE=true.")
             if not (self.mqtt_user and self.mqtt_password) and not self.control_allow_anonymous:
@@ -284,10 +292,29 @@ class ControlSubscriber:
                 )
                 self._ack(msg_id, tag_name, "error", value)
 
-        # 因为 on_message 在单独线程，异步调用需要用 loop
-        import asyncio
+        # 注意：paho-mqtt 的 on_message 回调运行在其网络线程中。
+        # 在真实运行时该线程通常没有 asyncio 事件循环；直接 get_event_loop() 可能抛异常导致控制失效。
+        # - 如果当前线程就是 asyncio 主循环线程：直接 create_task
+        # - 否则：用 run_coroutine_threadsafe 安全投递到 start() 捕获的主循环
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_do_write())
+        except RuntimeError:
+            if self._loop:
+                fut = asyncio.run_coroutine_threadsafe(_do_write(), self._loop)
+                # 不阻塞回调线程；记录可能的异常（避免静默失败）
+                def _log_future_result(f):
+                    try:
+                        exc = f.exception()
+                        if exc:
+                            logger.error("control_write_task_failed", error=str(exc))
+                    except Exception:
+                        return
 
-        asyncio.get_event_loop().create_task(_do_write())
+                fut.add_done_callback(_log_future_result)
+            else:
+                # 最后兜底：没有可用 loop 时直接同步运行（避免静默丢控制）
+                asyncio.run(_do_write())
         self.last_sent_ts[tag_name] = now
         if msg_id:
             self._remember_id(msg_id)

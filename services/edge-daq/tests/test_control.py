@@ -141,6 +141,7 @@ async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
     modbus = FakeModbus()
     monkeypatch.setenv("CONTROL_REQUIRE_ID", "false")
     monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "false")
+    monkeypatch.setenv("CONTROL_REQUIRE_SIGNATURE", "false")
     config = {
         "tags": {
             "sec": {

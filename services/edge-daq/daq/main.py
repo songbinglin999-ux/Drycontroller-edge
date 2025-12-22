@@ -30,7 +30,26 @@ from pathlib import Path
 from aiohttp import web
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from common.logging import setup_logging
+try:
+    # 部署镜像/monorepo 正常情况下应能直接 import
+    from common.logging import setup_logging
+except ModuleNotFoundError:
+    # 单测/本地直接在 services/edge-daq 下运行时，可能缺少将 Drycontroller/ 加入 PYTHONPATH 的步骤
+    # 这里做一次相对路径自修复：在父目录链上查找 common/logging/__init__.py，并把其父目录加入 sys.path
+    import sys
+
+    here = Path(__file__).resolve()
+    injected = False
+    for p in here.parents:
+        if (p / "common" / "logging" / "__init__.py").exists():
+            sys.path.insert(0, str(p))
+            injected = True
+            break
+    if not injected:
+        # 保持原异常语义，便于定位环境问题
+        raise
+
+    from common.logging import setup_logging
 
 event_recorder = setup_logging("edge-daq")
 logger = structlog.get_logger(__name__)
@@ -265,20 +284,31 @@ class DAQService:
         Returns:
             包含服务状态和详细信息的字典
         """
+        # publisher_connected 需尽量反映“真实通路连通性”，但也兼容测试/桩对象只提供 connected 的情况
+        pub_connected = False
+        if self.publisher:
+            if hasattr(self.publisher, "mqtt_connected") or hasattr(self.publisher, "influx_connected"):
+                pub_connected = bool(
+                    getattr(self.publisher, "mqtt_connected", False)
+                    or getattr(self.publisher, "influx_connected", False)
+                )
+            else:
+                pub_connected = bool(getattr(self.publisher, "connected", False))
+
         return {
             "success": True,
             "service": "edge-daq",
             "status": "running" if self.running else "starting",
             "timestamp": int(time.time()),
             "details": {
-                "publisher_connected": bool(self.publisher and self.publisher.connected),
+                "publisher_connected": pub_connected,
                 "use_simulator": self.simulator is not None,
                 "modbus": self.modbus_client.get_status() if self.modbus_client else None,
                 "scan_interval": getattr(self.plc_reader, "scan_interval", None),
                 "config_errors": len(self.validation_errors),
                 "heartbeat_miss_count": getattr(self, "heartbeat_miss_count", None),
                 "heartbeat_fail_count": getattr(self, "heartbeat_fail_count", None),
-                "publisher": self.publisher.get_status() if self.publisher else None,
+                "publisher": self.publisher.get_status() if (self.publisher and hasattr(self.publisher, "get_status")) else None,
                 "control_suspended": self.control_suspended,
             },
         }

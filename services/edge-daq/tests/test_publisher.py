@@ -36,6 +36,7 @@ class FakeWriteAPI:
 @pytest.mark.asyncio
 async def test_mqtt_buffer_persist_and_flush(monkeypatch, tmp_path):
     monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
     pub = DataPublisher()
     pub.mqtt_client = FakeMQTTClient()
     pub.persist_mqtt_buffer = True
@@ -57,6 +58,7 @@ async def test_mqtt_buffer_persist_and_flush(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_influx_buffer_persist_and_flush(monkeypatch, tmp_path):
     monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
     pub = DataPublisher()
     pub.persist_influx_buffer = True
     fake_write = FakeWriteAPI()
@@ -76,10 +78,30 @@ async def test_mqtt_auth_required(monkeypatch, tmp_path):
     monkeypatch.setenv("MQTT_REQUIRE_AUTH", "true")
     monkeypatch.setenv("MQTT_TLS", "true")
     monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
     pub = DataPublisher()
     pub.mqtt_user = ""
     pub.mqtt_password = ""
     await pub._connect_mqtt()
     assert pub.connected is False
     assert pub.last_mqtt_error
+
+
+@pytest.mark.asyncio
+async def test_publish_tag_data_buffers_when_mqtt_not_ready(monkeypatch, tmp_path):
+    """
+    工业现场 MQTT 未就绪（断网/未连上 broker）时，采集数据不应丢弃，应进入缓冲并可落盘重放。
+    """
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
+
+    pub = DataPublisher()
+    # 模拟 MQTT 未就绪 & Influx 未就绪
+    pub.mqtt_client = None
+    pub.write_api = None
+
+    await pub.publish_tag_data(tag_name="T", value=1.23, unit="u", timestamp=time.time())
+
+    assert len(pub.mqtt_buffer) == 1
+    assert len(pub.influx_buffer) == 1
 
