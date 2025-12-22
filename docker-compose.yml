@@ -90,6 +90,8 @@ services:
       - MQTT_PORT=${MQTT_PORT}
       - MQTT_USER=${MQTT_USER}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
+      # 控制闭环：签名密钥（必须与 edge-daq 的 CONTROL_SIGNATURE_SECRET 一致）
+      - CONTROL_SIGNATURE_SECRET=${CONTROL_SIGNATURE_SECRET}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
       - ./logs/edge-api:/logs/edge-api
@@ -122,6 +124,11 @@ services:
       - MQTT_PORT=${MQTT_PORT}
       - MQTT_USER=${MQTT_USER}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
+      # 开发/演示环境：当前 mosquitto 为 1883 明文；edge-daq 默认强制 TLS，因此需显式允许不安全连接
+      # 生产环境请改为 MQTT_TLS=true 并配置 broker TLS/ACL
+      - MQTT_ALLOW_INSECURE=true
+      # 控制闭环：验签密钥（必须与 edge-api 一致）
+      - CONTROL_SIGNATURE_SECRET=${CONTROL_SIGNATURE_SECRET}
       - INFLUXDB_HOST=${INFLUXDB_HOST}
       - INFLUXDB_PORT=${INFLUXDB_PORT}
       - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}

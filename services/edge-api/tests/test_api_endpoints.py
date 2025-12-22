@@ -20,9 +20,12 @@ from app.api.v1.system import router as system_router, get_system_status_service
 from app.api.v1.control import router as control_router, get_control_recommendation_service
 from app.api.v1.alarms import router as alarm_router, get_alarm_service
 from app.core.config import settings
+from app.services.control_command import get_control_command_service
 
 settings.CONTROL_API_KEYS = ["test-control"]
 settings.ADMIN_API_KEYS = ["test-admin"]
+# 让 tag_loader 能读到真实 tags.yaml（否则控制服务会拒绝所有 tag）
+settings.TAGS_CONFIG = str(ROOT / "configs" / "tags.yaml")
 
 
 class DummyAISvc:
@@ -69,6 +72,7 @@ app.dependency_overrides[get_ai_softsensor_service] = lambda: DummyAISvc()
 app.dependency_overrides[get_system_status_service] = lambda: DummySystemSvc()
 app.dependency_overrides[get_control_recommendation_service] = lambda: DummyControlSvc()
 app.dependency_overrides[get_alarm_service] = lambda: DummyAlarmSvc()
+app.dependency_overrides[get_control_command_service] = lambda: DummyControlCommandSvc()
 client = TestClient(app)
 
 
@@ -93,6 +97,35 @@ def test_control_recommend_endpoint():
     )
     assert resp.status_code == 200
     assert "recommendations" in resp.json()["data"]
+
+
+class DummyControlCommandSvc:
+    async def send_set(self, **kwargs):
+        # 模拟 ACK 成功闭环
+        return {
+            "success": True,
+            "status": "acked",
+            "data": {"id": "ctl_x", "tag": kwargs.get("tag"), "ack_status": "success", "value": kwargs.get("value")},
+            "timestamp": 1,
+        }
+
+    async def send_batch(self, **kwargs):
+        return {"success": True, "count": 1, "data": [{"success": True}], "timestamp": 1}
+
+    async def emergency_stop(self, **kwargs):
+        return {"success": True, "count": 1, "data": [{"success": True}], "timestamp": 1}
+
+
+def test_control_set_endpoint():
+    resp = client.post(
+        "/api/v1/control/set",
+        json={"tag": "DRYER1.FAN.SPEED", "value": 10, "wait_ack": True, "timeout_sec": 1.0},
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["status"] == "acked"
 
 
 def test_alarm_active_endpoint():
