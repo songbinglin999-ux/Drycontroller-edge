@@ -82,6 +82,7 @@ temp/
 *.tmp
 
 # Backup files
+backup/
 *.bak
 *.backup
 
