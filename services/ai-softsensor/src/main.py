@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 
 from aiohttp import web
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from common.logging import setup_logging
 from src.infer import SoftSensorModel
@@ -151,7 +152,18 @@ class SoftSensorService:
         async def health_handler(request):
             return web.json_response(self._health_payload())
 
+        async def ready_handler(request):
+            payload = self._ready_payload()
+            status = 200 if payload.get("ready") else 503
+            return web.json_response(payload, status=status)
+
+        async def metrics_handler(request):
+            data = generate_latest()
+            return web.Response(body=data, content_type=CONTENT_TYPE_LATEST)
+
         app.router.add_get("/health", health_handler)
+        app.router.add_get("/ready", ready_handler)
+        app.router.add_get("/metrics", metrics_handler)
         self.health_runner = web.AppRunner(app)
         await self.health_runner.setup()
         self.health_site = web.TCPSite(self.health_runner, "0.0.0.0", self.health_port)
@@ -173,7 +185,22 @@ class SoftSensorService:
             "timestamp": int(time.time()),
             "details": {
                 "model_loaded": self.model is not None,
-                "mqtt_connected": bool(self.mqtt_handler and self.mqtt_handler.client),
+                "mqtt_connected": bool(self.mqtt_handler and self.mqtt_handler.connected),
+            },
+        }
+
+    def _ready_payload(self):
+        model_loaded = self.model is not None
+        mqtt_ready = bool(self.mqtt_handler and self.mqtt_handler.connected)
+        ready = bool(self.running and model_loaded and mqtt_ready)
+        return {
+            "ready": ready,
+            "service": "ai-softsensor",
+            "timestamp": int(time.time()),
+            "details": {
+                "running": bool(self.running),
+                "model_loaded": model_loaded,
+                "mqtt_connected": mqtt_ready,
             },
         }
 

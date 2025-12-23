@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 import structlog
+import os
 
 
 @dataclass
@@ -195,7 +196,19 @@ class SelfHealManager:
             )
 
         if decision.action != "restart":
-            outcome.state_updates = state_updates
+            # escalate：防止无限重启风暴，进入更长冷却并清零失败计数，等待下一窗口再尝试
+            if decision.action == "escalate":
+                try:
+                    cooldown_sec = int(os.getenv("SELF_HEAL_ESCALATE_COOLDOWN_SEC", "1800") or "1800")
+                except Exception:
+                    cooldown_sec = 1800
+                state_updates.update(
+                    {
+                        "cooldown_until": now + max(0, cooldown_sec),
+                        "consecutive_failures": 0,
+                    }
+                )
+            outcome.state_updates = {k: v for k, v in state_updates.items() if v is not None}
             return outcome
 
         execution = await self.executor.restart_container(target.get("container"))

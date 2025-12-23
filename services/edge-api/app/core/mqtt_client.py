@@ -27,6 +27,9 @@ from typing import Callable, Dict, List, Optional
 
 import paho.mqtt.client as mqtt
 import structlog
+import asyncio
+import os
+import time
 
 from app.core.config import settings
 
@@ -76,14 +79,24 @@ class MQTTManager:
                 settings.MQTT_USER,
                 settings.MQTT_PASSWORD,
             )
-            
-            # 连接到 Broker，保持心跳间隔 60 秒
-            self.client.connect(
+
+            # 自动重连退避：避免 broker 抖动导致连接风暴
+            try:
+                min_delay = int(os.getenv("MQTT_RECONNECT_MIN_DELAY", "1") or "1")
+                max_delay = int(os.getenv("MQTT_RECONNECT_MAX_DELAY", "30") or "30")
+                if hasattr(self.client, "reconnect_delay_set"):
+                    self.client.reconnect_delay_set(min_delay=min_delay, max_delay=max_delay)
+            except Exception:
+                # 不影响主流程
+                pass
+
+            # 异步连接 + 后台网络线程，断线后由 paho 自动重连（配合 reconnect_delay_set）
+            self.client.connect_async(
                 settings.MQTT_BROKER,
                 settings.MQTT_PORT,
                 keepalive=60,
             )
-            
+
             # 启动后台网络循环线程
             self.client.loop_start()
             
@@ -92,6 +105,17 @@ class MQTTManager:
                 broker=settings.MQTT_BROKER,
                 port=settings.MQTT_PORT,
             )
+
+            # 尝试等待一小段时间让首次连接完成（不阻塞过久，避免启动卡死）
+            try:
+                timeout = float(os.getenv("MQTT_CONNECT_TIMEOUT_SEC", "5") or "5")
+            except Exception:
+                timeout = 5.0
+            start = time.time()
+            while not self.connected and time.time() - start < timeout:
+                await asyncio.sleep(0.05)
+            if not self.connected:
+                logger.warning("mqtt_connect_timeout", timeout_sec=timeout)
         
         except Exception as e:
             logger.error("mqtt_connect_failed", error=str(e))

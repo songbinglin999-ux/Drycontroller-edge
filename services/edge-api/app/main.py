@@ -6,7 +6,7 @@
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import structlog
 from contextlib import asynccontextmanager
 import time
@@ -20,6 +20,9 @@ from app.core.mqtt_client import mqtt_manager
 from app.services.event_bus import event_bus
 from app.services.health import get_system_readiness
 from app.services.ws_stream import ws_stream
+from app.services.metrics import refresh_metrics
+
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 # 设置日志
 event_recorder = setup_logging()
@@ -233,6 +236,16 @@ async def readiness_check():
         status_code=200 if healthy else status.HTTP_503_SERVICE_UNAVAILABLE,
         content=payload,
     )
+
+
+@app.get("/metrics")
+async def metrics():
+    """
+    Prometheus 指标端点（P0：90 天游泳可观测性）
+    """
+    refresh_metrics()
+    data = generate_latest()
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
 
 if __name__ == "__main__":

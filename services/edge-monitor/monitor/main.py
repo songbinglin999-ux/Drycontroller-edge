@@ -174,6 +174,16 @@ class MonitorService:
         self.write_api = None
         self.http_client: httpx.AsyncClient | None = None
         self.docker_client = None
+
+        # P0：连接可靠性（90 天游泳）
+        # - 连接失败不能永久停在 None，需要自动重试
+        # - 加指数退避 + 下次尝试时间，避免连接风暴
+        self._mqtt_reconnect_backoff = 1.0
+        self._mqtt_reconnect_backoff_max = float(os.getenv("MONITOR_MQTT_RECONNECT_MAX_SEC", "30") or "30")
+        self._next_mqtt_connect_at = 0.0
+        self._influx_reconnect_backoff = 1.0
+        self._influx_reconnect_backoff_max = float(os.getenv("MONITOR_INFLUX_RECONNECT_MAX_SEC", "30") or "30")
+        self._next_influx_connect_at = 0.0
         
         # 运行状态
         self._running = False
@@ -326,12 +336,21 @@ class MonitorService:
             self.mqtt_client = mqtt.Client(client_id="edge-monitor")
             if self.mqtt_user and self.mqtt_password:
                 self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
-            self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, keepalive=60)
+            try:
+                if hasattr(self.mqtt_client, "reconnect_delay_set"):
+                    self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=int(self._mqtt_reconnect_backoff_max))
+            except Exception:
+                pass
+            self.mqtt_client.connect_async(self.mqtt_broker, self.mqtt_port, keepalive=60)
             self.mqtt_client.loop_start()
             logger.info("monitor_mqtt_connected", broker=self.mqtt_broker, port=self.mqtt_port)
+            self._mqtt_reconnect_backoff = 1.0
+            self._next_mqtt_connect_at = 0.0
         except Exception as exc:
             logger.error("monitor_mqtt_connect_failed", error=str(exc))
             self.mqtt_client = None
+            self._next_mqtt_connect_at = time.time() + self._mqtt_reconnect_backoff
+            self._mqtt_reconnect_backoff = min(self._mqtt_reconnect_backoff * 2, self._mqtt_reconnect_backoff_max)
     
     def _connect_influx(self):
         """连接到 InfluxDB"""
@@ -344,10 +363,14 @@ class MonitorService:
             )
             self.write_api = self.influx_client.write_api(write_options=ASYNCHRONOUS)
             logger.info("monitor_influx_connected", url=url, bucket=self.influx_bucket)
+            self._influx_reconnect_backoff = 1.0
+            self._next_influx_connect_at = 0.0
         except Exception as exc:
             logger.error("monitor_influx_connect_failed", error=str(exc))
             self.influx_client = None
             self.write_api = None
+            self._next_influx_connect_at = time.time() + self._influx_reconnect_backoff
+            self._influx_reconnect_backoff = min(self._influx_reconnect_backoff * 2, self._influx_reconnect_backoff_max)
     
     async def _connect_http(self):
         """初始化 HTTP 客户端（用于服务健康检查）"""
@@ -368,6 +391,39 @@ class MonitorService:
     def _get_mqtt_client(self):
         """提供当前 MQTT 客户端实例"""
         return self.mqtt_client
+
+    async def _ensure_mqtt(self):
+        """
+        P0：确保 MQTT 连接可用（失败自动重试+退避）。
+        """
+        if not self.publish_mqtt:
+            return False
+        now = time.time()
+        if self._next_mqtt_connect_at and now < self._next_mqtt_connect_at:
+            return False
+        if self.mqtt_client and getattr(self.mqtt_client, "is_connected", lambda: False)():
+            self._mqtt_reconnect_backoff = 1.0
+            self._next_mqtt_connect_at = 0.0
+            return True
+        self._connect_mqtt()
+        # 给网络线程一点时间推进连接（不强等待）
+        await asyncio.sleep(0)
+        return bool(self.mqtt_client and getattr(self.mqtt_client, "is_connected", lambda: False)())
+
+    async def _ensure_influx(self):
+        """
+        P0：确保 InfluxDB 写入通路可用（失败自动重试+退避）。
+        """
+        now = time.time()
+        if self._next_influx_connect_at and now < self._next_influx_connect_at:
+            return False
+        if self.influx_client and self.write_api:
+            self._influx_reconnect_backoff = 1.0
+            self._next_influx_connect_at = 0.0
+            return True
+        self._connect_influx()
+        await asyncio.sleep(0)
+        return bool(self.influx_client and self.write_api)
     
     async def _fetch_alertmanager_alerts(self, severity: str | None, service: str | None, state: str | None) -> list:
         """
@@ -415,10 +471,12 @@ class MonitorService:
             self.system_metrics = metrics
             
             # 写入 InfluxDB
+            await self._ensure_influx()
             self._write_system_metrics(metrics)
             
             # 发布到 MQTT（如果启用）
             if self.publish_mqtt:
+                await self._ensure_mqtt()
                 self._publish_status()
             
             await asyncio.sleep(self.system_interval)
@@ -466,10 +524,12 @@ class MonitorService:
             
             # 更新缓存并持久化
             self.service_status = aggregated
+            await self._ensure_influx()
             self._write_service_health(aggregated)
             
             # 发布到 MQTT
             if self.publish_mqtt:
+                await self._ensure_mqtt()
                 self._publish_status()
             
             await asyncio.sleep(self.service_interval)
