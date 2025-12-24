@@ -256,6 +256,8 @@ services:
       - INFLUXDB_ORG=${INFLUXDB_ORG}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - LOG_LEVEL=${LOG_LEVEL}
+      # 工业级告警：对接本地 Alertmanager（Prometheus 触发告警后可被 ops-console 展示）
+      - ALERTMANAGER_BASE_URL=http://alertmanager:9093
     volumes:
       - ./logs/edge-monitor:/logs/edge-monitor
       - ./logs:/logs:ro
@@ -271,6 +273,45 @@ services:
       - influxdb
     restart: always
 
+  # ==================== Prometheus（指标采集/告警规则） ====================
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: edge-prometheus
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+    ports:
+      - "9090:9090"
+    networks:
+      - edge-network
+    depends_on:
+      - edge-api
+      - edge-daq
+      - ai-softsensor
+      - alertmanager
+    restart: always
+
+  # ==================== Alertmanager（告警聚合/查询） ====================
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: edge-alertmanager
+    volumes:
+      - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    ports:
+      - "9093:9093"
+    networks:
+      - edge-network
+    restart: always
+
 networks:
   edge-network:
     driver: bridge
@@ -281,4 +322,6 @@ volumes:
   influxdb_config:
   mosquitto_data:
   mosquitto_logs:
+  prometheus_data:
+  alertmanager_data:
 

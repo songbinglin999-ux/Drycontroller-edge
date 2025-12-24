@@ -1,0 +1,16 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "noop"
+  group_by: ["alertname", "service", "severity"]
+  group_wait: 30s
+  group_interval: 2m
+  repeat_interval: 4h
+
+receivers:
+  # 工业现场最小配置：先让 Alertmanager 聚合并提供 API 查询（给 edge-monitor/ops-console 展示）
+  # 如需短信/企业微信/邮件等通知，可在此增加对应 receiver。
+  - name: "noop"
+
+

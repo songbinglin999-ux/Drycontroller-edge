@@ -24,7 +24,7 @@ services:
       url: "http://edge-daq:8080/ready"
       container: "edge-daq"
     - name: "ai-softsensor"
-      url: "http://ai-softsensor:8080/health"
+      url: "http://ai-softsensor:8080/ready"
       container: "ai-softsensor"
     - name: "ai-ctrl-optimizer"
       url: "http://ai-ctrl-optimizer:8080/health"

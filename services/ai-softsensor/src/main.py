@@ -133,6 +133,7 @@ class SoftSensorService:
         # 断开 MQTT 连接
         if self.mqtt_handler:
             await self.mqtt_handler.disconnect()
+            self.mqtt_handler = None
 
         # 停止健康检查服务
         await self._stop_health_server()
@@ -178,6 +179,12 @@ class SoftSensorService:
             logger.info("health_server_stopped")
 
     def _health_payload(self):
+        dq = None
+        if self.mqtt_handler:
+            try:
+                dq = self.mqtt_handler.dq_snapshot()
+            except Exception:
+                dq = None
         return {
             "success": True,
             "service": "ai-softsensor",
@@ -186,13 +193,15 @@ class SoftSensorService:
             "details": {
                 "model_loaded": self.model is not None,
                 "mqtt_connected": bool(self.mqtt_handler and self.mqtt_handler.connected),
+                "dq": dq,
             },
         }
 
     def _ready_payload(self):
         model_loaded = self.model is not None
         mqtt_ready = bool(self.mqtt_handler and self.mqtt_handler.connected)
-        ready = bool(self.running and model_loaded and mqtt_ready)
+        dq_ready = bool(self.mqtt_handler and self.mqtt_handler.is_dq_ready()) if self.mqtt_handler else False
+        ready = bool(self.running and model_loaded and mqtt_ready and dq_ready)
         return {
             "ready": ready,
             "service": "ai-softsensor",
@@ -201,6 +210,7 @@ class SoftSensorService:
                 "running": bool(self.running),
                 "model_loaded": model_loaded,
                 "mqtt_connected": mqtt_ready,
+                "dq_ready": dq_ready,
             },
         }
 
