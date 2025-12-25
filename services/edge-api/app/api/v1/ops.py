@@ -9,10 +9,12 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.core.security import require_admin_api_key
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 
-router = APIRouter()
+# 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
+router = APIRouter(dependencies=[Depends(require_admin_api_key)])
 
 
 class ServiceOverride(BaseModel):

@@ -1,6 +1,101 @@
 version: '3.8'
 
 services:
+  # ==================== 远程运维通道（Tailscale） ====================
+  # 使用方式：
+  # - 仅在需要“云端无公网入站 → 远程运维边缘机”时启用
+  # - 启动：docker compose --profile remote-debug up -d tailscale
+  # 前提：
+  # - 云端已部署 Headscale（自建控制面）并生成 preauth key
+  # - TS_LOGIN_SERVER/TS_AUTHKEY 配置正确
+  #
+  # 重要说明：
+  # - 该服务需要 Linux（/dev/net/tun + network_mode=host）
+  # - 共享宿主机网络命名空间后，云端可通过 tailnet IP 直接访问宿主机映射端口（例如 edge-api 的 8000）
+  tailscale:
+    image: tailscale/tailscale:stable
+    container_name: edge-tailscale
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+      - tailscale_run:/var/run/tailscale
+    environment:
+      # Headscale/Tailscale 登录信息（敏感）
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_LOGIN_SERVER=${TS_LOGIN_SERVER}
+      # 可选：hostname / 额外参数
+      - TS_HOSTNAME=${TS_HOSTNAME:-edge-node}
+      - TS_EXTRA_ARGS=--login-server=${TS_LOGIN_SERVER} --hostname=${TS_HOSTNAME:-edge-node} --accept-dns=true
+      # 状态存储目录
+      - TS_STATE_DIR=/var/lib/tailscale
+    restart: unless-stopped
+    profiles:
+      - remote-debug
+
+  # ==================== 节点自注册/心跳（Enroll → cloud-ops） ====================
+  # 作用：边缘机上线后，自动向云端 cloud-ops 报到/心跳，从而在 nodes 列表中自动可见。
+  # 说明：
+  # - 该容器通过 tailscaled socket 获取 tailnet IP（100.x.x.x），并 POST 到 cloud-ops /api/v1/enroll
+  # - 仅在 remote-debug 场景启用（与 tailscale 一起）
+  edge-enroll:
+    image: tailscale/tailscale:stable
+    container_name: edge-enroll
+    network_mode: "host"
+    depends_on:
+      - tailscale
+    volumes:
+      - tailscale_state:/var/lib/tailscale:ro
+      - tailscale_run:/var/run/tailscale
+    environment:
+      # cloud-ops 地址（示例：https://cloud-ops.example.com 或 http://<ip>:8088）
+      - CLOUD_OPS_BASE_URL=${CLOUD_OPS_BASE_URL}
+      # enroll token（对应云端 cloud-ops 的 ENROLL_TOKEN）
+      - CLOUD_OPS_ENROLL_TOKEN=${CLOUD_OPS_ENROLL_TOKEN}
+      # 可选：header 名（默认 X-Enroll-Token）
+      - CLOUD_OPS_ENROLL_TOKEN_HEADER=${CLOUD_OPS_ENROLL_TOKEN_HEADER:-X-Enroll-Token}
+      # 节点名称：建议与 TS_HOSTNAME 一致
+      - ENROLL_NAME=${TS_HOSTNAME:-edge-node}
+      # 边缘 edge-api 对外端口（宿主机映射端口）
+      - ENROLL_EDGE_API_PORT=${EDGE_API_PORT:-8000}
+      # 心跳周期（秒）
+      - ENROLL_INTERVAL_SEC=${ENROLL_INTERVAL_SEC:-60}
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      set -eu;
+      if [ -z "${CLOUD_OPS_BASE_URL:-}" ] || [ -z "${CLOUD_OPS_ENROLL_TOKEN:-}" ]; then
+        echo "[edge-enroll] missing CLOUD_OPS_BASE_URL or CLOUD_OPS_ENROLL_TOKEN; exiting";
+        exit 1;
+      fi;
+      SOCKET="/var/run/tailscale/tailscaled.sock";
+      echo "[edge-enroll] waiting for tailscaled socket: $SOCKET";
+      i=0;
+      while [ ! -S "$SOCKET" ]; do i=$((i+1)); if [ $i -gt 60 ]; then echo "[edge-enroll] tailscaled socket not ready"; exit 2; fi; sleep 1; done;
+      echo "[edge-enroll] starting enroll loop";
+      while true; do
+        IP="$(tailscale --socket=$SOCKET ip -4 2>/dev/null | head -n 1 || true)";
+        if [ -z "$IP" ]; then
+          echo "[edge-enroll] no tailnet ipv4 yet; retry";
+          sleep 3;
+          continue;
+        fi;
+        URL="${CLOUD_OPS_BASE_URL%/}/api/v1/enroll";
+        echo "[edge-enroll] enrolling name=${ENROLL_NAME} address=${IP} port=${ENROLL_EDGE_API_PORT} -> ${URL}";
+        curl -fsS -X POST "$URL" \
+          -H "Content-Type: application/json" \
+          -H "${CLOUD_OPS_ENROLL_TOKEN_HEADER}: ${CLOUD_OPS_ENROLL_TOKEN}" \
+          -d "{\"name\":\"${ENROLL_NAME}\",\"address\":\"${IP}\",\"edge_api_port\":${ENROLL_EDGE_API_PORT}}" \
+          || echo "[edge-enroll] enroll request failed (will retry)";
+        sleep "${ENROLL_INTERVAL_SEC}";
+      done
+    restart: unless-stopped
+    profiles:
+      - remote-debug
+
   # ==================== 数据库服务 ====================
   postgres:
     image: postgres:15-alpine
@@ -324,4 +419,6 @@ volumes:
   mosquitto_logs:
   prometheus_data:
   alertmanager_data:
+  tailscale_state:
+  tailscale_run:
 
