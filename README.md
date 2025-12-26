@@ -202,7 +202,7 @@ graph LR
 
 ```bash
 git clone <repository-url>
-cd Drycontroller
+cd Drycontroller-monorepo
 ```
 
 ### 2. 配置环境
@@ -573,7 +573,7 @@ vim .env  # 修改为生产配置
 bash scripts/build-images.sh v1.0.0
 
 # 3. 启动生产服务
-docker-compose -f docker-compose.prod.yml up -d
+docker-compose up -d
 
 # 4. 初始化数据库
 bash scripts/init-db.sh
@@ -591,13 +591,13 @@ docker-compose ps
 curl -fsSL https://get.docker.com | sh
 
 # 2. 上传项目文件
-scp -r Drycontroller/ user@edge-device:/opt/
+scp -r Drycontroller-monorepo/ user@edge-device:/opt/
 
 # 3. SSH 登录设备
 ssh user@edge-device
 
 # 4. 启动服务
-cd /opt/Drycontroller
+cd /opt/Drycontroller-monorepo
 docker-compose up -d
 
 # 5. 设置开机自启
@@ -609,8 +609,7 @@ sudo systemctl enable docker
 - 架构概览：`docs/architecture/system-overview.md`
 - 部署细节：`docs/ops/deployment-guide.md`
 - 大屏接入：`docs/architecture/big-screen-integration.md`
-- 更多基础设施配置（MQTT/PostgreSQL 等）：`infra/` 目录  
-  （已预留 `infra/influxdb/` 与 `infra/nginx/` 目录，可按现场需要补充配置）
+- 更多基础设施配置（MQTT/PostgreSQL/Prometheus/Alertmanager 等）：`infra/` 目录
 
 ---
 
