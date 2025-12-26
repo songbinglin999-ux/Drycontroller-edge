@@ -202,7 +202,7 @@ graph LR
 
 ```bash
 git clone <repository-url>
-cd Drycontroller-monorepo
+cd Drycontroller-edge
 ```
 
 ### 2. 配置环境
@@ -591,13 +591,13 @@ docker-compose ps
 curl -fsSL https://get.docker.com | sh
 
 # 2. 上传项目文件
-scp -r Drycontroller-monorepo/ user@edge-device:/opt/
+scp -r Drycontroller-edge/ user@edge-device:/opt/
 
 # 3. SSH 登录设备
 ssh user@edge-device
 
 # 4. 启动服务
-cd /opt/Drycontroller-monorepo
+cd /opt/Drycontroller-edge
 docker-compose up -d
 
 # 5. 设置开机自启

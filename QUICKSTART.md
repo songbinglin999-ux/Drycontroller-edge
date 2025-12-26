@@ -12,7 +12,7 @@
 
 ```bash
 git clone <repository-url>
-cd Drycontroller-monorepo
+cd Drycontroller-edge
 ```
 
 ## 步骤 2: 配置环境
