@@ -35,8 +35,9 @@ import httpx
 import psutil
 import structlog
 import yaml
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
 import paho.mqtt.client as mqtt
@@ -74,6 +75,52 @@ class SelfHealToggleRequest(BaseModel):
 
 class SelfHealRestartRequest(BaseModel):
     service: str
+
+
+_ops_api_key_header_name = os.getenv("MONITOR_API_KEY_HEADER", "X-API-Key")
+_ops_api_key_scheme = APIKeyHeader(name=_ops_api_key_header_name, auto_error=False)
+
+
+def _split_api_keys(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _get_ops_api_keys() -> set[str]:
+    # 优先使用专用变量；其次复用 ADMIN_API_KEYS（便于与 edge-api 统一）
+    keys = _split_api_keys(os.getenv("MONITOR_OPS_API_KEYS"))
+    if not keys:
+        keys = _split_api_keys(os.getenv("ADMIN_API_KEYS"))
+    return set(keys)
+
+
+async def require_ops_api_key(api_key: str | None = Depends(_ops_api_key_scheme)) -> str:
+    """
+    edge-monitor 的高危运维接口鉴权（/ops/*）。
+
+    - 未配置密钥：返回 503（避免“默认裸奔”）
+    - 缺失密钥：401
+    - 密钥不匹配：403
+    """
+    allowed = _get_ops_api_keys()
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ops api key security is not configured (set MONITOR_OPS_API_KEYS or ADMIN_API_KEYS)",
+        )
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+            headers={"WWW-Authenticate": "API-Key"},
+        )
+    if api_key not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key not permitted",
+        )
+    return api_key
 
 
 class MonitorService:
@@ -1274,13 +1321,13 @@ async def system_metrics():
 
 
 @app.post("/ops/self-heal/restart")
-async def manual_self_heal_restart(req: SelfHealRestartRequest):
+async def manual_self_heal_restart(req: SelfHealRestartRequest, _: str = Depends(require_ops_api_key)):
     result = await monitor_service.manual_restart(req.service)
     return result
 
 
 @app.post("/ops/self-heal/toggle")
-async def manual_self_heal_toggle(req: SelfHealToggleRequest):
+async def manual_self_heal_toggle(req: SelfHealToggleRequest, _: str = Depends(require_ops_api_key)):
     return monitor_service.set_self_heal_enabled(req.service, req.enabled)
 
 
@@ -1288,6 +1335,7 @@ async def manual_self_heal_toggle(req: SelfHealToggleRequest):
 async def fetch_service_logs(
     service: str,
     lines: int = Query(200, ge=1, le=2000),
+    _: str = Depends(require_ops_api_key),
 ):
     try:
         data = monitor_service.read_service_logs(service, lines)
@@ -1304,6 +1352,7 @@ async def list_alerts(
     severity: str | None = Query(None, description="过滤 severity，如 critical/warning"),
     service: str | None = Query(None, description="过滤 service 标签"),
     state: str | None = Query("active", description="active/silenced/inhibited"),
+    _: str = Depends(require_ops_api_key),
 ):
     """
     代理 Alertmanager，提供运维告警聚合给 ops-console 使用。

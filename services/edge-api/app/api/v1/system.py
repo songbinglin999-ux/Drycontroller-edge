@@ -105,7 +105,7 @@ async def update_system_config(
 async def get_container_logs(
     container: str = Query(..., description="容器名称"),
     lines: int = Query(200, description="日志行数", ge=1, le=2000),
-    _: str = Depends(require_admin_api_key),
+    api_key: str = Depends(require_admin_api_key),
 ):
     """
     获取容器日志（代理 edge-monitor）
@@ -113,9 +113,10 @@ async def get_container_logs(
     monitor_base = settings.MONITOR_API_BASE.rstrip("/")
     url = f"{monitor_base}/ops/logs/{container}"
     
+    headers = {settings.API_KEY_HEADER: api_key} if api_key else {}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(url, params={"lines": lines})
+            response = await client.get(url, params={"lines": lines}, headers=headers)
     except httpx.RequestError as exc:
         logger.error("monitor_log_proxy_failed", error=str(exc))
         raise HTTPException(

@@ -15,25 +15,39 @@ class MonitorOpsClient:
     def __init__(self, base_url: Optional[str] = None):
         self.base_url = (base_url or settings.MONITOR_API_BASE).rstrip("/")
 
-    async def restart_service(self, service: str) -> dict:
+    def _headers(self, api_key: str | None) -> dict:
+        if not api_key:
+            return {}
+        return {settings.API_KEY_HEADER: api_key}
+
+    async def restart_service(self, service: str, *, api_key: str | None = None) -> dict:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
                 f"{self.base_url}/ops/self-heal/restart",
                 json={"service": service},
+                headers=self._headers(api_key),
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def toggle_self_heal(self, service: str, enabled: bool) -> dict:
+    async def toggle_self_heal(self, service: str, enabled: bool, *, api_key: str | None = None) -> dict:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
                 f"{self.base_url}/ops/self-heal/toggle",
                 json={"service": service, "enabled": enabled},
+                headers=self._headers(api_key),
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def list_alerts(self, severity: Optional[str], service: Optional[str], state: Optional[str]) -> dict:
+    async def list_alerts(
+        self,
+        severity: Optional[str],
+        service: Optional[str],
+        state: Optional[str],
+        *,
+        api_key: str | None = None,
+    ) -> dict:
         params = {}
         if severity:
             params["severity"] = severity
@@ -42,7 +56,11 @@ class MonitorOpsClient:
         if state:
             params["state"] = state
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{self.base_url}/ops/alerts", params=params)
+            resp = await client.get(
+                f"{self.base_url}/ops/alerts",
+                params=params,
+                headers=self._headers(api_key),
+            )
             resp.raise_for_status()
             return resp.json()
 

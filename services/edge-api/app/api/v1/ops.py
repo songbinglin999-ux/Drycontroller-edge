@@ -14,7 +14,8 @@ from app.services.monitor_config import MonitorConfigService, get_monitor_config
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
-router = APIRouter(dependencies=[Depends(require_admin_api_key)])
+# 注意：这里需要拿到实际 api_key 以便代理调用 edge-monitor 的 /ops/*
+router = APIRouter()
 
 
 class ServiceOverride(BaseModel):
@@ -64,15 +65,19 @@ async def list_alerts(
     service: str | None = None,
     state: str | None = "active",
     client: MonitorOpsClient = Depends(get_monitor_ops_client),
+    api_key: str = Depends(require_admin_api_key),
 ):
     """
     代理 edge-monitor 的 /ops/alerts，供前端展示告警。
     """
-    return await client.list_alerts(severity=severity, service=service, state=state)
+    return await client.list_alerts(severity=severity, service=service, state=state, api_key=api_key)
 
 
 @router.get("/monitor-config")
-async def get_monitor_config(service: MonitorConfigService = Depends(get_monitor_config_service)):
+async def get_monitor_config(
+    service: MonitorConfigService = Depends(get_monitor_config_service),
+    _: str = Depends(require_admin_api_key),
+):
     try:
         return service.load()
     except FileNotFoundError:
@@ -83,6 +88,7 @@ async def get_monitor_config(service: MonitorConfigService = Depends(get_monitor
 async def update_monitor_config(
     payload: MonitorConfigUpdate,
     service: MonitorConfigService = Depends(get_monitor_config_service),
+    _: str = Depends(require_admin_api_key),
 ):
     updates = payload.model_dump(exclude_none=True)
     if "targets" in updates:
@@ -95,8 +101,9 @@ async def update_monitor_config(
 async def manual_restart(
     req: ManualActionRequest,
     client: MonitorOpsClient = Depends(get_monitor_ops_client),
+    api_key: str = Depends(require_admin_api_key),
 ):
-    result = await client.restart_service(req.service)
+    result = await client.restart_service(req.service, api_key=api_key)
     return result
 
 
@@ -104,7 +111,8 @@ async def manual_restart(
 async def manual_toggle_self_heal(
     req: SelfHealToggleRequest,
     client: MonitorOpsClient = Depends(get_monitor_ops_client),
+    api_key: str = Depends(require_admin_api_key),
 ):
-    result = await client.toggle_self_heal(req.service, req.enabled)
+    result = await client.toggle_self_heal(req.service, req.enabled, api_key=api_key)
     return result
 

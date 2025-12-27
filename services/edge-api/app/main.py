@@ -9,6 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 import structlog
 from contextlib import asynccontextmanager
+import asyncio
 import time
 
 from app.core.config import settings
@@ -40,16 +41,44 @@ async def lifespan(app: FastAPI):
         tags={"component": "edge-api"},
     )
     
-    # 创建数据库表
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    async def _ensure_db_schema_forever():
+        """
+        7x24：DB 抖动/重启时不应导致 edge-api 进程起不来。
+        建表失败则后台重试；/ready 会反映依赖未就绪（503）。
+        """
+        backoff = 1.0
+        backoff_max = 30.0
+        while True:
+            try:
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+                logger.info("db_schema_ready")
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("db_schema_init_failed", error=str(exc))
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, backoff_max)
+
+    db_schema_task = asyncio.create_task(_ensure_db_schema_forever())
     
     # 连接 MQTT & 启动事件总线
-    await mqtt_manager.connect()
-    await event_bus.start()
+    try:
+        await mqtt_manager.connect()
+    except Exception as exc:
+        # 允许启动进入 degraded：MQTT 后续由 paho 自动重连，/ready 会返回 503
+        logger.error("mqtt_startup_connect_failed", error=str(exc))
+    try:
+        await event_bus.start()
+    except Exception as exc:
+        logger.error("event_bus_start_failed", error=str(exc))
     
     # 启动 MQTT → WS 转发
-    await ws_stream.start()
+    try:
+        await ws_stream.start()
+    except Exception as exc:
+        logger.error("ws_stream_start_failed", error=str(exc))
     
     logger.info("edge_api_started")
     event_recorder.record_event(
@@ -72,6 +101,10 @@ async def lifespan(app: FastAPI):
     await ws_stream.stop()
     await event_bus.stop()
     await mqtt_manager.disconnect()
+
+    # 停止后台任务
+    db_schema_task.cancel()
+    await asyncio.gather(db_schema_task, return_exceptions=True)
     
     # 关闭数据库连接
     await engine.dispose()
