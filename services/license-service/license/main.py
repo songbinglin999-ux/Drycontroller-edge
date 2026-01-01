@@ -44,6 +44,11 @@ async def shutdown():
 async def health():
     return {"status": "healthy"}
 
+@app.get("/ready")
+async def ready():
+    # 当前授权服务未强依赖外部资源，readiness 等价于存活。
+    return {"ready": True}
+
 @app.get("/verify")
 async def verify_license():
     # TODO: 实现加密狗验证逻辑

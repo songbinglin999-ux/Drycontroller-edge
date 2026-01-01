@@ -75,7 +75,16 @@ class OptimizerService:
         async def health_handler(request):
             return web.json_response(self._health_payload())
 
+        async def ready_handler(request):
+            payload = {
+                "ready": bool(self.running),
+                "service": "ai-ctrl-optimizer",
+                "timestamp": int(time.time()),
+            }
+            return web.json_response(payload, status=200 if payload["ready"] else 503)
+
         app.router.add_get("/health", health_handler)
+        app.router.add_get("/ready", ready_handler)
         self.health_runner = web.AppRunner(app)
         await self.health_runner.setup()
         self.health_site = web.TCPSite(self.health_runner, "0.0.0.0", self.health_port)
