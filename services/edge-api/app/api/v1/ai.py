@@ -77,28 +77,6 @@ async def get_lab_samples(
     )
 
 
-@router.get("/optimization/recommendation")
-async def get_optimization_recommendation():
-    """
-    控制优化建议（占位）
-    """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Optimizer recommendation API not implemented yet",
-    )
-
-
-@router.post("/optimization/apply")
-async def apply_optimization():
-    """
-    应用优化建议（占位）
-    """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Optimization apply API not implemented yet",
-    )
-
-
 @router.get("/models")
 async def get_models(service: AISoftsensorService = Depends(get_ai_softsensor_service)):
     """

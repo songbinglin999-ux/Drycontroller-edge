@@ -16,15 +16,9 @@ influxdb-client==1.39.0
 # MQTT
 paho-mqtt==1.6.1
 
-# 认证和安全
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
-
 # 工具
 python-dotenv==1.0.0
 pyyaml==6.0.1
-redis==5.0.1
 
 # 日志和监控
 structlog==24.1.0

@@ -2,13 +2,11 @@
 应用配置管理
 """
 
-from pathlib import Path
 import os
-import secrets
 import json
 from typing import List
 
-from pydantic import field_validator, model_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,21 +53,11 @@ class Settings(BaseSettings):
     # 生产默认最小暴露：不开放任意跨域。需要时在 .env 显式配置（支持 JSON 数组或逗号分隔）。
     CORS_ORIGINS: List[str] = []
     CORS_ALLOW_CREDENTIALS: bool = False
-    
-    # JWT 配置
-    SECRET_KEY: str = ""
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
-    SECRET_KEY_FILE: str | None = None
 
     # API Key 鉴权
     API_KEY_HEADER: str = "X-API-Key"
     CONTROL_API_KEYS: List[str] = []
     ADMIN_API_KEYS: List[str] = []
-    
-    # 限流配置
-    RATE_LIMIT_ENABLED: bool = True
-    RATE_LIMIT_PER_MINUTE: int = 60
     
     # 配置文件路径
     CONFIG_DIR: str = "/app/configs"
@@ -153,22 +141,6 @@ class Settings(BaseSettings):
                     pass
             return [item.strip() for item in raw.split(",") if item.strip()]
         return value or []
-
-    @model_validator(mode="after")
-    def _ensure_secret_key(self):
-        secret = self.SECRET_KEY.strip() if isinstance(self.SECRET_KEY, str) else ""
-        if secret:
-            return self
-
-        if self.SECRET_KEY_FILE:
-            candidate = Path(self.SECRET_KEY_FILE)
-            if candidate.exists():
-                self.SECRET_KEY = candidate.read_text(encoding="utf-8").strip()
-                if self.SECRET_KEY:
-                    return self
-
-        self.SECRET_KEY = secrets.token_urlsafe(32)
-        return self
 
 
 # 创建全局配置实例

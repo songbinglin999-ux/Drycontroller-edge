@@ -48,11 +48,3 @@ async def get_alarm_history(
     """
     return await service.get_alarm_history(period=period, severity=severity)
 
-
-@router.get("/statistics")
-async def get_alarm_statistics():
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Alarm statistics endpoint not implemented yet",
-    )
-

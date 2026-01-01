@@ -56,17 +56,6 @@ async def get_history_data(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-@router.get("/batch/{batch_id}")
-async def get_batch_data(batch_id: str):
-    """
-    获取生产批次数据（占位接口）
-    """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail=f"Batch data API not implemented yet (batch_id={batch_id})",
-    )
-
-
 @router.get("/tags")
 async def get_tags(service: RealtimeDataService = Depends(get_realtime_data_service)):
     """

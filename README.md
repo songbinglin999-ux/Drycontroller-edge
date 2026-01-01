@@ -146,7 +146,7 @@ graph LR
 
 ### ⚠️ 待补齐
 - `/ready` 仍为硬编码常量，未真实探测数据库、MQTT、Influx 等依赖，CI/CD 与编排层无法凭此判断可用性。
-- API 口完全未鉴权：`SECRET_KEY` 为示例值、CORS 允许任意来源、控制/日志接口均未做 RBAC 与审计，不符合工业现场安全要求。
+- API 安全：生产必须启用 API Key（control/admin）、收敛 CORS、并对高危运维动作做审计；否则不符合工业现场安全要求。
 - `edge-api`、`edge-monitor` 直接挂载 `/var/run/docker.sock` 并开放 `/api/v1/system/container/logs`，等价授予容器 root 权限，需改为受控 sidecar。
 - 自动化测试覆盖薄弱：除少量 stub 路由测试外，AI/DAQ/监控等服务缺乏单元与契约测试，无法防止模型加载、MQTT 序列回归。
 

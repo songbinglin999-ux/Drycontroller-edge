@@ -75,32 +75,6 @@ async def get_system_metric_trend(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-@router.get("/config")
-async def get_system_config(
-    _: str = Depends(require_admin_api_key),
-):
-    """
-    系统配置（占位）
-    """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="System config API not implemented yet",
-    )
-
-
-@router.post("/config")
-async def update_system_config(
-    _: str = Depends(require_admin_api_key),
-):
-    """
-    更新配置（占位）
-    """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="System config update API not implemented yet",
-    )
-
-
 @router.get("/container/logs")
 async def get_container_logs(
     container: str = Query(..., description="容器名称"),
