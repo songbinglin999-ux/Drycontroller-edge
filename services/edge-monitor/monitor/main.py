@@ -1268,6 +1268,19 @@ async def health():
         "timestamp": int(time.time()),
     }
 
+@app.get("/ready")
+async def ready():
+    """
+    readiness：用于编排系统判断“监控服务是否已进入运行态”。
+    不做外部依赖强校验（避免把 Influx/MQTT 抖动误判为 monitor 不可用）。
+    """
+    ok = bool(monitor_service._running)
+    return {
+        "ready": ok,
+        "service": "edge-monitor",
+        "timestamp": int(time.time()),
+    }
+
 
 @app.get("/.well-known/drycontroller/bootstrap.json")
 async def discovery_bootstrap():
