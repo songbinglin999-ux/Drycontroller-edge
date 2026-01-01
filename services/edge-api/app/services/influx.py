@@ -13,6 +13,7 @@ InfluxDB 查询服务
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
 import re
@@ -53,6 +54,27 @@ class InfluxQueryService:
         self.bucket = settings.INFLUXDB_BUCKET
         # 默认测量表名，用于存储工业采集数据
         self.measurement = os.getenv("INFLUXDB_MEASUREMENT", "industrial_data")
+        # 避免解释器退出阶段 Influx SDK __del__ 抛出噪音异常：显式关闭 client
+        atexit.register(self.close)
+
+    def close(self) -> None:
+        """
+        释放 InfluxDB 连接资源（幂等）。
+        """
+        client = getattr(self, "client", None)
+        if client:
+            try:
+                client.close()
+            finally:
+                self.client = None
+                self.query_api = None
+
+    def __del__(self):
+        # 兜底：异常不应在析构阶段冒泡
+        try:
+            self.close()
+        except Exception:
+            pass
 
     async def latest_points(self, tags: List[str], lookback: str = "5m") -> List[Dict[str, Any]]:
         """

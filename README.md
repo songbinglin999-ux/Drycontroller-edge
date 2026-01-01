@@ -209,7 +209,7 @@ cd Drycontroller-edge
 
 ```bash
 # 复制环境变量模板
-cp .env.example .env
+cp env.example .env
 
 # 根据实际情况修改配置
 vim .env
@@ -462,8 +462,15 @@ INFLUXDB_BUCKET=industrial-data
 # MQTT
 MQTT_BROKER=mosquitto
 MQTT_PORT=1883
-MQTT_USER=edge_mqtt
-MQTT_PASSWORD=your_password
+# MQTT（按服务拆分账号；配合 infra/mosquitto/acl 最小权限）
+MQTT_USER_EDGE_API=edge_api
+MQTT_PASSWORD_EDGE_API=your_password
+MQTT_USER_EDGE_DAQ=edge_daq
+MQTT_PASSWORD_EDGE_DAQ=your_password
+MQTT_USER_AI_SOFTSENSOR=ai_softsensor
+MQTT_PASSWORD_AI_SOFTSENSOR=your_password
+MQTT_USER_EDGE_MONITOR=edge_monitor
+MQTT_PASSWORD_EDGE_MONITOR=your_password
 
 # PLC
 PLC_HOST=192.168.1.100
@@ -566,7 +573,7 @@ docker-compose down
 
 ```bash
 # 1. 设置生产环境变量
-cp .env.example .env
+cp env.example .env
 vim .env  # 修改为生产配置
 
 # 2. 构建生产镜像

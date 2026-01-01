@@ -47,8 +47,8 @@ required_env_vars=(
   POSTGRES_DB
   INFLUXDB_TOKEN
   INFLUXDB_ORG
-  MQTT_USER
-  MQTT_PASSWORD
+  MQTT_USER_EDGE_API
+  MQTT_PASSWORD_EDGE_API
 )
 
 for var in "${required_env_vars[@]}"; do
@@ -93,8 +93,8 @@ check_mqtt() {
   local topic="edge/smoke/$RANDOM"
   local payload="edge-smoke-$(date +%s)"
   docker-compose exec -T \
-    -e MQTT_USER="$MQTT_USER" \
-    -e MQTT_PASSWORD="$MQTT_PASSWORD" \
+    -e MQTT_USER="$MQTT_USER_EDGE_API" \
+    -e MQTT_PASSWORD="$MQTT_PASSWORD_EDGE_API" \
     -e TEST_TOPIC="$topic" \
     -e TEST_PAYLOAD="$payload" \
     mosquitto /bin/sh -c '

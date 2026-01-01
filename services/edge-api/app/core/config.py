@@ -5,6 +5,7 @@
 from pathlib import Path
 import os
 import secrets
+import json
 from typing import List
 
 from pydantic import field_validator, model_validator
@@ -51,7 +52,8 @@ class Settings(BaseSettings):
     
     # API 配置
     API_PREFIX: str = "/api/v1"
-    CORS_ORIGINS: List[str] = ["*"]
+    # 生产默认最小暴露：不开放任意跨域。需要时在 .env 显式配置（支持 JSON 数组或逗号分隔）。
+    CORS_ORIGINS: List[str] = []
     CORS_ALLOW_CREDENTIALS: bool = False
     
     # JWT 配置
@@ -99,11 +101,57 @@ class Settings(BaseSettings):
     def api_security_enabled(self) -> bool:
         return bool(self.CONTROL_API_KEYS or self.ADMIN_API_KEYS)
 
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, value):
+        """
+        兼容两种写法：
+        - JSON 数组：["https://a.com","https://b.com"]
+        - 逗号分隔：https://a.com,https://b.com
+        """
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return [str(v).strip() for v in parsed if str(v).strip()]
+                except Exception:
+                    # 回退到逗号分隔
+                    pass
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return []
+
     @field_validator("CONTROL_API_KEYS", "ADMIN_API_KEYS", mode="before")
     @classmethod
     def _split_api_keys(cls, value):
+        """
+        兼容两种写法：
+        - JSON 数组：["k1","k2"]
+        - 逗号分隔：k1,k2
+        """
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return [str(v).strip() for v in value if str(v).strip()]
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return [str(v).strip() for v in parsed if str(v).strip()]
+                except Exception:
+                    pass
+            return [item.strip() for item in raw.split(",") if item.strip()]
         return value or []
 
     @model_validator(mode="after")

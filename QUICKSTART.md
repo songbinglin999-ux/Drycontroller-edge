@@ -19,7 +19,7 @@ cd Drycontroller-edge
 
 ```bash
 # 复制环境变量模板
-cp .env.example .env
+cp env.example .env
 
 # 可选：编辑配置（使用默认配置也可以运行）
 # vim .env
@@ -136,10 +136,7 @@ http://localhost:8086
 ```
 
 登录信息：
-- 用户名: `admin`
-- 密码: `admin_password_2025`
-- 组织: `edge-org`
-- Bucket: `industrial-data`
+- 用户名/密码/组织/Bucket：以 `.env`（由 `env.example` 复制）中的 `INFLUXDB_*` 为准
 
 ## 常用命令
 

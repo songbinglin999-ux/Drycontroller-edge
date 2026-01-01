@@ -100,6 +100,13 @@ class EventRecorder:
             self._write_api = None
             self._enabled = False
 
+    def __del__(self):
+        # 析构阶段尽量避免 Influx SDK 抛出噪音异常
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def record_event(
         self,
         event: str,

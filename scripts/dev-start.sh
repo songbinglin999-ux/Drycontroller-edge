@@ -9,8 +9,8 @@ echo "======================================"
 
 # 检查 .env 文件
 if [ ! -f .env ]; then
-    echo "⚠️  .env 文件不存在，从 .env.example 复制..."
-    cp .env.example .env
+    echo "⚠️  .env 文件不存在，从 env.example 复制..."
+    cp env.example .env
     echo "✅ 已创建 .env 文件，请根据需要修改配置"
 fi
 
@@ -33,17 +33,7 @@ mkdir -p logs/edge-api logs/edge-daq logs/ai-softsensor logs/ai-ctrl-optimizer l
 echo "📁 创建模型目录..."
 mkdir -p services/ai-softsensor/models services/ai-ctrl-optimizer/models
 
-# 生成 MQTT 密码文件
-if [ ! -f infra/mosquitto/passwords.generated ]; then
-    echo "🔐 生成 MQTT 密码..."
-    # 这里需要 mosquitto_passwd 工具，如果没有则跳过
-    if command -v mosquitto_passwd &> /dev/null; then
-        mosquitto_passwd -b infra/mosquitto/passwords edge_mqtt mqtt_password_2025
-        touch infra/mosquitto/passwords.generated
-    else
-        echo "⚠️  mosquitto_passwd 工具未找到，跳过密码生成"
-    fi
-fi
+# MQTT 密码文件由 docker-compose 内的 mosquitto-init 生成（写入 mosquitto_secrets volume）
 
 # 停止并清理现有容器
 echo "🧹 清理现有容器..."

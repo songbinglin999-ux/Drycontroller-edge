@@ -36,7 +36,6 @@ import psutil
 import structlog
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Query, status
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
@@ -1228,14 +1227,8 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# 配置 CORS 中间件（允许跨域访问）
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 安全基线：edge-monitor 属于“高危运维面”，默认不对浏览器做跨域开放。
+# ops-console 建议通过 edge-api 的 /api/v1/ops/* 代理访问（由 edge-api 统一鉴权与审计）。
 
 
 # ============================================================
