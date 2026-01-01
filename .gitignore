@@ -48,6 +48,8 @@ env/
 .env.local
 .env.*.local
 .env
+edge-local.env
+edge-local.env.*
 
 # Logs
 logs/**/*.log

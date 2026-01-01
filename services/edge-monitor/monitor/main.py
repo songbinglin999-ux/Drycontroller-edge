@@ -813,7 +813,9 @@ class MonitorService:
         
         # 检查 Docker 客户端是否就绪
         if not self.docker_client:
-            result["status"] = "unknown"
+            # 没有 docker_client 时，容器状态无法判定，但健康检查应提示“降级”
+            # 以便上层 merge_status 能把它当作风险信号（而不是完全未知）
+            result["status"] = "degraded"
             result["detail"] = "docker_client_not_ready"
             return result
         

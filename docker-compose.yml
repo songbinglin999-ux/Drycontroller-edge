@@ -28,9 +28,15 @@ services:
       - TS_LOGIN_SERVER=${TS_LOGIN_SERVER}
       # 可选：hostname / 额外参数
       - TS_HOSTNAME=${TS_HOSTNAME:-edge-node}
-      - TS_EXTRA_ARGS=--login-server=${TS_LOGIN_SERVER} --hostname=${TS_HOSTNAME:-edge-node} --accept-dns=true
+      # 注意：TS_HOSTNAME 会被 entrypoint 用来设置 hostname，避免在 TS_EXTRA_ARGS 里重复传 --hostname
+      # 额外参数（如 --reset）请放到 edge 的 .env 里通过 TS_EXTRA_ARGS 传入
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
       # 状态存储目录
       - TS_STATE_DIR=/var/lib/tailscale
+      # 让 tailscaled 把 socket 放在共享卷里，供 edge-enroll 使用（否则会默认 /tmp/tailscaled.sock 无法跨容器）
+      - TS_SOCKET=/var/run/tailscale/tailscaled.sock
+      # 使用内核 TUN（否则宿主机可能没有 tailscale0 / 路由不生效）
+      - TS_USERSPACE=false
     restart: unless-stopped
     profiles:
       - remote-debug
@@ -63,33 +69,66 @@ services:
       # 心跳周期（秒）
       - ENROLL_INTERVAL_SEC=${ENROLL_INTERVAL_SEC:-60}
     entrypoint: ["/bin/sh", "-c"]
-    command: >
-      set -eu;
-      if [ -z "$${CLOUD_OPS_BASE_URL:-}" ] || [ -z "$${CLOUD_OPS_ENROLL_TOKEN:-}" ]; then
-        echo "[edge-enroll] missing CLOUD_OPS_BASE_URL or CLOUD_OPS_ENROLL_TOKEN; exiting";
-        exit 1;
-      fi;
-      SOCKET="/var/run/tailscale/tailscaled.sock";
-      echo "[edge-enroll] waiting for tailscaled socket: $${SOCKET}";
-      i=0;
-      while [ ! -S "$${SOCKET}" ]; do i=$$((i+1)); if [ $$i -gt 60 ]; then echo "[edge-enroll] tailscaled socket not ready"; exit 2; fi; sleep 1; done;
-      echo "[edge-enroll] starting enroll loop";
-      while true; do
-        IP="$$(tailscale --socket=$${SOCKET} ip -4 2>/dev/null | head -n 1 || true)";
-        if [ -z "$${IP}" ]; then
-          echo "[edge-enroll] no tailnet ipv4 yet; retry";
-          sleep 3;
-          continue;
-        fi;
-        URL="$${CLOUD_OPS_BASE_URL%/}/api/v1/enroll";
-        echo "[edge-enroll] enrolling name=$${ENROLL_NAME} address=$${IP} port=$${ENROLL_EDGE_API_PORT} -> $${URL}";
-        curl -fsS -X POST "$${URL}" \
-          -H "Content-Type: application/json" \
-          -H "$${CLOUD_OPS_ENROLL_TOKEN_HEADER}: $${CLOUD_OPS_ENROLL_TOKEN}" \
-          -d "{\"name\":\"$${ENROLL_NAME}\",\"address\":\"$${IP}\",\"edge_api_port\":$${ENROLL_EDGE_API_PORT}}" \
-          || echo "[edge-enroll] enroll request failed (will retry)";
-        sleep "$${ENROLL_INTERVAL_SEC}";
-      done
+    # IMPORTANT:
+    # - With entrypoint ["sh","-c"], Compose may split a long string command into argv tokens.
+    # - We must pass the script as a single argv element, otherwise sh -c only receives the first token (e.g. "set").
+    command:
+      - |
+        # NOTE: we must escape '$' as '$$' so Compose doesn't try to interpolate variables at compose-time.
+        set -eu
+        if [ -z "$${CLOUD_OPS_BASE_URL:-}" ] || [ -z "$${CLOUD_OPS_ENROLL_TOKEN:-}" ]; then
+          echo "[edge-enroll] missing CLOUD_OPS_BASE_URL or CLOUD_OPS_ENROLL_TOKEN; exiting"
+          exit 1
+        fi
+        SOCKET="/var/run/tailscale/tailscaled.sock"
+        echo "[edge-enroll] waiting for tailscaled socket: $${SOCKET}"
+        i=0
+        while [ ! -S "$${SOCKET}" ]; do
+          i=$$((i+1))
+          if [ $$i -gt 60 ]; then
+            echo "[edge-enroll] tailscaled socket not ready"
+            exit 2
+          fi
+          sleep 1
+        done
+        echo "[edge-enroll] starting enroll loop"
+        while true; do
+          IP="$$(tailscale --socket=$${SOCKET} ip -4 2>/dev/null | head -n 1 || true)"
+          if [ -z "$${IP}" ]; then
+            echo "[edge-enroll] no tailnet ipv4 yet; retry"
+            sleep 3
+            continue
+          fi
+          ENROLL_URL="$${CLOUD_OPS_BASE_URL%/}/api/v1/enroll"
+          echo "[edge-enroll] enrolling name=$${ENROLL_NAME} address=$${IP} port=$${ENROLL_EDGE_API_PORT} -> $${ENROLL_URL}"
+          ENROLL_PAYLOAD="{\"name\":\"$${ENROLL_NAME}\",\"address\":\"$${IP}\",\"edge_api_port\":$${ENROLL_EDGE_API_PORT}}"
+          wget -q -O - "$${ENROLL_URL}" \
+            --header "Content-Type: application/json" \
+            --header "$${CLOUD_OPS_ENROLL_TOKEN_HEADER}: $${CLOUD_OPS_ENROLL_TOKEN}" \
+            --post-data "$${ENROLL_PAYLOAD}" \
+            >/dev/null 2>&1 \
+            || echo "[edge-enroll] enroll request failed (will retry)"
+
+          # 方案 B：推送服务状态（edge-api 聚合的 system/status）
+          STATUS_URL="http://127.0.0.1:$${ENROLL_EDGE_API_PORT}/api/v1/system/status"
+          # BusyBox wget 对带引号的 URL（例如 "\"http://...\""）会直接失败，因此这里不要转义引号
+          STATUS_JSON="$$(wget -q -O - "$${STATUS_URL}" 2>/dev/null || true)"
+          if [ -n "$${STATUS_JSON}" ]; then
+            STATUS_B64="$$(printf '%s' "$${STATUS_JSON}" | base64 | tr -d '\n')"
+            REPORT_URL="$${CLOUD_OPS_BASE_URL%/}/api/v1/edge-status"
+            REPORT_PAYLOAD="{\"name\":\"$${ENROLL_NAME}\",\"address\":\"$${IP}\",\"edge_api_port\":$${ENROLL_EDGE_API_PORT},\"system_status_b64\":\"$${STATUS_B64}\"}"
+            echo "[edge-enroll] reporting status -> $${REPORT_URL} (b64_bytes=$$(printf '%s' \"$${STATUS_B64}\" | wc -c))"
+            wget -q -O - "$${REPORT_URL}" \
+              --header "Content-Type: application/json" \
+              --header "$${CLOUD_OPS_ENROLL_TOKEN_HEADER}: $${CLOUD_OPS_ENROLL_TOKEN}" \
+              --post-data "$${REPORT_PAYLOAD}" \
+              >/dev/null 2>&1 \
+              || echo "[edge-enroll] status report failed (will retry)"
+          else
+            echo "[edge-enroll] system/status unavailable yet; skip report"
+          fi
+          sleep "$${ENROLL_INTERVAL_SEC}"
+        done
     restart: unless-stopped
     profiles:
       - remote-debug
