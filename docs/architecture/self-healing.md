@@ -81,7 +81,7 @@
 
 ### 5.1 执行方式
 
-- 通过 Docker API 重启指定容器（依赖 Docker 引擎访问能力，常见为挂载 `/var/run/docker.sock`）。
+- 通过 Docker API 重启指定容器（依赖 Docker 引擎访问能力；当前默认通过受控 `docker-socket-proxy` 访问，而不是把 `/var/run/docker.sock` 直接暴露给业务容器）。
 
 ### 5.2 审计与事件上报
 
@@ -104,7 +104,7 @@
 
 ## 7. 当前缺口与后续规划（面向 7x24 验收）
 
-- **P0（必须）**：`edge-monitor` 的 `/ops/*` 接口鉴权；默认不向宿主机暴露该端口；docker.sock 风险隔离方案落地。
+- **P0（必须）**：`edge-monitor` 的 `/ops/*` 接口鉴权；默认不向宿主机暴露该端口；docker.sock 风险隔离方案落地（当前默认通过 `docker-socket-proxy` 收敛权限）。
 - **P1**：AI 模型版本/校验/回滚闭环；Influx/DB 降级策略与补写机制；运维操作审计入库。
 - **P2**：OTA 蓝绿发布与自动回滚；故障注入与演练脚本（断链、磁盘满、MQTT 抖动）。
 

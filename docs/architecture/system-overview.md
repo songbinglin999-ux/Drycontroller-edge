@@ -114,7 +114,7 @@ graph LR
 
 - `edge-api` 的控制/运维接口已支持 API Key 鉴权（未配置 key 时会拒绝访问）。
 - `mosquitto` 禁止匿名连接，使用口令文件。
-- `edge-monitor` 需要访问 Docker 引擎以实现自动重启（默认通过挂载 docker.sock）。
+- `edge-monitor` 需要访问 Docker 引擎以实现自动重启（当前默认通过受控 `docker-socket-proxy` 访问 Docker API；宿主机的 `docker.sock` 不再直接暴露给业务容器）。
 
 ### 4.2 需要重点加固（建议作为 7x24 验收前置）
 

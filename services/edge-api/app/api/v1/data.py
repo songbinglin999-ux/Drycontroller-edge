@@ -2,6 +2,8 @@
 数据查询 API（v1）
 """
 
+# pyright: reportMissingImports=false
+
 from typing import List, Optional
 
 import structlog
@@ -15,6 +17,24 @@ from app.services.realtime_data import (
 router = APIRouter()
 logger = structlog.get_logger(__name__)
 
+def _normalize_tags(tags: Optional[List[str]]) -> Optional[List[str]]:
+    """
+    FastAPI 对 List[str] 的 Query 默认只支持多次传参：
+      ?tags=a&tags=b
+    但前端/脚本经常会传逗号分隔：
+      ?tags=a,b
+    这里做兼容：支持“多值 + 逗号分隔”混用。
+    """
+    if not tags:
+        return None
+    out: list[str] = []
+    for item in tags:
+        if not item:
+            continue
+        parts = [p.strip() for p in item.split(",")]
+        out.extend([p for p in parts if p])
+    return out or None
+
 
 @router.get("/realtime")
 async def get_realtime_data(
@@ -25,6 +45,7 @@ async def get_realtime_data(
     """
     获取实时数据（等价于 `/api/realtime/latest`）
     """
+    tags = _normalize_tags(tags)
     try:
         return await service.get_latest_payload(tags, lookback=lookback)
     except ValueError as exc:

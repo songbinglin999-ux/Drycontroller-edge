@@ -143,12 +143,13 @@ graph LR
 - `edge-api` 统一生命周期钩子：启动阶段自动建表、接入 MQTT / 事件总线 / WS 转发，配合 Structlog + 事件审计记录关键状态。
 - `edge-monitor` 形成“策略 + 执行器 + 审计”的自愈闭环，可在 Docker 级别执行熔断重启并推送 MQTT 事件。
 - 完整的 Docker Compose 拆分（API / 采集 / 推理 / 授权 / 监控 / DB / MQ），支持一键联调与模拟器。
+- `/ready` 已实现真实依赖探测：并发检查 Postgres/Influx/MQTT/事件总线/WS 模块；不就绪返回 **HTTP 503**，可直接作为编排/监控判定依据（并已用于 Dockerfile `HEALTHCHECK`）。
+- API 安全基线已落地：`edge-api` 统一采用 API Key（区分 control/admin）保护控制与运维接口；`edge-monitor` 的 `/ops/*` 高危接口也启用 API Key。
+- 最小权限治理已推进：`edge-api` 不再挂载 `docker.sock`；容器重启/查询通过 `docker-socket-proxy` 收敛权限；容器日志由 `edge-api` 代理调用 `edge-monitor` 的受控日志端点。
 
 ### ⚠️ 待补齐
-- `/ready` 仍为硬编码常量，未真实探测数据库、MQTT、Influx 等依赖，CI/CD 与编排层无法凭此判断可用性。
-- API 安全：生产必须启用 API Key（control/admin）、收敛 CORS、并对高危运维动作做审计；否则不符合工业现场安全要求。
-- `edge-api`、`edge-monitor` 直接挂载 `/var/run/docker.sock` 并开放 `/api/v1/system/container/logs`，等价授予容器 root 权限，需改为受控 sidecar。
-- 自动化测试覆盖薄弱：除少量 stub 路由测试外，AI/DAQ/监控等服务缺乏单元与契约测试，无法防止模型加载、MQTT 序列回归。
+- 运维面限流与防滥用：对高危/高频接口（例如日志读取、运维动作）补齐速率限制与更细粒度审计（必要时落库）。
+- 自动化测试进一步补齐：目前已有基础单测，但仍需扩展到“鉴权 + 异常 + 限流 + WS 推送 + 关键链路”的集成/契约测试，覆盖回归场景（模型加载、MQTT 序列、依赖抖动）。
 
 > 📌 建议将上述事项收敛到安全基线、健康探活、CI 测试、最小权限治理四大里程碑，并在 `docs/architecture/` 与运行手册里同步记录。
 

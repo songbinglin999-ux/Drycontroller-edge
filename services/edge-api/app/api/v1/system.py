@@ -2,7 +2,10 @@
 系统管理 API
 """
 
+# pyright: reportMissingImports=false
+
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 import structlog
@@ -85,7 +88,8 @@ async def get_container_logs(
     获取容器日志（代理 edge-monitor）
     """
     monitor_base = settings.MONITOR_API_BASE.rstrip("/")
-    url = f"{monitor_base}/ops/logs/{container}"
+    # container 作为 path segment 必须做 URL 编码，避免特殊字符导致路径错误/潜在路径穿越
+    url = f"{monitor_base}/ops/logs/{quote(container, safe='')}"
     
     headers = {settings.API_KEY_HEADER: api_key} if api_key else {}
     try:
