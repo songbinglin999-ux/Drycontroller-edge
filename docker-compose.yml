@@ -548,6 +548,9 @@ services:
       - ADMIN_API_KEYS=${ADMIN_API_KEYS}
       - OTA_AGENT_API_KEYS=${OTA_AGENT_API_KEYS:-}
       - OTA_WORK_DIR=/work
+      # 联调/演示环境：如无 PLC 或某服务 /ready 会长期 503，可临时跳过 ready/smoke
+      - OTA_SKIP_READY=${OTA_SKIP_READY:-false}
+      - OTA_SKIP_SMOKE=${OTA_SKIP_SMOKE:-false}
       # cosign 公钥（运维资产，只读挂载到容器）
       - OTA_COSIGN_PUBKEY_PATH=${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}
     volumes:

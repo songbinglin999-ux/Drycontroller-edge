@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     docker.io \
+    docker-cli \
     docker-compose \
     && rm -rf /var/lib/apt/lists/*
 
