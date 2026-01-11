@@ -256,6 +256,11 @@ apply_package_dir() {
   # 重启服务（up 会滚动替换变更的容器）
   log_info "重启服务..."
   compose up -d --remove-orphans
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    log_error "compose up 失败（rc=$rc）"
+    return $rc
+  fi
 
   # 可选 post-check
   if [ -f "$dir/post-check.sh" ]; then
@@ -326,6 +331,11 @@ rollback_to() {
   fi
 
   compose up -d --remove-orphans
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    log_error "回滚 compose up 失败（rc=$rc）"
+    return $rc
+  fi
   verify_ready_and_smoke
   log_info "回滚完成"
 }
@@ -367,12 +377,31 @@ main() {
 
   set +e
   local ok=1
+  local rc=0
   case "$MODE" in
     online)
       log_info "在线升级：docker pull + up -d"
       compose pull
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        log_error "compose pull 失败（rc=$rc）"
+        ok=$rc
+        break
+      fi
       compose up -d --remove-orphans
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        log_error "compose up 失败（rc=$rc）"
+        ok=$rc
+        break
+      fi
       verify_ready_and_smoke
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        log_error "验证失败（rc=$rc）"
+        ok=$rc
+        break
+      fi
       ok=0
       ;;
     offline)
@@ -381,7 +410,11 @@ main() {
         ok=2
       else
         apply_package_dir "$PKG"
+        rc=$?
+        if [ $rc -ne 0 ]; then ok=$rc; break; fi
         verify_ready_and_smoke
+        rc=$?
+        if [ $rc -ne 0 ]; then ok=$rc; break; fi
         ok=0
       fi
       ;;
@@ -396,7 +429,11 @@ main() {
         log_info "解压 OTA 包：$PKG -> $tmp_dir"
         tar -xzf "$PKG" -C "$tmp_dir"
         apply_package_dir "$tmp_dir"
+        rc=$?
+        if [ $rc -ne 0 ]; then ok=$rc; rm -rf "$tmp_dir"; break; fi
         verify_ready_and_smoke
+        rc=$?
+        if [ $rc -ne 0 ]; then ok=$rc; rm -rf "$tmp_dir"; break; fi
         rm -rf "$tmp_dir"
         ok=0
       fi
