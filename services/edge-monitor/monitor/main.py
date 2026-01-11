@@ -378,6 +378,9 @@ class MonitorService:
     
     def _connect_mqtt(self):
         """连接到 MQTT Broker"""
+        # 避免在 connect_async 尚未完成时反复 new Client 导致“连接风暴”，并且 publish 队列被不断丢失
+        if self.mqtt_client is not None:
+            return
         try:
             self.mqtt_client = mqtt.Client(client_id="edge-monitor")
             if self.mqtt_user and self.mqtt_password:
@@ -387,11 +390,37 @@ class MonitorService:
                     self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=int(self._mqtt_reconnect_backoff_max))
             except Exception:
                 pass
+
+            # 连接回调：仅在真正连上 broker 后才认为“connected”
+            def _on_connect(client, _userdata, _flags, rc):  # pragma: no cover
+                if rc == 0:
+                    logger.info("monitor_mqtt_connected", broker=self.mqtt_broker, port=self.mqtt_port)
+                    self._mqtt_reconnect_backoff = 1.0
+                    self._next_mqtt_connect_at = 0.0
+                    return
+                # 非 0：鉴权/参数错误等，主动断开并进入退避重试
+                logger.error("monitor_mqtt_connect_rc", rc=rc)
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
+                self.mqtt_client = None
+                self._next_mqtt_connect_at = time.time() + self._mqtt_reconnect_backoff
+                self._mqtt_reconnect_backoff = min(self._mqtt_reconnect_backoff * 2, self._mqtt_reconnect_backoff_max)
+
+            def _on_disconnect(_client, _userdata, rc):  # pragma: no cover
+                logger.warning("monitor_mqtt_disconnected", rc=rc)
+                self.mqtt_client = None
+                self._next_mqtt_connect_at = time.time() + self._mqtt_reconnect_backoff
+                self._mqtt_reconnect_backoff = min(self._mqtt_reconnect_backoff * 2, self._mqtt_reconnect_backoff_max)
+
+            self.mqtt_client.on_connect = _on_connect
+            self.mqtt_client.on_disconnect = _on_disconnect
+
             self.mqtt_client.connect_async(self.mqtt_broker, self.mqtt_port, keepalive=60)
             self.mqtt_client.loop_start()
-            logger.info("monitor_mqtt_connected", broker=self.mqtt_broker, port=self.mqtt_port)
-            self._mqtt_reconnect_backoff = 1.0
-            self._next_mqtt_connect_at = 0.0
+            # connect_async 是异步的：这里不要假装已连接；并设置最小重试间隔避免频繁重试
+            self._next_mqtt_connect_at = time.time() + 1.0
         except Exception as exc:
             logger.error("monitor_mqtt_connect_failed", error=str(exc))
             self.mqtt_client = None

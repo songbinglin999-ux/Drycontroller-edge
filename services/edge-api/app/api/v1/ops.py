@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.core.security import require_admin_api_key
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
+from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
 # 注意：这里需要拿到实际 api_key 以便代理调用 edge-monitor 的 /ops/*
@@ -57,6 +58,18 @@ class ManualActionRequest(BaseModel):
 class SelfHealToggleRequest(BaseModel):
     service: str
     enabled: bool
+
+
+class OtaStartRequest(BaseModel):
+    mode: str = Field("online", description="online/offline/offline-tar（MVP 默认 online）")
+    target_version: Optional[str] = None
+    # 可选：发布侧生成的 docker-compose override（建议使用 digest 固定，避免 tag 漂移）
+    # 说明：edge-api 仅做鉴权与透传，实际由 edge-ota-agent 落盘并执行
+    compose_override_yaml: Optional[str] = Field(None, description="docker compose override yaml（可选）")
+    # 强制验签：若为 true，则要求 override 中的镜像均为 digest 且通过 cosign verify
+    cosign_enforce: bool = Field(False, description="是否强制 cosign 验签（推荐逐步开启）")
+    dry_run: bool = False
+    timeout_sec: int = Field(60 * 30, ge=60, le=60 * 60 * 6)
 
 
 @router.get("/alerts")
@@ -115,4 +128,36 @@ async def manual_toggle_self_heal(
 ):
     result = await client.toggle_self_heal(req.service, req.enabled, api_key=api_key)
     return result
+
+
+# ==================== OTA（由 edge-ota-agent 执行，edge-api 负责鉴权与代理） ====================
+
+
+@router.post("/ota/start")
+async def ota_start(
+    req: OtaStartRequest,
+    client: OtaOpsClient = Depends(get_ota_ops_client),
+    api_key: str = Depends(require_admin_api_key),
+):
+    # 透传到 ota-agent（MVP 仅支持 online）
+    return await client.start(api_key=api_key, payload=req.model_dump(exclude_none=True))
+
+
+@router.get("/ota/operations/{operation_id}")
+async def ota_get_operation(
+    operation_id: str,
+    client: OtaOpsClient = Depends(get_ota_ops_client),
+    api_key: str = Depends(require_admin_api_key),
+):
+    return await client.get_operation(operation_id, api_key=api_key)
+
+
+@router.get("/ota/operations/{operation_id}/logs")
+async def ota_get_logs(
+    operation_id: str,
+    lines: int = 200,
+    client: OtaOpsClient = Depends(get_ota_ops_client),
+    api_key: str = Depends(require_admin_api_key),
+):
+    return await client.get_logs(operation_id, api_key=api_key, lines=lines)
 

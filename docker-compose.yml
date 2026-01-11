@@ -249,6 +249,8 @@ services:
         mosquitto_passwd -b "$${PASSFILE}" "$${MQTT_USER_EDGE_DAQ}" "$${MQTT_PASSWORD_EDGE_DAQ}"
         mosquitto_passwd -b "$${PASSFILE}" "$${MQTT_USER_AI_SOFTSENSOR}" "$${MQTT_PASSWORD_AI_SOFTSENSOR}"
         mosquitto_passwd -b "$${PASSFILE}" "$${MQTT_USER_EDGE_MONITOR}" "$${MQTT_PASSWORD_EDGE_MONITOR}"
+        # mosquitto 官方镜像默认以 uid=1883 运行；若 passwords 属主为 root 会导致 broker 启动失败
+        chown 1883:1883 "$${PASSFILE}" || true
         chmod 600 "$${PASSFILE}"
         mkdir -p "/mosquitto/secret/certs"
         echo "[mosquitto-init] passwords generated: $${PASSFILE}"
@@ -288,7 +290,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "if [ \"$${MQTT_TLS:-false}\" = \"true\" ] || [ \"$${MQTT_TLS:-false}\" = \"1\" ] || [ \"$${MQTT_TLS:-false}\" = \"yes\" ]; then mosquitto_sub -h localhost -p 8883 --cafile /mosquitto/secret/certs/ca.crt -u \"$${MQTT_HEALTH_USER}\" -P \"$${MQTT_HEALTH_PASSWORD}\" -t '$$SYS/#' -C 1 >/dev/null 2>&1; else mosquitto_sub -h localhost -p 1883 -u \"$${MQTT_HEALTH_USER}\" -P \"$${MQTT_HEALTH_PASSWORD}\" -t '$$SYS/#' -C 1 >/dev/null 2>&1; fi || exit 1"
+          "if [ \"$${MQTT_TLS:-false}\" = \"true\" ] || [ \"$${MQTT_TLS:-false}\" = \"1\" ] || [ \"$${MQTT_TLS:-false}\" = \"yes\" ]; then mosquitto_sub -h localhost -p 8883 --cafile /mosquitto/secret/certs/ca.crt -u \"$${MQTT_HEALTH_USER}\" -P \"$${MQTT_HEALTH_PASSWORD}\" -t '$$SYS/broker/uptime' -C 1 -W 12 >/dev/null 2>&1; else mosquitto_sub -h localhost -p 1883 -u \"$${MQTT_HEALTH_USER}\" -P \"$${MQTT_HEALTH_PASSWORD}\" -t '$$SYS/broker/uptime' -C 1 -W 12 >/dev/null 2>&1; fi || exit 1"
         ]
       interval: 30s
       timeout: 10s
@@ -368,6 +370,10 @@ services:
     volumes:
       - ./logs/edge-daq:/logs/edge-daq
       - ./configs:/app/configs:ro
+    ports:
+      # 仅用于本机健康探针与 OTA 校验（脚本默认通过 localhost 校验）
+      # 注意：edge-monitor 默认占用 8080，因此这里默认用 8082
+      - "127.0.0.1:${EDGE_DAQ_HEALTH_PORT:-8082}:8080"
     networks:
       - edge-network
     depends_on:
@@ -519,6 +525,43 @@ services:
       influxdb:
         condition: service_healthy
     restart: always
+
+  # ==================== OTA Agent（在线升级执行器，profile=ota） ====================
+  # 用途：
+  # - 作为“设备侧执行面”，负责执行在线升级（compose pull/up + /ready 校验 + 失败回滚）
+  # - 对外不暴露端口，建议只由 edge-api 代理调用（同 docker network）
+  #
+  # 安全提示：
+  # - MVP 阶段为了执行 compose pull/up，会挂载 docker.sock（高危权限）
+  # - 强烈建议仅在需要 OTA 时启用该 profile，并在后续迭代把权限进一步收敛/隔离
+  edge-ota-agent:
+    build:
+      context: .
+      dockerfile: services/edge-ota-agent/Dockerfile
+    container_name: edge-ota-agent
+    profiles:
+      - ota
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      - API_KEY_HEADER=${API_KEY_HEADER:-X-API-Key}
+      # 默认复用 ADMIN_API_KEYS；也可单独配置 OTA_AGENT_API_KEYS
+      - ADMIN_API_KEYS=${ADMIN_API_KEYS}
+      - OTA_AGENT_API_KEYS=${OTA_AGENT_API_KEYS:-}
+      - OTA_WORK_DIR=/work
+      # cosign 公钥（运维资产，只读挂载到容器）
+      - OTA_COSIGN_PUBKEY_PATH=${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}
+    volumes:
+      # 仓库根目录挂载为 /work，便于执行 scripts/ota-update.sh
+      - ./:/work
+      # 高危：需要访问 docker engine 才能 pull/up
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 运维资产：cosign 公钥（默认宿主机 /etc/drycontroller/keys/cosign.pub）
+      - ${OTA_COSIGN_PUBKEY_HOST_PATH:-/etc/drycontroller/keys/cosign.pub}:${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}:ro
+      - ./logs/edge-ota-agent:/logs/edge-ota-agent
+      - ./data/ota:/data/ota
+    networks:
+      - edge-network
+    restart: unless-stopped
 
   # ==================== Prometheus（指标采集/告警规则） ====================
   prometheus:

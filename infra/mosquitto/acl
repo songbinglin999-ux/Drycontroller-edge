@@ -17,6 +17,7 @@
 # - events/system/self_heal
 
 user edge_api
+topic read $SYS/#
 topic read realtime/+/tags
 topic read system/+/status
 topic read system/+/alarms

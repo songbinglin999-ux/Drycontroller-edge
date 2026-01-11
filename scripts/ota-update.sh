@@ -269,10 +269,13 @@ verify_ready_and_smoke() {
   compose ps
 
   if [ "$SKIP_READY" = false ]; then
+    # 默认宿主机探测：localhost 端口（edge-daq 默认映射到 8082，避免与 edge-monitor:8080 冲突）
     local api_port="${EDGE_API_PORT:-8000}"
-    local daq_port="${EDGE_DAQ_HEALTH_PORT:-8080}"
-    wait_http_ok "http://localhost:${api_port}/ready" "edge-api /ready" 60
-    wait_http_ok "http://localhost:${daq_port}/ready" "edge-daq /ready" 60
+    local daq_port="${EDGE_DAQ_HEALTH_PORT:-8082}"
+    local api_ready_url="${EDGE_API_READY_URL:-http://localhost:${api_port}/ready}"
+    local daq_ready_url="${EDGE_DAQ_READY_URL:-http://localhost:${daq_port}/ready}"
+    wait_http_ok "$api_ready_url" "edge-api /ready" 60
+    wait_http_ok "$daq_ready_url" "edge-daq /ready" 60
   else
     log_warn "已跳过 /ready 校验"
   fi

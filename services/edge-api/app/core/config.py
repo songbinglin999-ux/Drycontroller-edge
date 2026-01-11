@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     MONITOR_CONFIG: str = "/app/configs/monitor.yaml"
     MONITOR_API_BASE: str = "http://edge-monitor:8080"
     
+    # OTA Agent（执行面，建议仅由 edge-api 代理调用）
+    OTA_AGENT_API_BASE: str = "http://edge-ota-agent:8090"
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
