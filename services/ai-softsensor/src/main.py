@@ -160,7 +160,8 @@ class SoftSensorService:
 
         async def metrics_handler(request):
             data = generate_latest()
-            return web.Response(body=data, content_type=CONTENT_TYPE_LATEST)
+            # aiohttp 不允许在 content_type 参数中包含 charset；prometheus_client 常量带 charset
+            return web.Response(body=data, headers={"Content-Type": CONTENT_TYPE_LATEST})
 
         app.router.add_get("/health", health_handler)
         app.router.add_get("/ready", ready_handler)
@@ -202,10 +203,25 @@ class SoftSensorService:
         mqtt_ready = bool(self.mqtt_handler and self.mqtt_handler.connected)
         dq_ready = bool(self.mqtt_handler and self.mqtt_handler.is_dq_ready()) if self.mqtt_handler else False
         ready = bool(self.running and model_loaded and mqtt_ready and dq_ready)
+        reason = None
+        hint = None
+        if not self.running:
+            reason = "SERVICE_STARTING"
+        elif not model_loaded:
+            reason = "MODEL_NOT_READY"
+            hint = "模型未加载：检查 AI_MODEL_PATH / 模型文件是否存在。"
+        elif not mqtt_ready:
+            reason = "MQTT_OFFLINE"
+            hint = "MQTT 未连接：检查 mosquitto 以及账号密码。"
+        elif not dq_ready:
+            reason = "DQ_NOT_READY"
+            hint = "数据链路未就绪：通常是 edge-daq/PLC 侧没有稳定产出数据（例如 PLC 离线导致 edge-daq /ready=PLC_OFFLINE）。"
         return {
             "ready": ready,
             "service": "ai-softsensor",
             "timestamp": int(time.time()),
+            "reason": reason,
+            "hint": hint,
             "details": {
                 "running": bool(self.running),
                 "model_loaded": model_loaded,

@@ -762,13 +762,37 @@ class MonitorService:
             
             result["latency_ms"] = round(latency_ms, 2)
             result["status_code"] = response.status_code
+            # 关键：在非 2xx 时保留部分响应体，供云端/现场快速定位（如 PLC_OFFLINE）
+            # 注意：只截断少量文本，避免状态 payload 过大
+            if response.status_code < 200 or response.status_code >= 300:
+                try:
+                    text = (response.text or "")[:2048]
+                    if text:
+                        result["response_body"] = text
+                    ct = (response.headers.get("content-type") or "").lower()
+                    if "application/json" in ct and text:
+                        try:
+                            result["response_json"] = response.json()
+                        except Exception:
+                            # keep text only
+                            pass
+                except Exception:
+                    pass
             
             # 根据状态码判断健康状态
             if 200 <= response.status_code < 300:
                 result["status"] = "healthy"
             else:
                 result["status"] = "degraded"
-                result["detail"] = f"http {response.status_code}"
+                # 优先显示标准化 reason（如果有），否则退化为 http xxx
+                reason = None
+                try:
+                    rj = result.get("response_json") or {}
+                    if isinstance(rj, dict):
+                        reason = rj.get("reason")
+                except Exception:
+                    reason = None
+                result["detail"] = f"{reason}" if reason else f"http {response.status_code}"
         except Exception as exc:
             # 请求失败（连接超时、拒绝等）
             result["status"] = "down"
@@ -1229,12 +1253,30 @@ class MonitorService:
                 }
             )
         
+        # 聚合告警：让现场/云端一眼区分“服务挂了” vs “外部依赖离线（PLC）”
+        warnings: list[dict[str, Any]] = []
+        for item in services:
+            try:
+                http_check = (item.get("checks") or {}).get("http") or {}
+                rj = http_check.get("response_json") or {}
+                if isinstance(rj, dict) and rj.get("reason") == "PLC_OFFLINE":
+                    warnings.append(
+                        {
+                            "type": "PLC_OFFLINE",
+                            "service": item.get("name"),
+                            "hint": rj.get("hint") or "PLC/Modbus 不通：请检查 PLC 上电/网络/地址配置。",
+                        }
+                    )
+            except Exception:
+                continue
+
         # 组装完整消息
         return {
             "schema": self.status_schema,  # 消息 schema 版本
             "line": self.line_id,           # 产线标识
             "timestamp": int(time.time()),  # 消息时间戳
             "services": services,           # 服务状态列表
+            "warnings": warnings,
             "system": {
                 "metrics": self.system_metrics,
                 "updated_at": self.system_metrics.get("updated_at"),

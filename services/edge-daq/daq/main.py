@@ -86,6 +86,10 @@ class DAQService:
         self.simulator = None
         self.config = None
         self.control_subscriber = None
+        # 现场定位关键：记录当前 PLC 配置（用于 /ready 返回）
+        self.plc_host: str | None = None
+        self.plc_port: int | None = None
+        self.use_simulator: bool | None = None
         # 健康检查 HTTP 服务器
         self.health_runner = None
         self.health_site = None
@@ -156,6 +160,11 @@ class DAQService:
         heartbeat_interval = float(os.getenv("PLC_HEARTBEAT_INTERVAL", "5") or "5")
         heartbeat_timeout_cycles = int(os.getenv("PLC_HEARTBEAT_TIMEOUT_CYCLES", "3") or "3")
         
+        # 保存配置，便于 /ready 输出给现场定位
+        self.plc_host = plc_host
+        self.plc_port = plc_port
+        self.use_simulator = use_simulator
+
         # 初始化数据发布器（连接 MQTT 和 InfluxDB）
         self.publisher = DataPublisher()
         await self.publisher.connect()
@@ -275,7 +284,8 @@ class DAQService:
         async def metrics_handler(request):
             """Prometheus 指标"""
             data = generate_latest()
-            return web.Response(body=data, content_type=CONTENT_TYPE_LATEST)
+            # aiohttp 不允许在 content_type 参数中包含 charset；prometheus_client 常量带 charset
+            return web.Response(body=data, headers={"Content-Type": CONTENT_TYPE_LATEST})
 
         app.router.add_get("/health", health_handler)
         app.router.add_get("/ready", ready_handler)
@@ -338,7 +348,8 @@ class DAQService:
         running = bool(self.running)
 
         # 数据源：模拟器即认为可用；真实 PLC 则要求 modbus 连接可用
-        modbus_ok = True if self.simulator is not None else bool(self.modbus_client and self.modbus_client.get_status().get("connected"))
+        modbus_connected = bool(self.modbus_client and self.modbus_client.get_status().get("connected")) if self.simulator is None else True
+        modbus_ok = bool(modbus_connected)
 
         # 发布通路：至少一个（MQTT/Influx）在线，避免“看似健康但实际没出数”
         pub_ok = False
@@ -349,17 +360,49 @@ class DAQService:
 
         ready = running and modbus_ok and pub_ok and not self.control_suspended and not self.validation_errors
 
+        reason = None
+        hint = None
+        warnings: list[str] = []
+        if not running:
+            reason = "SERVICE_STARTING"
+        elif self.validation_errors:
+            reason = "CONFIG_ERROR"
+            hint = f"配置校验失败：{self.validation_errors}"
+        elif self.control_suspended:
+            reason = "CONTROL_SUSPENDED"
+            hint = "PLC 心跳异常触发控制挂起（为安全起见停止下发控制）。"
+        elif not pub_ok:
+            reason = "PUBLISHER_OFFLINE"
+            hint = "发布通路（MQTT/Influx）未连通：请检查 mosquitto/influxdb 以及账号密码。"
+        elif not modbus_ok:
+            reason = "PLC_OFFLINE"
+            warnings.append("PLC_OFFLINE")
+            # 现场最常见：容器内误配成 127.0.0.1（指向容器自己），必然连不上 PLC
+            if (self.plc_host or "").strip() in ("127.0.0.1", "localhost"):
+                hint = "PLC/Modbus 不通：当前 PLC_HOST=127.0.0.1（容器内指向自身）。请改为 PLC 实际 IP（如 192.168.x.x），或使用 USE_SIMULATOR=true 做联调。"
+            else:
+                hint = "PLC/Modbus 不通：请检查 PLC 是否上电、网络是否可达、Modbus 端口/从站地址是否正确。"
+
         return {
             "ready": ready,
             "service": "edge-daq",
             "timestamp": int(time.time()),
+            "reason": reason,
+            "hint": hint,
+            "warnings": warnings,
             "details": {
                 "running": running,
                 "modbus_ok": modbus_ok,
+                "modbus_connected": modbus_connected,
                 "publisher_ok": pub_ok,
                 "control_suspended": self.control_suspended,
                 "config_errors": len(self.validation_errors),
                 "publisher": pub_details,
+                "plc": {
+                    "host": self.plc_host,
+                    "port": self.plc_port,
+                    "use_simulator": bool(self.simulator is not None),
+                },
             },
         }
 
