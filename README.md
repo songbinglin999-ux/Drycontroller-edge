@@ -216,6 +216,17 @@ cp env.example .env
 vim .env
 ```
 
+### （推荐）PLC 通讯参数：云端下发（应用层，不改网卡）
+
+若 PLC 与 edge 在**同一路由/同一网段**且共用上网口（现场常见），**最稳做法**是：不去改 Ubuntu 网卡 IP/网关，只下发 Modbus TCP 通讯参数。
+
+- **落盘位置**：`./configs-runtime/plc.yaml`（由云端 `cloud-ops` → 边缘 `edge-api` 自动写入）
+- **生效方式**：写入后会重启 `edge-daq`，使其加载新配置
+- **读取优先级**：`configs-runtime/plc.yaml` > `.env` 里的 `PLC_HOST/PLC_PORT/PLC_SLAVE_ID/PLC_CONNECT_TIMEOUT`
+- **可观测性**：`edge-daq /ready` 会回显 `plc.config_source` 与 `runtime_config_path`，并在 PLC 不在线时返回 `reason=PLC_OFFLINE` + `hint`
+
+> ⚠️ 注意：`PLC_HOST` 不能配置为 `127.0.0.1/localhost`（容器内指向自身，必然连不上 PLC）。
+
 ### 3. 启动服务
 
 ```bash

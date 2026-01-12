@@ -90,6 +90,10 @@ class DAQService:
         self.plc_host: str | None = None
         self.plc_port: int | None = None
         self.use_simulator: bool | None = None
+        self.plc_slave_id: int | None = None
+        self.plc_connect_timeout: int | None = None
+        # env/runtime_file（云端下发）等
+        self.plc_config_source: str | None = None
         # 健康检查 HTTP 服务器
         self.health_runner = None
         self.health_site = None
@@ -151,7 +155,7 @@ class DAQService:
         # 启动健康检查 HTTP 服务
         await self._start_health_server()
         
-        # 读取 PLC 连接配置
+        # 读取 PLC 连接配置（工业推荐：支持云端下发 runtime 配置覆盖 env）
         plc_host = os.getenv("PLC_HOST", "192.168.1.100")
         plc_port = int(os.getenv("PLC_PORT", "502"))
         plc_slave_id = int(os.getenv("PLC_SLAVE_ID", "1"))
@@ -159,10 +163,32 @@ class DAQService:
         use_simulator = os.getenv("USE_SIMULATOR", "false").lower() == "true"
         heartbeat_interval = float(os.getenv("PLC_HEARTBEAT_INTERVAL", "5") or "5")
         heartbeat_timeout_cycles = int(os.getenv("PLC_HEARTBEAT_TIMEOUT_CYCLES", "3") or "3")
-        
+
+        # 云端下发的运行时配置：/app/configs-runtime/plc.yaml
+        # - edge-api 写入该文件并触发重启 edge-daq 使其生效
+        # - 只修改应用层通讯参数，不修改网卡配置（避免共用网口断联风险）
+        runtime_cfg_path = Path("/app/configs-runtime/plc.yaml")
+        if runtime_cfg_path.exists():
+            try:
+                with runtime_cfg_path.open("r", encoding="utf-8") as f:
+                    runtime_cfg = yaml.safe_load(f) or {}
+                if isinstance(runtime_cfg, dict):
+                    plc_host = str(runtime_cfg.get("host") or plc_host)
+                    plc_port = int(runtime_cfg.get("port") or plc_port)
+                    plc_slave_id = int(runtime_cfg.get("slave_id") or plc_slave_id)
+                    plc_connect_timeout = int(runtime_cfg.get("connect_timeout") or plc_connect_timeout)
+                    self.plc_config_source = "runtime_file"
+            except Exception as exc:
+                logger.warning("runtime_plc_config_load_failed", path=str(runtime_cfg_path), error=str(exc))
+                self.plc_config_source = "env"
+        else:
+            self.plc_config_source = "env"
+
         # 保存配置，便于 /ready 输出给现场定位
         self.plc_host = plc_host
         self.plc_port = plc_port
+        self.plc_slave_id = plc_slave_id
+        self.plc_connect_timeout = plc_connect_timeout
         self.use_simulator = use_simulator
 
         # 初始化数据发布器（连接 MQTT 和 InfluxDB）
@@ -402,6 +428,10 @@ class DAQService:
                     "host": self.plc_host,
                     "port": self.plc_port,
                     "use_simulator": bool(self.simulator is not None),
+                    "slave_id": self.plc_slave_id,
+                    "connect_timeout": self.plc_connect_timeout,
+                    "config_source": self.plc_config_source,
+                    "runtime_config_path": "/app/configs-runtime/plc.yaml",
                 },
             },
         }

@@ -4,8 +4,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+from pathlib import Path
 from typing import List, Optional
 
+import httpx
+import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -70,6 +75,28 @@ class OtaStartRequest(BaseModel):
     cosign_enforce: bool = Field(False, description="是否强制 cosign 验签（推荐逐步开启）")
     dry_run: bool = False
     timeout_sec: int = Field(60 * 30, ge=60, le=60 * 60 * 6)
+
+
+class PlcConfigApplyRequest(BaseModel):
+    """
+    只做“应用层通讯参数”配置：不修改网卡 IP/掩码/网关（避免共用网口把设备改断联）。
+    """
+
+    plc_host: str = Field(..., min_length=1, description="PLC IP/域名（Modbus TCP Server）")
+    plc_port: int = Field(502, ge=1, le=65535)
+    plc_slave_id: int = Field(1, ge=0, le=255, description="Modbus TCP Unit/Slave ID（部分 PLC 会忽略，但建议与现场一致）")
+    plc_connect_timeout: int = Field(5, ge=1, le=60, description="Modbus TCP 连接/请求超时（秒）")
+    restart_edge_daq: bool = True
+    read_ready_after_restart: bool = True
+    fail_on_not_ready: bool = False
+
+
+def _atomic_write_yaml(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".tmp.{int(time.time())}")
+    with tmp.open("w", encoding="utf-8") as fp:
+        yaml.safe_dump(data, fp, allow_unicode=True, sort_keys=False)
+    tmp.replace(path)
 
 
 @router.get("/alerts")
@@ -160,4 +187,67 @@ async def ota_get_logs(
     api_key: str = Depends(require_admin_api_key),
 ):
     return await client.get_logs(operation_id, api_key=api_key, lines=lines)
+
+
+# ==================== PLC 通讯参数下发（不改网卡，仅改应用层） ====================
+
+
+@router.post("/plc-config/apply")
+async def apply_plc_config(
+    req: PlcConfigApplyRequest,
+    client: MonitorOpsClient = Depends(get_monitor_ops_client),
+    api_key: str = Depends(require_admin_api_key),
+):
+    """
+    云端下发 PLC 通讯参数：
+    1) 写入 /app/configs-runtime/plc.yaml（bind mount 到宿主机 ./configs-runtime）
+    2) 可选：通过 edge-monitor 重启 edge-daq 使其加载新配置
+    3) 可选：读取 edge-daq /ready 返回（用于云端展示 PLC_OFFLINE 等原因）
+    """
+    if req.plc_host.strip() in {"127.0.0.1", "localhost"}:
+        # 工业现场必坑：容器内 127.0.0.1 指向自身，必然连不上 PLC
+        raise HTTPException(status_code=400, detail="PLC_HOST cannot be 127.0.0.1/localhost in docker; use real PLC IP")
+
+    cfg_path = Path("/app/configs-runtime/plc.yaml")
+    payload = {
+        "host": req.plc_host.strip(),
+        "port": int(req.plc_port),
+        "slave_id": int(req.plc_slave_id),
+        "connect_timeout": int(req.plc_connect_timeout),
+        "updated_at": int(time.time()),
+        "updated_by": "cloud",
+    }
+    _atomic_write_yaml(cfg_path, payload)
+
+    restart_result = None
+    if req.restart_edge_daq:
+        restart_result = await client.restart_service("edge-daq", api_key=api_key)
+
+    ready_result: dict | None = None
+    if req.read_ready_after_restart:
+        # 给容器一点启动时间（避免刚重启就探测）
+        await asyncio.sleep(2)
+        url = "http://edge-daq:8080/ready"
+        try:
+            async with httpx.AsyncClient(timeout=6) as hc:
+                resp = await hc.get(url)
+                ready_result = {
+                    "url": url,
+                    "status_code": resp.status_code,
+                    "json": resp.json() if resp.content else None,
+                    "text": (resp.text[:1000] if resp.text else None),
+                }
+        except Exception as exc:
+            ready_result = {"url": url, "status_code": 0, "error": str(exc)}
+
+    if req.fail_on_not_ready and ready_result and int(ready_result.get("status_code") or 0) >= 400:
+        raise HTTPException(status_code=409, detail={"success": False, "error": "edge_daq_not_ready", "ready": ready_result})
+
+    return {
+        "success": True,
+        "config_path": str(cfg_path),
+        "config": payload,
+        "restart": restart_result,
+        "edge_daq_ready": ready_result,
+    }
 

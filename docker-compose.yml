@@ -336,6 +336,8 @@ services:
     volumes:
       - ./logs/edge-api:/logs/edge-api
       - ./configs:/app/configs:ro
+      # 运行时可变配置（由云端下发）：例如 PLC 通讯参数（不改网卡，只改应用层）
+      - ./configs-runtime:/app/configs-runtime
     ports:
       - "${EDGE_API_PORT}:8000"
     networks:
@@ -379,6 +381,8 @@ services:
     volumes:
       - ./logs/edge-daq:/logs/edge-daq
       - ./configs:/app/configs:ro
+      # 运行时可变配置（只读）：例如 PLC 通讯参数（由 edge-api 落盘后重启生效）
+      - ./configs-runtime:/app/configs-runtime:ro
     ports:
       # 仅用于本机健康探针与 OTA 校验（脚本默认通过 localhost 校验）
       # 注意：edge-monitor 默认占用 8080，因此这里默认用 8082
