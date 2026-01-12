@@ -128,7 +128,7 @@ services:
           ENROLL_URL="$${CLOUD_OPS_BASE_URL%/}/api/v1/enroll"
           echo "[edge-enroll] enrolling name=$${ENROLL_NAME} address=$${IP} port=$${ENROLL_EDGE_API_PORT} -> $${ENROLL_URL}"
           ENROLL_PAYLOAD="{\"name\":\"$${ENROLL_NAME}\",\"address\":\"$${IP}\",\"edge_api_port\":$${ENROLL_EDGE_API_PORT}}"
-          ENROLL_RESP="$$(wget -S -O - -T 8 "$${ENROLL_URL}" \
+          ENROLL_RESP="$$(wget -q -S -O - -T 8 "$${ENROLL_URL}" \
             --header "Content-Type: application/json" \
             --header "$${CLOUD_OPS_ENROLL_TOKEN_HEADER}: $${CLOUD_OPS_ENROLL_TOKEN}" \
             --post-data "$${ENROLL_PAYLOAD}" 2>&1)"
@@ -150,7 +150,7 @@ services:
             REPORT_URL="$${CLOUD_OPS_BASE_URL%/}/api/v1/edge-status"
             REPORT_PAYLOAD="{\"name\":\"$${ENROLL_NAME}\",\"address\":\"$${IP}\",\"edge_api_port\":$${ENROLL_EDGE_API_PORT},\"line_id\":\"$${LINE_ID}\",\"system_status_b64\":\"$${STATUS_B64}\"}"
             echo "[edge-enroll] reporting status -> $${REPORT_URL} (b64_bytes=$$(printf '%s' \"$${STATUS_B64}\" | wc -c))"
-            REPORT_RESP="$$(wget -S -O - -T 8 "$${REPORT_URL}" \
+            REPORT_RESP="$$(wget -q -S -O - -T 8 "$${REPORT_URL}" \
               --header "Content-Type: application/json" \
               --header "$${CLOUD_OPS_ENROLL_TOKEN_HEADER}: $${CLOUD_OPS_ENROLL_TOKEN}" \
               --post-data "$${REPORT_PAYLOAD}" 2>&1)"
