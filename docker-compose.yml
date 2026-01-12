@@ -128,29 +128,38 @@ services:
           ENROLL_URL="$${CLOUD_OPS_BASE_URL%/}/api/v1/enroll"
           echo "[edge-enroll] enrolling name=$${ENROLL_NAME} address=$${IP} port=$${ENROLL_EDGE_API_PORT} -> $${ENROLL_URL}"
           ENROLL_PAYLOAD="{\"name\":\"$${ENROLL_NAME}\",\"address\":\"$${IP}\",\"edge_api_port\":$${ENROLL_EDGE_API_PORT}}"
-          wget -q -O - "$${ENROLL_URL}" \
+          ENROLL_RESP="$$(wget -S -O - -T 8 "$${ENROLL_URL}" \
             --header "Content-Type: application/json" \
             --header "$${CLOUD_OPS_ENROLL_TOKEN_HEADER}: $${CLOUD_OPS_ENROLL_TOKEN}" \
-            --post-data "$${ENROLL_PAYLOAD}" \
-            >/dev/null 2>&1 \
-            || echo "[edge-enroll] enroll request failed (will retry)"
+            --post-data "$${ENROLL_PAYLOAD}" 2>&1)"
+          ENROLL_RC=$$?
+          if [ $$ENROLL_RC -eq 0 ]; then
+            # 最后一行通常是 JSON body（例如 {"success":true,...}）
+            echo "[edge-enroll] enroll ok: $$(printf '%s' \"$${ENROLL_RESP}\" | tail -n 1)"
+          else
+            echo "[edge-enroll] enroll failed (rc=$$ENROLL_RC): $$(printf '%s' \"$${ENROLL_RESP}\" | tail -n 3 | tr '\n' ' ')"
+          fi
 
           # 方案 B：推送服务状态（edge-api 聚合的 system/status）
           # 重要：必须带 line 参数，否则 edge-api 会返回 system/# 的“全局最新”，可能被 bootstrap 消息覆盖
           STATUS_URL="http://127.0.0.1:$${ENROLL_EDGE_API_PORT}/api/v1/system/status?line=$${LINE_ID}"
           # BusyBox wget 对带引号的 URL（例如 "\"http://...\""）会直接失败，因此这里不要转义引号
-          STATUS_JSON="$$(wget -q -O - "$${STATUS_URL}" 2>/dev/null || true)"
+          STATUS_JSON="$$(wget -q -O - -T 4 "$${STATUS_URL}" 2>/dev/null || true)"
           if [ -n "$${STATUS_JSON}" ]; then
             STATUS_B64="$$(printf '%s' "$${STATUS_JSON}" | base64 | tr -d '\n')"
             REPORT_URL="$${CLOUD_OPS_BASE_URL%/}/api/v1/edge-status"
             REPORT_PAYLOAD="{\"name\":\"$${ENROLL_NAME}\",\"address\":\"$${IP}\",\"edge_api_port\":$${ENROLL_EDGE_API_PORT},\"line_id\":\"$${LINE_ID}\",\"system_status_b64\":\"$${STATUS_B64}\"}"
             echo "[edge-enroll] reporting status -> $${REPORT_URL} (b64_bytes=$$(printf '%s' \"$${STATUS_B64}\" | wc -c))"
-            wget -q -O - "$${REPORT_URL}" \
+            REPORT_RESP="$$(wget -S -O - -T 8 "$${REPORT_URL}" \
               --header "Content-Type: application/json" \
               --header "$${CLOUD_OPS_ENROLL_TOKEN_HEADER}: $${CLOUD_OPS_ENROLL_TOKEN}" \
-              --post-data "$${REPORT_PAYLOAD}" \
-              >/dev/null 2>&1 \
-              || echo "[edge-enroll] status report failed (will retry)"
+              --post-data "$${REPORT_PAYLOAD}" 2>&1)"
+            REPORT_RC=$$?
+            if [ $$REPORT_RC -eq 0 ]; then
+              echo "[edge-enroll] status report ok: $$(printf '%s' \"$${REPORT_RESP}\" | tail -n 1)"
+            else
+              echo "[edge-enroll] status report failed (rc=$$REPORT_RC): $$(printf '%s' \"$${REPORT_RESP}\" | tail -n 3 | tr '\n' ' ')"
+            fi
           else
             echo "[edge-enroll] system/status unavailable yet; skip report"
           fi
