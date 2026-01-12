@@ -140,6 +140,7 @@ AUTO_YES=true
 DO_ROLLBACK=true
 SKIP_READY=false
 SKIP_SMOKE=false
+SKIP_PULL=false
 BACKUP_IMAGES=false
 
 while [ $# -gt 0 ]; do
@@ -148,6 +149,7 @@ while [ $# -gt 0 ]; do
     --no-rollback) DO_ROLLBACK=false ;;
     --skip-ready) SKIP_READY=true ;;
     --skip-smoke) SKIP_SMOKE=true ;;
+    --skip-pull) SKIP_PULL=true ;;
     --backup-images) BACKUP_IMAGES=true ;;
     -h|--help)
       usage
@@ -160,6 +162,14 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# 也允许通过环境变量控制（容器化联调更方便）
+if [ "${OTA_SKIP_PULL:-}" != "" ]; then
+  case "${OTA_SKIP_PULL}" in
+    1|true|yes) SKIP_PULL=true ;;
+    0|false|no) SKIP_PULL=false ;;
+  esac
+fi
 
 BACKUP_DIR=""
 
@@ -381,28 +391,33 @@ main() {
   case "$MODE" in
     online)
       log_info "在线升级：docker pull + up -d"
-      compose pull
-      rc=$?
-      if [ $rc -ne 0 ]; then
-        log_error "compose pull 失败（rc=$rc）"
-        ok=$rc
-        break
-      fi
-      compose up -d --remove-orphans
-      rc=$?
-      if [ $rc -ne 0 ]; then
-        log_error "compose up 失败（rc=$rc）"
-        ok=$rc
-        break
-      fi
-      verify_ready_and_smoke
-      rc=$?
-      if [ $rc -ne 0 ]; then
-        log_error "验证失败（rc=$rc）"
-        ok=$rc
-        break
-      fi
       ok=0
+      if [ "$SKIP_PULL" = false ]; then
+        compose pull
+        rc=$?
+        if [ $rc -ne 0 ]; then
+          log_error "compose pull 失败（rc=$rc）"
+          ok=$rc
+        fi
+      else
+        log_warn "已跳过 compose pull"
+      fi
+      if [ $ok -eq 0 ]; then
+        compose up -d --remove-orphans
+        rc=$?
+        if [ $rc -ne 0 ]; then
+          log_error "compose up 失败（rc=$rc）"
+          ok=$rc
+        fi
+      fi
+      if [ $ok -eq 0 ]; then
+        verify_ready_and_smoke
+        rc=$?
+        if [ $rc -ne 0 ]; then
+          log_error "验证失败（rc=$rc）"
+          ok=$rc
+        fi
+      fi
       ;;
     offline)
       if [ -z "${PKG:-}" ] || [ ! -d "$PKG" ]; then

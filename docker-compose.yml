@@ -553,6 +553,8 @@ services:
       # 联调/演示环境：如无 PLC 或某服务 /ready 会长期 503，可临时跳过 ready/smoke
       - OTA_SKIP_READY=${OTA_SKIP_READY:-false}
       - OTA_SKIP_SMOKE=${OTA_SKIP_SMOKE:-false}
+      # 联调/弱网环境：如无法访问 Docker Hub，可临时跳过 compose pull（仅做 up -d）
+      - OTA_SKIP_PULL=${OTA_SKIP_PULL:-false}
       # cosign 公钥（运维资产，只读挂载到容器）
       - OTA_COSIGN_PUBKEY_PATH=${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}
     volumes:

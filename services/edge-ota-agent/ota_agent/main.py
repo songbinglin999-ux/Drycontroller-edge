@@ -231,6 +231,8 @@ async def _run_online(op_id: str, payload: OtaStartRequest) -> None:
             cmd.append("--skip-ready")
         if env.get("OTA_SKIP_SMOKE", "").lower() in {"1", "true", "yes"}:
             cmd.append("--skip-smoke")
+        if env.get("OTA_SKIP_PULL", "").lower() in {"1", "true", "yes"}:
+            cmd.append("--skip-pull")
 
         # 可选：应用 compose override（用于 digest 固定/版本不可漂移）
         if payload.compose_override_yaml:
