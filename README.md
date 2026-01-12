@@ -778,6 +778,13 @@ docker-compose exec edge-daq python -c "from daq.modbus_client import ModbusClie
 # 在 .env 中设置 USE_SIMULATOR=true
 ```
 
+**现场快速定位（推荐）：先看 /ready 的 reason/hint**
+
+- **edge-daq**：`/ready` 会在 PLC/Modbus 不通时返回 `reason=PLC_OFFLINE`，并给出可操作的 `hint`（例如：不要把 `PLC_HOST` 配成 `127.0.0.1/localhost`，因为在容器内这是“指向容器自身”，必然连不上现场 PLC）。
+- **ai-softsensor**：当它依赖的数据链路未就绪时会返回 `reason=DQ_NOT_READY`，并提示通常与 `edge-daq`（PLC 离线导致无数据）相关；避免把“上游没数据”误判成“软测量服务崩溃”。
+
+> 如果你使用云端 `cloud-console`，节点详情页也会直接显示“PLC 不在线/Modbus 不通”的告警条（来自 edge-monitor 汇总的 warnings）。
+
 #### 3. 数据库连接失败
 
 ```bash
