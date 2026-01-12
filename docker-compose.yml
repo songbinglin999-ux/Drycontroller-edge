@@ -547,7 +547,8 @@ services:
       # 默认复用 ADMIN_API_KEYS；也可单独配置 OTA_AGENT_API_KEYS
       - ADMIN_API_KEYS=${ADMIN_API_KEYS}
       - OTA_AGENT_API_KEYS=${OTA_AGENT_API_KEYS:-}
-      - OTA_WORK_DIR=/work
+      # 关键：在容器内使用与宿主机一致的绝对路径，避免 compose 的相对路径 bind mount 解析到宿主机不存在的 /work/*
+      - OTA_WORK_DIR=/opt/Drycontroller-edge
       # 关键：让 OTA agent 以“同一个 compose project”操作现有容器，避免 project 不一致导致 container_name 冲突
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-drycontroller-edge}
       # 联调/演示环境：如无 PLC 或某服务 /ready 会长期 503，可临时跳过 ready/smoke
@@ -558,8 +559,8 @@ services:
       # cosign 公钥（运维资产，只读挂载到容器）
       - OTA_COSIGN_PUBKEY_PATH=${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}
     volumes:
-      # 仓库根目录挂载为 /work，便于执行 scripts/ota-update.sh
-      - ./:/work
+      # 关键：把仓库根目录挂载到“与宿主机一致的路径”，让 compose 解析出来的 bind mount src 能在宿主机上真实存在
+      - ./:/opt/Drycontroller-edge
       # 高危：需要访问 docker engine 才能 pull/up
       - /var/run/docker.sock:/var/run/docker.sock
       # 运维资产：cosign 公钥（默认宿主机 /etc/drycontroller/keys/cosign.pub）
