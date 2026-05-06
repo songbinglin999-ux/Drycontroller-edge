@@ -7,6 +7,11 @@
 
 ## [未发布]
 
+### 安全
+- `docker-compose.yml`：`postgres`(5432) / `influxdb`(8086) / `prometheus`(9090) / `alertmanager`(9093) 端口加 `127.0.0.1:` 前缀，不再对现场局域网（含 PLC 网段）暴露。原 `prometheus` / `alertmanager` 的注释声明"仅绑定本机回环"但配置不一致，本次修齐。详见顶层架构审计报告 P0-2 / P0-3（2026-05-06）。
+  - **部署提醒**：之前若有从其他机器直连 5432/8086 的工作流（如远程 DB 排障），需改用 SSH 隧道或 `docker exec` 进容器；如确需对外暴露，请在生产 override 文件单独打开。
+- `docker-compose.yml`：添加顶层 `x-logging` 锚点（`driver: json-file`，`max-size: 100m`，`max-file: 5`），15 个长期运行 service 引用 `logging: *default-logging`，防止 docker 默认无上限日志撑爆 IPC 磁盘。详见 P0-1。
+
 ### 新增
 - 初始项目架构
 - Edge API 服务
@@ -19,6 +24,9 @@
 - 完整的配置管理系统
 - 数据库初始化脚本
 - OTA 升级脚本
+
+### 修复
+- edge-ota-agent 在只读根目录环境下导入即创建目录导致启动失败的问题（回退到 /tmp）
 
 ### 文档
 - 完整的 README 文档

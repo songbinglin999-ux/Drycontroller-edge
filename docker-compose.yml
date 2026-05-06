@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "5"
+
 services:
   # ==================== Docker Socket Proxy（最小权限隔离 docker.sock） ====================
   # 说明：
@@ -7,6 +13,7 @@ services:
     image: tecnativa/docker-socket-proxy:0.1.1
     container_name: edge-docker-socket-proxy
     restart: always
+    logging: *default-logging
     networks:
       - edge-network
     volumes:
@@ -62,6 +69,7 @@ services:
       # 使用内核 TUN（否则宿主机可能没有 tailscale0 / 路由不生效）
       - TS_USERSPACE=false
     restart: unless-stopped
+    logging: *default-logging
     profiles:
       - remote-debug
 
@@ -166,6 +174,7 @@ services:
           sleep "$${ENROLL_INTERVAL_SEC}"
         done
     restart: unless-stopped
+    logging: *default-logging
     profiles:
       - remote-debug
 
@@ -181,10 +190,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     networks:
       - edge-network
     restart: always
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -206,10 +216,11 @@ services:
       - influxdb_data:/var/lib/influxdb2
       - influxdb_config:/etc/influxdb2
     ports:
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     networks:
       - edge-network
     restart: always
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "influx", "ping"]
       interval: 30s
@@ -291,6 +302,7 @@ services:
     networks:
       - edge-network
     restart: always
+    logging: *default-logging
     depends_on:
       mosquitto-init:
         condition: service_completed_successfully
@@ -350,6 +362,7 @@ services:
       mosquitto:
         condition: service_healthy
     restart: always
+    logging: *default-logging
 
   # ==================== 数据采集服务 ====================
   edge-daq:
@@ -395,6 +408,7 @@ services:
       influxdb:
         condition: service_healthy
     restart: always
+    logging: *default-logging
 
   # ==================== AI 软测量服务 ====================
   ai-softsensor:
@@ -427,6 +441,7 @@ services:
       influxdb:
         condition: service_healthy
     restart: always
+    logging: *default-logging
 
   # ==================== AI 控制优化服务 ====================
   ai-ctrl-optimizer:
@@ -461,6 +476,7 @@ services:
       ai-softsensor:
         condition: service_started
     restart: always
+    logging: *default-logging
 
   # ==================== 授权服务 ====================
   license-service:
@@ -494,6 +510,7 @@ services:
         condition: service_healthy
     privileged: true  # 需要访问 USB 设备
     restart: always
+    logging: *default-logging
 
   # ==================== 系统监控服务 ====================
   edge-monitor:
@@ -538,6 +555,7 @@ services:
       influxdb:
         condition: service_healthy
     restart: always
+    logging: *default-logging
 
   # ==================== OTA Agent（在线升级执行器，profile=ota） ====================
   # 用途：
@@ -583,6 +601,7 @@ services:
     networks:
       - edge-network
     restart: unless-stopped
+    logging: *default-logging
 
   # ==================== Prometheus（指标采集/告警规则） ====================
   prometheus:
@@ -597,7 +616,7 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=30d"
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks:
       - edge-network
     depends_on:
@@ -606,6 +625,7 @@ services:
       - ai-softsensor
       - alertmanager
     restart: always
+    logging: *default-logging
 
   # ==================== Alertmanager（告警聚合/查询） ====================
   alertmanager:
@@ -618,10 +638,11 @@ services:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
     ports:
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     networks:
       - edge-network
     restart: always
+    logging: *default-logging
 
 networks:
   edge-network:
