@@ -151,7 +151,7 @@ class EventRecorder:
         except Exception as exc:  # pragma: no cover - 网络问题
             logger.error(
                 "event_record_failed",
-                event=event,
+                event_name=event,
                 error=str(exc),
                 service=self.service_name,
             )
