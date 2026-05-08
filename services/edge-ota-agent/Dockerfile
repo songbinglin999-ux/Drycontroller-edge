@@ -2,7 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 中国大陆环境：apt 走国内镜像加速（生产部署也在国内）
+RUN find /etc/apt -type f \( -name "*.sources" -o -name "*.list" \) \
+        -exec sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' {} + \
+    && apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
     ca-certificates \
