@@ -35,11 +35,12 @@ import httpx
 import psutil
 import structlog
 import yaml
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.security import APIKeyHeader
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
 import paho.mqtt.client as mqtt
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
 from common.logging import setup_logging
@@ -1269,7 +1270,7 @@ class MonitorService:
                     )
             except Exception:
                 continue
-
+        
         # 组装完整消息
         return {
             "schema": self.status_schema,  # 消息 schema 版本
@@ -1385,9 +1386,9 @@ async def system_health():
 async def system_metrics():
     """
     系统指标端点
-    
+
     返回最新的系统指标数据。
-    
+
     Returns:
         包含 CPU、内存、磁盘等指标的 JSON 响应
     """
@@ -1397,6 +1398,13 @@ async def system_metrics():
         "metrics": monitor_service.system_metrics,
         "timestamp": int(time.time()),
     }
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    # Prometheus exposition format. /system/metrics above stays as-is
+    # (JSON, business-facing); this is the standard scrape target.
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/ops/self-heal/restart")

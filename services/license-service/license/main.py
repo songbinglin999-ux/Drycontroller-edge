@@ -2,7 +2,8 @@
 授权服务
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import structlog
 
 from common.logging import setup_logging
@@ -48,6 +49,12 @@ async def health():
 async def ready():
     # 当前授权服务未强依赖外部资源，readiness 等价于存活。
     return {"ready": True}
+
+@app.get("/metrics")
+async def metrics():
+    # Prometheus exposition format. Phase 1 only exposes prometheus_client's
+    # default process / GC metrics; service-level Counter/Gauge can be added later.
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.get("/verify")
 async def verify_license():

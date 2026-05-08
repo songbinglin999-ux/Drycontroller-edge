@@ -4,6 +4,7 @@ paho-mqtt==1.6.1
 influxdb-client==1.39.0
 python-dotenv==1.0.0
 structlog==24.1.0
+prometheus-client==0.19.0
 fastapi==0.110.0
 uvicorn==0.23.2
 httpx==0.25.2

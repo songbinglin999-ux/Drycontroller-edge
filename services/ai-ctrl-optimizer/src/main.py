@@ -9,6 +9,7 @@ import time
 
 import structlog
 from aiohttp import web
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from common.logging import setup_logging
 
@@ -83,8 +84,14 @@ class OptimizerService:
             }
             return web.json_response(payload, status=200 if payload["ready"] else 503)
 
+        async def metrics_handler(request):
+            # Prometheus exposition format. aiohttp 不允许在 content_type 参数中
+            # 包含 charset；prometheus_client 常量带 charset，所以用 headers 传。
+            return web.Response(body=generate_latest(), headers={"Content-Type": CONTENT_TYPE_LATEST})
+
         app.router.add_get("/health", health_handler)
         app.router.add_get("/ready", ready_handler)
+        app.router.add_get("/metrics", metrics_handler)
         self.health_runner = web.AppRunner(app)
         await self.health_runner.setup()
         self.health_site = web.TCPSite(self.health_runner, "0.0.0.0", self.health_port)

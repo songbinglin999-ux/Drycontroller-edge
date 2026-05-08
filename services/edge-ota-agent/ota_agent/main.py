@@ -12,8 +12,9 @@ from typing import Any
 
 import structlog
 import yaml
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.security import APIKeyHeader
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel, Field
 
 from common.logging import setup_logging
@@ -27,8 +28,26 @@ DATA_DIR = Path(os.getenv("OTA_DATA_DIR", "/data/ota")).resolve()
 LOG_DIR = Path(os.getenv("OTA_LOG_DIR", "/logs/edge-ota-agent")).resolve()
 WORK_DIR = Path(os.getenv("OTA_WORK_DIR", "/work")).resolve()
 COSIGN_PUBKEY_PATH = Path(os.getenv("OTA_COSIGN_PUBKEY_PATH", "/etc/drycontroller/keys/cosign.pub")).resolve()
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_dir(path: Path, fallback: Path) -> Path:
+    """
+    Best-effort 创建目录；若失败则回退到 /tmp，避免导入即崩溃。
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except Exception:
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
+        except Exception:
+            return path
+
+
+# 兼容本地/CI：只读根目录时回退到 /tmp
+DATA_DIR = _ensure_dir(DATA_DIR, Path("/tmp/drycontroller-ota/data"))
+LOG_DIR = _ensure_dir(LOG_DIR, Path("/tmp/drycontroller-ota/logs"))
 
 
 def _split_api_keys(value: str | None) -> list[str]:
@@ -399,6 +418,13 @@ async def ready():
         return {"ready": True, "service": "edge-ota-agent", "work_dir": str(WORK_DIR)}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"ota_agent_not_ready: {exc}")
+
+
+@app.get("/metrics")
+async def metrics():
+    # Prometheus exposition format. Phase 1 only exposes prometheus_client's
+    # default process / GC metrics; OTA-specific Counters can be added later.
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/ota/start", response_model=OtaOperationOut)
