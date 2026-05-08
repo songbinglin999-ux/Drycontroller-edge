@@ -27,4 +27,26 @@ scrape_configs:
     static_configs:
       - targets: ["ai-softsensor:8080"]
 
+  - job_name: "ai-ctrl-optimizer"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["ai-ctrl-optimizer:8080"]
+
+  - job_name: "edge-monitor"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["edge-monitor:8080"]
+
+  - job_name: "license-service"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["license-service:8000"]
+
+  # edge-ota-agent runs only with `--profile ota`. When that profile is not
+  # active the target will be DOWN; that's expected and not an alert condition.
+  - job_name: "edge-ota-agent"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["edge-ota-agent:8090"]
+
 
