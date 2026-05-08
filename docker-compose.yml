@@ -323,6 +323,12 @@ services:
       context: .
       dockerfile: services/edge-api/Dockerfile
     container_name: edge-api
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     environment:
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
@@ -370,6 +376,12 @@ services:
       context: .
       dockerfile: services/edge-daq/Dockerfile
     container_name: edge-daq
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     environment:
       - PLC_HOST=${PLC_HOST}
       - PLC_PORT=${PLC_PORT}
@@ -416,6 +428,12 @@ services:
       context: .
       dockerfile: services/ai-softsensor/Dockerfile
     container_name: ai-softsensor
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     environment:
       - MQTT_BROKER=${MQTT_BROKER}
       - MQTT_PORT=${MQTT_PORT}
@@ -449,6 +467,12 @@ services:
       context: .
       dockerfile: services/ai-ctrl-optimizer/Dockerfile
     container_name: ai-ctrl-optimizer
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     environment:
       - MQTT_BROKER=${MQTT_BROKER}
       - MQTT_PORT=${MQTT_PORT}
@@ -484,6 +508,12 @@ services:
       context: .
       dockerfile: services/license-service/Dockerfile
     container_name: license-service
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     environment:
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
@@ -518,6 +548,12 @@ services:
       context: .
       dockerfile: services/edge-monitor/Dockerfile
     container_name: edge-monitor
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     environment:
       - MQTT_BROKER=${MQTT_BROKER}
       - MQTT_PORT=${MQTT_PORT}
@@ -570,6 +606,12 @@ services:
       context: .
       dockerfile: services/edge-ota-agent/Dockerfile
     container_name: edge-ota-agent
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     profiles:
       - ota
     environment:

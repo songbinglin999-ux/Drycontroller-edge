@@ -12,6 +12,10 @@
   - **部署提醒**：之前若有从其他机器直连 5432/8086 的工作流（如远程 DB 排障），需改用 SSH 隧道或 `docker exec` 进容器；如确需对外暴露，请在生产 override 文件单独打开。
 - `docker-compose.yml`：添加顶层 `x-logging` 锚点（`driver: json-file`，`max-size: 100m`，`max-file: 5`），15 个长期运行 service 引用 `logging: *default-logging`，防止 docker 默认无上限日志撑爆 IPC 磁盘。详见 P0-1。
 
+### 变更
+- `docker-compose.yml`：给 7 个应用层 service（`edge-api` / `edge-daq` / `ai-softsensor` / `ai-ctrl-optimizer` / `license-service` / `edge-monitor` / `edge-ota-agent`）加 docker `healthcheck`，用 `python -c "import urllib.request..."` 探活 `/ready`（零依赖，不需镜像安装 curl）。AI 服务 `start_period=60s` 留出模型加载时间，其余服务 `40s`。让 docker engine 能识别"应用 hang"而不只是"进程退出"。详见 `p1-roadmap-2026-05-07.md` P1-7（2026-05-07）。
+  - **生产实测建议**：`docker compose up -d` 后等 90s，跑 `docker ps --format "table {{.Names}}\t{{.Status}}"` 查看每个容器是否 `(healthy)`；如 ai-softsensor / ai-ctrl-optimizer 因模型大于 60s 启动，调大 `start_period`。
+
 ### 新增
 - 初始项目架构
 - Edge API 服务
