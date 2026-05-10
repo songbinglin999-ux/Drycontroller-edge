@@ -7,12 +7,22 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import List, Optional
 
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+
+# 协议 schema 已移到仓库根 common/schemas/cloud_to_edge.py（P1-8 phase B），
+# 与 cloud-ops 仓库的同名文件保持 byte-identical 同步，CI hash 校验保障一致性。
+# 详见 Drycontroller-cloudserver/docs/architecture/shared-schemas.md。
+from common.schemas.cloud_to_edge import (
+    ManualActionRequest,
+    MonitorConfigUpdate,
+    OtaStartRequest,
+    PlcConfigApplyRequest,
+    SelfHealToggleRequest,
+    ServiceOverride,
+)
 
 from app.core.security import require_admin_api_key
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
@@ -24,71 +34,24 @@ from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 router = APIRouter()
 
 
-class ServiceOverride(BaseModel):
-    name: str
-    self_heal_enabled: Optional[bool] = None
-    failure_threshold: Optional[int] = Field(None, ge=1)
-    max_restart_per_hour: Optional[int] = Field(None, ge=0)
-
-    @property
-    def as_payload(self) -> dict:
-        payload: dict = {}
-        if self.self_heal_enabled is not None:
-            payload.setdefault("self_heal", {})
-            payload["self_heal"]["enabled"] = self.self_heal_enabled
-        if self.failure_threshold is not None:
-            payload.setdefault("self_heal", {})
-            payload["self_heal"]["failure_threshold"] = self.failure_threshold
-        if self.max_restart_per_hour is not None:
-            payload.setdefault("self_heal", {})
-            payload["self_heal"]["max_restart_per_hour"] = self.max_restart_per_hour
-        payload["name"] = self.name
-        return payload
-
-
-class MonitorConfigUpdate(BaseModel):
-    interval: Optional[int] = Field(None, ge=1, description="服务探活间隔秒")
-    http_timeout: Optional[int] = Field(None, ge=1)
-    failure_threshold: Optional[int] = Field(None, ge=1)
-    recovery_observe: Optional[int] = Field(None, ge=1)
-    max_restart_per_hour: Optional[int] = Field(None, ge=0)
-    self_heal_enabled: Optional[bool] = None
-    targets: Optional[List[ServiceOverride]] = None
-
-
-class ManualActionRequest(BaseModel):
-    service: str
-
-
-class SelfHealToggleRequest(BaseModel):
-    service: str
-    enabled: bool
-
-
-class OtaStartRequest(BaseModel):
-    mode: str = Field("online", description="online/offline/offline-tar（MVP 默认 online）")
-    target_version: Optional[str] = None
-    # 可选：发布侧生成的 docker-compose override（建议使用 digest 固定，避免 tag 漂移）
-    # 说明：edge-api 仅做鉴权与透传，实际由 edge-ota-agent 落盘并执行
-    compose_override_yaml: Optional[str] = Field(None, description="docker compose override yaml（可选）")
-    # 强制验签：若为 true，则要求 override 中的镜像均为 digest 且通过 cosign verify
-    cosign_enforce: bool = Field(False, description="是否强制 cosign 验签（推荐逐步开启）")
-    dry_run: bool = False
-    timeout_sec: int = Field(60 * 30, ge=60, le=60 * 60 * 6)
-
-
-class PlcConfigApplyRequest(BaseModel):
+def _service_override_payload(o: ServiceOverride) -> dict:
     """
-    只做“应用层通讯参数”配置：不修改网卡 IP/掩码/网关（避免共用网口把设备改断联）。
+    把共享 schema ServiceOverride 转换为 edge-monitor 内部 monitor_config 的
+    payload 形状。这是 edge-api 私有的实现细节（不是协议契约的一部分），
+    所以不放进 common/schemas/。
     """
-
-    plc_host: str = Field(..., min_length=1, description="PLC IP/域名（Modbus TCP Server）")
-    plc_port: int = Field(502, ge=1, le=65535)
-    plc_slave_id: int = Field(1, ge=0, le=255, description="Modbus TCP Unit/Slave ID（部分 PLC 会忽略，但建议与现场一致）")
-    plc_connect_timeout: int = Field(5, ge=1, le=60, description="Modbus TCP 连接/请求超时（秒）")
-    restart_edge_daq: bool = True
-    read_ready_after_restart: bool = True
-    fail_on_not_ready: bool = False
+    payload: dict = {}
+    if o.self_heal_enabled is not None:
+        payload.setdefault("self_heal", {})
+        payload["self_heal"]["enabled"] = o.self_heal_enabled
+    if o.failure_threshold is not None:
+        payload.setdefault("self_heal", {})
+        payload["self_heal"]["failure_threshold"] = o.failure_threshold
+    if o.max_restart_per_hour is not None:
+        payload.setdefault("self_heal", {})
+        payload["self_heal"]["max_restart_per_hour"] = o.max_restart_per_hour
+    payload["name"] = o.name
+    return payload
 
 
 def _atomic_write_yaml(path: Path, data: dict) -> None:
@@ -132,7 +95,7 @@ async def update_monitor_config(
 ):
     updates = payload.model_dump(exclude_none=True)
     if "targets" in updates:
-        updates["targets"] = [override.as_payload for override in payload.targets or []]
+        updates["targets"] = [_service_override_payload(o) for o in payload.targets or []]
     patched = service.patch(updates)
     return {"success": True, "config": patched}
 
