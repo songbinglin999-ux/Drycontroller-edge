@@ -9,10 +9,14 @@ RUN find /etc/apt -type f \( -name "*.sources" -o -name "*.list" \) \
     bash \
     curl \
     ca-certificates \
-    docker.io \
     docker-cli \
     docker-compose \
     && rm -rf /var/lib/apt/lists/*
+# 不装 docker.io：那是 daemon 包（带 containerd 依赖 ~400MB 解压峰值）。
+# ota-agent 是 client，通过 mount /var/run/docker.sock 调 host daemon，
+# docker-cli + docker-compose（v1 python 客户端，ota-update.sh 优先用）
+# 已经够用。这一改让 docker build 内存峰值从 ~2.5GB 降到 ~600MB，
+# 普通 Docker Desktop（默认 2GB 内存）就能 build 过。
 
 # cosign（二进制）用于验签（工业级信任链）
 # 现场网络可能无法稳定访问 GitHub Release，因此这里做“尽力下载”：
