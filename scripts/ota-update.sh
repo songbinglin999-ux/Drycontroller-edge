@@ -66,7 +66,10 @@ sha256_check_dir() {
 
 # 用 cosign 验证 compose 中所有镜像的签名（仅 online 模式调用——离线包不在 registry，cosign 无法 verify）
 # 公钥查找顺序：${OTA_COSIGN_PUBKEY_HOST_PATH} -> /etc/drycontroller/keys/cosign.pub -> ${ROOT_DIR}/configs/keys/cosign.pub
+# Image 过滤：仅 verify 来自 $OTA_TRUSTED_REGISTRY 的镜像（项目自家 registry）；第三方 base image
+# （postgres / prometheus / mosquitto 等）由 docker daemon 走 DCT/上游签名机制保护，不在此处验签。
 verify_images_cosign() {
+  local trusted="${OTA_TRUSTED_REGISTRY:-}"
   local pubkey="${OTA_COSIGN_PUBKEY_HOST_PATH:-/etc/drycontroller/keys/cosign.pub}"
   if [ ! -f "$pubkey" ]; then
     pubkey="${ROOT_DIR}/configs/keys/cosign.pub"
@@ -76,13 +79,25 @@ verify_images_cosign() {
     return 1
   fi
   require_cmd cosign
-  local images
-  images="$(compose config 2>/dev/null | awk '/^[[:space:]]*image:/{print $2}' | sort -u || true)"
-  if [ -z "$images" ]; then
+  local raw_images
+  raw_images="$(compose config 2>/dev/null | awk '/^[[:space:]]*image:/{print $2}' | sort -u || true)"
+  if [ -z "$raw_images" ]; then
     log_warn "未解析到 image 列表，跳过 cosign 验签"
     return 0
   fi
+  local images
+  if [ -n "$trusted" ]; then
+    images="$(printf '%s\n' "$raw_images" | grep -E "^${trusted}/" || true)"
+    if [ -z "$images" ]; then
+      log_warn "compose 中无来自 trusted registry ($trusted) 的 image，跳过 cosign 验签"
+      return 0
+    fi
+  else
+    log_warn "OTA_TRUSTED_REGISTRY 未配置——生产应明确配置为 Gitea registry host (e.g. git.example.com)，否则会尝试 verify 所有第三方 image 并失败"
+    images="$raw_images"
+  fi
   log_info "使用 cosign 公钥：$pubkey"
+  log_info "trusted registry: ${trusted:-<未配置>}"
   local failed=0
   while IFS= read -r img; do
     [ -z "$img" ] && continue
@@ -95,7 +110,7 @@ verify_images_cosign() {
   if [ $failed -ne 0 ]; then
     return 1
   fi
-  log_info "✅ 所有镜像签名验证通过"
+  log_info "✅ 所有 trusted 镜像签名验证通过"
 }
 
 wait_http_ok() {
