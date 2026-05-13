@@ -62,8 +62,16 @@ if [ ! -f "$PROV_JSON" ]; then
   exit 2
 fi
 if [ ! -f "$COSIGN_PUB" ]; then
-  log "missing cosign.pub: $COSIGN_PUB"
-  exit 2
+  # fallback：U 盘未提供 cosign.pub 时使用仓库内置版本（dev / 应急装机用）
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  REPO_PUB="${REPO_ROOT}/configs/keys/cosign.pub"
+  if [ -f "$REPO_PUB" ]; then
+    log "U 盘未提供 cosign.pub，回退使用仓库内置: $REPO_PUB"
+    COSIGN_PUB="$REPO_PUB"
+  else
+    log "missing cosign.pub: $COSIGN_PUB (and no fallback at $REPO_PUB)"
+    exit 2
+  fi
 fi
 
 # 简单 JSON 解析（避免依赖 jq）：使用 python3

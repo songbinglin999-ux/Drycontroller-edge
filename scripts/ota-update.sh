@@ -64,6 +64,40 @@ sha256_check_dir() {
   log_info "SHA256 校验通过"
 }
 
+# 用 cosign 验证 compose 中所有镜像的签名（仅 online 模式调用——离线包不在 registry，cosign 无法 verify）
+# 公钥查找顺序：${OTA_COSIGN_PUBKEY_HOST_PATH} -> /etc/drycontroller/keys/cosign.pub -> ${ROOT_DIR}/configs/keys/cosign.pub
+verify_images_cosign() {
+  local pubkey="${OTA_COSIGN_PUBKEY_HOST_PATH:-/etc/drycontroller/keys/cosign.pub}"
+  if [ ! -f "$pubkey" ]; then
+    pubkey="${ROOT_DIR}/configs/keys/cosign.pub"
+  fi
+  if [ ! -f "$pubkey" ]; then
+    log_error "cosign 公钥未找到（尝试：\$OTA_COSIGN_PUBKEY_HOST_PATH、/etc/drycontroller/keys/cosign.pub、${ROOT_DIR}/configs/keys/cosign.pub）"
+    return 1
+  fi
+  require_cmd cosign
+  local images
+  images="$(compose config 2>/dev/null | awk '/^[[:space:]]*image:/{print $2}' | sort -u || true)"
+  if [ -z "$images" ]; then
+    log_warn "未解析到 image 列表，跳过 cosign 验签"
+    return 0
+  fi
+  log_info "使用 cosign 公钥：$pubkey"
+  local failed=0
+  while IFS= read -r img; do
+    [ -z "$img" ] && continue
+    log_info "cosign verify: $img"
+    if ! cosign verify --key "$pubkey" "$img" >/dev/null 2>&1; then
+      log_error "签名验证失败：$img"
+      failed=1
+    fi
+  done <<< "$images"
+  if [ $failed -ne 0 ]; then
+    return 1
+  fi
+  log_info "✅ 所有镜像签名验证通过"
+}
+
 wait_http_ok() {
   local url="$1"
   local name="$2"
@@ -390,7 +424,7 @@ main() {
   local rc=0
   case "$MODE" in
     online)
-      log_info "在线升级：docker pull + up -d"
+      log_info "在线升级：docker pull + cosign verify + up -d"
       ok=0
       if [ "$SKIP_PULL" = false ]; then
         compose pull
@@ -403,7 +437,15 @@ main() {
         log_warn "已跳过 compose pull"
       fi
       if [ $ok -eq 0 ]; then
-        compose up -d --remove-orphans
+        verify_images_cosign
+        rc=$?
+        if [ $rc -ne 0 ]; then
+          log_error "cosign 验签失败（rc=$rc）"
+          ok=$rc
+        fi
+      fi
+      if [ $ok -eq 0 ]; then
+      compose up -d --remove-orphans
         rc=$?
         if [ $rc -ne 0 ]; then
           log_error "compose up 失败（rc=$rc）"
@@ -411,7 +453,7 @@ main() {
         fi
       fi
       if [ $ok -eq 0 ]; then
-        verify_ready_and_smoke
+      verify_ready_and_smoke
         rc=$?
         if [ $rc -ne 0 ]; then
           log_error "验证失败（rc=$rc）"
