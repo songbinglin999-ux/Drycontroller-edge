@@ -29,7 +29,7 @@ CROSS_REPO_FILES=(
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-REF="${REF:-master}"
+REF="${REF:-main}"
 auth_header=""
 if [ -n "${GITEA_TOKEN:-}" ]; then
   auth_header="Authorization: token $GITEA_TOKEN"
