@@ -4,7 +4,10 @@
 
 # pyright: reportMissingImports=false
 
+import os
+import time
 from typing import Optional
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -17,9 +20,116 @@ from app.services.system_status import (
     SystemStatusService,
     get_system_status_service,
 )
+from app.services.health import get_system_readiness
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
+
+
+def _status_level(status_value: str | None) -> str:
+    status_text = (status_value or "").lower()
+    if status_text in {"healthy", "ok", "pass", "ready", "running"}:
+        return "ok"
+    if status_text in {"degraded", "warning", "unknown"}:
+        return "degraded"
+    return "critical"
+
+
+def _overall_level(items: list[dict]) -> str:
+    levels = {str(item.get("status") or "unknown") for item in items}
+    if "critical" in levels:
+        return "critical"
+    if "degraded" in levels:
+        return "degraded"
+    return "ok"
+
+
+async def _license_summary() -> dict:
+    url = f"{settings.LICENSE_SERVICE_BASE.rstrip('/')}/verify"
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(url)
+        body = resp.json() if resp.content else {}
+        valid = bool(body.get("valid"))
+        return {
+            "key": "license",
+            "label": "授权",
+            "status": "ok" if resp.status_code == 200 and valid else "critical",
+            "message": "有效" if valid else str(body.get("reason") or f"http {resp.status_code}"),
+            "detail": body,
+        }
+    except Exception as exc:  # pragma: no cover - depends on sibling service
+        return {
+            "key": "license",
+            "label": "授权",
+            "status": "critical",
+            "message": "授权服务不可达",
+            "detail": {"error": str(exc), "url": url},
+        }
+
+
+async def _cloud_summary() -> dict:
+    base_url = os.getenv("CLOUD_OPS_BASE_URL", "").strip()
+    if not base_url:
+        return {
+            "key": "cloud",
+            "label": "云端",
+            "status": "degraded",
+            "message": "未配置云端地址，本地可继续运行",
+        }
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"{base_url.rstrip('/')}/health")
+        return {
+            "key": "cloud",
+            "label": "云端",
+            "status": "ok" if resp.status_code < 400 else "degraded",
+            "message": "在线" if resp.status_code < 400 else f"http {resp.status_code}",
+            "detail": {"url": base_url, "status_code": resp.status_code},
+        }
+    except Exception as exc:  # pragma: no cover - depends on cloud connectivity
+        return {
+            "key": "cloud",
+            "label": "云端",
+            "status": "degraded",
+            "message": "暂时离线，不影响本地运行",
+            "detail": {"url": base_url, "error": str(exc)},
+        }
+
+
+def _plc_summary(status_payload: dict | None) -> dict:
+    services = status_payload.get("services") if isinstance(status_payload, dict) else None
+    edge_daq = None
+    if isinstance(services, dict):
+        edge_daq = services.get("edge-daq") or services.get("edge_daq")
+    elif isinstance(services, list):
+        edge_daq = next((item for item in services if item.get("name") in {"edge-daq", "edge_daq"}), None)
+
+    if not isinstance(edge_daq, dict):
+        return {
+            "key": "plc",
+            "label": "PLC",
+            "status": "degraded",
+            "message": "等待采集服务上报",
+        }
+
+    level = _status_level(str(edge_daq.get("status") or edge_daq.get("container_state") or "unknown"))
+    checks = edge_daq.get("checks") if isinstance(edge_daq.get("checks"), dict) else {}
+    plc_check = checks.get("plc") or checks.get("modbus") or checks.get("ready") or {}
+    hint = plc_check.get("hint") or plc_check.get("detail") or edge_daq.get("detail")
+    if level == "ok":
+        message = "已连接"
+    elif hint:
+        message = str(hint)
+    else:
+        message = "连接异常，请检查 PLC 电源、网线和 IP 地址"
+    return {
+        "key": "plc",
+        "label": "PLC",
+        "status": level,
+        "message": message,
+        "detail": {"service": edge_daq},
+    }
 
 
 @router.get("/status")
@@ -54,6 +164,70 @@ async def get_system_metrics(
             detail="No system metrics available yet",
         )
     return payload
+
+
+@router.get("/local-summary")
+async def get_local_status_summary(
+    line: Optional[str] = Query(None, description="可选：按产线过滤，如 L1"),
+    service: SystemStatusService = Depends(get_system_status_service),
+):
+    """
+    面向现场大屏的只读状态摘要。
+
+    该接口刻意避免暴露容器、日志、配置等维护细节；维护动作仍走 /api/v1/ops/*
+    并要求管理员 API Key。
+    """
+    readiness = await get_system_readiness()
+    status_payload = service.get_status_payload(line)
+
+    items = [
+        {
+            "key": "edge_api",
+            "label": "系统",
+            "status": "ok" if all(v.get("status") == "healthy" for v in readiness.values()) else "degraded",
+            "message": "本机服务正常" if all(v.get("status") == "healthy" for v in readiness.values()) else "部分服务降级",
+            "detail": readiness,
+        },
+        _plc_summary(status_payload),
+        await _license_summary(),
+        await _cloud_summary(),
+        {
+            "key": "tailnet",
+            "label": "远程通道",
+            "status": "ok" if os.getenv("TS_LOGIN_SERVER", "").strip() else "degraded",
+            "message": "已配置" if os.getenv("TS_LOGIN_SERVER", "").strip() else "未配置",
+            "detail": {
+                "ts_login_server_present": bool(os.getenv("TS_LOGIN_SERVER", "").strip()),
+                "ts_hostname": os.getenv("TS_HOSTNAME", "").strip() or None,
+            },
+        },
+        {
+            "key": "bootstrap",
+            "label": "装机",
+            "status": "ok" if Path("/var/lib/drycontroller/.bootstrapped").is_file() else "degraded",
+            "message": "已完成" if Path("/var/lib/drycontroller/.bootstrapped").is_file() else "未检测到完成标记",
+        },
+    ]
+    level = _overall_level(items)
+    title = {
+        "ok": "系统正常",
+        "degraded": "部分降级",
+        "critical": "需要处理",
+    }[level]
+    next_action = {
+        "ok": "无需处理",
+        "degraded": "可继续生产，建议联系维护人员查看详情",
+        "critical": "请通知维护人员处理，不要自行修改系统配置",
+    }[level]
+    return {
+        "success": True,
+        "level": level,
+        "title": title,
+        "items": items,
+        "next_action": next_action,
+        "line_id": line,
+        "generated_at": int(time.time()),
+    }
 
 
 @router.get("/metrics/trend")
@@ -123,4 +297,3 @@ async def get_container_logs(
     if "success" not in payload:
         payload = {"success": True, "data": payload}
     return payload
-

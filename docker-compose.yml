@@ -355,6 +355,10 @@ services:
       - LICENSE_PUBLIC_KEY_PATH=${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}
       - LICENSE_TRUSTED_PUBLIC_KEY=${LICENSE_TRUSTED_PUBLIC_KEY:-}
       - LICENSE_SERVICE_BASE=${LICENSE_SERVICE_BASE:-http://license-service:8000}
+      # 大屏现场状态摘要只读展示云端/tailnet 配置状态
+      - CLOUD_OPS_BASE_URL=${CLOUD_OPS_BASE_URL:-}
+      - TS_LOGIN_SERVER=${TS_LOGIN_SERVER:-}
+      - TS_HOSTNAME=${TS_HOSTNAME:-edge-node}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
       - ./logs/edge-api:/logs/edge-api
@@ -364,6 +368,8 @@ services:
       # License 文件由云端下发到 edge-api，再由 license-service 只读校验
       - /etc/drycontroller/license:/etc/drycontroller/license
       - /etc/drycontroller/keys:/etc/drycontroller/keys
+      # 只读读取 bootstrap sentinel，供大屏现场状态摘要显示装机状态
+      - /var/lib/drycontroller:/var/lib/drycontroller:ro
     ports:
       - "${EDGE_API_PORT}:8000"
     networks:

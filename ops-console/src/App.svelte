@@ -272,8 +272,8 @@
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
       </div>
       <div>
-        <h1>Edge Ops</h1>
-        <span class="subtitle">智能监控看板</span>
+        <h1>Maintenance Console</h1>
+        <span class="subtitle">本机维护模式</span>
       </div>
     </div>
     
@@ -312,7 +312,7 @@
         <section class="service-section">
           <div class="section-header">
             <div class="header-left">
-              <h2>服务监控</h2>
+              <h2>本机服务维护</h2>
               <span class="badge">{services.length}</span>
             </div>
             <div class="status-legend">
