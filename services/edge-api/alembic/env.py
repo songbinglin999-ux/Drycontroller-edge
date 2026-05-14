@@ -24,6 +24,7 @@ from alembic import context
 # run from services/edge-api/ (alembic.ini sets prepend_sys_path = .).
 from app.core.config import settings  # noqa: E402
 from app.core.database import Base  # noqa: E402
+import app.models  # noqa: F401, E402  - register all ORM tables onto Base.metadata
 
 config = context.config
 

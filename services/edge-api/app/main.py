@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.logging import setup_logging
 from app.api.v1 import router as api_v1_router
 from app.api import realtime as realtime_router
-from app.core.database import engine, Base
+from app.core.database import engine
 from app.core.mqtt_client import mqtt_manager
 from app.services.event_bus import event_bus
 from app.services.health import get_system_readiness
@@ -41,28 +41,10 @@ async def lifespan(app: FastAPI):
         tags={"component": "edge-api"},
     )
     
-    async def _ensure_db_schema_forever():
-        """
-        7x24：DB 抖动/重启时不应导致 edge-api 进程起不来。
-        建表失败则后台重试；/ready 会反映依赖未就绪（503）。
-        """
-        backoff = 1.0
-        backoff_max = 30.0
-        while True:
-            try:
-                async with engine.begin() as conn:
-                    await conn.run_sync(Base.metadata.create_all)
-                logger.info("db_schema_ready")
-                return
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.error("db_schema_init_failed", error=str(exc))
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, backoff_max)
+    # P1-5 phase B：schema 由容器 entrypoint 的 `alembic upgrade head` 接管。
+    # alembic 失败 = 容器起不来 = docker 自然 restart 重试，无需 app-level retry。
 
-    db_schema_task = asyncio.create_task(_ensure_db_schema_forever())
-    
+
     # 连接 MQTT & 启动事件总线
     try:
         await mqtt_manager.connect()
@@ -102,10 +84,6 @@ async def lifespan(app: FastAPI):
     await event_bus.stop()
     await mqtt_manager.disconnect()
 
-    # 停止后台任务
-    db_schema_task.cancel()
-    await asyncio.gather(db_schema_task, return_exceptions=True)
-    
     # 关闭数据库连接
     await engine.dispose()
     

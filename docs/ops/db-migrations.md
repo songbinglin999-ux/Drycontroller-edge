@@ -2,8 +2,12 @@
 
 本文档说明 edge-api PostgreSQL schema 演进工具与流程。**核心流程与 cloudserver 一致**——完整版见 [`Drycontroller-cloudserver/docs/ops/db-migrations.md`](https://git.example.com/example-org/Drycontroller-cloudserver/src/branch/main/docs/ops/db-migrations.md)，本文档只记录 edge-api 的差异点。
 
-> **当前阶段：A（工具就位但未启用）**
-> 而且：edge-api 当前**没有 ORM 表**（`Base.metadata` 为空，`_ensure_db_schema_forever()` 创建 0 张表）。alembic 现在就位是为了**未来加第一张表时不用临时引入工具**。
+> **当前阶段：Phase B 完整切换完成 2026-05-14。**
+> Alembic 接管 edge-api PostgreSQL schema：容器 entrypoint 跑 `alembic upgrade head` 再启 uvicorn。
+> `_ensure_db_schema_forever()` 后台 retry task 已删除（alembic 失败 = 容器起不来 = docker 自然重启）。
+> 7 张 ORM 表已就位（详见 `app/models/__init__.py`）：
+> alarm_events / operation_audit_logs / control_command_history / ota_operations /
+> preflight_runs / config_versions / cloud_sync_outbox
 
 ---
 
