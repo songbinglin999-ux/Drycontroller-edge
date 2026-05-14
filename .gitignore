@@ -34,6 +34,7 @@ venv/
 ENV/
 env/
 .venv
+.venv*/
 
 # IDE
 .vscode/
@@ -87,6 +88,9 @@ temp/
 backup/
 *.bak
 *.backup
+
+# Runtime data (OTA artifacts, edge-daq state etc.)
+data/
 
 # System files
 Thumbs.db
