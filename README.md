@@ -51,7 +51,7 @@
 | **edge-daq** | PLC 数据采集 | Modbus TCP + MQTT |
 | **ai-softsensor** | 含水率软测量 | ONNX Runtime |
 | **ai-ctrl-optimizer** | 控制参数优化 | PSO / 遗传算法 |
-| **license-service** | 加密狗授权 | USB 硬件授权 |
+| **license-service** | 授权校验 | 云端激活 + 本地签名验签 |
 | **edge-monitor** | 系统健康监控 | Docker + 系统指标 |
 
 ---
@@ -119,13 +119,14 @@ graph LR
 - 🔄 自动重连机制
 - 💪 异常容错处理
 - 📝 完整日志审计
-- 🔐 加密狗授权保护
+- 🔐 云端激活与本地授权保护
 
 ### 🔧 易维护
 
 - 🐳 Docker 容器化部署
 - 📦 一键 OTA 升级
 - 🔍 健康检查监控
+- 🧭 /ready 标准化 reason/hint（PLC 离线/配置错误/控制挂起）
 - 📊 Prometheus 指标
 
 ### 🌐 易扩展
@@ -333,8 +334,11 @@ GET  /api/v1/system/status       # 系统状态
 - 💾 InfluxDB 写入
 - 🚨 报警检测
 - 🎭 PLC 模拟器（开发用）
+- 🩺 /health /ready /metrics 健康与就绪探针（失败会给出 reason/hint）
+- 🧯 PLC 心跳超时触发控制挂起（避免误下发）
 
 **配置：** `configs/tags.yaml`
+**运行时 PLC 配置：** `configs-runtime/plc.yaml`（由云端下发，优先级高于 .env）
 
 ### ai-softsensor (后台服务)
 
@@ -363,10 +367,10 @@ GET  /api/v1/system/status       # 系统状态
 
 ### license-service (端口: 8004)
 
-**加密狗授权服务**
+**授权校验服务**
 
 功能：
-- 🔐 USB 加密狗验证
+- 🔐 本地签名 license 验签
 - ⏰ 授权过期检查
 - 📝 授权日志记录
 
@@ -383,6 +387,8 @@ GET  /api/v1/system/status       # 系统状态
 - 🌐 HTTP 接口：`/health`、`/system/health`、`/system/metrics`
 - 🔔 MQTT 状态：`system/<LINE>/status`
 - 🔧 自愈模块位于 `services/edge-monitor/monitor/self_heal.py`，测试脚本见 `services/edge-monitor/tests/`
+- 🔐 运维接口（/ops/*）必须配置 API Key（`MONITOR_OPS_API_KEYS` 或复用 `ADMIN_API_KEYS`）
+- 🧾 支持读取容器日志（`/ops/logs/{service}`）与 Alertmanager 代理（`/ops/alerts`）
 
 ---
 
@@ -487,7 +493,23 @@ MQTT_PASSWORD_EDGE_MONITOR=your_password
 # PLC
 PLC_HOST=192.168.1.100
 PLC_PORT=502
+PLC_SLAVE_ID=1
+PLC_CONNECT_TIMEOUT=5
+PLC_HEARTBEAT_INTERVAL=5
+PLC_HEARTBEAT_TIMEOUT_CYCLES=3
 USE_SIMULATOR=true  # 开发环境使用模拟器
+
+# edge-daq 健康检查
+HEALTH_PORT=8080
+
+# edge-monitor 运维安全
+MONITOR_OPS_API_KEYS=your_ops_key
+MONITOR_API_KEY_HEADER=X-API-Key
+
+# Alertmanager（ops-console 告警聚合）
+ALERTMANAGER_BASE_URL=http://alertmanager:9093
+ALERTMANAGER_USERNAME=
+ALERTMANAGER_PASSWORD=
 ```
 
 ### 标签配置 (configs/tags.yaml)
@@ -696,8 +718,8 @@ logger.info(
 ### 运行测试
 
 ```bash
-# 运行所有测试
-pytest
+# 运行所有测试（统一测试环境）
+bash scripts/test-all.sh
 
 # 运行特定服务测试
 pytest services/edge-api/tests/
@@ -746,8 +768,11 @@ bash scripts/ota-update.sh online
 ### 离线升级
 
 ```bash
-# 使用 OTA 升级包
-bash scripts/ota-update.sh offline /path/to/ota-package.tar.gz
+# 使用 OTA 目录包
+bash scripts/ota-update.sh offline /opt/ota/1.2.0
+
+# 使用 OTA tar 包
+bash scripts/ota-update.sh offline-tar /opt/ota/1.2.0.tar.gz
 ```
 
 ### 回滚
@@ -755,6 +780,23 @@ bash scripts/ota-update.sh offline /path/to/ota-package.tar.gz
 ```bash
 # 回滚到上一个版本
 bash scripts/ota-update.sh rollback
+```
+
+### 常用参数（可选）
+
+```bash
+# 非交互（默认开启），失败自动回滚
+--yes
+
+# 失败不回滚（不推荐）
+--no-rollback
+
+# 跳过就绪校验（/ready）或 smoke-test
+--skip-ready
+--skip-smoke
+
+# 备份当前镜像为 tar（体积大，回滚更可靠）
+--backup-images
 ```
 
 ---

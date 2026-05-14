@@ -32,7 +32,7 @@
 - **`edge-daq`**：PLC（Modbus TCP）采集与数据发布；写入 InfluxDB；订阅控制指令并回执 ACK（闭环）。
 - **`ai-softsensor`**：订阅 MQTT 实时点位进行 ONNX 推理（软测量），发布结果到 MQTT/Influx。
 - **`ai-ctrl-optimizer`**：订阅数据并输出控制建议（策略/优化），通过 API 对外提供建议。
-- **`license-service`**：授权校验（USB 加密狗相关）。
+- **`license-service`**：授权校验（云端激活后本地签名 license 验签）。
 - **`edge-monitor`**：系统指标采集、服务探活、自动自愈（容器重启/熔断）、告警聚合（Alertmanager）。
 - **`mosquitto`**：本地 MQTT Broker（默认禁匿名，口令文件）。
 - **`influxdb`**：本地时序库（实时/历史曲线、事件记录）。
@@ -102,6 +102,8 @@ graph LR
 
 ### 3.2 未实现/需谨慎承诺
 
+非 PLC、非控制优化类的产品能力补齐总设计见：`Drycontroller-cloudserver/docs/ops/product-hardening-design.md`。
+
 - **AI 模型版本登记与自动回滚**：当前未形成“多版本登记 + 校验 + 回退”的完整闭环。
 - **OTA 蓝绿发布/自动回滚**：当前脚本以 compose pull/up 为主，未实现蓝绿与自动判定回滚。
 - **数据级补偿（Influx 不可用时缓存补写）**：当前未形成统一的本地缓存补写机制。
@@ -138,5 +140,3 @@ graph LR
 - 日志规范与轮转：`docs/ops/logging-standard.md`
 - 风险评估：`docs/architecture/risk-assessment.md`
 - 自愈规范（对齐实现）：`docs/architecture/self-healing.md`
-
-

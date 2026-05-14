@@ -190,7 +190,7 @@ class DAQService:
         self.plc_slave_id = plc_slave_id
         self.plc_connect_timeout = plc_connect_timeout
         self.use_simulator = use_simulator
-
+        
         # 初始化数据发布器（连接 MQTT 和 InfluxDB）
         self.publisher = DataPublisher()
         await self.publisher.connect()

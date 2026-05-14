@@ -5,12 +5,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import os
 import time
+from typing import Any
 from pathlib import Path
 
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 # 协议 schema 已移到仓库根 common/schemas/cloud_to_edge.py（P1-8 phase B），
 # 与 cloud-ops 仓库的同名文件保持 byte-identical 同步，CI hash 校验保障一致性。
@@ -25,13 +30,26 @@ from common.schemas.cloud_to_edge import (
 )
 
 from app.core.security import require_admin_api_key
+from app.core.config import settings
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
+from common.license_verifier import load_public_key, verify_signature
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
 # 注意：这里需要拿到实际 api_key 以便代理调用 edge-monitor 的 /ops/*
 router = APIRouter()
+
+
+class LicenseInstallRequest(BaseModel):
+    """
+    云端签发后的 License 安装请求。
+
+    现场人员不应手工拷贝文件；edge-api 接收云端下发后负责落盘、校验、失败回滚。
+    """
+
+    license: dict[str, Any] = Field(..., description="完整 signed license JSON（扁平结构，包含 signature）")
+    license_public_key: str = Field(..., min_length=1, description="base64 编码 Ed25519 公钥")
 
 
 def _service_override_payload(o: ServiceOverride) -> dict:
@@ -62,6 +80,84 @@ def _atomic_write_yaml(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
+def _write_bytes_atomic(path: Path, data: bytes, mode: int = 0o640) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{int(time.time() * 1000)}")
+    try:
+        with tmp.open("wb") as fp:
+            fp.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _restore_or_remove(path: Path, old_data: bytes | None, mode: int = 0o640) -> None:
+    if old_data is None:
+        path.unlink(missing_ok=True)
+        return
+    _write_bytes_atomic(path, old_data, mode=mode)
+
+
+def _validate_license_install_shape(req: LicenseInstallRequest) -> None:
+    required_fields = {"signature", "signature_alg", "license_id", "machine_id", "issued_at", "expires_at"}
+    missing = sorted(required_fields - set(req.license.keys()))
+    if missing:
+        raise HTTPException(status_code=400, detail={"success": False, "error": "license_missing_fields", "missing": missing})
+    if str(req.license.get("signature_alg") or "").lower() != "ed25519":
+        raise HTTPException(status_code=400, detail={"success": False, "error": "unsupported_signature_alg"})
+    for field in ("signature", "license_id", "machine_id", "issued_at", "expires_at"):
+        if not str(req.license.get(field) or "").strip():
+            raise HTTPException(status_code=400, detail={"success": False, "error": "license_payload_missing_field", "field": field})
+    try:
+        base64.b64decode(req.license_public_key.strip(), validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail={"success": False, "error": "invalid_license_public_key_base64"})
+
+
+def _trusted_license_public_key(public_key_path: Path) -> bytes:
+    configured = str(settings.LICENSE_TRUSTED_PUBLIC_KEY or "").strip()
+    if configured:
+        try:
+            return base64.b64decode(configured, validate=True)
+        except Exception:
+            raise HTTPException(status_code=500, detail={"success": False, "error": "invalid_trusted_license_public_key"})
+    if public_key_path.is_file():
+        try:
+            return load_public_key(public_key_path)
+        except Exception:
+            raise HTTPException(status_code=500, detail={"success": False, "error": "invalid_existing_license_public_key"})
+    raise HTTPException(status_code=409, detail={"success": False, "error": "missing_trusted_license_public_key"})
+
+
+def _verify_license_install_request(req: LicenseInstallRequest, *, public_key_path: Path) -> bytes:
+    request_public_key = base64.b64decode(req.license_public_key.strip(), validate=True)
+    trusted_public_key = _trusted_license_public_key(public_key_path)
+    if request_public_key != trusted_public_key:
+        raise HTTPException(status_code=403, detail={"success": False, "error": "license_public_key_not_trusted"})
+    try:
+        verify_signature(req.license, trusted_public_key)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail={"success": False, "error": "license_signature_invalid"}) from exc
+    return trusted_public_key
+
+
+async def _call_license_verify() -> dict:
+    url = f"{settings.LICENSE_SERVICE_BASE.rstrip('/')}/verify"
+    try:
+        async with httpx.AsyncClient(timeout=8) as hc:
+            resp = await hc.get(url)
+        body = resp.json() if resp.content else {}
+        return {"url": url, "status_code": resp.status_code, "body": body}
+    except Exception as exc:
+        return {"url": url, "status_code": 0, "error": str(exc)}
+
+
+def _license_verify_ok(result: dict) -> bool:
+    body = result.get("body")
+    return int(result.get("status_code") or 0) == 200 and isinstance(body, dict) and body.get("valid") is True
+
+
 @router.get("/alerts")
 async def list_alerts(
     severity: str | None = None,
@@ -74,6 +170,69 @@ async def list_alerts(
     代理 edge-monitor 的 /ops/alerts，供前端展示告警。
     """
     return await client.list_alerts(severity=severity, service=service, state=state, api_key=api_key)
+
+
+# ==================== License 安装与校验（云端决策，边端无人值守执行） ====================
+
+
+@router.get("/license/verify")
+async def verify_license(_: str = Depends(require_admin_api_key)):
+    """
+    代理 license-service /verify，供云端安装前后读取边端真实验签状态。
+    """
+    result = await _call_license_verify()
+    return {
+        "success": _license_verify_ok(result),
+        "verify": result,
+    }
+
+
+@router.post("/license/install")
+async def install_license(req: LicenseInstallRequest, _: str = Depends(require_admin_api_key)):
+    """
+    安装云端签发的 License。
+
+    关键保证：
+    - 只写固定 license 文件与公钥文件，不触碰控制/采集服务；
+    - 文件替换使用 os.replace，避免半写入；
+    - 新 License 验签失败时恢复旧文件，现场运行不因失败安装而丢失旧授权。
+    """
+    _validate_license_install_shape(req)
+
+    license_path = Path(settings.LICENSE_FILE_PATH)
+    public_key_path = Path(settings.LICENSE_PUBLIC_KEY_PATH)
+    _verify_license_install_request(req, public_key_path=public_key_path)
+    old_license = license_path.read_bytes() if license_path.exists() else None
+    old_public_key = public_key_path.read_bytes() if public_key_path.exists() else None
+
+    license_bytes = json.dumps(req.license, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    public_key_bytes = req.license_public_key.strip().encode("utf-8") + b"\n"
+
+    _write_bytes_atomic(license_path, license_bytes, mode=0o640)
+    _write_bytes_atomic(public_key_path, public_key_bytes, mode=0o640)
+
+    verify_result = await _call_license_verify()
+    if _license_verify_ok(verify_result):
+        return {
+            "success": True,
+            "license_path": str(license_path),
+            "public_key_path": str(public_key_path),
+            "verify": verify_result,
+            "restart_required": False,
+        }
+
+    _restore_or_remove(license_path, old_license, mode=0o640)
+    _restore_or_remove(public_key_path, old_public_key, mode=0o640)
+    rollback_verify = await _call_license_verify()
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "success": False,
+            "error": "license_verify_failed_after_install",
+            "verify": verify_result,
+            "rollback_verify": rollback_verify,
+        },
+    )
 
 
 @router.get("/monitor-config")
@@ -213,4 +372,3 @@ async def apply_plc_config(
         "restart": restart_result,
         "edge_daq_ready": ready_result,
     }
-

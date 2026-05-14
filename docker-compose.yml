@@ -350,12 +350,20 @@ services:
       - API_KEY_HEADER=${API_KEY_HEADER:-X-API-Key}
       - CONTROL_API_KEYS=${CONTROL_API_KEYS}
       - ADMIN_API_KEYS=${ADMIN_API_KEYS}
+      # License 安装闭环：edge-api 受管理员鉴权保护，负责写入；license-service 负责验签
+      - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
+      - LICENSE_PUBLIC_KEY_PATH=${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}
+      - LICENSE_TRUSTED_PUBLIC_KEY=${LICENSE_TRUSTED_PUBLIC_KEY:-}
+      - LICENSE_SERVICE_BASE=${LICENSE_SERVICE_BASE:-http://license-service:8000}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
       - ./logs/edge-api:/logs/edge-api
       - ./configs:/app/configs:ro
       # 运行时可变配置（由云端下发）：例如 PLC 通讯参数（不改网卡，只改应用层）
       - ./configs-runtime:/app/configs-runtime
+      # License 文件由云端下发到 edge-api，再由 license-service 只读校验
+      - /etc/drycontroller/license:/etc/drycontroller/license
+      - /etc/drycontroller/keys:/etc/drycontroller/keys
     ports:
       - "${EDGE_API_PORT}:8000"
     networks:
@@ -522,6 +530,9 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - LICENSE_CHECK_ENABLED=${LICENSE_CHECK_ENABLED}
       - LICENSE_EXPIRY_DAYS=${LICENSE_EXPIRY_DAYS}
+      - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
+      - LICENSE_PUBLIC_KEY_PATH=${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}
+      - LICENSE_MACHINE_ID=${LICENSE_MACHINE_ID:-}
       - INFLUXDB_HOST=${INFLUXDB_HOST}
       - INFLUXDB_PORT=${INFLUXDB_PORT}
       - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}
@@ -530,7 +541,8 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
       - ./logs/license-service:/logs/license-service
-      - /dev/bus/usb:/dev/bus/usb  # USB 设备映射（加密狗）
+      - /etc/drycontroller/license:/etc/drycontroller/license:ro
+      - /etc/drycontroller/keys:/etc/drycontroller/keys:ro
     ports:
       - "${LICENSE_SERVICE_PORT}:8000"
     networks:
@@ -538,7 +550,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    privileged: true  # 需要访问 USB 设备
     restart: always
     logging: *default-logging
 
@@ -701,4 +712,3 @@ volumes:
   alertmanager_data:
   tailscale_state:
   tailscale_run:
-

@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     LIMITS_CONFIG: str = "/app/configs/limits.yaml"
     MONITOR_CONFIG: str = "/app/configs/monitor.yaml"
     MONITOR_API_BASE: str = "http://edge-monitor:8080"
+
+    # License 安装与校验：edge-api 负责受控写入，license-service 负责验签判定
+    LICENSE_FILE_PATH: str = "/etc/drycontroller/license/license.json"
+    LICENSE_PUBLIC_KEY_PATH: str = "/etc/drycontroller/keys/license.pub"
+    # 可选信任锚。为空时 edge-api 使用 LICENSE_PUBLIC_KEY_PATH 已存在的公钥作为信任锚。
+    LICENSE_TRUSTED_PUBLIC_KEY: str = ""
+    LICENSE_SERVICE_BASE: str = "http://license-service:8000"
     
     # OTA Agent（执行面，建议仅由 edge-api 代理调用）
     OTA_AGENT_API_BASE: str = "http://edge-ota-agent:8090"
@@ -148,4 +155,3 @@ class Settings(BaseSettings):
 
 # 创建全局配置实例
 settings = Settings()
-

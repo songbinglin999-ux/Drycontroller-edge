@@ -19,9 +19,12 @@ STATE_DIR="/var/lib/drycontroller"
 SENTINEL="${STATE_DIR}/.bootstrapped"
 ASSET_DIR="/etc/drycontroller"
 KEYS_DIR="${ASSET_DIR}/keys"
+LICENSE_DIR="${ASSET_DIR}/license"
 
-mkdir -p "$(dirname "$LOG_FILE")" "$STATE_DIR" "$KEYS_DIR"
+mkdir -p "$(dirname "$LOG_FILE")" "$STATE_DIR" "$KEYS_DIR" "$LICENSE_DIR"
 chmod 700 "$STATE_DIR" || true
+chmod 755 "$ASSET_DIR" "$KEYS_DIR" || true
+chmod 750 "$LICENSE_DIR" || true
 
 log() { echo "[$(date -Is)] $*" | tee -a "$LOG_FILE" >/dev/null; }
 
@@ -94,6 +97,7 @@ DEVICE_ID="$(pyget device_id || true)"
 TENANT_ID="$(pyget tenant_id || true)"
 LINE_ID="$(pyget line_id || true)"
 NODE_NAME="$(pyget node_name || true)"
+MACHINE_ID="$(cat /etc/machine-id 2>/dev/null || true)"
 
 CLOUD_OPS_BASE_URL="$(pyget cloud_ops_base_url || true)"
 ENROLL_TOKEN="$(pyget enroll_token || true)"
@@ -182,6 +186,9 @@ set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"
 set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
 set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_BASE_URL}"
 set_kv "CLOUD_OPS_ENROLL_TOKEN" "${ENROLL_TOKEN}"
+set_kv "LICENSE_FILE_PATH" "/etc/drycontroller/license/license.json"
+set_kv "LICENSE_PUBLIC_KEY_PATH" "/etc/drycontroller/keys/license.pub"
+if [ -n "${MACHINE_ID:-}" ]; then set_kv "LICENSE_MACHINE_ID" "${MACHINE_ID}"; fi
 if [ -n "${LINE_ID:-}" ]; then set_kv "LINE_ID" "${LINE_ID}"; fi
 log "updated edge .env at ${ENV_FILE}"
 
@@ -205,8 +212,7 @@ compose --profile remote-debug up -d tailscale edge-enroll
 log "starting ota agent (profile ota)..."
 compose --profile ota up -d edge-ota-agent
 
-# 5) 云端登记/绑定 license（需要 cloud-ops 新接口）
-MACHINE_ID="$(cat /etc/machine-id 2>/dev/null || true)"
+# 5) 云端登记/绑定 license，并保存本地签名 license
 PAYLOAD="$(python3 - <<PY
 import json
 print(json.dumps({
@@ -220,13 +226,59 @@ print(json.dumps({
 PY
 )"
 log "binding license on cloud-ops..."
-curl -fsS "${CLOUD_OPS_BASE_URL%/}/api/v1/provisioning/license/bind" \
+LICENSE_RESP_FILE="$(mktemp)"
+if curl -fsS "${CLOUD_OPS_BASE_URL%/}/api/v1/provisioning/license/bind" \
   -H "Content-Type: application/json" \
   -H "X-Enroll-Token: ${ENROLL_TOKEN}" \
   -d "$PAYLOAD" \
-  >> "$LOG_FILE" 2>&1 \
-  && log "license bind request ok" \
-  || log "WARN: license bind request failed (see log)"
+  -o "$LICENSE_RESP_FILE" >> "$LOG_FILE" 2>&1; then
+  log "license bind request ok"
+else
+  log "license bind request failed; bootstrap will not be marked complete"
+  rm -f "$LICENSE_RESP_FILE"
+  exit 5
+fi
+
+python3 - "$LICENSE_RESP_FILE" "${LICENSE_DIR}/license.json" "${KEYS_DIR}/license.pub" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+resp = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+license_payload = resp.get("license") or resp.get("payload")
+public_key = (resp.get("license_public_key") or "").strip()
+if not isinstance(license_payload, dict) or not license_payload.get("signature"):
+    raise SystemExit("license response missing signed license")
+if not public_key:
+    raise SystemExit("license response missing license_public_key")
+Path(sys.argv[2]).write_text(json.dumps(license_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+Path(sys.argv[3]).write_text(public_key + "\n", encoding="utf-8")
+PY
+rm -f "$LICENSE_RESP_FILE"
+chmod 0640 "${LICENSE_DIR}/license.json" || true
+chmod 0644 "${KEYS_DIR}/license.pub" || true
+log "saved signed license -> ${LICENSE_DIR}/license.json"
+log "saved license public key -> ${KEYS_DIR}/license.pub"
+
+log "verifying local license..."
+VERIFY_URL="http://127.0.0.1:${LICENSE_SERVICE_PORT:-8004}/verify"
+VERIFY_RETRIES="${BOOTSTRAP_LICENSE_VERIFY_RETRIES:-10}"
+VERIFY_SLEEP_SEC="${BOOTSTRAP_LICENSE_VERIFY_SLEEP_SEC:-2}"
+VERIFY_OK=0
+for attempt in $(seq 1 "$VERIFY_RETRIES"); do
+  if curl -fsS "$VERIFY_URL" | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data.get("valid") is True, data'; then
+    VERIFY_OK=1
+    break
+  fi
+  log "local license verify not ready or invalid (attempt ${attempt}/${VERIFY_RETRIES})"
+  sleep "$VERIFY_SLEEP_SEC"
+done
+if [ "$VERIFY_OK" = "1" ]; then
+  log "local license verify ok"
+else
+  log "local license verify failed; bootstrap will not be marked complete"
+  exit 6
+fi
 
 cat > "${STATE_DIR}/device.json" <<EOF
 {
@@ -236,11 +288,10 @@ cat > "${STATE_DIR}/device.json" <<EOF
   "node_name": "${NODE_NAME}",
   "ts_hostname": "${TS_HOSTNAME}",
   "cloud_ops_base_url": "${CLOUD_OPS_BASE_URL}",
+  "activated_at": "$(date -Is)",
   "bootstrapped_at": "$(date -Is)"
 }
 EOF
 
 touch "$SENTINEL"
 log "bootstrap complete. sentinel written: $SENTINEL"
-
-
