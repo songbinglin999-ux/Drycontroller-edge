@@ -213,15 +213,17 @@ log "starting ota agent (profile ota)..."
 compose --profile ota up -d edge-ota-agent
 
 # 5) 云端登记/绑定 license，并保存本地签名 license
-PAYLOAD="$(python3 - <<PY
+PAYLOAD="$(DEVICE_ID="$DEVICE_ID" MACHINE_ID="$MACHINE_ID" TENANT_ID="$TENANT_ID" LINE_ID="$LINE_ID" NODE_NAME="$NODE_NAME" TS_HOSTNAME="$TS_HOSTNAME" python3 - <<'PY'
 import json
+import os
+
 print(json.dumps({
-  "device_id": "${DEVICE_ID}",
-  "machine_id": "${MACHINE_ID}",
-  "tenant_id": "${TENANT_ID}",
-  "line_id": "${LINE_ID}",
-  "node_name": "${NODE_NAME}",
-  "ts_hostname": "${TS_HOSTNAME}",
+  "device_id": os.environ.get("DEVICE_ID", ""),
+  "machine_id": os.environ.get("MACHINE_ID", ""),
+  "tenant_id": os.environ.get("TENANT_ID", ""),
+  "line_id": os.environ.get("LINE_ID", ""),
+  "node_name": os.environ.get("NODE_NAME", ""),
+  "ts_hostname": os.environ.get("TS_HOSTNAME", ""),
 }, ensure_ascii=False))
 PY
 )"
