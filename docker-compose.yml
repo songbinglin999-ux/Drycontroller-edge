@@ -357,6 +357,7 @@ services:
       - LICENSE_SERVICE_BASE=${LICENSE_SERVICE_BASE:-http://license-service:8000}
       # 大屏现场状态摘要只读展示云端/tailnet 配置状态
       - CLOUD_OPS_BASE_URL=${CLOUD_OPS_BASE_URL:-}
+      - CLOUD_OPS_ENROLL_TOKEN=${CLOUD_OPS_ENROLL_TOKEN:-}
       - TS_LOGIN_SERVER=${TS_LOGIN_SERVER:-}
       - TS_HOSTNAME=${TS_HOSTNAME:-edge-node}
       - LOG_LEVEL=${LOG_LEVEL}

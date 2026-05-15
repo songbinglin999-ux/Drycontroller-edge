@@ -163,3 +163,72 @@ def test_license_install_rejects_bad_signature(tmp_path: Path):
 
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"] == "license_signature_invalid"
+
+
+def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatch):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
+    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
+    Path(settings.LICENSE_FILE_PATH).write_text("{}", encoding="utf-8")
+    Path(settings.LICENSE_PUBLIC_KEY_PATH).write_text("pub", encoding="utf-8")
+    device_json = tmp_path / "device.json"
+    device_json.write_text('{"device_id":"d1","tenant_id":"t1","node_name":"n1"}', encoding="utf-8")
+    sentinel = tmp_path / ".bootstrapped"
+    sentinel.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(device_json))
+    monkeypatch.setenv("PREFLIGHT_BOOTSTRAP_SENTINEL", str(sentinel))
+    monkeypatch.setenv("CLOUD_OPS_BASE_URL", "http://cloud")
+    monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "token")
+    monkeypatch.setenv("TS_LOGIN_SERVER", "http://headscale")
+
+    async def fake_verify():
+        return {"url": "mock", "status_code": 200, "body": {"valid": True}}
+
+    async def fake_http_check(checks, check_id, url, *, degraded_ok, allow_degraded, timeout=5.0):
+        ops_module._preflight_check(checks, check_id, "pass", "ok", detail={"url": url})
+
+    monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
+    monkeypatch.setattr(ops_module, "_preflight_http_check", fake_http_check)
+
+    resp = _client().post(
+        "/api/v1/ops/preflight",
+        json={"strict": False, "check_ota": False},
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["status"] == "degraded"
+    assert body["summary"]["fail"] == 0
+
+
+def test_preflight_fails_when_required_files_missing(tmp_path: Path, monkeypatch):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    settings.LICENSE_FILE_PATH = str(tmp_path / "missing-license.json")
+    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "missing-license.pub")
+    monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(tmp_path / "missing-device.json"))
+    monkeypatch.setenv("PREFLIGHT_BOOTSTRAP_SENTINEL", str(tmp_path / "missing-sentinel"))
+
+    async def fake_verify():
+        return {"url": "mock", "status_code": 200, "body": {"valid": False}}
+
+    async def fake_http_check(checks, check_id, url, *, degraded_ok, allow_degraded, timeout=5.0):
+        ops_module._preflight_check(checks, check_id, "pass", "ok", detail={"url": url})
+
+    monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
+    monkeypatch.setattr(ops_module, "_preflight_http_check", fake_http_check)
+
+    resp = _client().post(
+        "/api/v1/ops/preflight",
+        json={"strict": False, "check_ota": False},
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["success"] is False
+    assert detail["status"] == "fail"
+    assert detail["summary"]["fail"] >= 1

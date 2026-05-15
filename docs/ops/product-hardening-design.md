@@ -10,7 +10,7 @@ Drycontroller-cloudserver/docs/ops/product-hardening-design.md
 
 - `scripts/preflight.sh`。状态：已完成第一版。
 - `make preflight`。状态：已完成第一版。
-- `edge-api /api/v1/ops/preflight`
+- `edge-api /api/v1/ops/preflight`。状态：已完成第一版（云端远程只读检查）。
 - `edge-api /api/v1/ops/license/install`。状态：已完成第一版。
 - `edge-api /api/v1/alarms/{alarm_id}/acknowledge`
 - `edge-ota-agent dry_run`
@@ -77,7 +77,8 @@ bash scripts/preflight.sh
 
 - 只读本机状态，不写入业务数据。
 - 输出 JSON，失败时返回非 0。
-- cloud-ops 远程 job、edge-api 代理接口、cloud-console 展示仍待实现。
+- edge-api 远程只读接口、cloud-ops 远程 job、cloud-console 快速创建入口已完成第一版。
+- 真 Linux edge 上的 Docker / TUN / OTA / PLC 路径仍需现场 e2e 验证。
 
 不包含：
 

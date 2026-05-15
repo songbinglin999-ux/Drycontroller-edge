@@ -52,6 +52,18 @@ class LicenseInstallRequest(BaseModel):
     license_public_key: str = Field(..., min_length=1, description="base64 编码 Ed25519 公钥")
 
 
+class PreflightRequest(BaseModel):
+    """
+    云端触发的边端只读出厂检查。
+
+    该接口不执行宿主机 shell 脚本；它在 edge-api 容器内做等价的远程可观测检查，
+    保证 cloud-ops 可以无人值守触发并拿到结构化结果。
+    """
+
+    strict: bool = Field(False, description="true 时 degraded 也视为失败")
+    check_ota: bool = Field(False, description="true 时要求 edge-ota-agent /ready 可用")
+
+
 def _service_override_payload(o: ServiceOverride) -> dict:
     """
     把共享 schema ServiceOverride 转换为 edge-monitor 内部 monitor_config 的
@@ -158,6 +170,101 @@ def _license_verify_ok(result: dict) -> bool:
     return int(result.get("status_code") or 0) == 200 and isinstance(body, dict) and body.get("valid") is True
 
 
+def _preflight_check(checks: list[dict[str, Any]], check_id: str, status: str, reason: str, hint: str = "", detail: dict[str, Any] | None = None) -> None:
+    checks.append(
+        {
+            "id": check_id,
+            "status": status,
+            "reason": reason,
+            "hint": hint,
+            "detail": detail or {},
+        }
+    )
+
+
+def _preflight_file_check(checks: list[dict[str, Any]], check_id: str, path: Path, *, hint: str) -> None:
+    if path.is_file():
+        _preflight_check(checks, check_id, "pass", "ok", detail={"path": str(path)})
+    else:
+        _preflight_check(checks, check_id, "fail", "missing_file", hint=hint, detail={"path": str(path)})
+
+
+def _preflight_device_identity(checks: list[dict[str, Any]]) -> None:
+    path = Path(os.getenv("PREFLIGHT_DEVICE_JSON", "/var/lib/drycontroller/device.json"))
+    if not path.is_file():
+        _preflight_check(
+            checks,
+            "device.identity",
+            "fail",
+            "missing_device_json",
+            hint=f"bootstrap should create {path}",
+            detail={"path": str(path)},
+        )
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _preflight_check(checks, "device.identity", "fail", "invalid_json", hint="device.json must be valid JSON", detail={"path": str(path), "error": str(exc)})
+        return
+    missing = [k for k in ("device_id", "tenant_id", "node_name") if not data.get(k)]
+    _preflight_check(
+        checks,
+        "device.identity",
+        "fail" if missing else "pass",
+        "missing_required_fields" if missing else "ok",
+        hint="device.json must contain device_id/tenant_id/node_name" if missing else "",
+        detail={
+            "path": str(path),
+            "missing": missing,
+            "device_id": data.get("device_id"),
+            "tenant_id": data.get("tenant_id"),
+            "node_name": data.get("node_name"),
+        },
+    )
+
+
+async def _preflight_http_check(
+    checks: list[dict[str, Any]],
+    check_id: str,
+    url: str,
+    *,
+    degraded_ok: bool,
+    allow_degraded: bool,
+    timeout: float = 5.0,
+) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as hc:
+            resp = await hc.get(url)
+        body: Any
+        try:
+            body = resp.json() if resp.content else None
+        except Exception:
+            body = resp.text[:800]
+        detail = {"url": url, "status_code": resp.status_code, "body": body}
+        if 200 <= resp.status_code < 300:
+            _preflight_check(checks, check_id, "pass", "ok", detail=detail)
+        elif resp.status_code == 503 and degraded_ok and allow_degraded:
+            _preflight_check(checks, check_id, "degraded", "service_degraded", hint="accepted in factory mode; use strict for final acceptance", detail=detail)
+        else:
+            _preflight_check(checks, check_id, "fail", f"http_{resp.status_code}", hint="unexpected readiness status", detail=detail)
+    except Exception as exc:
+        _preflight_check(checks, check_id, "fail", "unreachable", hint="endpoint is not reachable", detail={"url": url, "error": str(exc)})
+
+
+def _preflight_summary(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
+    counts = {"pass": 0, "degraded": 0, "fail": 0}
+    for check in checks:
+        status_text = str(check.get("status") or "")
+        if status_text in counts:
+            counts[status_text] += 1
+    status_text = "fail" if counts["fail"] or (strict and counts["degraded"]) else ("degraded" if counts["degraded"] else "pass")
+    return {
+        "success": status_text != "fail",
+        "status": status_text,
+        "summary": counts,
+    }
+
+
 @router.get("/alerts")
 async def list_alerts(
     severity: str | None = None,
@@ -185,6 +292,113 @@ async def verify_license(_: str = Depends(require_admin_api_key)):
         "success": _license_verify_ok(result),
         "verify": result,
     }
+
+
+@router.post("/preflight")
+async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_api_key)):
+    """
+    云端触发的只读 preflight。
+
+    本地工厂位仍可直接运行 scripts/preflight.sh；云端 job 使用本接口拿结构化结果。
+    """
+    checks: list[dict[str, Any]] = []
+    allow_degraded = not req.strict
+
+    _preflight_file_check(
+        checks,
+        "bootstrap.sentinel",
+        Path(os.getenv("PREFLIGHT_BOOTSTRAP_SENTINEL", "/var/lib/drycontroller/.bootstrapped")),
+        hint="run USB/bootstrap provisioning before shipping",
+    )
+    _preflight_device_identity(checks)
+    _preflight_file_check(
+        checks,
+        "license.file",
+        Path(settings.LICENSE_FILE_PATH),
+        hint="install signed license before shipping",
+    )
+    _preflight_file_check(
+        checks,
+        "license.public_key",
+        Path(settings.LICENSE_PUBLIC_KEY_PATH),
+        hint="install license public key before shipping",
+    )
+
+    verify_result = await _call_license_verify()
+    _preflight_check(
+        checks,
+        "license.verify",
+        "pass" if _license_verify_ok(verify_result) else "fail",
+        "ok" if _license_verify_ok(verify_result) else "license_verify_failed",
+        hint="license-service /verify must return valid=true",
+        detail=verify_result,
+    )
+
+    _preflight_check(checks, "edge_api.ready", "pass", "ok", detail={"source": "preflight endpoint reached"})
+    await _preflight_http_check(
+        checks,
+        "edge_daq.ready",
+        "http://edge-daq:8080/ready",
+        degraded_ok=True,
+        allow_degraded=allow_degraded,
+    )
+    await _preflight_http_check(
+        checks,
+        "edge_monitor.ready",
+        f"{settings.MONITOR_API_BASE.rstrip('/')}/ready",
+        degraded_ok=False,
+        allow_degraded=allow_degraded,
+    )
+    if req.check_ota:
+        await _preflight_http_check(
+            checks,
+            "ota_agent.ready",
+            f"{settings.OTA_AGENT_API_BASE.rstrip('/')}/ready",
+            degraded_ok=False,
+            allow_degraded=allow_degraded,
+        )
+    else:
+        _preflight_check(
+            checks,
+            "ota_agent.ready",
+            "degraded" if allow_degraded else "fail",
+            "skipped",
+            hint="edge-ota-agent check skipped; set check_ota=true for final OTA acceptance",
+        )
+
+    ts_login_server = os.getenv("TS_LOGIN_SERVER", "").strip()
+    ts_hostname = os.getenv("TS_HOSTNAME", "").strip()
+    _preflight_check(
+        checks,
+        "tailnet.identity",
+        "pass" if ts_login_server else ("degraded" if allow_degraded else "fail"),
+        "configured" if ts_login_server else "missing_tailnet_config",
+        hint="configure TS_LOGIN_SERVER/TS_HOSTNAME for remote operations",
+        detail={"ts_login_server_present": bool(ts_login_server), "ts_hostname": ts_hostname or None},
+    )
+
+    cloud_ops_base_url = os.getenv("CLOUD_OPS_BASE_URL", "").strip()
+    enroll_token = os.getenv("CLOUD_OPS_ENROLL_TOKEN", "").strip()
+    _preflight_check(
+        checks,
+        "cloud.enroll.config",
+        "pass" if cloud_ops_base_url and enroll_token else "fail",
+        "configured" if cloud_ops_base_url and enroll_token else "missing_cloud_enroll_config",
+        hint="configure CLOUD_OPS_BASE_URL and CLOUD_OPS_ENROLL_TOKEN",
+        detail={"cloud_ops_base_url_present": bool(cloud_ops_base_url), "enroll_token_present": bool(enroll_token)},
+    )
+
+    summary = _preflight_summary(checks, strict=req.strict)
+    payload = {
+        **summary,
+        "checks": checks,
+        "strict": req.strict,
+        "check_ota": req.check_ota,
+        "generated_at": int(time.time()),
+    }
+    if not payload["success"]:
+        raise HTTPException(status_code=409, detail=payload)
+    return payload
 
 
 @router.post("/license/install")
