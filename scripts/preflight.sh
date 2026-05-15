@@ -112,10 +112,10 @@ has_cmd() {
 }
 
 compose() {
-  if has_cmd docker-compose; then
-    docker-compose "$@"
-  else
+  if docker compose version >/dev/null 2>&1; then
     docker compose "$@"
+  else
+    return 127
   fi
 }
 
@@ -297,8 +297,8 @@ check_compose() {
     add_check "docker.command" fail missing_docker "install Docker before factory preflight" "{}"
     return
   fi
-  if ! has_cmd docker-compose && ! docker compose version >/dev/null 2>&1; then
-    add_check "docker.compose" fail missing_compose "install docker compose v2 or docker-compose" "{}"
+  if ! docker compose version >/dev/null 2>&1; then
+    add_check "docker.compose" fail missing_compose "install docker compose v2 plugin" "{}"
     return
   fi
   add_check "docker.compose" pass ok "" "{}"
@@ -329,7 +329,7 @@ import sys
 required = sys.argv[1:]
 try:
     raw = subprocess.check_output(
-        ["bash", "-lc", "docker compose ps --format json 2>/dev/null || docker-compose ps --format json 2>/dev/null"],
+        ["docker", "compose", "ps", "--format", "json"],
         text=True,
     ).strip()
 except Exception as exc:
@@ -379,6 +379,8 @@ PY
 )"
   if python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$result"; then
     add_check "docker.containers" pass ok "" "$result"
+  elif [ "$ALLOW_DEGRADED" = true ] && python3 -c 'import json,sys; data=json.loads(sys.argv[1]); allowed={"edge-daq","ai-softsensor"}; bad=data.get("bad") or []; raise SystemExit(0 if bad and all(item.get("service") in allowed and item.get("state") == "running" and item.get("health") == "unhealthy" for item in bad) else 1)' "$result"; then
+    add_check "docker.containers" degraded factory_degraded "edge-daq/ai-softsensor may be unhealthy without PLC/data source; run --strict for final acceptance" "$result"
   else
     add_check "docker.containers" fail container_not_ready "all core services must be running and healthy when health exists" "$result"
   fi

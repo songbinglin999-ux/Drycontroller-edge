@@ -307,13 +307,32 @@ PY
 set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
 set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"
 set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
+set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
+# 云分配模式下，edge-api 只通过 tailnet 对云端开放探活/运维入口。
+# 默认 compose 仍保持 127.0.0.1，避免未入网机器在现场 LAN 暴露管理口。
+set_kv "EDGE_API_BIND_ADDR" "0.0.0.0"
 set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_BASE_URL}"
 set_kv "CLOUD_OPS_ENROLL_TOKEN" "${ENROLL_TOKEN}"
 set_kv "LICENSE_FILE_PATH" "/etc/drycontroller/license/license.json"
 set_kv "LICENSE_PUBLIC_KEY_PATH" "/etc/drycontroller/keys/license.pub"
 if [ -n "${DEVICE_ID:-}" ]; then set_kv "DEVICE_ID" "${DEVICE_ID}"; fi
-if [ -n "${ADMIN_API_KEYS:-}" ]; then set_kv "ADMIN_API_KEYS" "${ADMIN_API_KEYS}"; fi
-if [ -n "${CONTROL_API_KEYS:-}" ]; then set_kv "CONTROL_API_KEYS" "${CONTROL_API_KEYS}"; fi
+set_json_list_kv() {
+  local k="$1"
+  local v="$2"
+  local encoded
+  encoded="$(ENV_VALUE="$v" python3 - <<'PY'
+import json
+import os
+
+value = os.environ["ENV_VALUE"]
+print(json.dumps([value], ensure_ascii=False))
+PY
+)"
+  set_kv "$k" "$encoded"
+}
+
+if [ -n "${ADMIN_API_KEYS:-}" ]; then set_json_list_kv "ADMIN_API_KEYS" "${ADMIN_API_KEYS}"; fi
+if [ -n "${CONTROL_API_KEYS:-}" ]; then set_json_list_kv "CONTROL_API_KEYS" "${CONTROL_API_KEYS}"; fi
 if [ -n "${MACHINE_ID:-}" ]; then set_kv "LICENSE_MACHINE_ID" "${MACHINE_ID}"; fi
 if [ -n "${LINE_ID:-}" ]; then set_kv "LINE_ID" "${LINE_ID}"; fi
 log "updated edge .env at ${ENV_FILE}"
@@ -322,10 +341,11 @@ log "updated edge .env at ${ENV_FILE}"
 cd "$EDGE_ROOT"
 
 compose() {
-  if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose "$@"
-  else
+  if docker compose version >/dev/null 2>&1; then
     docker compose "$@"
+  else
+    log "docker compose v2 plugin is required"
+    exit 4
   fi
 }
 

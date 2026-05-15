@@ -2,6 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ARG PIP_INDEX_URL=http://mirrors.tencentyun.com/pypi/simple
+ARG PIP_TRUSTED_HOST=mirrors.tencentyun.com
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}
+ENV PIP_DEFAULT_TIMEOUT=120
+ENV PIP_RETRIES=10
+
 # 中国大陆环境：apt 走国内镜像加速（生产部署也在国内）
 RUN find /etc/apt -type f \( -name "*.sources" -o -name "*.list" \) \
         -exec sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' {} + \
@@ -24,4 +31,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5).read()"
 
 CMD ["python", "-m", "src.main"]
-

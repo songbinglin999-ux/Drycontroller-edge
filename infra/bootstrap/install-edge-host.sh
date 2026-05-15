@@ -124,12 +124,14 @@ install_docker_apt() {
 
   if docker compose version >/dev/null 2>&1; then
     log "docker compose plugin available: $(docker compose version)"
-  elif command -v docker-compose >/dev/null 2>&1; then
-    log "legacy docker-compose available: $(docker-compose --version)"
   else
     log "installing docker compose plugin from OS package repository"
-    if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
+    if apt-cache show docker-compose-v2 >/dev/null 2>&1; then
+      apt-get install -y --no-install-recommends docker-compose-v2
+    elif apt-cache show docker-compose-plugin >/dev/null 2>&1; then
       apt-get install -y --no-install-recommends docker-compose-plugin
+    elif command -v docker-compose >/dev/null 2>&1; then
+      log "docker compose v2 unavailable; legacy docker-compose present: $(docker-compose --version)"
     else
       apt-get install -y --no-install-recommends docker-compose
     fi
@@ -156,8 +158,8 @@ install_host_packages() {
 
 verify_prerequisites() {
   command -v docker >/dev/null 2>&1 || die "docker is not installed"
-  if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
-    die "docker compose v2 plugin or docker-compose is not installed"
+  if ! docker compose version >/dev/null 2>&1; then
+    die "docker compose v2 plugin is not installed"
   fi
   command -v python3 >/dev/null 2>&1 || die "python3 is not installed"
   command -v curl >/dev/null 2>&1 || die "curl is not installed"
