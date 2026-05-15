@@ -28,6 +28,25 @@ chmod 750 "$LICENSE_DIR" || true
 
 log() { echo "[$(date -Is)] $*" | tee -a "$LOG_FILE" >/dev/null; }
 
+SECRET_TEMP_FILES=()
+cleanup_secret_temp_files() {
+  local f
+  for f in "${SECRET_TEMP_FILES[@]:-}"; do
+    if [ -n "${f:-}" ]; then
+      rm -f "$f"
+    fi
+  done
+}
+trap cleanup_secret_temp_files EXIT
+
+secret_mktemp() {
+  local f
+  f="$(mktemp)"
+  chmod 600 "$f"
+  SECRET_TEMP_FILES+=("$f")
+  echo "$f"
+}
+
 if [ -f "$SENTINEL" ]; then
   log "already bootstrapped: $SENTINEL"
   exit 0
@@ -101,6 +120,8 @@ MACHINE_ID="$(cat /etc/machine-id 2>/dev/null || true)"
 
 CLOUD_OPS_BASE_URL="$(pyget cloud_ops_base_url || true)"
 ENROLL_TOKEN="$(pyget enroll_token || true)"
+BATCH_ID="$(pyget batch_id || true)"
+INSTALLER_TOKEN="$(pyget installer_token || true)"
 
 TS_LOGIN_SERVER="$(pyget ts_login_server || true)"
 TS_AUTHKEY="$(pyget ts_authkey || true)"
@@ -110,18 +131,102 @@ HARBOR_HOST="$(pyget harbor_host || true)"
 HARBOR_ROBOT_USER="$(pyget harbor_robot_user || true)"
 HARBOR_ROBOT_TOKEN="$(pyget harbor_robot_token || true)"
 
-if [ -z "${CLOUD_OPS_BASE_URL:-}" ] || [ -z "${ENROLL_TOKEN:-}" ]; then
-  log "missing cloud_ops_base_url or enroll_token in provisioning.json"
+if [ -z "${CLOUD_OPS_BASE_URL:-}" ]; then
+  log "missing cloud_ops_base_url in provisioning.json"
+  exit 2
+fi
+
+ALLOCATION_RESP_FILE=""
+if [ -n "${BATCH_ID:-}" ] || [ -n "${INSTALLER_TOKEN:-}" ]; then
+  if [ -z "${BATCH_ID:-}" ] || [ -z "${INSTALLER_TOKEN:-}" ]; then
+    log "batch_id and installer_token must be provided together"
+    exit 2
+  fi
+
+  ALLOCATE_PAYLOAD="$(PROV_JSON="$PROV_JSON" MACHINE_ID="$MACHINE_ID" python3 - <<'PY'
+import json
+import os
+
+obj = json.load(open(os.environ["PROV_JSON"], "r", encoding="utf-8"))
+payload = {
+  "batch_id": obj.get("batch_id", ""),
+  "installer_token": obj.get("installer_token", ""),
+  "machine_id": os.environ.get("MACHINE_ID", ""),
+}
+for key in (
+  "tenant_id",
+  "line_id",
+  "ts_hostname",
+  "ts_login_server",
+  "ts_authkey",
+  "harbor_host",
+  "harbor_robot_user",
+  "harbor_robot_token",
+  "meta",
+):
+  value = obj.get(key)
+  if value:
+    payload[key] = value
+print(json.dumps(payload, ensure_ascii=False))
+PY
+)"
+  log "allocating device identity from cloud-ops batch ${BATCH_ID}..."
+  ALLOCATION_RESP_FILE="$(secret_mktemp)"
+  if curl -fsS "${CLOUD_OPS_BASE_URL%/}/api/v1/provisioning/allocate" \
+    -H "Content-Type: application/json" \
+    -d "$ALLOCATE_PAYLOAD" \
+    -o "$ALLOCATION_RESP_FILE" >> "$LOG_FILE" 2>&1; then
+    log "cloud allocation ok"
+  else
+    log "cloud allocation failed; bootstrap will not be marked complete"
+    exit 5
+  fi
+
+  eval "$(python3 - "$ALLOCATION_RESP_FILE" <<'PY'
+import json
+import shlex
+import sys
+
+resp = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+mapping = {
+  "DEVICE_ID": resp.get("device_id"),
+  "TENANT_ID": resp.get("tenant_id"),
+  "LINE_ID": resp.get("line_id"),
+  "NODE_NAME": resp.get("node_name"),
+  "TS_HOSTNAME": resp.get("ts_hostname") or resp.get("node_name"),
+  "ENROLL_TOKEN": resp.get("enroll_token"),
+  "TS_LOGIN_SERVER": resp.get("ts_login_server"),
+  "TS_AUTHKEY": resp.get("ts_authkey"),
+  "HARBOR_HOST": resp.get("harbor_host"),
+  "HARBOR_ROBOT_USER": resp.get("harbor_robot_user"),
+  "HARBOR_ROBOT_TOKEN": resp.get("harbor_robot_token"),
+  "ADMIN_API_KEYS": resp.get("admin_api_key"),
+  "CONTROL_API_KEYS": resp.get("control_api_key"),
+}
+for key, value in mapping.items():
+  if value is not None:
+    print(f"{key}={shlex.quote(str(value))}")
+PY
+)"
+fi
+
+if [ -z "${ENROLL_TOKEN:-}" ]; then
+  log "missing enroll_token in provisioning.json or cloud allocation response"
+  exit 2
+fi
+
+if [ -z "${DEVICE_ID:-}" ] || [ -z "${NODE_NAME:-}" ]; then
+  log "missing device_id or node_name in provisioning.json or cloud allocation response"
   exit 2
 fi
 
 if [ -z "${TS_LOGIN_SERVER:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
-  log "missing ts_login_server or ts_authkey in provisioning.json"
+  log "missing ts_login_server or ts_authkey in provisioning.json or cloud allocation response"
   exit 2
 fi
 
 if [ -z "${HARBOR_HOST:-}" ] || [ -z "${HARBOR_ROBOT_USER:-}" ] || [ -z "${HARBOR_ROBOT_TOKEN:-}" ]; then
-  log "missing harbor credentials in provisioning.json"
+  log "missing harbor credentials in provisioning.json or cloud allocation response"
   exit 2
 fi
 
@@ -173,12 +278,30 @@ fi
 set_kv() {
   local k="$1"
   local v="$2"
-  # 若已有 key 则替换，否则追加
-  if grep -qE "^${k}=" "$ENV_FILE"; then
-    sed -i "s#^${k}=.*#${k}=${v}#g" "$ENV_FILE"
-  else
-    echo "${k}=${v}" >> "$ENV_FILE"
-  fi
+  ENV_FILE="$ENV_FILE" ENV_KEY="$k" ENV_VALUE="$v" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["ENV_FILE"])
+key = os.environ["ENV_KEY"]
+value = os.environ["ENV_VALUE"]
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+replacement = f"{key}={value}"
+out = []
+replaced = False
+for line in lines:
+    if line.startswith(f"{key}="):
+        if not replaced:
+            out.append(replacement)
+            replaced = True
+        continue
+    out.append(line)
+if not replaced:
+    out.append(replacement)
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
 }
 
 set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
@@ -188,6 +311,9 @@ set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_BASE_URL}"
 set_kv "CLOUD_OPS_ENROLL_TOKEN" "${ENROLL_TOKEN}"
 set_kv "LICENSE_FILE_PATH" "/etc/drycontroller/license/license.json"
 set_kv "LICENSE_PUBLIC_KEY_PATH" "/etc/drycontroller/keys/license.pub"
+if [ -n "${DEVICE_ID:-}" ]; then set_kv "DEVICE_ID" "${DEVICE_ID}"; fi
+if [ -n "${ADMIN_API_KEYS:-}" ]; then set_kv "ADMIN_API_KEYS" "${ADMIN_API_KEYS}"; fi
+if [ -n "${CONTROL_API_KEYS:-}" ]; then set_kv "CONTROL_API_KEYS" "${CONTROL_API_KEYS}"; fi
 if [ -n "${MACHINE_ID:-}" ]; then set_kv "LICENSE_MACHINE_ID" "${MACHINE_ID}"; fi
 if [ -n "${LINE_ID:-}" ]; then set_kv "LINE_ID" "${LINE_ID}"; fi
 log "updated edge .env at ${ENV_FILE}"
@@ -213,7 +339,11 @@ log "starting ota agent (profile ota)..."
 compose --profile ota up -d edge-ota-agent
 
 # 5) 云端登记/绑定 license，并保存本地签名 license
-PAYLOAD="$(DEVICE_ID="$DEVICE_ID" MACHINE_ID="$MACHINE_ID" TENANT_ID="$TENANT_ID" LINE_ID="$LINE_ID" NODE_NAME="$NODE_NAME" TS_HOSTNAME="$TS_HOSTNAME" python3 - <<'PY'
+if [ -n "${ALLOCATION_RESP_FILE:-}" ]; then
+  LICENSE_RESP_FILE="$ALLOCATION_RESP_FILE"
+  log "using signed license from cloud allocation response"
+else
+  PAYLOAD="$(DEVICE_ID="$DEVICE_ID" MACHINE_ID="$MACHINE_ID" TENANT_ID="$TENANT_ID" LINE_ID="$LINE_ID" NODE_NAME="$NODE_NAME" TS_HOSTNAME="$TS_HOSTNAME" python3 - <<'PY'
 import json
 import os
 
@@ -227,18 +357,18 @@ print(json.dumps({
 }, ensure_ascii=False))
 PY
 )"
-log "binding license on cloud-ops..."
-LICENSE_RESP_FILE="$(mktemp)"
-if curl -fsS "${CLOUD_OPS_BASE_URL%/}/api/v1/provisioning/license/bind" \
-  -H "Content-Type: application/json" \
-  -H "X-Enroll-Token: ${ENROLL_TOKEN}" \
-  -d "$PAYLOAD" \
-  -o "$LICENSE_RESP_FILE" >> "$LOG_FILE" 2>&1; then
-  log "license bind request ok"
-else
-  log "license bind request failed; bootstrap will not be marked complete"
-  rm -f "$LICENSE_RESP_FILE"
-  exit 5
+  log "binding license on cloud-ops..."
+  LICENSE_RESP_FILE="$(secret_mktemp)"
+  if curl -fsS "${CLOUD_OPS_BASE_URL%/}/api/v1/provisioning/license/bind" \
+    -H "Content-Type: application/json" \
+    -H "X-Enroll-Token: ${ENROLL_TOKEN}" \
+    -d "$PAYLOAD" \
+    -o "$LICENSE_RESP_FILE" >> "$LOG_FILE" 2>&1; then
+    log "license bind request ok"
+  else
+    log "license bind request failed; bootstrap will not be marked complete"
+    exit 5
+  fi
 fi
 
 python3 - "$LICENSE_RESP_FILE" "${LICENSE_DIR}/license.json" "${KEYS_DIR}/license.pub" <<'PY'
@@ -282,18 +412,32 @@ else
   exit 6
 fi
 
-cat > "${STATE_DIR}/device.json" <<EOF
-{
-  "device_id": "${DEVICE_ID}",
-  "tenant_id": "${TENANT_ID}",
-  "line_id": "${LINE_ID}",
-  "node_name": "${NODE_NAME}",
-  "ts_hostname": "${TS_HOSTNAME}",
-  "cloud_ops_base_url": "${CLOUD_OPS_BASE_URL}",
-  "activated_at": "$(date -Is)",
-  "bootstrapped_at": "$(date -Is)"
+DEVICE_JSON="${STATE_DIR}/device.json" \
+DEVICE_ID="$DEVICE_ID" \
+TENANT_ID="$TENANT_ID" \
+LINE_ID="$LINE_ID" \
+NODE_NAME="$NODE_NAME" \
+TS_HOSTNAME="$TS_HOSTNAME" \
+CLOUD_OPS_BASE_URL="$CLOUD_OPS_BASE_URL" \
+ACTIVATED_AT="$(date -Is)" \
+BOOTSTRAPPED_AT="$(date -Is)" \
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = {
+    "device_id": os.environ.get("DEVICE_ID", ""),
+    "tenant_id": os.environ.get("TENANT_ID", ""),
+    "line_id": os.environ.get("LINE_ID", ""),
+    "node_name": os.environ.get("NODE_NAME", ""),
+    "ts_hostname": os.environ.get("TS_HOSTNAME", ""),
+    "cloud_ops_base_url": os.environ.get("CLOUD_OPS_BASE_URL", ""),
+    "activated_at": os.environ.get("ACTIVATED_AT", ""),
+    "bootstrapped_at": os.environ.get("BOOTSTRAPPED_AT", ""),
 }
-EOF
+Path(os.environ["DEVICE_JSON"]).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
 
 touch "$SENTINEL"
 log "bootstrap complete. sentinel written: $SENTINEL"

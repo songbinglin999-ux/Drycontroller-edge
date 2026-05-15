@@ -1,0 +1,51 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  timezone: Asia/Shanghai
+
+  # Production media should replace the password hash before use.
+  # Generate a hash:
+  #   openssl passwd -6
+  identity:
+    hostname: drycontroller-edge
+    username: dryops
+    password: "$6$REPLACE_WITH_SHA512_CRYPT_HASH"
+
+  ssh:
+    install-server: true
+    allow-pw: false
+
+  apt:
+    preserve_sources_list: false
+    primary:
+      - arches: [default]
+        uri: http://archive.ubuntu.com/ubuntu
+
+  storage:
+    layout:
+      name: direct
+
+  packages:
+    - ca-certificates
+    - curl
+    - python3
+    - tar
+    - iproute2
+    - lsb-release
+    - docker.io
+
+  late-commands:
+    - curtin in-target --target=/target -- mkdir -p /opt /var/log
+    - cp -a /cdrom/drycontroller-edge.tar.gz /target/opt/drycontroller-edge.tar.gz
+    - sh -c 'if [ -f /cdrom/wifi.env ]; then cp -a /cdrom/wifi.env /target/opt/drycontroller-wifi.env; chmod 0600 /target/opt/drycontroller-wifi.env; fi'
+    - cp -a /cdrom/post-install.sh /target/usr/local/sbin/drycontroller-edge-post-install.sh
+    - cp -a /cdrom/drycontroller-edge-post-install.service /target/etc/systemd/system/drycontroller-edge-post-install.service
+    - curtin in-target --target=/target -- chmod 0755 /usr/local/sbin/drycontroller-edge-post-install.sh
+    - curtin in-target --target=/target -- systemctl enable drycontroller-edge-post-install.service
+    - curtin in-target --target=/target -- systemctl set-default multi-user.target
+    - curtin in-target --target=/target -- sh -c 'echo DryController Edge first boot install is pending > /etc/motd'
+
+  shutdown: poweroff
