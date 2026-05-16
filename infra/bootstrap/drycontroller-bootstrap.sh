@@ -119,6 +119,7 @@ NODE_NAME="$(pyget node_name || true)"
 MACHINE_ID="$(cat /etc/machine-id 2>/dev/null || true)"
 
 CLOUD_OPS_BASE_URL="$(pyget cloud_ops_base_url || true)"
+CLOUD_OPS_TAILNET_BASE_URL="$(pyget cloud_ops_tailnet_base_url || true)"
 ENROLL_TOKEN="$(pyget enroll_token || true)"
 BATCH_ID="$(pyget batch_id || true)"
 INSTALLER_TOKEN="$(pyget installer_token || true)"
@@ -230,20 +231,22 @@ if [ -z "${HARBOR_HOST:-}" ] || [ -z "${HARBOR_ROBOT_USER:-}" ] || [ -z "${HARBO
   exit 2
 fi
 
+CLOUD_OPS_RUNTIME_BASE_URL="${CLOUD_OPS_TAILNET_BASE_URL:-$CLOUD_OPS_BASE_URL}"
+
 # 1) 写入运维资产：cosign.pub
 install -m 0644 "$COSIGN_PUB" "${KEYS_DIR}/cosign.pub"
 log "installed cosign pubkey -> ${KEYS_DIR}/cosign.pub"
 
-# 2) docker login（只读 robot）
-if command -v docker >/dev/null 2>&1; then
-  log "docker login to ${HARBOR_HOST} ..."
-  echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_HOST}" -u "${HARBOR_ROBOT_USER}" --password-stdin \
-    && log "docker login ok" \
-    || { log "docker login failed"; exit 3; }
-else
+# 2) 基础命令检查 + docker login（Harbor 是公网入口，与 tailnet 无关，前置以早 fail）
+if ! command -v docker >/dev/null 2>&1; then
   log "docker not found"
   exit 3
 fi
+
+log "docker login to ${HARBOR_HOST} ..."
+echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_HOST}" -u "${HARBOR_ROBOT_USER}" --password-stdin \
+  && log "docker login ok" \
+  || { log "docker login failed"; exit 3; }
 
 # 3) 写入 drycontroller-edge .env（若不存在则生成；若存在则只补齐关键字段）
 EDGE_ROOT="/opt/Drycontroller-edge"
@@ -311,7 +314,7 @@ set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
 # 云分配模式下，edge-api 只通过 tailnet 对云端开放探活/运维入口。
 # 默认 compose 仍保持 127.0.0.1，避免未入网机器在现场 LAN 暴露管理口。
 set_kv "EDGE_API_BIND_ADDR" "0.0.0.0"
-set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_BASE_URL}"
+set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_RUNTIME_BASE_URL}"
 set_kv "CLOUD_OPS_ENROLL_TOKEN" "${ENROLL_TOKEN}"
 set_kv "LICENSE_FILE_PATH" "/etc/drycontroller/license/license.json"
 set_kv "LICENSE_PUBLIC_KEY_PATH" "/etc/drycontroller/keys/license.pub"
@@ -335,9 +338,13 @@ if [ -n "${ADMIN_API_KEYS:-}" ]; then set_json_list_kv "ADMIN_API_KEYS" "${ADMIN
 if [ -n "${CONTROL_API_KEYS:-}" ]; then set_json_list_kv "CONTROL_API_KEYS" "${CONTROL_API_KEYS}"; fi
 if [ -n "${MACHINE_ID:-}" ]; then set_kv "LICENSE_MACHINE_ID" "${MACHINE_ID}"; fi
 if [ -n "${LINE_ID:-}" ]; then set_kv "LINE_ID" "${LINE_ID}"; fi
+set_kv "CLOUD_OPS_PUBLIC_BASE_URL" "${CLOUD_OPS_BASE_URL}"
+if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
+  set_kv "CLOUD_OPS_TAILNET_BASE_URL" "${CLOUD_OPS_TAILNET_BASE_URL}"
+fi
 log "updated edge .env at ${ENV_FILE}"
 
-# 4) 启动 edge（含 remote-debug：tailscale+edge-enroll；以及 ota profile：edge-ota-agent）
+# 4) 启动 tailnet。Headscale-first：后续 enroll/license/OTA 使用 tailnet Cloud Ops URL。
 cd "$EDGE_ROOT"
 
 compose() {
@@ -349,17 +356,46 @@ compose() {
   fi
 }
 
+log "starting tailnet first (tailscale only)..."
+compose --profile remote-debug up -d tailscale
+
+if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
+  log "waiting for tailnet identity before cloud runtime calls..."
+  TAILNET_READY=0
+  TAILNET_RETRIES="${BOOTSTRAP_TAILNET_RETRIES:-60}"
+  TAILNET_SLEEP_SEC="${BOOTSTRAP_TAILNET_SLEEP_SEC:-2}"
+  for attempt in $(seq 1 "$TAILNET_RETRIES"); do
+    # tailscale ip 证明拿到 tailnet IP；wget /health 证明 cloud-ops 经 tailnet 真可达（路由收敛 + ECS 端口放行）
+    if docker exec edge-tailscale tailscale ip -4 >/dev/null 2>&1 \
+       && docker exec edge-tailscale wget -q -T 5 -O /dev/null "${CLOUD_OPS_RUNTIME_BASE_URL%/}/health" >/dev/null 2>&1; then
+      TAILNET_READY=1
+      break
+    fi
+    log "tailnet not ready yet (attempt ${attempt}/${TAILNET_RETRIES})"
+    sleep "$TAILNET_SLEEP_SEC"
+  done
+  if [ "$TAILNET_READY" = "1" ]; then
+    log "tailnet ready; cloud runtime url: ${CLOUD_OPS_RUNTIME_BASE_URL}"
+  else
+    log "tailnet did not become ready; bootstrap will not fall back to public cloud url"
+    exit 5
+  fi
+else
+  log "cloud_ops_tailnet_base_url not provided; using cloud_ops_base_url for runtime cloud calls"
+fi
+
+# 5) 启动 edge（含 enroll；以及 ota profile：edge-ota-agent）
 log "starting edge core stack..."
 compose up -d
 
-log "starting tailnet/enroll (profile remote-debug)..."
-compose --profile remote-debug up -d tailscale edge-enroll
+log "starting tailnet enroll (profile remote-debug)..."
+compose --profile remote-debug up -d edge-enroll
 
 log "starting ota agent (profile ota)..."
 compose --profile ota up -d edge-ota-agent
 
-# 5) 云端登记/绑定 license，并保存本地签名 license
-if [ -n "${ALLOCATION_RESP_FILE:-}" ]; then
+# 6) 云端登记/绑定 license，并保存本地签名 license
+if [ -n "${ALLOCATION_RESP_FILE:-}" ] && [ -z "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   LICENSE_RESP_FILE="$ALLOCATION_RESP_FILE"
   log "using signed license from cloud allocation response"
 else
@@ -379,7 +415,7 @@ PY
 )"
   log "binding license on cloud-ops..."
   LICENSE_RESP_FILE="$(secret_mktemp)"
-  if curl -fsS "${CLOUD_OPS_BASE_URL%/}/api/v1/provisioning/license/bind" \
+  if curl -fsS "${CLOUD_OPS_RUNTIME_BASE_URL%/}/api/v1/provisioning/license/bind" \
     -H "Content-Type: application/json" \
     -H "X-Enroll-Token: ${ENROLL_TOKEN}" \
     -d "$PAYLOAD" \
@@ -439,6 +475,8 @@ LINE_ID="$LINE_ID" \
 NODE_NAME="$NODE_NAME" \
 TS_HOSTNAME="$TS_HOSTNAME" \
 CLOUD_OPS_BASE_URL="$CLOUD_OPS_BASE_URL" \
+CLOUD_OPS_RUNTIME_BASE_URL="$CLOUD_OPS_RUNTIME_BASE_URL" \
+CLOUD_OPS_TAILNET_BASE_URL="$CLOUD_OPS_TAILNET_BASE_URL" \
 ACTIVATED_AT="$(date -Is)" \
 BOOTSTRAPPED_AT="$(date -Is)" \
 python3 - <<'PY'
@@ -452,7 +490,9 @@ payload = {
     "line_id": os.environ.get("LINE_ID", ""),
     "node_name": os.environ.get("NODE_NAME", ""),
     "ts_hostname": os.environ.get("TS_HOSTNAME", ""),
-    "cloud_ops_base_url": os.environ.get("CLOUD_OPS_BASE_URL", ""),
+    "cloud_ops_base_url": os.environ.get("CLOUD_OPS_RUNTIME_BASE_URL", ""),
+    "cloud_ops_public_base_url": os.environ.get("CLOUD_OPS_BASE_URL", ""),
+    "cloud_ops_tailnet_base_url": os.environ.get("CLOUD_OPS_TAILNET_BASE_URL", ""),
     "activated_at": os.environ.get("ACTIVATED_AT", ""),
     "bootstrapped_at": os.environ.get("BOOTSTRAPPED_AT", ""),
 }
