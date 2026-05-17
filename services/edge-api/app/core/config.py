@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     CLOUD_SYNC_OUTBOX_BATCH_SIZE: int = 50
     CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS: int = 10
     CLOUD_SYNC_OUTBOX_AUDIT_PATH: str = "/api/v1/audit/from-edge"
+    # cloud-ops 端 header 名（默认 X-Enroll-Token，与 cloudserver settings.ENROLL_TOKEN_HEADER 对齐）
+    CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER: str = "X-Enroll-Token"
     
     model_config = SettingsConfigDict(
         env_file=".env",

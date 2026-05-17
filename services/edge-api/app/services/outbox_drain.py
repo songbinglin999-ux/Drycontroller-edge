@@ -3,17 +3,22 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import os
+from collections import defaultdict
 from typing import Any
 
 import httpx
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models import CloudSyncOutbox
 
 logger = structlog.get_logger(__name__)
+
+# 多 worker 部署时只允许一个 drainer 跑（与 cloud-ops NodeHealthPoller P1-N4 同款 pattern）
+_PG_ADVISORY_LOCK_KEY = 0x4452434F5554424F  # "DRCOUTBO"
 
 
 def _utcnow() -> dt.datetime:
@@ -63,28 +68,44 @@ class CloudSyncOutboxDrainer:
             await asyncio.sleep(max(0.2, float(settings.CLOUD_SYNC_OUTBOX_INTERVAL_SEC)))
 
     async def drain_once(self) -> int:
-        now = _utcnow()
         async with AsyncSessionLocal() as db:
-            res = await db.execute(
-                select(CloudSyncOutbox)
-                .where(
-                    CloudSyncOutbox.synced_at.is_(None),
-                    CloudSyncOutbox.status == "pending",
-                    or_(CloudSyncOutbox.next_retry_at.is_(None), CloudSyncOutbox.next_retry_at <= now),
-                )
-                .order_by(CloudSyncOutbox.created_at.asc(), CloudSyncOutbox.id.asc())
-                .limit(max(1, int(settings.CLOUD_SYNC_OUTBOX_BATCH_SIZE)))
-            )
-            rows = list(res.scalars().all())
+            if not await self._try_acquire_drain_lock(db):
+                logger.debug("cloud_sync_outbox_drain_lock_busy")
+                return 0
+            try:
+                return await self._drain_locked(db)
+            finally:
+                await self._release_drain_lock(db)
 
-            pushed = 0
-            for row in rows:
-                ok, error = await self._push(row.kind, row.payload)
-                now = _utcnow()
-                row.last_attempt_at = now
+    async def _drain_locked(self, db: AsyncSession) -> int:
+        now = _utcnow()
+        res = await db.execute(
+            select(CloudSyncOutbox)
+            .where(
+                CloudSyncOutbox.synced_at.is_(None),
+                CloudSyncOutbox.status == "pending",
+                or_(CloudSyncOutbox.next_retry_at.is_(None), CloudSyncOutbox.next_retry_at <= now),
+            )
+            .order_by(CloudSyncOutbox.created_at.asc(), CloudSyncOutbox.id.asc())
+            .limit(max(1, int(settings.CLOUD_SYNC_OUTBOX_BATCH_SIZE)))
+        )
+        rows = list(res.scalars().all())
+        if not rows:
+            return 0
+
+        by_kind: dict[str, list[CloudSyncOutbox]] = defaultdict(list)
+        for row in rows:
+            by_kind[row.kind].append(row)
+
+        pushed = 0
+        for kind, kind_rows in by_kind.items():
+            ok, error = await self._push(kind, kind_rows)
+            attempt_at = _utcnow()
+            for row in kind_rows:
+                row.last_attempt_at = attempt_at
                 if ok:
                     row.status = "synced"
-                    row.synced_at = now
+                    row.synced_at = attempt_at
                     row.last_error = None
                     pushed += 1
                     continue
@@ -98,27 +119,39 @@ class CloudSyncOutboxDrainer:
                 else:
                     row.next_retry_at = _retry_at(row.attempts)
 
-            await db.commit()
-            return pushed
+        await db.commit()
+        return pushed
 
-    async def _push(self, kind: str, payload: dict[str, Any]) -> tuple[bool, str]:
+    async def _try_acquire_drain_lock(self, session: AsyncSession) -> bool:
+        if session.get_bind().dialect.name != "postgresql":
+            return True
+        res = await session.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": _PG_ADVISORY_LOCK_KEY})
+        return bool(res.scalar())
+
+    async def _release_drain_lock(self, session: AsyncSession) -> None:
+        if session.get_bind().dialect.name != "postgresql":
+            return
+        await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _PG_ADVISORY_LOCK_KEY})
+
+    async def _push(self, kind: str, rows: list[CloudSyncOutbox]) -> tuple[bool, str]:
         if kind != "audit":
             return False, f"unsupported_outbox_kind:{kind}"
 
         base_url = os.getenv("CLOUD_OPS_BASE_URL", "").strip()
         enroll_token = os.getenv("CLOUD_OPS_ENROLL_TOKEN", "").strip()
-        token_header = os.getenv("CLOUD_OPS_ENROLL_TOKEN_HEADER", "X-Enroll-Token").strip() or "X-Enroll-Token"
+        token_header = (settings.CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER or "X-Enroll-Token").strip() or "X-Enroll-Token"
         if not base_url or not enroll_token:
             return False, "missing_cloud_ops_config"
 
         url = f"{base_url.rstrip('/')}{settings.CLOUD_SYNC_OUTBOX_AUDIT_PATH}"
+        body: dict[str, Any] = {"items": [row.payload for row in rows]}
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(url, json=payload, headers={token_header: enroll_token})
+                resp = await client.post(url, json=body, headers={token_header: enroll_token})
             if 200 <= resp.status_code < 300:
                 return True, ""
-            body = resp.text[:1000] if resp.text else ""
-            return False, f"http_{resp.status_code}:{body}"
+            text_body = resp.text[:1000] if resp.text else ""
+            return False, f"http_{resp.status_code}:{text_body}"
         except Exception as exc:
             return False, str(exc)
 

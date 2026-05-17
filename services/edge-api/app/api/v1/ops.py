@@ -427,12 +427,14 @@ async def install_license(req: LicenseInstallRequest, api_key: str = Depends(req
     _write_bytes_atomic(public_key_path, public_key_bytes, mode=0o640)
 
     verify_result = await _call_license_verify()
+    actor = api_key_actor(api_key, role="admin")
+    license_id = str(req.license.get("license_id") or "")
     if _license_verify_ok(verify_result):
         await write_audit(
-            actor=api_key_actor(api_key, role="admin"),
+            actor=actor,
             action="license.install",
             resource_type="license",
-            resource_id=str(req.license.get("license_id") or ""),
+            resource_id=license_id,
             result="success",
             detail={
                 "machine_id": req.license.get("machine_id"),
@@ -451,6 +453,20 @@ async def install_license(req: LicenseInstallRequest, api_key: str = Depends(req
     _restore_or_remove(license_path, old_license, mode=0o640)
     _restore_or_remove(public_key_path, old_public_key, mode=0o640)
     rollback_verify = await _call_license_verify()
+    await write_audit(
+        actor=actor,
+        action="license.install",
+        resource_type="license",
+        resource_id=license_id,
+        result="failure",
+        error_msg="license_verify_failed_after_install",
+        detail={
+            "machine_id": req.license.get("machine_id"),
+            "expires_at": req.license.get("expires_at"),
+            "verify": verify_result,
+            "rollback_verify": rollback_verify,
+        },
+    )
     raise HTTPException(
         status_code=409,
         detail={
