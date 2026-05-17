@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     
     # OTA Agent（执行面，建议仅由 edge-api 代理调用）
     OTA_AGENT_API_BASE: str = "http://edge-ota-agent:8090"
+
+    # Cloud sync outbox：edge 本地 audit 等事件先写 cloud_sync_outbox，再后台推送 cloud-ops。
+    CLOUD_SYNC_OUTBOX_ENABLED: bool = True
+    CLOUD_SYNC_OUTBOX_INTERVAL_SEC: float = 5.0
+    CLOUD_SYNC_OUTBOX_BATCH_SIZE: int = 50
+    CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS: int = 10
+    CLOUD_SYNC_OUTBOX_AUDIT_PATH: str = "/api/v1/audit/from-edge"
     
     model_config = SettingsConfigDict(
         env_file=".env",

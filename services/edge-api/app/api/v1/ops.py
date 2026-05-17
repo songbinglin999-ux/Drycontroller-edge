@@ -34,6 +34,7 @@ from app.core.config import settings
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
+from app.services.audit import api_key_actor, write_audit
 from common.license_verifier import load_public_key, verify_signature
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
@@ -402,7 +403,7 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
 
 
 @router.post("/license/install")
-async def install_license(req: LicenseInstallRequest, _: str = Depends(require_admin_api_key)):
+async def install_license(req: LicenseInstallRequest, api_key: str = Depends(require_admin_api_key)):
     """
     安装云端签发的 License。
 
@@ -427,6 +428,18 @@ async def install_license(req: LicenseInstallRequest, _: str = Depends(require_a
 
     verify_result = await _call_license_verify()
     if _license_verify_ok(verify_result):
+        await write_audit(
+            actor=api_key_actor(api_key, role="admin"),
+            action="license.install",
+            resource_type="license",
+            resource_id=str(req.license.get("license_id") or ""),
+            result="success",
+            detail={
+                "machine_id": req.license.get("machine_id"),
+                "expires_at": req.license.get("expires_at"),
+                "verify": verify_result,
+            },
+        )
         return {
             "success": True,
             "license_path": str(license_path),

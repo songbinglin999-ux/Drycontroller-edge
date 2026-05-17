@@ -8,6 +8,11 @@
 > 7 张 ORM 表已就位（详见 `app/models/__init__.py`）：
 > alarm_events / operation_audit_logs / control_command_history / ota_operations /
 > preflight_runs / config_versions / cloud_sync_outbox
+>
+> 当前接入状态：
+> - `cloud_sync_outbox`：**active**（audit 事件写入 outbox，并由 edge-api 后台 drain task 推送 cloud-ops）
+> - `alarm_events` / `operation_audit_logs` / `control_command_history` / `ota_operations` /
+>   `preflight_runs` / `config_versions`：schema-only（业务写入仍按后续任务逐步接入）
 
 ---
 
