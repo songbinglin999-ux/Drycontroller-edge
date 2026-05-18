@@ -17,6 +17,7 @@ set -euo pipefail
 LOG_FILE="/var/log/drycontroller-bootstrap.log"
 STATE_DIR="/var/lib/drycontroller"
 SENTINEL="${STATE_DIR}/.bootstrapped"
+ALLOCATION_CACHE_FILE="${STATE_DIR}/allocation-response.json"
 ASSET_DIR="/etc/drycontroller"
 KEYS_DIR="${ASSET_DIR}/keys"
 LICENSE_DIR="${ASSET_DIR}/license"
@@ -126,7 +127,8 @@ INSTALLER_TOKEN="$(pyget installer_token || true)"
 
 TS_LOGIN_SERVER="$(pyget ts_login_server || true)"
 TS_AUTHKEY="$(pyget ts_authkey || true)"
-TS_HOSTNAME="${NODE_NAME:-$(hostname)}"
+TS_HOSTNAME="$(pyget ts_hostname || true)"
+TS_HOSTNAME="${TS_HOSTNAME:-${NODE_NAME:-$(hostname)}}"
 
 HARBOR_HOST="$(pyget harbor_host || true)"
 HARBOR_ROBOT_USER="$(pyget harbor_robot_user || true)"
@@ -137,118 +139,6 @@ if [ -z "${CLOUD_OPS_BASE_URL:-}" ]; then
   exit 2
 fi
 
-ALLOCATION_RESP_FILE=""
-if [ -n "${BATCH_ID:-}" ] || [ -n "${INSTALLER_TOKEN:-}" ]; then
-  if [ -z "${BATCH_ID:-}" ] || [ -z "${INSTALLER_TOKEN:-}" ]; then
-    log "batch_id and installer_token must be provided together"
-    exit 2
-  fi
-
-  ALLOCATE_PAYLOAD="$(PROV_JSON="$PROV_JSON" MACHINE_ID="$MACHINE_ID" python3 - <<'PY'
-import json
-import os
-
-obj = json.load(open(os.environ["PROV_JSON"], "r", encoding="utf-8"))
-payload = {
-  "batch_id": obj.get("batch_id", ""),
-  "installer_token": obj.get("installer_token", ""),
-  "machine_id": os.environ.get("MACHINE_ID", ""),
-}
-for key in (
-  "tenant_id",
-  "line_id",
-  "ts_hostname",
-  "ts_login_server",
-  "ts_authkey",
-  "harbor_host",
-  "harbor_robot_user",
-  "harbor_robot_token",
-  "meta",
-):
-  value = obj.get(key)
-  if value:
-    payload[key] = value
-print(json.dumps(payload, ensure_ascii=False))
-PY
-)"
-  log "allocating device identity from cloud-ops batch ${BATCH_ID}..."
-  ALLOCATION_RESP_FILE="$(secret_mktemp)"
-  if curl -fsS "${CLOUD_OPS_BASE_URL%/}/api/v1/provisioning/allocate" \
-    -H "Content-Type: application/json" \
-    -d "$ALLOCATE_PAYLOAD" \
-    -o "$ALLOCATION_RESP_FILE" >> "$LOG_FILE" 2>&1; then
-    log "cloud allocation ok"
-  else
-    log "cloud allocation failed; bootstrap will not be marked complete"
-    exit 5
-  fi
-
-  eval "$(python3 - "$ALLOCATION_RESP_FILE" <<'PY'
-import json
-import shlex
-import sys
-
-resp = json.load(open(sys.argv[1], "r", encoding="utf-8"))
-mapping = {
-  "DEVICE_ID": resp.get("device_id"),
-  "TENANT_ID": resp.get("tenant_id"),
-  "LINE_ID": resp.get("line_id"),
-  "NODE_NAME": resp.get("node_name"),
-  "TS_HOSTNAME": resp.get("ts_hostname") or resp.get("node_name"),
-  "ENROLL_TOKEN": resp.get("enroll_token"),
-  "TS_LOGIN_SERVER": resp.get("ts_login_server"),
-  "TS_AUTHKEY": resp.get("ts_authkey"),
-  "HARBOR_HOST": resp.get("harbor_host"),
-  "HARBOR_ROBOT_USER": resp.get("harbor_robot_user"),
-  "HARBOR_ROBOT_TOKEN": resp.get("harbor_robot_token"),
-  "ADMIN_API_KEYS": resp.get("admin_api_key"),
-  "CONTROL_API_KEYS": resp.get("control_api_key"),
-}
-for key, value in mapping.items():
-  if value is not None:
-    print(f"{key}={shlex.quote(str(value))}")
-PY
-)"
-fi
-
-if [ -z "${ENROLL_TOKEN:-}" ]; then
-  log "missing enroll_token in provisioning.json or cloud allocation response"
-  exit 2
-fi
-
-if [ -z "${DEVICE_ID:-}" ] || [ -z "${NODE_NAME:-}" ]; then
-  log "missing device_id or node_name in provisioning.json or cloud allocation response"
-  exit 2
-fi
-
-if [ -z "${TS_LOGIN_SERVER:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
-  log "missing ts_login_server or ts_authkey in provisioning.json or cloud allocation response"
-  exit 2
-fi
-
-if [ -z "${HARBOR_HOST:-}" ] || [ -z "${HARBOR_ROBOT_USER:-}" ] || [ -z "${HARBOR_ROBOT_TOKEN:-}" ]; then
-  log "missing harbor credentials in provisioning.json or cloud allocation response"
-  exit 2
-fi
-
-CLOUD_OPS_RUNTIME_BASE_URL="${CLOUD_OPS_TAILNET_BASE_URL:-$CLOUD_OPS_BASE_URL}"
-
-# 1) 写入运维资产：cosign.pub
-install -m 0644 "$COSIGN_PUB" "${KEYS_DIR}/cosign.pub"
-log "installed cosign pubkey -> ${KEYS_DIR}/cosign.pub"
-
-# 2) 基础命令检查 + docker login（Harbor 是公网入口，与 tailnet 无关，前置以早 fail）
-if ! command -v docker >/dev/null 2>&1; then
-  log "docker not found"
-  exit 3
-fi
-
-log "docker login to ${HARBOR_HOST} ..."
-echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_HOST}" -u "${HARBOR_ROBOT_USER}" --password-stdin \
-  && log "docker login ok" \
-  || { log "docker login failed"; exit 3; }
-
-# 3) 写入 drycontroller-edge .env（若不存在则生成；若存在则只补齐关键字段）
 EDGE_ROOT="/opt/Drycontroller-edge"
 if [ -d "/opt/drycontroller-edge" ]; then
   EDGE_ROOT="/opt/drycontroller-edge"
@@ -307,6 +197,189 @@ tmp.replace(path)
 PY
 }
 
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    log "docker compose v2 plugin is required"
+    exit 4
+  fi
+}
+
+CLOUD_OPS_ALLOCATE_BASE_URL="$CLOUD_OPS_BASE_URL"
+if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
+  if [ -z "${TS_LOGIN_SERVER:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
+    log "cloud_ops_tailnet_base_url requires ts_login_server and ts_authkey in provisioning.json before allocation"
+    exit 2
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    log "docker not found"
+    exit 3
+  fi
+  set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
+  set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"
+  set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
+  set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
+  cd "$EDGE_ROOT"
+  log "starting tailnet before cloud allocation..."
+  compose --profile remote-debug up -d tailscale
+  TAILNET_READY=0
+  TAILNET_RETRIES="${BOOTSTRAP_TAILNET_RETRIES:-60}"
+  TAILNET_SLEEP_SEC="${BOOTSTRAP_TAILNET_SLEEP_SEC:-2}"
+  for attempt in $(seq 1 "$TAILNET_RETRIES"); do
+    if docker exec edge-tailscale tailscale ip -4 >/dev/null 2>&1 \
+       && docker exec edge-tailscale wget -q -T 5 -O /dev/null "${CLOUD_OPS_TAILNET_BASE_URL%/}/health" >/dev/null 2>&1; then
+      TAILNET_READY=1
+      break
+    fi
+    log "tailnet not ready before allocation (attempt ${attempt}/${TAILNET_RETRIES})"
+    sleep "$TAILNET_SLEEP_SEC"
+  done
+  if [ "$TAILNET_READY" = "1" ]; then
+    CLOUD_OPS_ALLOCATE_BASE_URL="$CLOUD_OPS_TAILNET_BASE_URL"
+    log "tailnet ready before allocation; allocating through ${CLOUD_OPS_ALLOCATE_BASE_URL}"
+  else
+    log "tailnet did not become ready before allocation; bootstrap will not fall back to public cloud url"
+    exit 5
+  fi
+fi
+
+ALLOCATION_RESP_FILE=""
+if [ -n "${BATCH_ID:-}" ] || [ -n "${INSTALLER_TOKEN:-}" ]; then
+  if [ -z "${BATCH_ID:-}" ] || [ -z "${INSTALLER_TOKEN:-}" ]; then
+    log "batch_id and installer_token must be provided together"
+    exit 2
+  fi
+
+  ALLOCATE_PAYLOAD="$(PROV_JSON="$PROV_JSON" MACHINE_ID="$MACHINE_ID" python3 - <<'PY'
+import json
+import os
+
+obj = json.load(open(os.environ["PROV_JSON"], "r", encoding="utf-8"))
+payload = {
+  "batch_id": obj.get("batch_id", ""),
+  "installer_token": obj.get("installer_token", ""),
+  "machine_id": os.environ.get("MACHINE_ID", ""),
+}
+for key in (
+  "tenant_id",
+  "line_id",
+  "ts_hostname",
+  "ts_login_server",
+  "ts_authkey",
+  "harbor_host",
+  "harbor_robot_user",
+  "harbor_robot_token",
+  "meta",
+):
+  value = obj.get(key)
+  if value:
+    payload[key] = value
+print(json.dumps(payload, ensure_ascii=False))
+PY
+)"
+  ALLOCATION_RESP_FILE="$(secret_mktemp)"
+  if [ -f "$ALLOCATION_CACHE_FILE" ]; then
+    if BATCH_ID="$BATCH_ID" python3 - "$ALLOCATION_CACHE_FILE" <<'PY'
+import json
+import os
+import sys
+
+try:
+    resp = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if resp.get("batch_id") == os.environ.get("BATCH_ID") else 1)
+PY
+    then
+      log "using cached cloud allocation response: $ALLOCATION_CACHE_FILE"
+      cp "$ALLOCATION_CACHE_FILE" "$ALLOCATION_RESP_FILE"
+    else
+      log "cached allocation response does not match current batch; ignoring cache"
+      rm -f "$ALLOCATION_CACHE_FILE"
+    fi
+  fi
+  if [ ! -s "$ALLOCATION_RESP_FILE" ]; then
+    log "allocating device identity from cloud-ops batch ${BATCH_ID}..."
+    if curl -fsS "${CLOUD_OPS_ALLOCATE_BASE_URL%/}/api/v1/provisioning/allocate" \
+      -H "Content-Type: application/json" \
+      -d "$ALLOCATE_PAYLOAD" \
+      -o "$ALLOCATION_RESP_FILE" >> "$LOG_FILE" 2>&1; then
+      install -m 0600 "$ALLOCATION_RESP_FILE" "$ALLOCATION_CACHE_FILE"
+      log "cloud allocation ok; cached response -> $ALLOCATION_CACHE_FILE"
+    else
+      log "cloud allocation failed; bootstrap will not be marked complete"
+      exit 5
+    fi
+  fi
+
+  eval "$(python3 - "$ALLOCATION_RESP_FILE" <<'PY'
+import json
+import shlex
+import sys
+
+resp = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+mapping = {
+  "DEVICE_ID": resp.get("device_id"),
+  "TENANT_ID": resp.get("tenant_id"),
+  "LINE_ID": resp.get("line_id"),
+  "NODE_NAME": resp.get("node_name"),
+  "TS_HOSTNAME": resp.get("ts_hostname") or resp.get("node_name"),
+  "ENROLL_TOKEN": resp.get("enroll_token"),
+  "TS_LOGIN_SERVER": resp.get("ts_login_server"),
+  "TS_AUTHKEY": resp.get("ts_authkey"),
+  "HARBOR_HOST": resp.get("harbor_host"),
+  "HARBOR_ROBOT_USER": resp.get("harbor_robot_user"),
+  "HARBOR_ROBOT_TOKEN": resp.get("harbor_robot_token"),
+  "ADMIN_API_KEYS": resp.get("admin_api_key"),
+  "CONTROL_API_KEYS": resp.get("control_api_key"),
+  "NODE_ENROLL_TOKEN": resp.get("node_enroll_token"),
+}
+for key, value in mapping.items():
+  if value is not None:
+    print(f"{key}={shlex.quote(str(value))}")
+PY
+)"
+fi
+
+if [ -z "${ENROLL_TOKEN:-}" ]; then
+  log "missing enroll_token in provisioning.json or cloud allocation response"
+  exit 2
+fi
+NODE_ENROLL_TOKEN="${NODE_ENROLL_TOKEN:-$ENROLL_TOKEN}"
+
+if [ -z "${DEVICE_ID:-}" ] || [ -z "${NODE_NAME:-}" ]; then
+  log "missing device_id or node_name in provisioning.json or cloud allocation response"
+  exit 2
+fi
+
+if [ -z "${TS_LOGIN_SERVER:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
+  log "missing ts_login_server or ts_authkey in provisioning.json or cloud allocation response"
+  exit 2
+fi
+
+if [ -z "${HARBOR_HOST:-}" ] || [ -z "${HARBOR_ROBOT_USER:-}" ] || [ -z "${HARBOR_ROBOT_TOKEN:-}" ]; then
+  log "missing harbor credentials in provisioning.json or cloud allocation response"
+  exit 2
+fi
+
+CLOUD_OPS_RUNTIME_BASE_URL="${CLOUD_OPS_TAILNET_BASE_URL:-$CLOUD_OPS_BASE_URL}"
+
+# 1) 写入运维资产：cosign.pub
+install -m 0644 "$COSIGN_PUB" "${KEYS_DIR}/cosign.pub"
+log "installed cosign pubkey -> ${KEYS_DIR}/cosign.pub"
+
+# 2) 基础命令检查 + docker login（Harbor 是公网入口，与 tailnet 无关，前置以早 fail）
+if ! command -v docker >/dev/null 2>&1; then
+  log "docker not found"
+  exit 3
+fi
+
+log "docker login to ${HARBOR_HOST} ..."
+echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_HOST}" -u "${HARBOR_ROBOT_USER}" --password-stdin \
+  && log "docker login ok" \
+  || { log "docker login failed"; exit 3; }
+
 set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
 set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"
 set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
@@ -315,7 +388,7 @@ set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
 # 默认 compose 仍保持 127.0.0.1，避免未入网机器在现场 LAN 暴露管理口。
 set_kv "EDGE_API_BIND_ADDR" "0.0.0.0"
 set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_RUNTIME_BASE_URL}"
-set_kv "CLOUD_OPS_ENROLL_TOKEN" "${ENROLL_TOKEN}"
+set_kv "CLOUD_OPS_ENROLL_TOKEN" "${NODE_ENROLL_TOKEN}"
 set_kv "LICENSE_FILE_PATH" "/etc/drycontroller/license/license.json"
 set_kv "LICENSE_PUBLIC_KEY_PATH" "/etc/drycontroller/keys/license.pub"
 if [ -n "${DEVICE_ID:-}" ]; then set_kv "DEVICE_ID" "${DEVICE_ID}"; fi
@@ -346,15 +419,6 @@ log "updated edge .env at ${ENV_FILE}"
 
 # 4) 启动 tailnet。Headscale-first：后续 enroll/license/OTA 使用 tailnet Cloud Ops URL。
 cd "$EDGE_ROOT"
-
-compose() {
-  if docker compose version >/dev/null 2>&1; then
-    docker compose "$@"
-  else
-    log "docker compose v2 plugin is required"
-    exit 4
-  fi
-}
 
 log "starting tailnet first (tailscale only)..."
 compose --profile remote-debug up -d tailscale

@@ -21,14 +21,14 @@ def test_bootstrap_starts_tailnet_before_enroll_license_and_core_stack():
     text = _script_text()
 
     docker_login = text.index('log "docker login to ${HARBOR_HOST} ..."')
-    tailnet_start = text.index("compose --profile remote-debug up -d tailscale")
+    tailnet_start = text.index('log "starting tailnet before cloud allocation..."')
+    allocation = text.index('log "allocating device identity from cloud-ops batch ${BATCH_ID}..."')
     core_start = text.index('log "starting edge core stack..."')
     enroll_start = text.index("compose --profile remote-debug up -d edge-enroll")
     license_bind = text.index('log "binding license on cloud-ops..."')
 
-    # Harbor 走公网，docker login 不依赖 tailnet，前置以早 fail；
-    # 但 enroll / core / license bind 必须在 tailnet 就绪之后。
-    assert docker_login < tailnet_start < core_start < enroll_start < license_bind
+    # tailnet URL 模式必须先入网，再通过 tailnet allocate；Harbor login 仍在 core stack 前 fail-fast。
+    assert tailnet_start < allocation < docker_login < core_start < enroll_start < license_bind
 
 
 def test_tailnet_mode_rebinds_license_instead_of_using_public_allocation_license():
@@ -46,3 +46,20 @@ def test_tailnet_readiness_probes_cloud_ops_health_not_just_local_ip():
 
     assert 'docker exec edge-tailscale tailscale ip -4' in text
     assert 'docker exec edge-tailscale wget -q -T 5 -O /dev/null "${CLOUD_OPS_RUNTIME_BASE_URL%/}/health"' in text
+
+
+def test_background_enroll_uses_node_token_not_license_bind_token():
+    text = _script_text()
+
+    assert '"NODE_ENROLL_TOKEN": resp.get("node_enroll_token")' in text
+    assert 'NODE_ENROLL_TOKEN="${NODE_ENROLL_TOKEN:-$ENROLL_TOKEN}"' in text
+    assert 'set_kv "CLOUD_OPS_ENROLL_TOKEN" "${NODE_ENROLL_TOKEN}"' in text
+    assert '-H "X-Enroll-Token: ${ENROLL_TOKEN}"' in text
+
+
+def test_allocation_response_is_cached_for_bootstrap_retry():
+    text = _script_text()
+
+    assert 'ALLOCATION_CACHE_FILE="${STATE_DIR}/allocation-response.json"' in text
+    assert 'using cached cloud allocation response' in text
+    assert 'install -m 0600 "$ALLOCATION_RESP_FILE" "$ALLOCATION_CACHE_FILE"' in text
