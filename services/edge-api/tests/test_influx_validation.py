@@ -44,6 +44,69 @@ def test_validate_aggregation_rejects_unknown():
         InfluxQueryService._validate_aggregation("median")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "DRYER1.OUT.TEMP",
+        "softsensor_training_data",
+        "industrial-data",
+        "edge-api:metrics",
+        "L1",
+        "degraded",
+    ],
+)
+def test_validate_identifier_ok(value: str):
+    assert InfluxQueryService._validate_identifier(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "DRYER1.OUT.TEMP\"",
+        "temp) |> drop()",
+        "system\nhealth",
+        "field value",
+        "../../../secret",
+    ],
+)
+def test_validate_identifier_bad(value: str):
+    with pytest.raises(ValueError):
+        InfluxQueryService._validate_identifier(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["-7d", "-12h", "now()", "2026-05-19T01:02:03Z", "2026-05-19T01:02:03.123Z"],
+)
+def test_validate_range_bound_ok(value: str):
+    assert InfluxQueryService._validate_range_bound(value, "start") == value
+
+
+@pytest.mark.parametrize("value", ["7d", "-7months", 'now() |> drop()', "2026-05-19", ""])
+def test_validate_range_bound_bad(value: str):
+    with pytest.raises(ValueError):
+        InfluxQueryService._validate_range_bound(value, "start")
+
+
+@pytest.mark.asyncio
+async def test_public_query_builders_reject_injected_user_values():
+    svc = InfluxQueryService.__new__(InfluxQueryService)
+    svc.bucket = "industrial-data"
+    svc.measurement = "industrial_data"
+
+    with pytest.raises(ValueError):
+        await svc.latest_points(['A.TAG") |> drop()'])
+    with pytest.raises(ValueError):
+        await svc.history_points('A.TAG") |> drop()')
+    with pytest.raises(ValueError):
+        await svc.training_samples("softsensor_training_data", '-7d) |> drop()')
+    with pytest.raises(ValueError):
+        await svc.system_metric_trend("system_metrics", 'cpu") |> drop()')
+    with pytest.raises(ValueError):
+        await svc.active_service_alarms("system_health", severity='down") |> drop()')
+
+
 def test_parse_flux_tables_filters_internal_fields_and_adds_time():
     # 构造最小的 flux 返回结构：table.records[].values
     class DummyRecord:
@@ -85,5 +148,3 @@ def test_parse_flux_tables_filters_internal_fields_and_adds_time():
     assert "_start" not in row
     assert "_stop" not in row
     assert "_value" not in row
-
-

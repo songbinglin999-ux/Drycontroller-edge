@@ -30,6 +30,8 @@ settings.TAGS_CONFIG = str(ROOT / "configs" / "tags.yaml")
 
 class DummyAISvc:
     async def get_lab_samples(self, **kwargs):
+        if kwargs.get("start") == "bad":
+            raise ValueError("Invalid start range format.")
         return {
             "success": True,
             "count": 1,
@@ -57,9 +59,13 @@ class DummyControlSvc:
 
 class DummyAlarmSvc:
     async def get_active_alarms(self, **kwargs):
+        if kwargs.get("severity") == "bad":
+            raise ValueError("Invalid severity format.")
         return {"success": True, "count": 1, "data": [{"name": "edge-api", "status": "down"}]}
 
     async def get_alarm_history(self, **kwargs):
+        if kwargs.get("severity") == "bad":
+            raise ValueError("Invalid severity format.")
         return {"success": True, "count": 0, "data": []}
 
 
@@ -82,6 +88,11 @@ def test_ai_lab_samples_endpoint():
     body = resp.json()
     assert body["count"] == 1
     assert body["data"][0]["line_id"] == "L1"
+
+
+def test_ai_lab_samples_validation_error_returns_400():
+    resp = client.get("/api/v1/ai/lab/samples?start=bad")
+    assert resp.status_code == 400
 
 
 def test_system_metric_trend_endpoint():
@@ -133,3 +144,7 @@ def test_alarm_active_endpoint():
     assert resp.status_code == 200
     assert resp.json()["count"] == 1
 
+
+def test_alarm_validation_error_returns_400():
+    resp = client.get("/api/v1/alarms/active?severity=bad")
+    assert resp.status_code == 400

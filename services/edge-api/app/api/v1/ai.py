@@ -68,13 +68,16 @@ async def get_lab_samples(
     """
     查询 softsensor 训练数据中的样本（便于导出训练集或对齐 LAB）
     """
-    return await service.get_lab_samples(
-        start=start,
-        stop=stop,
-        line=line,
-        require_lab=require_lab,
-        limit=limit,
-    )
+    try:
+        return await service.get_lab_samples(
+            start=start,
+            stop=stop,
+            line=line,
+            require_lab=require_lab,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.get("/models")
@@ -89,4 +92,3 @@ async def get_models(service: AISoftsensorService = Depends(get_ai_softsensor_se
             detail="AI config not available",
         )
     return payload
-

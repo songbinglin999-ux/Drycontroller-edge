@@ -22,7 +22,10 @@ async def get_active_alarms(
     """
     获取活动报警（基于 system_health measurement）
     """
-    return await service.get_active_alarms(period=period, severity=severity)
+    try:
+        return await service.get_active_alarms(period=period, severity=severity)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post("/{alarm_id}/acknowledge")
@@ -46,5 +49,7 @@ async def get_alarm_history(
     """
     获取历史报警（只读）
     """
-    return await service.get_alarm_history(period=period, severity=severity)
-
+    try:
+        return await service.get_alarm_history(period=period, severity=severity)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

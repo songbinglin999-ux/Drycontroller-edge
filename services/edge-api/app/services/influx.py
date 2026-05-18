@@ -26,6 +26,12 @@ from app.core.config import settings
 
 # 时间窗口格式校验正则：支持 s(秒)、m(分)、h(时)、d(天)、w(周)
 DURATION_PATTERN = re.compile(r"^\d+(s|m|h|d|w)$")
+# Flux 字符串插值白名单：覆盖现有点位/measurement/field/line/status 命名。
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
+# Flux range 边界：支持相对时间（-7d）、now() 和 UTC RFC3339 时间。
+RANGE_BOUND_PATTERN = re.compile(
+    r"^(now\(\)|-\d+(s|m|h|d|w)|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)$"
+)
 # 支持的聚合函数集合
 VALID_AGGREGATIONS = {"mean", "max", "min", "sum", "last", "first"}
 
@@ -51,9 +57,12 @@ class InfluxQueryService:
             timeout=60_000,  # 查询超时时间：60秒
         )
         self.query_api = self.client.query_api()
-        self.bucket = settings.INFLUXDB_BUCKET
+        self.bucket = self._validate_identifier(settings.INFLUXDB_BUCKET, "bucket")
         # 默认测量表名，用于存储工业采集数据
-        self.measurement = os.getenv("INFLUXDB_MEASUREMENT", "industrial_data")
+        self.measurement = self._validate_identifier(
+            os.getenv("INFLUXDB_MEASUREMENT", "industrial_data"),
+            "measurement",
+        )
         # 避免解释器退出阶段 Influx SDK __del__ 抛出噪音异常：显式关闭 client
         atexit.register(self.close)
 
@@ -94,6 +103,7 @@ class InfluxQueryService:
         if not tags:
             return []
         lookback = self._validate_duration(lookback)
+        tags = [self._validate_identifier(tag, "tag") for tag in tags]
         flux = self._build_latest_flux(tags, lookback)
         return await asyncio.to_thread(self._query_and_parse_latest, flux)
 
@@ -119,6 +129,7 @@ class InfluxQueryService:
         period = self._validate_duration(period)
         window = self._validate_duration(window)
         aggregation = self._validate_aggregation(aggregation)
+        tag = self._validate_identifier(tag, "tag")
         flux = self._build_history_flux(tag, period, window, aggregation)
         return await asyncio.to_thread(self._query_and_parse_history, flux)
 
@@ -158,6 +169,11 @@ class InfluxQueryService:
         Returns:
             训练样本字典列表
         """
+        measurement = self._validate_identifier(measurement, "measurement")
+        start = self._validate_range_bound(start, "start")
+        stop = self._validate_range_bound(stop, "stop")
+        if line is not None:
+            line = self._validate_identifier(line, "line")
         flux = self._build_training_flux(measurement, start, stop, line, require_lab)
         tables = await self.query_flux(flux)
         return self._tables_to_dicts(tables)
@@ -187,6 +203,10 @@ class InfluxQueryService:
         """
         period = self._validate_duration(period)
         window = self._validate_duration(window)
+        measurement = self._validate_identifier(measurement, "measurement")
+        field = self._validate_identifier(field, "field")
+        if line is not None:
+            line = self._validate_identifier(line, "line")
         flux = self._build_system_metric_flux(measurement, field, period, window, line)
         tables = await self.query_flux(flux)
         return self._parse_timeseries_tables(tables)
@@ -210,6 +230,10 @@ class InfluxQueryService:
         Returns:
             告警记录列表
         """
+        period = self._validate_duration(period)
+        measurement = self._validate_identifier(measurement, "measurement")
+        if severity is not None:
+            severity = self._validate_identifier(severity, "severity")
         flux = self._build_service_alarm_flux(
             measurement=measurement,
             period=period,
@@ -445,9 +469,26 @@ from(bucket: "{self.bucket}")
             raise ValueError(f"Unsupported aggregation '{value}'.")
         return value_lower
 
+    @staticmethod
+    def _validate_identifier(value: str, label: str = "identifier") -> str:
+        """
+        校验会进入 Flux 字符串字面量的名称类参数。
+        """
+        if not value or not IDENTIFIER_PATTERN.match(value):
+            raise ValueError(f"Invalid {label} format.")
+        return value
+
+    @staticmethod
+    def _validate_range_bound(value: str, label: str) -> str:
+        """
+        校验 Flux range(start/stop) 的未加引号表达式。
+        """
+        if not RANGE_BOUND_PATTERN.match(value):
+            raise ValueError(f"Invalid {label} range format.")
+        return value
+
 
 @lru_cache(maxsize=1)
 def get_influx_service() -> InfluxQueryService:
     """获取 InfluxDB 查询服务单例"""
     return InfluxQueryService()
-
