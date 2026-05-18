@@ -214,7 +214,7 @@ class CloudSyncOutbox(Base):
     __tablename__ = "cloud_sync_outbox"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    kind: Mapped[str] = mapped_column(String(64), nullable=False)  # edge-status / audit / alarm / control-ack / ...
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)  # edge-status / audit / alarm / control_command / ...
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, default=dict)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
