@@ -1,4 +1,4 @@
-# Edge OS 一键装机盘
+# Edge OS Installer USB
 
 ## 目标
 
@@ -8,10 +8,10 @@
 
 | U 盘 | 用途 | 现场人员是否填写参数 |
 |---|---|---|
-| 系统安装 U 盘 | 把空白 IPC 安装成标准 DryController Edge Host。 | 否 |
-| Provisioning U 盘 | 首次开机激活设备身份、Headscale、Harbor、license。 | 否 |
+| **OS Installer USB（系统安装 U 盘）** | 把空白 IPC 安装成标准 DryController Edge Host。 | 否 |
+| **Provisioning USB（部署/激活 U 盘）** | 首次开机激活设备身份、Headscale、Harbor、license。 | 否 |
 
-系统安装 U 盘只负责基础 OS。设备号、节点名、API key、license、tailnet 和 registry 凭据都由 Provisioning U 盘和 cloud-ops 分配。
+OS Installer USB 只负责基础 OS。设备号、节点名、API key、license、tailnet 和 registry 凭据都由 Provisioning USB 和 cloud-ops 分配。
 
 ## 产物位置
 
@@ -137,24 +137,24 @@ drycontroller-edge-post-install.service
 - 创建 `/opt/Drycontroller-edge/.env`
 - 安装并启用 `drycontroller-bootstrap.service`
 - 写入 `/var/lib/drycontroller/host-install.json`
-- 如果 Provisioning U 盘已经插入，会立即启动 `drycontroller-bootstrap.service`
+- 如果 Provisioning USB 已经插入，会立即启动 `drycontroller-bootstrap.service`
 - host install 成功后禁用自身，避免后续重复执行
 
 ## 现场人员流程
 
 ### 阶段 1：安装系统
 
-1. 插入“系统安装 U 盘”。
+1. 插入 OS Installer USB。
 2. 开机，选择从 U 盘启动。
 3. 选择 DryController Edge 自动安装项。
 4. 等机器自动安装并关机。
-5. 拔出系统安装 U 盘。
+5. 拔出 OS Installer USB。
 
 成功标准：机器自动关机。现场人员不需要登录系统。
 
 ### 阶段 2：激活设备
 
-1. 插入“Provisioning U 盘”。
+1. 插入 Provisioning USB。
 2. 开机。
 3. 首次进入系统后，机器会先自动连接 WiFi，再完成 Docker / edge host 安装，然后自动启动 bootstrap。
 4. 等待 edge 自动 bootstrap。
@@ -186,9 +186,9 @@ drycontroller-edge-post-install.service
 - apt 包安装依赖网络或可用 Ubuntu mirror；全离线 apt mirror 尚未打包。
 - 第一次真实 Linux edge e2e 前，不建议把该安装盘交给现场批量使用。
 
-## 与 Provisioning U 盘的关系
+## 与 Provisioning USB 的关系
 
-系统安装 U 盘不包含业务身份和长期凭据。Provisioning U 盘仍按云端分配模式制作，只保留：
+OS Installer USB 不包含业务身份和长期凭据。Provisioning USB 仍按云端分配模式制作，只保留：
 
 ```json
 {
