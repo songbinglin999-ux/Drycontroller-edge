@@ -21,11 +21,19 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
         sys.path.append(entry)
 
 
+async def _noop_write_control_history(*_args, **_kwargs):
+    return None
+
+
 @pytest.mark.asyncio
 async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
     from app.services.control_command import ControlCommandService, _hmac_sig
 
     monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret-1")
+    monkeypatch.setattr(
+        "app.services.control_command.write_control_history",
+        _noop_write_control_history,
+    )
 
     # fake mqtt manager
     published = {}
@@ -80,6 +88,10 @@ async def test_control_send_set_timeout(monkeypatch):
     from app.services.control_command import ControlCommandService
 
     monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret-1")
+    monkeypatch.setattr(
+        "app.services.control_command.write_control_history",
+        _noop_write_control_history,
+    )
 
     class DummyMQTT:
         connected = True

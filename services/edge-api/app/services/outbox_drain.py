@@ -134,7 +134,11 @@ class CloudSyncOutboxDrainer:
         await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _PG_ADVISORY_LOCK_KEY})
 
     async def _push(self, kind: str, rows: list[CloudSyncOutbox]) -> tuple[bool, str]:
-        if kind != "audit":
+        if kind == "audit":
+            path = settings.CLOUD_SYNC_OUTBOX_AUDIT_PATH
+        elif kind == "control_command":
+            path = settings.CLOUD_SYNC_OUTBOX_CONTROL_PATH
+        else:
             return False, f"unsupported_outbox_kind:{kind}"
 
         base_url = os.getenv("CLOUD_OPS_BASE_URL", "").strip()
@@ -143,7 +147,7 @@ class CloudSyncOutboxDrainer:
         if not base_url or not enroll_token:
             return False, "missing_cloud_ops_config"
 
-        url = f"{base_url.rstrip('/')}{settings.CLOUD_SYNC_OUTBOX_AUDIT_PATH}"
+        url = f"{base_url.rstrip('/')}{path}"
         body: dict[str, Any] = {"items": [row.payload for row in rows]}
         try:
             async with httpx.AsyncClient(timeout=10) as client:

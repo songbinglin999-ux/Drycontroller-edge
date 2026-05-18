@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import hmac
 import json
@@ -24,6 +25,7 @@ from typing import Any, Dict, Optional, Tuple
 import structlog
 
 from app.core.mqtt_client import mqtt_manager
+from app.services.control_history import write_control_history
 from app.utils.tag_loader import get_tag_config
 
 logger = structlog.get_logger(__name__)
@@ -192,69 +194,108 @@ class ControlCommandService:
         """
         下发单条控制指令。默认等待 ACK（闭环）。
         """
-        if not mqtt_manager.connected:
-            return {"success": False, "error": "mqtt_not_connected"}
-
-        ok, reason = self._validate_tag(tag, value)
-        if not ok:
-            return {"success": False, "error": reason}
-
-        if not self._signature_secret:
-            # 与 edge-daq 默认要求签名对齐：没有密钥就不要发（避免“发了必失败”）
-            return {"success": False, "error": "control_signature_secret_missing"}
-
-        self._ensure_ack_subscription()
-        self._loop = self._loop or asyncio.get_running_loop()
-
-        msg_id = msg_id or _gen_id()
-        msg_ts = _now_ts()
-        sig = _hmac_sig(self._signature_secret, msg_id, msg_ts, tag, value)
-        payload = {"id": msg_id, "ts": msg_ts, "tag": tag, "value": value, "sig": sig}
-        topic = self._topic_for_line(line)
-
-        # 注册 future（可选等待 ack）
-        fut: Optional[asyncio.Future] = None
-        if wait_ack:
-            fut = self._loop.create_future()
-            self._pending[msg_id] = fut
-
-        # QoS1 发布
-        mqtt_manager.publish(topic, payload, qos=1)
-
-        if not wait_ack:
-            return {
-                "success": True,
-                "status": "accepted",
-                "data": {"id": msg_id, "line": line, "topic": topic, "ack_topic": self._ack_topic_for_line(line)},
-                "timestamp": int(time.time()),
-            }
-
+        final_msg_id: Optional[str] = msg_id
+        ack_status: str = "error"
+        ack_at: Optional[dt.datetime] = None
+        ack_detail: Dict[str, Any] = {}
+        history_error: Optional[str] = None
         try:
-            ack: ControlAck = await asyncio.wait_for(fut, timeout=timeout_sec)  # type: ignore[arg-type]
-            return {
-                "success": True,
-                "status": "acked",
-                "data": {
-                    "id": ack.id,
-                    "tag": ack.tag,
-                    "ack_status": ack.status,
-                    "value": ack.value,
-                    "ack_ts": ack.ts,
-                    "line": line,
-                    "topic": topic,
-                },
-                "timestamp": int(time.time()),
-            }
-        except asyncio.TimeoutError:
-            return {
-                "success": False,
-                "status": "timeout",
-                "error": "ack_timeout",
-                "data": {"id": msg_id, "line": line, "topic": topic},
-                "timestamp": int(time.time()),
-            }
+            if not mqtt_manager.connected:
+                history_error = "mqtt_not_connected"
+                return {"success": False, "error": history_error}
+
+            ok, reason = self._validate_tag(tag, value)
+            if not ok:
+                history_error = reason
+                return {"success": False, "error": reason}
+
+            if not self._signature_secret:
+                # 与 edge-daq 默认要求签名对齐：没有密钥就不要发（避免“发了必失败”）
+                history_error = "control_signature_secret_missing"
+                return {"success": False, "error": history_error}
+
+            self._ensure_ack_subscription()
+            self._loop = self._loop or asyncio.get_running_loop()
+
+            final_msg_id = msg_id or _gen_id()
+            msg_ts = _now_ts()
+            sig = _hmac_sig(self._signature_secret, final_msg_id, msg_ts, tag, value)
+            payload = {"id": final_msg_id, "ts": msg_ts, "tag": tag, "value": value, "sig": sig}
+            topic = self._topic_for_line(line)
+
+            # 注册 future（可选等待 ack）
+            fut: Optional[asyncio.Future] = None
+            if wait_ack:
+                fut = self._loop.create_future()
+                self._pending[final_msg_id] = fut
+
+            # QoS1 发布
+            mqtt_manager.publish(topic, payload, qos=1)
+
+            if not wait_ack:
+                ack_status = "pending"
+                return {
+                    "success": True,
+                    "status": "accepted",
+                    "data": {"id": final_msg_id, "line": line, "topic": topic, "ack_topic": self._ack_topic_for_line(line)},
+                    "timestamp": int(time.time()),
+                }
+
+            try:
+                ack: ControlAck = await asyncio.wait_for(fut, timeout=timeout_sec)  # type: ignore[arg-type]
+                ack_status = ack.status or "unknown"
+                ack_at = dt.datetime.now(dt.timezone.utc)
+                ack_detail = {"id": ack.id, "tag": ack.tag, "value": ack.value, "ack_ts": ack.ts}
+                return {
+                    "success": True,
+                    "status": "acked",
+                    "data": {
+                        "id": ack.id,
+                        "tag": ack.tag,
+                        "ack_status": ack.status,
+                        "value": ack.value,
+                        "ack_ts": ack.ts,
+                        "line": line,
+                        "topic": topic,
+                    },
+                    "timestamp": int(time.time()),
+                }
+            except asyncio.TimeoutError:
+                ack_status = "timeout"
+                history_error = "ack_timeout"
+                return {
+                    "success": False,
+                    "status": "timeout",
+                    "error": "ack_timeout",
+                    "data": {"id": final_msg_id, "line": line, "topic": topic},
+                    "timestamp": int(time.time()),
+                }
+            finally:
+                if final_msg_id:
+                    self._pending.pop(final_msg_id, None)
         finally:
-            self._pending.pop(msg_id, None)
+            try:
+                await write_control_history(
+                    command_type="set",
+                    tag=tag,
+                    value=value,
+                    line_id=line,
+                    idempotency_key=final_msg_id,
+                    request_payload={
+                        "line": line,
+                        "tag": tag,
+                        "value": value,
+                        "wait_ack": wait_ack,
+                        "timeout_sec": timeout_sec,
+                    },
+                    ack_status=ack_status,
+                    ack_at=ack_at,
+                    ack_detail=ack_detail,
+                    error_msg=history_error,
+                )
+            except Exception:
+                # write_control_history 内部已 swallow；此处兜底防御 import 期异常等极端情况
+                pass
 
     async def send_batch(
         self,
