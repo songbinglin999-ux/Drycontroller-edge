@@ -8,6 +8,10 @@ host with Docker, the edge repository, and `drycontroller-bootstrap.service`
 enabled. Device identity and secrets are not placed in this installer profile;
 they are provided later by the **Provisioning USB**.
 
+This is destructive installation media. The autoinstall profile selects the
+largest non-installer disk, wipes existing Windows/Linux partition metadata, and
+recreates the DryController host partitions.
+
 Terminology:
 
 - **OS Installer USB**: Ubuntu autoinstall media maintained in the edge repo.
@@ -42,6 +46,24 @@ drycontroller-edge.tar.gz
 files directly at the root, or under one top-level `Drycontroller-edge/`
 directory.
 
+## macOS USB Write Note
+
+When writing the installer image with `dd` on macOS, write to the raw device
+such as `/dev/rdisk2`, not the buffered device `/dev/disk2`. A write through
+`/dev/disk2` was observed at about 148 KB/s and took about 5 hours; `/dev/rdisk2`
+is typically 10-20x faster.
+
+```bash
+diskutil list
+diskutil unmountDisk /dev/disk2
+sudo dd if=ubuntu-server.iso of=/dev/rdisk2 bs=4m status=progress
+sync
+diskutil eject /dev/disk2
+```
+
+Verify the disk number before running `dd`; the command overwrites the target
+device.
+
 ## Boot Parameters
 
 Ubuntu Server autoinstall needs the installer kernel command line to include:
@@ -53,3 +75,18 @@ autoinstall ds=nocloud;s=/cdrom/
 Most ISO remastering tools can add this to the GRUB menu entry. For a first
 factory validation, it is acceptable to edit the GRUB command line manually once
 at boot and then bake the final media after the flow is confirmed.
+
+## Storage Policy
+
+`user-data` uses explicit curtin storage actions instead of the default
+`direct` layout:
+
+- select the largest non-installer disk;
+- wipe the target disk with `superblock-recursive`;
+- create a GPT table with `bios_grub`, EFI, and ext4 root partitions;
+- mount the EFI System Partition at `/boot/efi`;
+- mount the remaining ext4 partition at `/`;
+- disable swap.
+
+For IPCs with multiple internal disks, replace the `match` rule in `user-data`
+with a serial/model/path match before factory use.

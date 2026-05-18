@@ -25,8 +25,57 @@ autoinstall:
         uri: http://archive.ubuntu.com/ubuntu
 
   storage:
-    layout:
-      name: direct
+    swap:
+      size: 0
+    config:
+      - type: disk
+        id: install-disk
+        match:
+          size: largest
+        ptable: gpt
+        wipe: superblock-recursive
+        preserve: false
+        grub_device: true
+      - type: partition
+        id: bios-grub-partition
+        device: install-disk
+        size: 1M
+        flag: bios_grub
+        wipe: superblock
+        preserve: false
+      - type: partition
+        id: efi-partition
+        device: install-disk
+        size: 1G
+        flag: boot
+        wipe: superblock
+        preserve: false
+      - type: format
+        id: efi-format
+        volume: efi-partition
+        fstype: fat32
+        label: EFI
+        preserve: false
+      - type: mount
+        id: efi-mount
+        device: efi-format
+        path: /boot/efi
+      - type: partition
+        id: root-partition
+        device: install-disk
+        size: -1
+        wipe: superblock
+        preserve: false
+      - type: format
+        id: root-format
+        volume: root-partition
+        fstype: ext4
+        label: dry-edge-root
+        preserve: false
+      - type: mount
+        id: root-mount
+        device: root-format
+        path: /
 
   packages:
     - ca-certificates
