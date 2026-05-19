@@ -2,6 +2,8 @@
 API Key 安全依赖
 """
 
+import hmac
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import APIKeyHeader
 
@@ -30,7 +32,7 @@ def _validate_key(api_key: str | None, required: str) -> str:
     else:
         allowed = admin_keys.union(settings.CONTROL_API_KEYS)
 
-    if api_key not in allowed:
+    if not any(hmac.compare_digest(api_key, k) for k in allowed):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="API key not permitted",
