@@ -118,7 +118,7 @@ app.add_middleware(
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"],
+    allow_headers=["Authorization", "Content-Type", settings.API_KEY_HEADER, "X-Request-ID"],
 )
 
 # Gzip 压缩中间件
