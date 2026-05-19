@@ -132,10 +132,10 @@ async def test_outbox_drain_pushes_control_command_to_control_path(monkeypatch):
     from app.services import outbox_drain as drain_module
     from app.services.outbox_drain import CloudSyncOutboxDrainer
 
-    drain_module.settings.CLOUD_OPS_BASE_URL = "https://cloud.example"
+    monkeypatch.setattr(drain_module.settings, "CLOUD_OPS_BASE_URL", "https://cloud.example")
     monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "tk-control")
-    drain_module.settings.CLOUD_SYNC_OUTBOX_CONTROL_PATH = "/api/v1/control/from-edge"
-    drain_module.settings.CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER = "X-Enroll-Token"
+    monkeypatch.setattr(drain_module.settings, "CLOUD_SYNC_OUTBOX_CONTROL_PATH", "/api/v1/control/from-edge")
+    monkeypatch.setattr(drain_module.settings, "CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER", "X-Enroll-Token")
 
     captured: dict = {}
 

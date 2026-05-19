@@ -178,9 +178,9 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     sentinel.write_text("ok", encoding="utf-8")
     monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(device_json))
     monkeypatch.setenv("PREFLIGHT_BOOTSTRAP_SENTINEL", str(sentinel))
-    settings.CLOUD_OPS_BASE_URL = "http://cloud"
+    monkeypatch.setattr(settings, "CLOUD_OPS_BASE_URL", "http://cloud")
     monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "token")
-    settings.TS_LOGIN_SERVER = "http://headscale"
+    monkeypatch.setattr(settings, "TS_LOGIN_SERVER", "http://headscale")
 
     async def fake_verify():
         return {"url": "mock", "status_code": 200, "body": {"valid": True}}
