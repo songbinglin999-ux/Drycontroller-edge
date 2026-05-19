@@ -141,7 +141,7 @@ class CloudSyncOutboxDrainer:
         else:
             return False, f"unsupported_outbox_kind:{kind}"
 
-        base_url = os.getenv("CLOUD_OPS_BASE_URL", "").strip()
+        base_url = (settings.CLOUD_OPS_BASE_URL or "").strip()
         enroll_token = os.getenv("CLOUD_OPS_ENROLL_TOKEN", "").strip()
         token_header = (settings.CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER or "X-Enroll-Token").strip() or "X-Enroll-Token"
         if not base_url or not enroll_token:

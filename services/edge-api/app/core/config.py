@@ -87,7 +87,12 @@ class Settings(BaseSettings):
     CLOUD_SYNC_OUTBOX_CONTROL_PATH: str = "/api/v1/control/from-edge"
     # cloud-ops 端 header 名（默认 X-Enroll-Token，与 cloudserver settings.ENROLL_TOKEN_HEADER 对齐）
     CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER: str = "X-Enroll-Token"
-    
+
+    # 云端 ops 入口与 Tailnet 身份（由 bootstrap 写入 .env）
+    CLOUD_OPS_BASE_URL: str = ""
+    TS_LOGIN_SERVER: str = ""
+    TS_HOSTNAME: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

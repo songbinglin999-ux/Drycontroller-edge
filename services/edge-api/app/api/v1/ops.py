@@ -367,8 +367,8 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
             hint="edge-ota-agent check skipped; set check_ota=true for final OTA acceptance",
         )
 
-    ts_login_server = os.getenv("TS_LOGIN_SERVER", "").strip()
-    ts_hostname = os.getenv("TS_HOSTNAME", "").strip()
+    ts_login_server = (settings.TS_LOGIN_SERVER or "").strip()
+    ts_hostname = (settings.TS_HOSTNAME or "").strip()
     _preflight_check(
         checks,
         "tailnet.identity",
@@ -378,7 +378,7 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
         detail={"ts_login_server_present": bool(ts_login_server), "ts_hostname": ts_hostname or None},
     )
 
-    cloud_ops_base_url = os.getenv("CLOUD_OPS_BASE_URL", "").strip()
+    cloud_ops_base_url = (settings.CLOUD_OPS_BASE_URL or "").strip()
     enroll_token = os.getenv("CLOUD_OPS_ENROLL_TOKEN", "").strip()
     _preflight_check(
         checks,

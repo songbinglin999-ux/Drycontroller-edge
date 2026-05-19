@@ -4,7 +4,6 @@
 
 # pyright: reportMissingImports=false
 
-import os
 import time
 from typing import Optional
 from pathlib import Path
@@ -69,7 +68,7 @@ async def _license_summary() -> dict:
 
 
 async def _cloud_summary() -> dict:
-    base_url = os.getenv("CLOUD_OPS_BASE_URL", "").strip()
+    base_url = (settings.CLOUD_OPS_BASE_URL or "").strip()
     if not base_url:
         return {
             "key": "cloud",
@@ -194,11 +193,11 @@ async def get_local_status_summary(
         {
             "key": "tailnet",
             "label": "远程通道",
-            "status": "ok" if os.getenv("TS_LOGIN_SERVER", "").strip() else "degraded",
-            "message": "已配置" if os.getenv("TS_LOGIN_SERVER", "").strip() else "未配置",
+            "status": "ok" if (settings.TS_LOGIN_SERVER or "").strip() else "degraded",
+            "message": "已配置" if (settings.TS_LOGIN_SERVER or "").strip() else "未配置",
             "detail": {
-                "ts_login_server_present": bool(os.getenv("TS_LOGIN_SERVER", "").strip()),
-                "ts_hostname": os.getenv("TS_HOSTNAME", "").strip() or None,
+                "ts_login_server_present": bool((settings.TS_LOGIN_SERVER or "").strip()),
+                "ts_hostname": (settings.TS_HOSTNAME or "").strip() or None,
             },
         },
         {
