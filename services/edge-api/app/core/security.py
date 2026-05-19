@@ -40,6 +40,14 @@ def _validate_key(api_key: str | None, required: str) -> str:
     return api_key
 
 
+def is_control_api_key_allowed(api_key: str | None) -> bool:
+    if not settings.api_security_enabled or not api_key:
+        return False
+
+    allowed = set(settings.ADMIN_API_KEYS).union(settings.CONTROL_API_KEYS)
+    return any(hmac.compare_digest(api_key, key) for key in allowed)
+
+
 async def require_control_api_key(api_key: str = Depends(api_key_scheme)) -> str:
     """
     需要控制权限（含 admin）
@@ -52,5 +60,4 @@ async def require_admin_api_key(api_key: str = Depends(api_key_scheme)) -> str:
     需要管理员权限
     """
     return _validate_key(api_key, required="admin")
-
 

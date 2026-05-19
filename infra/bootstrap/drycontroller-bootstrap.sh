@@ -386,7 +386,7 @@ set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
 set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
 # 云分配模式下，edge-api 只通过 tailnet 对云端开放探活/运维入口。
 # 默认 compose 仍保持 127.0.0.1，避免未入网机器在现场 LAN 暴露管理口。
-set_kv "EDGE_API_BIND_ADDR" "0.0.0.0"
+set_kv "EDGE_API_BIND_ADDR" "127.0.0.1"
 set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_RUNTIME_BASE_URL}"
 set_kv "CLOUD_OPS_ENROLL_TOKEN" "${NODE_ENROLL_TOKEN}"
 set_kv "LICENSE_FILE_PATH" "/etc/drycontroller/license/license.json"
@@ -426,11 +426,13 @@ compose --profile remote-debug up -d tailscale
 if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   log "waiting for tailnet identity before cloud runtime calls..."
   TAILNET_READY=0
+  TAILNET_IP=""
   TAILNET_RETRIES="${BOOTSTRAP_TAILNET_RETRIES:-60}"
   TAILNET_SLEEP_SEC="${BOOTSTRAP_TAILNET_SLEEP_SEC:-2}"
   for attempt in $(seq 1 "$TAILNET_RETRIES"); do
     # tailscale ip 证明拿到 tailnet IP；wget /health 证明 cloud-ops 经 tailnet 真可达（路由收敛 + ECS 端口放行）
-    if docker exec edge-tailscale tailscale ip -4 >/dev/null 2>&1 \
+    TAILNET_IP="$(docker exec edge-tailscale tailscale ip -4 2>/dev/null | head -n 1 || true)"
+    if [ -n "$TAILNET_IP" ] \
        && docker exec edge-tailscale wget -q -T 5 -O /dev/null "${CLOUD_OPS_RUNTIME_BASE_URL%/}/health" >/dev/null 2>&1; then
       TAILNET_READY=1
       break
@@ -440,6 +442,8 @@ if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   done
   if [ "$TAILNET_READY" = "1" ]; then
     log "tailnet ready; cloud runtime url: ${CLOUD_OPS_RUNTIME_BASE_URL}"
+    set_kv "EDGE_API_BIND_ADDR" "$TAILNET_IP"
+    log "edge-api bind address set to tailnet ip: ${TAILNET_IP}"
   else
     log "tailnet did not become ready; bootstrap will not fall back to public cloud url"
     exit 5

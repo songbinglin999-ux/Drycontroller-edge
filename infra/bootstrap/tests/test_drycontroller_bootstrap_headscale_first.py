@@ -48,6 +48,15 @@ def test_tailnet_readiness_probes_cloud_ops_health_not_just_local_ip():
     assert 'docker exec edge-tailscale wget -q -T 5 -O /dev/null "${CLOUD_OPS_RUNTIME_BASE_URL%/}/health"' in text
 
 
+def test_tailnet_mode_binds_edge_api_to_tailnet_ip_not_all_interfaces():
+    text = _script_text()
+
+    assert 'set_kv "EDGE_API_BIND_ADDR" "127.0.0.1"' in text
+    assert 'set_kv "EDGE_API_BIND_ADDR" "0.0.0.0"' not in text
+    assert 'TAILNET_IP="$(docker exec edge-tailscale tailscale ip -4 2>/dev/null | head -n 1 || true)"' in text
+    assert 'set_kv "EDGE_API_BIND_ADDR" "$TAILNET_IP"' in text
+
+
 def test_background_enroll_uses_node_token_not_license_bind_token():
     text = _script_text()
 

@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import json
 import time
 from typing import Callable, List, Optional, Set
 
@@ -15,9 +16,31 @@ from app.services.realtime_data import (
     RealtimeDataService,
     get_realtime_data_service,
 )
+from app.core.security import is_control_api_key_allowed
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
+WS_AUTH_TIMEOUT_SEC = 5.0
+
+
+async def _require_ws_control_auth(websocket: WebSocket) -> bool:
+    try:
+        message = await asyncio.wait_for(websocket.receive_text(), timeout=WS_AUTH_TIMEOUT_SEC)
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
+
+    try:
+        payload = json.loads(message)
+    except json.JSONDecodeError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
+
+    if payload.get("type") != "auth" or not is_control_api_key_allowed(payload.get("token")):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
+
+    return True
 
 
 @router.get("/realtime/latest")
@@ -63,6 +86,8 @@ async def history(
 @router.websocket("/realtime/stream")
 async def realtime_stream(websocket: WebSocket):
     await websocket.accept()
+    if not await _require_ws_control_auth(websocket):
+        return
     params = websocket.query_params
     tags_param = params.get("tags")
     lookback = params.get("lookback", "5m")
@@ -130,6 +155,8 @@ def _build_line_predicate(line: Optional[str]) -> Optional[Callable[[dict], bool
 
 async def _stream_websocket(websocket: WebSocket, stream_name: str, predicate: Optional[Callable[[dict], bool]] = None):
     await websocket.accept()
+    if not await _require_ws_control_auth(websocket):
+        return
     queue = ws_stream.register_subscriber(stream_name, predicate)
     logger.info("ws_client_connected", stream=stream_name)
     try:
@@ -192,4 +219,3 @@ async def system_health(
         "data": data,
         "timestamp": int(time.time()),
     }
-
