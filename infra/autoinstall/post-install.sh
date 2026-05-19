@@ -68,9 +68,10 @@ fi
 log "running install-edge-host.sh"
 bash "${SOURCE_ROOT}/infra/bootstrap/install-edge-host.sh" \
   --source "$SOURCE_ROOT" \
-  --edge-root "$EDGE_ROOT" \
-  --start-bootstrap
+  --edge-root "$EDGE_ROOT"
 
 systemctl disable drycontroller-edge-post-install.service >/dev/null 2>&1 || true
 
 log "autoinstall host preparation complete"
+log "powering off; remove OS Installer USB and insert Provisioning USB for activation"
+systemctl poweroff

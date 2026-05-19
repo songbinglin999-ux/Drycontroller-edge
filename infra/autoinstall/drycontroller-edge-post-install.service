@@ -1,7 +1,6 @@
 [Unit]
 Description=DryController Edge first boot host install
-After=network-online.target
-Wants=network-online.target
+After=local-fs.target
 ConditionPathExists=!/var/lib/drycontroller/host-install.json
 
 [Service]
