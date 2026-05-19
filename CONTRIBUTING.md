@@ -31,6 +31,16 @@
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
 5. 创建 Pull Request
 
+### Git hooks
+
+仓库自带一个 pre-commit hook 阻止 `.env` 等含真实凭据的文件被误提交（防御 `git add -f .env` 与 `.gitignore` 被改坏两种情况）。每次新 clone 后执行一次：
+
+```bash
+git config core.hooksPath scripts/git-hooks
+```
+
+如确需提交（例如清理已 track 的旧 `.env`），用 `git commit --no-verify`。
+
 ## 代码规范
 
 ### Python 代码

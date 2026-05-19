@@ -1,0 +1,27 @@
+#!/bin/sh
+# Tripwire against accidentally committing real credential files.
+# Mirrors the .gitignore policy: block .env and .env.*, allow .env.*.example.
+# Defends against `git add -f .env` and against .gitignore being edited away.
+# Escape hatch: git commit --no-verify (use only if you are sure).
+
+set -eu
+
+blocked=$(git diff --cached --name-only --diff-filter=AM | awk '
+{
+    n = split($0, parts, "/")
+    base = parts[n]
+    if (base == ".env") { print; next }
+    if (base ~ /^\.env\./) {
+        if (base ~ /\.example$/ || base ~ /\.sample$/) next
+        print
+    }
+}')
+
+if [ -n "$blocked" ]; then
+    echo "pre-commit: refusing to commit env file(s) reserved for real secrets:"
+    echo "$blocked" | sed 's/^/  /'
+    echo
+    echo "These match the .env / .env.* pattern. Templates should be .env.*.example."
+    echo "To bypass (only if you are certain): git commit --no-verify"
+    exit 1
+fi
