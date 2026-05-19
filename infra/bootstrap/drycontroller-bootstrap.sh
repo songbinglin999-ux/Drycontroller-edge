@@ -508,7 +508,7 @@ Path(sys.argv[3]).write_text(public_key + "\n", encoding="utf-8")
 PY
 rm -f "$LICENSE_RESP_FILE"
 chmod 0640 "${LICENSE_DIR}/license.json" || true
-chmod 0644 "${KEYS_DIR}/license.pub" || true
+chmod 0640 "${KEYS_DIR}/license.pub" || true
 log "saved signed license -> ${LICENSE_DIR}/license.json"
 log "saved license public key -> ${KEYS_DIR}/license.pub"
 
