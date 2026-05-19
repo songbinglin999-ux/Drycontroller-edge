@@ -198,7 +198,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={
             "success": False,
             "error": "Internal server error",
-            "message": str(exc) if settings.DEBUG else "An error occurred",
+            "message": "An error occurred",
             "timestamp": int(time.time()),
         },
     )
