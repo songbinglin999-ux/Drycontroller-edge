@@ -380,6 +380,12 @@ services:
       - "${EDGE_API_BIND_ADDR:-127.0.0.1}:${EDGE_API_PORT}:8000"
     networks:
       - edge-network
+    # P1-N12 audit 2026-05-20：staging 用 SSH 反向隧道把 cloud-ops 暴露在 host 127.0.0.1:18088
+    # 时，bridge 网络内的容器 127.0.0.1 不是 host loopback，CloudSyncOutboxDrainer 直连会
+    # ConnectionRefusedError。声明 host-gateway 后可用 CLOUD_OPS_BASE_URL=http://host.docker.internal:18088
+    # 走 host loopback。生产用 tailnet IP/DNS（CLOUD_OPS_BASE_URL 由 bootstrap 写入），不依赖此项。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
