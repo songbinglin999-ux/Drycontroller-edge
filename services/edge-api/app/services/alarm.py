@@ -1,20 +1,17 @@
 """
-报警查询领域服务（只读）
+报警查询领域服务（只读，已弃用）
 
-本模块提供系统报警信息的查询功能，包括：
-- 活跃报警查询：获取当前未恢复的报警
-- 历史报警查询：获取指定时间范围内的所有报警
+DEPRECATED: /api/v1/alarms/active 和 /history 已迁移到 alarm_events SQL 表查询，
+本模块不再被 alarms.py 引用。保留仅为 test_services.py 单测，等后续确认无其他
+调用方后可整体移除。新代码不要再使用 AlarmService / get_alarm_service()。
 
-数据来源：
-- 从 InfluxDB 的 system_health 测量表读取
-- 报警数据由 edge-monitor 服务写入
-
-注意：本服务为只读服务，不负责报警的生成和确认
+历史数据来源：InfluxDB system_health measurement（由 edge-monitor 写入）。
 """
 
 from __future__ import annotations
 
 import time
+import warnings
 from functools import lru_cache
 from typing import List, Optional
 
@@ -36,10 +33,15 @@ class AlarmService:
     def __init__(self, influx_service: Optional[InfluxQueryService] = None) -> None:
         """
         初始化报警服务
-        
+
         Args:
             influx_service: InfluxDB 服务（可注入用于测试）
         """
+        warnings.warn(
+            "AlarmService is deprecated; alarm read paths now query alarm_events table directly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._influx = influx_service or get_influx_service()
         self._measurement = settings.SYSTEM_HEALTH_MEASUREMENT
 

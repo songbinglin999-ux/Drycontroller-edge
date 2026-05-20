@@ -68,6 +68,23 @@ STATUS_PRIORITY = {
 }
 
 
+# health 状态 → alarm severity 映射
+_STATUS_TO_SEVERITY = {
+    "degraded": "warning",
+    "down": "critical",
+}
+
+
+def _normalize_health_status(value: str | None) -> str:
+    s = (value or "").lower()
+    if s in ("ok", "healthy"):
+        return "healthy"
+    if s in ("degraded", "down"):
+        return s
+    # unknown / 其它：视同 healthy（不发 alarm；现有代码已将 unknown 默认升级为 degraded）
+    return "healthy"
+
+
 class SelfHealToggleRequest(BaseModel):
     service: str
     enabled: bool
@@ -214,6 +231,15 @@ class MonitorService:
         self.alertmanager_timeout = float(os.getenv("ALERTMANAGER_TIMEOUT", "5") or "5")
         self.alertmanager_user = os.getenv("ALERTMANAGER_USERNAME", "")
         self.alertmanager_pass = os.getenv("ALERTMANAGER_PASSWORD", "")
+
+        # Alarm ingest 通道：状态转移上报到 edge-api，落 alarm_events 表 + outbox 同步到云端
+        self.alarm_ingest_url = os.getenv(
+            "MONITOR_ALARM_INGEST_URL",
+            "http://edge-api:8000/api/v1/alarms/internal/ingest",
+        ).strip()
+        self.alarm_ingest_token = os.getenv("MONITOR_ALARM_INGEST_TOKEN", "").strip()
+        self.alarm_ingest_timeout = float(os.getenv("MONITOR_ALARM_INGEST_TIMEOUT", "5") or "5")
+        self.alarm_ingest_header = os.getenv("MONITOR_ALARM_INGEST_HEADER", "X-API-Key").strip() or "X-API-Key"
         
         # 客户端实例
         self.mqtt_client = None
@@ -591,11 +617,12 @@ class MonitorService:
                         },
                     }
             
-            # 更新自愈状态缓存
-            state_snapshot = self._update_service_states(aggregated)
+            # 更新自愈状态缓存 + 抓 healthy↔degraded/down 转移
+            state_snapshot, alarm_transitions = self._update_service_states(aggregated)
             for name, state in state_snapshot.items():
                 aggregated[name]["self_heal"] = {"state": state}
 
+            await self._emit_alarm_transitions(alarm_transitions)
             await self._process_self_heal(aggregated)
             
             # 更新缓存并持久化
@@ -929,11 +956,16 @@ class MonitorService:
             ),
         }
 
-    def _update_service_states(self, aggregated: Dict[str, Any]) -> Dict[str, Any]:
+    def _update_service_states(self, aggregated: Dict[str, Any]) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
         """
-        根据最新检测结果维护各服务的故障计数与自愈上下文
+        根据最新检测结果维护各服务的故障计数与自愈上下文。
+
+        返回 (snapshot, alarm_transitions)。alarm_transitions 是本轮 healthy ↔ degraded/down
+        的状态转移列表，由调用方异步 emit 到 edge-api alarm ingest 端点；本方法不动
+        self_heal / failure count / cooldown 任何逻辑。
         """
         snapshot: Dict[str, Any] = {}
+        transitions: List[Dict[str, Any]] = []
         now = int(time.time())
 
         for target in self.service_targets:
@@ -959,6 +991,13 @@ class MonitorService:
                     "last_action_at": None,
                 },
             )
+
+            # 在 mutation 之前抓 previous_status，纯只读用于 alarm transition 检测；
+            # 不参与 self_heal / failure count 决策（这些逻辑保持原样）。
+            previous_status = state.get("status")
+            transition = self._build_alarm_transition(name, previous_status, status, record)
+            if transition is not None:
+                transitions.append(transition)
 
             window_start = state.get("restart_window_start") or now
             if now - window_start >= 3600:
@@ -1002,7 +1041,115 @@ class MonitorService:
 
             self.service_health_state[name] = state
 
-        return snapshot
+        return snapshot, transitions
+
+    def _build_alarm_transition(
+        self,
+        name: str,
+        previous_raw: str | None,
+        current_raw: str,
+        record: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        比较 mutation 前的 previous_status 和当前 status，生成 firing/resolved transition。
+
+        first-run (previous is None) 视同 healthy，仅当当前 degraded/down 时发 firing。
+        相同状态返回 None（不发 alarm）。
+        """
+        prev = _normalize_health_status(previous_raw)
+        curr = _normalize_health_status(current_raw)
+        if prev == curr:
+            return None
+
+        alarm_key = f"{self.line_id}:{name}:health"
+        # message 优先取 http check 的 detail，否则容器/tcp/monitor 的 detail
+        message: Optional[str] = None
+        try:
+            checks = record.get("checks") or {}
+            for slot in ("http", "container", "tcp", "monitor"):
+                slot_cfg = checks.get(slot) or {}
+                if slot_cfg.get("detail"):
+                    message = str(slot_cfg["detail"])[:512]
+                    break
+        except Exception:
+            message = None
+
+        if curr in ("degraded", "down"):
+            severity = _STATUS_TO_SEVERITY.get(curr, "warning")
+            return {
+                "service": name,
+                "alarm_key": alarm_key,
+                "state": "firing",
+                "severity": severity,
+                "message": message,
+                "previous_status": prev,
+                "current_status": curr,
+            }
+        # curr == "healthy" 且 prev in (degraded, down) → resolved
+        return {
+            "service": name,
+            "alarm_key": alarm_key,
+            "state": "resolved",
+            "severity": None,
+            "message": message,
+            "previous_status": prev,
+            "current_status": curr,
+        }
+
+    async def _emit_alarm_transitions(self, transitions: List[Dict[str, Any]]) -> None:
+        """
+        把本轮 transitions POST 到 edge-api /api/v1/alarms/internal/ingest。
+        缺配置时静默跳过；单条失败不影响其它条；不阻塞 self_heal 主循环。
+        """
+        if not transitions:
+            return
+        if not self.alarm_ingest_url or not self.alarm_ingest_token:
+            logger.debug("alarm_ingest_skipped_missing_config", count=len(transitions))
+            return
+        if not self.http_client:
+            await self._connect_http()
+        if not self.http_client:
+            logger.warning("alarm_ingest_skipped_no_http_client", count=len(transitions))
+            return
+
+        headers = {self.alarm_ingest_header: self.alarm_ingest_token}
+        for t in transitions:
+            body = {
+                "alarm_key": t["alarm_key"],
+                "source_service": "edge-monitor",
+                "state": t["state"],
+                "line_id": self.line_id,
+                "meta": {
+                    "service": t["service"],
+                    "previous_status": t["previous_status"],
+                    "current_status": t["current_status"],
+                },
+            }
+            if t.get("severity"):
+                body["severity"] = t["severity"]
+            if t.get("message"):
+                body["message"] = t["message"]
+            try:
+                resp = await self.http_client.post(
+                    self.alarm_ingest_url,
+                    json=body,
+                    headers=headers,
+                    timeout=self.alarm_ingest_timeout,
+                )
+                if resp.status_code >= 300:
+                    logger.warning(
+                        "alarm_ingest_non_2xx",
+                        status=resp.status_code,
+                        alarm_key=t["alarm_key"],
+                        state=t["state"],
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "alarm_ingest_failed",
+                    alarm_key=t["alarm_key"],
+                    state=t["state"],
+                    error=str(exc),
+                )
 
     def _find_service_target(self, name: str) -> Optional[Dict[str, Any]]:
         for target in self.service_targets:
