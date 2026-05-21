@@ -28,6 +28,13 @@ Terminology:
   `post-install.sh` after the installed OS boots for real.
 - `wifi.env.example`: template for factory WiFi credentials. Copy to
   `wifi.env` on the installer media when wired Ethernet is not available.
+- `password.env.example`: template for the local, untracked password input used
+  while building media. Copy to `password.env`; do not commit it or copy it to
+  the installer media.
+- `drycontroller-apt/`: generated offline apt repository copied to the installer
+  media root. It contains Docker runtime, Docker Compose v2, NetworkManager, and
+  host package dependencies so factory/site installs do not depend on public
+  mirror reachability.
 
 ## Required USB Root Files
 
@@ -40,11 +47,82 @@ post-install.sh
 drycontroller-edge-post-install.service
 wifi.env              # optional, copied from wifi.env.example and filled by operator/team
 drycontroller-edge.tar.gz
+drycontroller-apt/
 ```
 
 `drycontroller-edge.tar.gz` must contain the edge repository. The tar can contain
 files directly at the root, or under one top-level `Drycontroller-edge/`
 directory.
+
+Build `drycontroller-apt/` on an Ubuntu amd64 host whose apt sources match the
+installer ISO release:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y dpkg-dev
+bash scripts/build-autoinstall-offline-apt-repo.sh --out dist/autoinstall/drycontroller-apt
+```
+
+Ubuntu 22.04 media should use a jammy package set; Ubuntu 24.04 media should use
+a noble package set.
+
+If the default Ubuntu archive is unstable from the build host, pass a reachable
+mirror:
+
+```bash
+bash scripts/build-autoinstall-offline-apt-repo.sh \
+  --mirror https://mirrors.aliyun.com/ubuntu/ \
+  --out dist/autoinstall/drycontroller-apt
+```
+
+The autoinstall profile does not override Subiquity's apt configuration during
+the installer phase. It only verifies that `drycontroller-apt/` exists, copies it
+into the target as `/opt/drycontroller-apt`, and points the installed system at
+that offline repo for first-boot Docker/runtime package installation.
+
+## Installer Login And SSH
+
+The source `user-data` intentionally keeps `identity.password` as
+`$6$REPLACE_WITH_SHA512_CRYPT_HASH` so no real password or hash is committed. The
+`dryops` Linux account password is also the SSH password because the installer
+enables password SSH for that account.
+
+For factory/site media, create a local password env file:
+
+```bash
+cp infra/autoinstall/password.env.example infra/autoinstall/password.env
+chmod 0600 infra/autoinstall/password.env
+$EDITOR infra/autoinstall/password.env
+bash scripts/build-autoinstall-bundle.sh \
+  --password-env-file infra/autoinstall/password.env
+```
+
+`password.env` should contain:
+
+```text
+DRYOPS_PASSWORD=replace-with-strong-password
+```
+
+The bundle script reads the plaintext password locally, converts it to a
+sha512-crypt hash with `openssl passwd -6 -stdin`, and writes only the hash into
+`dist/autoinstall/user-data`. `password.env` is ignored by git and excluded from
+`drycontroller-edge.tar.gz`.
+
+If you already generated a sha512-crypt hash, you can still inject it directly:
+
+```bash
+openssl passwd -6 > /tmp/drycontroller-autoinstall.passhash
+bash scripts/build-autoinstall-bundle.sh \
+  --password-hash-file /tmp/drycontroller-autoinstall.passhash
+```
+
+Do not write or remaster media while `dist/autoinstall/user-data` still contains
+`REPLACE_WITH_SHA512_CRYPT_HASH`; the `dryops` console login and password SSH
+login will not work.
+
+The installer profile installs SSH, allows password SSH for the `dryops` account,
+and enables host SSH during late commands. This is kept available for development,
+operations, and field testing on the trusted LAN.
 
 ## macOS USB Write Note
 

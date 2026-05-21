@@ -6,6 +6,20 @@ autoinstall:
     layout: us
   timezone: Asia/Shanghai
 
+  network:
+    version: 2
+    ethernets:
+      all-en:
+        match:
+          name: "en*"
+        dhcp4: true
+        optional: true
+      all-eth:
+        match:
+          name: "eth*"
+        dhcp4: true
+        optional: true
+
   # Production media should replace the password hash before use.
   # Generate a hash:
   #   openssl passwd -6
@@ -16,13 +30,11 @@ autoinstall:
 
   ssh:
     install-server: true
-    allow-pw: false
+    allow-pw: true
 
-  apt:
-    preserve_sources_list: false
-    primary:
-      - arches: [default]
-        uri: http://archive.ubuntu.com/ubuntu
+  early-commands:
+    - test -d /cdrom/dists || (echo "missing /cdrom/dists; OS Installer USB must keep the Ubuntu ISO apt repository at the media root" >&2; exit 1)
+    - test -f /cdrom/drycontroller-apt/Packages || (echo "missing /cdrom/drycontroller-apt/Packages; build and copy the offline apt repo before booting the OS Installer USB" >&2; exit 1)
 
   storage:
     swap:
@@ -77,22 +89,17 @@ autoinstall:
         device: root-format
         path: /
 
-  packages:
-    - ca-certificates
-    - curl
-    - python3
-    - tar
-    - iproute2
-    - lsb-release
-    - docker.io
-
   late-commands:
     - curtin in-target --target=/target -- mkdir -p /opt /var/log
+    - mkdir -p /target/opt/drycontroller-apt
+    - cp -a /cdrom/drycontroller-apt/. /target/opt/drycontroller-apt/
+    - sh -c 'echo "deb [trusted=yes] file:/opt/drycontroller-apt ./" > /target/etc/apt/sources.list && rm -f /target/etc/apt/sources.list.d/ubuntu.sources /target/etc/apt/sources.list.d/drycontroller-offline.list'
     - cp -a /cdrom/drycontroller-edge.tar.gz /target/opt/drycontroller-edge.tar.gz
     - sh -c 'if [ -f /cdrom/wifi.env ]; then cp -a /cdrom/wifi.env /target/opt/drycontroller-wifi.env; chmod 0600 /target/opt/drycontroller-wifi.env; fi'
     - cp -a /cdrom/post-install.sh /target/usr/local/sbin/drycontroller-edge-post-install.sh
     - cp -a /cdrom/drycontroller-edge-post-install.service /target/etc/systemd/system/drycontroller-edge-post-install.service
     - curtin in-target --target=/target -- chmod 0755 /usr/local/sbin/drycontroller-edge-post-install.sh
+    - curtin in-target --target=/target -- systemctl enable ssh
     - curtin in-target --target=/target -- systemctl enable drycontroller-edge-post-install.service
     - curtin in-target --target=/target -- systemctl set-default multi-user.target
     - curtin in-target --target=/target -- sh -c 'echo DryController Edge first boot install is pending > /etc/motd'

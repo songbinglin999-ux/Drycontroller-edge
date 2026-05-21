@@ -26,6 +26,7 @@ infra/autoinstall/
   wifi.env.example
 
 scripts/build-autoinstall-bundle.sh
+scripts/build-autoinstall-offline-apt-repo.sh
 ```
 
 ## 内部制作流程
@@ -66,6 +67,22 @@ diskutil eject /dev/disk2
 bash scripts/build-autoinstall-bundle.sh
 ```
 
+在一台能访问目标 Ubuntu 包源、且发行版与安装 ISO 匹配的 Ubuntu amd64 构建机上生成离线 apt repo。Ubuntu 22.04 ISO 用 jammy 构建机，Ubuntu 24.04 ISO 用 noble 构建机：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y dpkg-dev
+bash scripts/build-autoinstall-offline-apt-repo.sh --out dist/autoinstall/drycontroller-apt
+```
+
+如果默认 Ubuntu 源不稳定，显式指定可达镜像：
+
+```bash
+bash scripts/build-autoinstall-offline-apt-repo.sh \
+  --mirror https://mirrors.aliyun.com/ubuntu/ \
+  --out dist/autoinstall/drycontroller-apt
+```
+
 输出目录：
 
 ```text
@@ -76,9 +93,12 @@ dist/autoinstall/
   drycontroller-edge-post-install.service
   wifi.env.example
   drycontroller-edge.tar.gz
+  drycontroller-apt/
 ```
 
-### 3. 设置安装用户密码 hash
+`drycontroller-apt/` 是必备项，包含 Docker runtime、Docker Compose v2、NetworkManager 和基础 host package 的离线 apt 包集。安装阶段不覆盖 Subiquity 的 apt 配置，只校验并复制 `drycontroller-apt/`；首次开机 post-install 会从 `/opt/drycontroller-apt` 离线安装 Docker 和现场额外依赖，IPC 运行阶段不应依赖现场能访问 `archive.ubuntu.com` 或 Docker 相关包源。
+
+### 3. 设置 dryops 登录和 SSH 密码
 
 `dist/autoinstall/user-data` 里有占位：
 
@@ -86,13 +106,45 @@ dist/autoinstall/
 $6$REPLACE_WITH_SHA512_CRYPT_HASH
 ```
 
-生成 hash：
+`dryops` 是安装后本机登录用户；因为 installer 配置了 `ssh.allow-pw: true`，同一个密码也用于 SSH 登录：
 
 ```bash
-openssl passwd -6
+ssh dryops@<IPC-IP>
 ```
 
-把生成值替换到 `identity.password`。测试阶段可以使用统一临时密码；生产阶段必须走密码管理器或后续改成无密码 SSH key 模式。
+推荐使用本地不入库的 `password.env` 输入明文密码。这个文件只在制作介质的机器上存在，不复制到安装盘，也不会进入 `drycontroller-edge.tar.gz`：
+
+```bash
+cp infra/autoinstall/password.env.example infra/autoinstall/password.env
+chmod 0600 infra/autoinstall/password.env
+$EDITOR infra/autoinstall/password.env
+bash scripts/build-autoinstall-bundle.sh \
+  --password-env-file infra/autoinstall/password.env
+```
+
+`password.env` 内容：
+
+```text
+DRYOPS_PASSWORD=replace-with-strong-password
+```
+
+脚本会在本机把明文转成 sha512-crypt hash，再注入 `dist/autoinstall/user-data`；最终安装介质里只有 hash，没有明文密码。不要把 `password.env` 提交到 git，也不要把它放到安装盘根目录。
+
+如果已经有 hash，也可以继续用 hash 文件方式：
+
+```bash
+openssl passwd -6 > /tmp/drycontroller-autoinstall.passhash
+bash scripts/build-autoinstall-bundle.sh \
+  --password-hash-file /tmp/drycontroller-autoinstall.passhash
+```
+
+写 U 盘或重打 ISO 前必须确认 artifact 里已经不是占位符：
+
+```bash
+rg -n 'REPLACE_WITH_SHA512_CRYPT_HASH' dist/autoinstall/user-data && exit 1
+```
+
+测试阶段可以使用统一临时密码；生产阶段必须走密码管理器或后续改成无密码 SSH key 模式。
 
 ### 4. 放入 Ubuntu 安装盘根目录
 
@@ -104,6 +156,7 @@ meta-data
 post-install.sh
 drycontroller-edge-post-install.service
 drycontroller-edge.tar.gz
+drycontroller-apt/
 ```
 
 如果安装车间只有 WiFi，再额外放：
@@ -154,7 +207,7 @@ drycontroller-edge-post-install.service
 - 如果 `/opt/drycontroller-wifi.env` 存在，安装/启用 NetworkManager 并自动连接 WiFi
 - 解压 `drycontroller-edge.tar.gz`
 - 调用 `infra/bootstrap/install-edge-host.sh`
-- 安装或校验 Docker / Docker Compose / Python / curl
+- 从 `/opt/drycontroller-apt` 离线安装或校验 Docker / Docker Compose / Python / curl
 - 配置 Docker 日志轮转
 - 复制 edge repo 到 `/opt/Drycontroller-edge`
 - 创建 `/opt/Drycontroller-edge/.env`
@@ -209,7 +262,9 @@ drycontroller-edge-post-install.service
 | 现象 | 判断 |
 |---|---|
 | 安装没有自动开始 | 检查启动参数是否包含 `autoinstall ds=nocloud;s=/cdrom/`，以及 U 盘根目录是否有 `user-data` / `meta-data`。 |
-| 安装中途失败 | 查看安装器日志，优先确认 ISO 是否能访问 apt 源，或是否需要离线 apt mirror。 |
+| `configure_apt` 阶段报 `curtin ... apt-config` 失败 | 不要在 `user-data` 里自定义 `apt.primary` / `apt.sources` 指向 `file:/cdrom`；安装阶段让 Subiquity 使用默认 apt 配置，Docker/runtime 包放到首次开机从 `/opt/drycontroller-apt` 离线安装。 |
+| 安装早期提示缺少 `/cdrom/drycontroller-apt/Packages` | 重新运行 `scripts/build-autoinstall-offline-apt-repo.sh`，并把生成的 `drycontroller-apt/` 目录复制到安装盘根目录。 |
+| 安装中途 `install_docker.io` 失败 | 查看 `/var/log/installer/curtin-install.log`，优先确认 `drycontroller-apt/` 与 ISO 版本/架构匹配，且包含 `docker.io` 及依赖。 |
 | 安装完成但没有自动关机 | 查看 `/var/log/installer/`，确认 late-commands 是否执行。 |
 | 首次开机后没有继续 host install | 查看 `/var/log/drycontroller-autoinstall.log` 和 `systemctl status drycontroller-edge-post-install.service`。 |
 | WiFi 连不上 | 检查安装盘根目录是否有 `wifi.env`，SSID/密码是否正确；必要时设置 `WIFI_INTERFACE`。 |
