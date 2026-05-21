@@ -35,6 +35,7 @@ from app.services.monitor_config import MonitorConfigService, get_monitor_config
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 from app.services.audit import api_key_actor, write_audit
+from app.services.ota_history import record_ota_operation
 from common.license_verifier import load_public_key, verify_signature
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
@@ -532,7 +533,10 @@ async def ota_start(
     api_key: str = Depends(require_admin_api_key),
 ):
     # 透传到 ota-agent（MVP 仅支持 online）
-    return await client.start(api_key=api_key, payload=req.model_dump(exclude_none=True))
+    request_payload = req.model_dump(exclude_none=True)
+    result = await client.start(api_key=api_key, payload=request_payload)
+    await record_ota_operation(result, request_payload=request_payload)
+    return result
 
 
 @router.get("/ota/operations/{operation_id}")
@@ -541,7 +545,9 @@ async def ota_get_operation(
     client: OtaOpsClient = Depends(get_ota_ops_client),
     api_key: str = Depends(require_admin_api_key),
 ):
-    return await client.get_operation(operation_id, api_key=api_key)
+    result = await client.get_operation(operation_id, api_key=api_key)
+    await record_ota_operation(result)
+    return result
 
 
 @router.get("/ota/operations/{operation_id}/logs")
