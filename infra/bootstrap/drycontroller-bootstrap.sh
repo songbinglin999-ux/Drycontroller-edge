@@ -17,10 +17,15 @@ set -euo pipefail
 LOG_FILE="/var/log/drycontroller-bootstrap.log"
 STATE_DIR="/var/lib/drycontroller"
 SENTINEL="${STATE_DIR}/.bootstrapped"
+STATUS_FILE="${STATE_DIR}/provisioning.status"
 ALLOCATION_CACHE_FILE="${STATE_DIR}/allocation-response.json"
 ASSET_DIR="/etc/drycontroller"
 KEYS_DIR="${ASSET_DIR}/keys"
 LICENSE_DIR="${ASSET_DIR}/license"
+
+BOOTSTRAP_STARTED_AT="$(date -Is)"
+BOOTSTRAP_FAIL_REASON=""
+BOOTSTRAP_USB_MOUNT="/mnt/drycontroller-provisioning"
 
 mkdir -p "$(dirname "$LOG_FILE")" "$STATE_DIR" "$KEYS_DIR" "$LICENSE_DIR"
 chmod 700 "$STATE_DIR" || true
@@ -28,6 +33,87 @@ chmod 755 "$ASSET_DIR" "$KEYS_DIR" || true
 chmod 750 "$LICENSE_DIR" || true
 
 log() { echo "[$(date -Is)] $*" | tee -a "$LOG_FILE" >/dev/null; }
+
+# 让现场操作员一眼看到结果：横幅同时写入日志、stderr(journald)、物理控制台
+broadcast() {
+  local msg="$1"
+  printf '%s\n' "$msg" | tee -a "$LOG_FILE" >&2
+  if [ -w /dev/console ]; then
+    printf '%s\n' "$msg" > /dev/console 2>/dev/null || true
+  fi
+}
+
+banner_success() {
+  local detail="${1:-}"
+  broadcast ""
+  broadcast "================================================================================"
+  broadcast "/xxxxxxxxxxxxxxxxxxx  SUCCESS  xxxxxxxxxxxxxxxxxxx/   Drycontroller bootstrap"
+  [ -n "$detail" ] && broadcast "  $detail"
+  broadcast "  started:  ${BOOTSTRAP_STARTED_AT}"
+  broadcast "  finished: $(date -Is)"
+  broadcast "  sentinel: ${SENTINEL}"
+  broadcast "================================================================================"
+  broadcast ""
+}
+
+banner_failure() {
+  local exit_code="$1"
+  local reason="${2:-(unspecified)}"
+  broadcast ""
+  broadcast "################################################################################"
+  broadcast "/XXXXXXXXXXXXXXXXXXX  FAILURE  XXXXXXXXXXXXXXXXXXX/   Drycontroller bootstrap"
+  broadcast "  exit_code: ${exit_code}"
+  broadcast "  reason:    ${reason}"
+  broadcast "  started:   ${BOOTSTRAP_STARTED_AT}"
+  broadcast "  failed_at: $(date -Is)"
+  broadcast "  log:       ${LOG_FILE}"
+  broadcast "  next:      检查上方日志，修正后 reboot 或 systemctl restart drycontroller-bootstrap.service"
+  broadcast "################################################################################"
+  broadcast ""
+}
+
+write_status() {
+  local state="$1"
+  local exit_code="${2:-}"
+  local reason="${3:-}"
+  {
+    echo "state=${state}"
+    echo "started_at=${BOOTSTRAP_STARTED_AT}"
+    echo "updated_at=$(date -Is)"
+    [ -n "$exit_code" ] && echo "exit_code=${exit_code}"
+    [ -n "$reason" ] && echo "reason=${reason}"
+    [ -n "${DEVICE_ID:-}" ] && echo "device_id=${DEVICE_ID}"
+    [ -n "${NODE_NAME:-}" ] && echo "node_name=${NODE_NAME}"
+  } > "${STATUS_FILE}.tmp"
+  mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
+  chmod 644 "$STATUS_FILE" || true
+}
+
+fail() {
+  BOOTSTRAP_FAIL_REASON="$1"
+  exit "${2:-1}"
+}
+
+on_exit() {
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    if [ -f "$SENTINEL" ]; then
+      write_status "success" "0" ""
+      banner_success "device_id: ${DEVICE_ID:-?}    node: ${NODE_NAME:-?}"
+    fi
+    # rc=0 但无 sentinel（例如 already-bootstrapped 早退）—— 不打横幅，不改 status
+  else
+    write_status "failed" "$rc" "${BOOTSTRAP_FAIL_REASON:-(see log)}"
+    banner_failure "$rc" "${BOOTSTRAP_FAIL_REASON:-(see log)}"
+  fi
+  # 调用原有的 secrets 清理（合并到统一 trap 里，避免后定义的 trap 覆盖本 trap）
+  if declare -F cleanup_secret_temp_files >/dev/null 2>&1; then
+    cleanup_secret_temp_files || true
+  fi
+}
+trap on_exit EXIT
+
+write_status "running" "" ""
 
 SECRET_TEMP_FILES=()
 cleanup_secret_temp_files() {
@@ -38,7 +124,7 @@ cleanup_secret_temp_files() {
     fi
   done
 }
-trap cleanup_secret_temp_files EXIT
+# 注：原本这里有一个 `trap cleanup_secret_temp_files EXIT`，已合并到上方 `on_exit` 中。
 
 secret_mktemp() {
   local f
@@ -54,7 +140,7 @@ if [ -f "$SENTINEL" ]; then
 fi
 
 find_provision_dir() {
-  # 常见桌面/服务器自动挂载路径
+  # 常见桌面/服务器自动挂载路径（含 bootstrap 自己挂的 /mnt/drycontroller-provisioning）
   local roots=(/media /mnt /run/media)
   for r in "${roots[@]}"; do
     [ -d "$r" ] || continue
@@ -69,10 +155,69 @@ find_provision_dir() {
   return 1
 }
 
+# Server 版 Ubuntu 不会自动挂 USB；这里主动扫块设备并挂载。
+# 探测策略：找所有 vfat/ext* 分区，临时只读挂上看里面有没有 drycontroller-provisioning/provisioning.json。
+# 找到后挂到 $BOOTSTRAP_USB_MOUNT (默认 /mnt/drycontroller-provisioning)。
+mount_provisioning_usb() {
+  local target="$BOOTSTRAP_USB_MOUNT"
+  mkdir -p "$target"
+
+  # 已经挂着且内容齐全 —— 直接复用
+  if mountpoint -q "$target" && [ -f "$target/drycontroller-provisioning/provisioning.json" ]; then
+    log "provisioning USB already mounted at $target"
+    return 0
+  fi
+
+  local timeout="${BOOTSTRAP_USB_WAIT_SEC:-60}"
+  local interval=3
+  local elapsed=0
+
+  while [ "$elapsed" -lt "$timeout" ]; do
+    udevadm settle --timeout=5 >/dev/null 2>&1 || true
+
+    local candidates
+    candidates="$(lsblk -lnpo NAME,TYPE,FSTYPE 2>/dev/null \
+      | awk '$2=="part" && ($3=="vfat" || $3 ~ /^ext/) {print $1}')"
+
+    local dev
+    for dev in $candidates; do
+      [ -b "$dev" ] || continue
+      local probe
+      probe="$(mktemp -d)"
+      if mount -o ro "$dev" "$probe" >/dev/null 2>&1; then
+        if [ -f "$probe/drycontroller-provisioning/provisioning.json" ]; then
+          umount "$probe" >/dev/null 2>&1 || true
+          rmdir "$probe" 2>/dev/null || true
+          if mount -o ro "$dev" "$target" >/dev/null 2>&1; then
+            log "mounted provisioning USB: $dev -> $target"
+            return 0
+          else
+            log "found provisioning data on $dev but failed to mount at $target"
+          fi
+        else
+          umount "$probe" >/dev/null 2>&1 || true
+        fi
+      fi
+      rmdir "$probe" 2>/dev/null || true
+    done
+
+    log "provisioning USB not yet visible (elapsed ${elapsed}s/${timeout}s)"
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+  return 1
+}
+
 PROV_DIR="$(find_provision_dir || true)"
 if [ -z "${PROV_DIR:-}" ]; then
+  log "no pre-mounted provisioning dir; attempting to mount USB ourselves..."
+  if mount_provisioning_usb; then
+    PROV_DIR="$(find_provision_dir || true)"
+  fi
+fi
+if [ -z "${PROV_DIR:-}" ]; then
   log "provisioning package not found. Please insert USB with drycontroller-provisioning/ and reboot."
-  exit 0
+  fail "provisioning USB not found (scanned /media /mnt /run/media + all vfat/ext partitions for ${BOOTSTRAP_USB_WAIT_SEC:-60}s)" 2
 fi
 
 log "found provisioning dir: $PROV_DIR"
@@ -133,6 +278,8 @@ TS_HOSTNAME="${TS_HOSTNAME:-${NODE_NAME:-$(hostname)}}"
 HARBOR_HOST="$(pyget harbor_host || true)"
 HARBOR_ROBOT_USER="$(pyget harbor_robot_user || true)"
 HARBOR_ROBOT_TOKEN="$(pyget harbor_robot_token || true)"
+TAILSCALE_IMAGE="$(pyget tailscale_image || true)"
+TAILSCALE_IMAGE="${TAILSCALE_IMAGE:-git.example.com/example-org/tailscale:stable}"
 
 if [ -z "${CLOUD_OPS_BASE_URL:-}" ]; then
   log "missing cloud_ops_base_url in provisioning.json"
@@ -206,6 +353,87 @@ compose() {
   fi
 }
 
+REGISTRY_LOGIN_DONE=0
+registry_login() {
+  if [ "$REGISTRY_LOGIN_DONE" = "1" ]; then
+    return 0
+  fi
+  if [ -z "${HARBOR_HOST:-}" ] || [ -z "${HARBOR_ROBOT_USER:-}" ] || [ -z "${HARBOR_ROBOT_TOKEN:-}" ]; then
+    return 1
+  fi
+  log "docker login to ${HARBOR_HOST} ..."
+  if echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_HOST}" -u "${HARBOR_ROBOT_USER}" --password-stdin >> "$LOG_FILE" 2>&1; then
+    REGISTRY_LOGIN_DONE=1
+    log "docker login ok"
+    return 0
+  fi
+  log "docker login failed"
+  return 1
+}
+
+load_bootstrap_image_tars() {
+  local images_dir="${PROV_DIR}/images"
+  [ -d "$images_dir" ] || return 0
+
+  local found=0
+  while IFS= read -r -d '' image_tar; do
+    found=1
+    log "loading bootstrap image from USB: ${image_tar}"
+    docker load -i "$image_tar" >> "$LOG_FILE" 2>&1 || {
+      log "docker load failed: ${image_tar}"
+      return 1
+    }
+  done < <(find "$images_dir" -maxdepth 1 -type f \( -name '*.tar' -o -name '*.tar.gz' -o -name '*.tgz' \) -print0 2>/dev/null | sort -z)
+
+  if [ "$found" = "0" ]; then
+    log "bootstrap images directory exists but contains no image tar: ${images_dir}"
+  fi
+  return 0
+}
+
+ensure_docker_image() {
+  local local_image="$1"
+  local mirror_image="${2:-}"
+
+  if docker image inspect "$local_image" >/dev/null 2>&1; then
+    log "required image already local: ${local_image}"
+    return 0
+  fi
+
+  load_bootstrap_image_tars
+  if docker image inspect "$local_image" >/dev/null 2>&1; then
+    log "required image loaded from USB: ${local_image}"
+    return 0
+  fi
+
+  if [ -n "$mirror_image" ]; then
+    if registry_login; then
+      log "pulling required image from private registry: ${mirror_image}"
+      if docker pull "$mirror_image" >> "$LOG_FILE" 2>&1; then
+        if [ "$mirror_image" != "$local_image" ]; then
+          docker tag "$mirror_image" "$local_image"
+        fi
+        log "required image available from private registry: ${local_image}"
+        return 0
+      fi
+      log "private registry pull failed: ${mirror_image}"
+    else
+      log "private registry credentials unavailable before image pull"
+    fi
+  fi
+
+  if [ "${BOOTSTRAP_ALLOW_DOCKER_HUB_FALLBACK:-false}" = "true" ]; then
+    log "Docker Hub fallback enabled; pulling ${local_image}"
+    if docker pull "$local_image" >> "$LOG_FILE" 2>&1; then
+      return 0
+    fi
+    log "Docker Hub fallback pull failed: ${local_image}"
+  fi
+
+  log "required image unavailable: ${local_image}"
+  return 1
+}
+
 CLOUD_OPS_ALLOCATE_BASE_URL="$CLOUD_OPS_BASE_URL"
 if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   if [ -z "${TS_LOGIN_SERVER:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
@@ -221,6 +449,7 @@ if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
   set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
   cd "$EDGE_ROOT"
+  ensure_docker_image "tailscale/tailscale:stable" "${TAILSCALE_IMAGE}" || exit 3
   log "starting tailnet before cloud allocation..."
   compose --profile remote-debug up -d tailscale
   TAILNET_READY=0
@@ -375,10 +604,7 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 3
 fi
 
-log "docker login to ${HARBOR_HOST} ..."
-echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_HOST}" -u "${HARBOR_ROBOT_USER}" --password-stdin \
-  && log "docker login ok" \
-  || { log "docker login failed"; exit 3; }
+registry_login || exit 3
 
 set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
 set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"
@@ -420,6 +646,7 @@ log "updated edge .env at ${ENV_FILE}"
 # 4) 启动 tailnet。Headscale-first：后续 enroll/license/OTA 使用 tailnet Cloud Ops URL。
 cd "$EDGE_ROOT"
 
+ensure_docker_image "tailscale/tailscale:stable" "${TAILSCALE_IMAGE}" || exit 3
 log "starting tailnet first (tailscale only)..."
 compose --profile remote-debug up -d tailscale
 
