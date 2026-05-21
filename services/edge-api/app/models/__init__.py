@@ -144,6 +144,7 @@ class OtaOperation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    operation_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     ota_version: Mapped[str] = mapped_column(String(64), nullable=False)
     source: Mapped[str] = mapped_column(String(32), nullable=False)  # online / offline / offline-tar
@@ -160,6 +161,7 @@ class OtaOperation(Base):
     result: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, default=dict)
 
     __table_args__ = (
+        Index("ix_ota_operation_id", "operation_id"),
         Index("ix_ota_started", "started_at"),
         Index("ix_ota_status", "status"),
     )

@@ -140,6 +140,8 @@ class CloudSyncOutboxDrainer:
             path = settings.CLOUD_SYNC_OUTBOX_CONTROL_PATH
         elif kind == "alarm":
             path = settings.CLOUD_SYNC_OUTBOX_ALARM_PATH
+        elif kind == "ota_operation":
+            path = settings.CLOUD_SYNC_OUTBOX_OTA_PATH
         else:
             return False, f"unsupported_outbox_kind:{kind}"
 
