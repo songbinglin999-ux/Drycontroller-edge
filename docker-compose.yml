@@ -30,6 +30,43 @@ services:
     tmpfs:
       - /run
       - /tmp
+
+  # ==================== Docker Socket Proxy (OTA 专用，profile=ota) ====================
+  # 说明：
+  # - edge-ota-agent 需要 compose pull / up / ps，比 edge-monitor 多 IMAGES/NETWORKS/VOLUMES 权限
+  # - 独立实例以保持 edge-monitor 最小权限不受影响（避免横向扩权）
+  # - 仅在 ota profile 启用，与 edge-ota-agent 同生命周期
+  docker-socket-proxy-ota:
+    image: tecnativa/docker-socket-proxy:0.1.1
+    container_name: edge-docker-socket-proxy-ota
+    profiles:
+      - ota
+    restart: always
+    logging: *default-logging
+    networks:
+      - edge-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # OTA 必需：compose pull -> POST /images/create
+      - IMAGES=1
+      # OTA 必需：compose up/down/ps 操作容器
+      - CONTAINERS=1
+      # OTA 必需：compose up 管理用户定义网络
+      - NETWORKS=1
+      # OTA 必需：compose up 创建命名卷
+      - VOLUMES=1
+      # 客户端兼容/健康检查
+      - INFO=1
+      - VERSION=1
+      - PING=1
+      # 必须：上述 API 大多通过 POST 完成 create/start/load
+      - POST=1
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+
   # ==================== 远程运维通道（Tailscale） ====================
   # 使用方式：
   # - 仅在需要“云端无公网入站 → 远程运维边缘机”时启用
@@ -629,8 +666,8 @@ services:
   # - 对外不暴露端口，建议只由 edge-api 代理调用（同 docker network）
   #
   # 安全提示：
-  # - MVP 阶段为了执行 compose pull/up，会挂载 docker.sock（高危权限）
-  # - 强烈建议仅在需要 OTA 时启用该 profile，并在后续迭代把权限进一步收敛/隔离
+  # - 不再直挂 /var/run/docker.sock；通过 docker-socket-proxy-ota 受控访问 docker engine
+  # - 仅开放 OTA 必需的 Docker API（IMAGES / CONTAINERS / NETWORKS / VOLUMES + POST），降低横向攻击面
   edge-ota-agent:
     build:
       context: .
@@ -645,6 +682,8 @@ services:
     profiles:
       - ota
     environment:
+      # 通过 docker-socket-proxy-ota 访问 docker engine（替代直挂 docker.sock）
+      - DOCKER_HOST=tcp://docker-socket-proxy-ota:2375
       - LOG_LEVEL=${LOG_LEVEL}
       - API_KEY_HEADER=${API_KEY_HEADER:-X-API-Key}
       # 默认复用 ADMIN_API_KEYS；也可单独配置 OTA_AGENT_API_KEYS
@@ -664,14 +703,15 @@ services:
     volumes:
       # 关键：把仓库根目录挂载到“与宿主机一致的路径”，让 compose 解析出来的 bind mount src 能在宿主机上真实存在
       - ./:/opt/Drycontroller-edge
-      # 高危：需要访问 docker engine 才能 pull/up
-      - /var/run/docker.sock:/var/run/docker.sock
       # 运维资产：cosign 公钥（默认宿主机 /etc/drycontroller/keys/cosign.pub）
       - ${OTA_COSIGN_PUBKEY_HOST_PATH:-/etc/drycontroller/keys/cosign.pub}:${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}:ro
       - ./logs/edge-ota-agent:/logs/edge-ota-agent
       - ./data/ota:/data/ota
     networks:
       - edge-network
+    depends_on:
+      docker-socket-proxy-ota:
+        condition: service_started
     restart: unless-stopped
     logging: *default-logging
 
