@@ -7,6 +7,7 @@ edge-api License 安装闭环测试。
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives import serialization
@@ -277,4 +278,33 @@ def test_plc_config_apply_records_version(monkeypatch):
     assert written[0][1]["host"] == "192.168.1.20"
     assert recorded[0]["scope"] == "plc"
     assert recorded[0]["source"] == "cloud"
+    assert recorded[0]["restart_required"] is True
+
+
+def test_plc_config_apply_records_pending_restart_when_restart_fails(monkeypatch):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    recorded = []
+
+    class _FailingMonitorClient:
+        async def restart_service(self, *_args, **_kwargs):
+            raise RuntimeError("restart failed")
+
+    async def fake_record_config_version(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(ops_module, "_atomic_write_yaml", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ops_module, "record_config_version", fake_record_config_version)
+    app = FastAPI()
+    app.include_router(ops_module.router, prefix="/api/v1/ops")
+    app.dependency_overrides[ops_module.get_monitor_ops_client] = lambda: _FailingMonitorClient()
+
+    with pytest.raises(RuntimeError, match="restart failed"):
+        TestClient(app).post(
+            "/api/v1/ops/plc-config/apply",
+            json={"plc_host": "192.168.1.20"},
+            headers={"X-API-Key": "admin-1"},
+        )
+
+    assert recorded[0]["scope"] == "plc"
     assert recorded[0]["restart_required"] is True

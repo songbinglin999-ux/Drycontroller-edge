@@ -53,6 +53,11 @@ async def test_record_preflight_run_adds_local_row_and_outbox(monkeypatch):
     session = _FakeSession()
     monkeypatch.setattr(history_module, "AsyncSessionLocal", lambda: session)
     monkeypatch.setattr(history_module.settings, "CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS", 10)
+    monkeypatch.setattr(
+        history_module,
+        "load_edge_identity",
+        lambda: {"edge_device_id": "EDGE-7", "edge_node_name": "edge-7"},
+    )
 
     await history_module.record_preflight_run(
         {"success": True, "status": "degraded", "summary": {"pass": 9, "degraded": 2, "fail": 0}}
@@ -72,6 +77,8 @@ async def test_record_preflight_run_adds_local_row_and_outbox(monkeypatch):
     assert outbox.kind == "preflight_run"
     assert outbox.max_attempts == 10
     assert outbox.payload["edge_preflight_id"] == 7
+    assert outbox.payload["edge_device_id"] == "EDGE-7"
+    assert outbox.payload["edge_node_name"] == "edge-7"
     assert outbox.payload["status"] == "degraded"
 
 
@@ -83,6 +90,11 @@ async def test_record_config_version_adds_local_row_and_outbox(monkeypatch):
     session = _FakeSession()
     monkeypatch.setattr(version_module, "AsyncSessionLocal", lambda: session)
     monkeypatch.setattr(version_module.settings, "CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS", 10)
+    monkeypatch.setattr(
+        version_module,
+        "load_edge_identity",
+        lambda: {"edge_device_id": "EDGE-7", "edge_node_name": "edge-7"},
+    )
 
     await version_module.record_config_version(
         scope="plc",
@@ -105,6 +117,8 @@ async def test_record_config_version_adds_local_row_and_outbox(monkeypatch):
     outbox = session.added[1]
     assert outbox.kind == "config_version"
     assert outbox.payload["edge_config_id"] == 7
+    assert outbox.payload["edge_device_id"] == "EDGE-7"
+    assert outbox.payload["edge_node_name"] == "edge-7"
     assert outbox.payload["payload"]["host"] == "192.168.1.20"
     assert outbox.payload["applied_by"] == "admin:key:abc"
 

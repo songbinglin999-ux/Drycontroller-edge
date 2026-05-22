@@ -9,10 +9,9 @@
 > alarm_events / operation_audit_logs / control_command_history / ota_operations /
 > preflight_runs / config_versions / cloud_sync_outbox
 >
-> 当前接入状态（2026-05-18 复核）：
-> - `operation_audit_logs` + `cloud_sync_outbox`：**active**（audit 域 producer `app/services/audit.py:write_audit()` 同时写两表，drainer `app/services/outbox_drain.py:CloudSyncOutboxDrainer` 在 `main.py` lifespan 启动；cloud-ops 侧 `POST /api/v1/audit/from-edge` consumer 已就位）
-> - `alarm_events` / `control_command_history` / `ota_operations` /
->   `preflight_runs` / `config_versions`：schema-only（producer 尚未接 outbox，断网时事件仍可能丢；见顶层 `architecture-audit-2026-05-06.md` P1-N5）
+> 当前接入状态（2026-05-22 复核）：
+> - `operation_audit_logs` / `alarm_events` / `control_command_history` / `ota_operations` /
+>   `preflight_runs` / `config_versions`：**active**（producer 同步写本地历史 + `cloud_sync_outbox`，drainer `app/services/outbox_drain.py:CloudSyncOutboxDrainer` 在 `main.py` lifespan 启动，cloud-ops 侧 `*/from-edge` consumer 已就位；见顶层 `architecture-audit-2026-05-06.md` P1-N5）
 
 ---
 

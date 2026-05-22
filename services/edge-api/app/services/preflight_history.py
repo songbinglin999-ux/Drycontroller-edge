@@ -8,6 +8,7 @@ import structlog
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models import CloudSyncOutbox, PreflightRun
+from app.services.edge_identity import load_edge_identity
 
 logger = structlog.get_logger(__name__)
 
@@ -34,6 +35,7 @@ async def record_preflight_run(payload: dict[str, Any]) -> None:
                 )
                 db.add(row)
                 await db.flush()
+                identity = load_edge_identity()
 
                 db.add(
                     CloudSyncOutbox(
@@ -41,6 +43,7 @@ async def record_preflight_run(payload: dict[str, Any]) -> None:
                         max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
                         payload={
                             "edge_preflight_id": row.id,
+                            **identity,
                             "run_at": row.run_at.isoformat() if row.run_at else None,
                             "status": row.status,
                             "ok": row.ok,

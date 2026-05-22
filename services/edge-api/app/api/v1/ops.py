@@ -592,6 +592,21 @@ async def apply_plc_config(
         "updated_by": "cloud",
     }
     _atomic_write_yaml(cfg_path, payload)
+
+    restart_result = None
+    if req.restart_edge_daq:
+        try:
+            restart_result = await client.restart_service("edge-daq", api_key=api_key)
+        except Exception:
+            await record_config_version(
+                scope="plc",
+                payload=payload,
+                source="cloud",
+                applied_by=api_key_actor(api_key, role="admin"),
+                restart_required=True,
+            )
+            raise
+
     await record_config_version(
         scope="plc",
         payload=payload,
@@ -599,10 +614,6 @@ async def apply_plc_config(
         applied_by=api_key_actor(api_key, role="admin"),
         restart_required=not req.restart_edge_daq,
     )
-
-    restart_result = None
-    if req.restart_edge_daq:
-        restart_result = await client.restart_service("edge-daq", api_key=api_key)
 
     ready_result: dict | None = None
     if req.read_ready_after_restart:

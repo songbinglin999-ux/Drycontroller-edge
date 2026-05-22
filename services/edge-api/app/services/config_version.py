@@ -10,6 +10,7 @@ import structlog
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models import CloudSyncOutbox, ConfigVersion
+from app.services.edge_identity import load_edge_identity
 
 logger = structlog.get_logger(__name__)
 
@@ -58,6 +59,7 @@ async def record_config_version(
                 )
                 db.add(row)
                 await db.flush()
+                identity = load_edge_identity()
 
                 db.add(
                     CloudSyncOutbox(
@@ -65,6 +67,7 @@ async def record_config_version(
                         max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
                         payload={
                             "edge_config_id": row.id,
+                            **identity,
                             "scope": row.scope,
                             "version": row.version,
                             "checksum": row.checksum,
