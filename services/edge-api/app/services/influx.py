@@ -133,7 +133,7 @@ class InfluxQueryService:
         flux = self._build_history_flux(tag, period, window, aggregation)
         return await asyncio.to_thread(self._query_and_parse_history, flux)
 
-    async def query_flux(self, flux: str):
+    async def _query_flux(self, flux: str):
         """
         执行自定义 Flux 查询并返回原始表数据
         
@@ -175,7 +175,7 @@ class InfluxQueryService:
         if line is not None:
             line = self._validate_identifier(line, "line")
         flux = self._build_training_flux(measurement, start, stop, line, require_lab)
-        tables = await self.query_flux(flux)
+        tables = await self._query_flux(flux)
         return self._tables_to_dicts(tables)
 
     async def system_metric_trend(
@@ -208,7 +208,7 @@ class InfluxQueryService:
         if line is not None:
             line = self._validate_identifier(line, "line")
         flux = self._build_system_metric_flux(measurement, field, period, window, line)
-        tables = await self.query_flux(flux)
+        tables = await self._query_flux(flux)
         return self._parse_timeseries_tables(tables)
 
     async def active_service_alarms(
@@ -240,7 +240,7 @@ class InfluxQueryService:
             severity=severity,
             include_history=include_history,
         )
-        tables = await self.query_flux(flux)
+        tables = await self._query_flux(flux)
         return self._tables_to_dicts(tables)
 
     def _build_latest_flux(self, tags: List[str], lookback: str) -> str:
