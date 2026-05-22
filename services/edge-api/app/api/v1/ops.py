@@ -35,7 +35,9 @@ from app.services.monitor_config import MonitorConfigService, get_monitor_config
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 from app.services.audit import api_key_actor, write_audit
+from app.services.config_version import record_config_version
 from app.services.ota_history import record_ota_operation
+from app.services.preflight_history import record_preflight_run
 from common.license_verifier import load_public_key, verify_signature
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
@@ -398,6 +400,7 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
         "check_ota": req.check_ota,
         "generated_at": int(time.time()),
     }
+    await record_preflight_run(payload)
     if not payload["success"]:
         raise HTTPException(status_code=409, detail=payload)
     return payload
@@ -589,6 +592,13 @@ async def apply_plc_config(
         "updated_by": "cloud",
     }
     _atomic_write_yaml(cfg_path, payload)
+    await record_config_version(
+        scope="plc",
+        payload=payload,
+        source="cloud",
+        applied_by=api_key_actor(api_key, role="admin"),
+        restart_required=not req.restart_edge_daq,
+    )
 
     restart_result = None
     if req.restart_edge_daq:

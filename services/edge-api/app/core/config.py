@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     CLOUD_SYNC_OUTBOX_CONTROL_PATH: str = "/api/v1/control/from-edge"
     CLOUD_SYNC_OUTBOX_ALARM_PATH: str = "/api/v1/alarms/from-edge"
     CLOUD_SYNC_OUTBOX_OTA_PATH: str = "/api/v1/ota/from-edge"
+    CLOUD_SYNC_OUTBOX_PREFLIGHT_PATH: str = "/api/v1/preflight/from-edge"
+    CLOUD_SYNC_OUTBOX_CONFIG_PATH: str = "/api/v1/config-versions/from-edge"
     # cloud-ops 端 header 名（默认 X-Enroll-Token，与 cloudserver settings.ENROLL_TOKEN_HEADER 对齐）
     CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER: str = "X-Enroll-Token"
 

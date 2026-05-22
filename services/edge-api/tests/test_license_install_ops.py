@@ -190,6 +190,12 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
     monkeypatch.setattr(ops_module, "_preflight_http_check", fake_http_check)
+    recorded = []
+
+    async def fake_record_preflight_run(payload):
+        recorded.append(payload)
+
+    monkeypatch.setattr(ops_module, "record_preflight_run", fake_record_preflight_run)
 
     resp = _client().post(
         "/api/v1/ops/preflight",
@@ -202,6 +208,7 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     assert body["success"] is True
     assert body["status"] == "degraded"
     assert body["summary"]["fail"] == 0
+    assert recorded[0]["status"] == "degraded"
 
 
 def test_preflight_fails_when_required_files_missing(tmp_path: Path, monkeypatch):
@@ -220,6 +227,12 @@ def test_preflight_fails_when_required_files_missing(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
     monkeypatch.setattr(ops_module, "_preflight_http_check", fake_http_check)
+    recorded = []
+
+    async def fake_record_preflight_run(payload):
+        recorded.append(payload)
+
+    monkeypatch.setattr(ops_module, "record_preflight_run", fake_record_preflight_run)
 
     resp = _client().post(
         "/api/v1/ops/preflight",
@@ -232,3 +245,36 @@ def test_preflight_fails_when_required_files_missing(tmp_path: Path, monkeypatch
     assert detail["success"] is False
     assert detail["status"] == "fail"
     assert detail["summary"]["fail"] >= 1
+    assert recorded[0]["status"] == "fail"
+
+
+def test_plc_config_apply_records_version(monkeypatch):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    written = []
+    recorded = []
+
+    def fake_atomic_write_yaml(path, payload):
+        written.append((path, payload))
+
+    async def fake_record_config_version(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(ops_module, "_atomic_write_yaml", fake_atomic_write_yaml)
+    monkeypatch.setattr(ops_module, "record_config_version", fake_record_config_version)
+
+    resp = _client().post(
+        "/api/v1/ops/plc-config/apply",
+        json={
+            "plc_host": "192.168.1.20",
+            "restart_edge_daq": False,
+            "read_ready_after_restart": False,
+        },
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert resp.status_code == 200
+    assert written[0][1]["host"] == "192.168.1.20"
+    assert recorded[0]["scope"] == "plc"
+    assert recorded[0]["source"] == "cloud"
+    assert recorded[0]["restart_required"] is True
