@@ -27,12 +27,39 @@ BOOTSTRAP_STARTED_AT="$(date -Is)"
 BOOTSTRAP_FAIL_REASON=""
 BOOTSTRAP_USB_MOUNT="/mnt/drycontroller-provisioning"
 
+# ── ANSI 颜色 ──────────────────────────────────────────────────────
+C_RESET='\033[0m'
+C_BOLD='\033[1m'
+C_RED='\033[31m'
+C_GREEN='\033[32m'
+C_YELLOW='\033[33m'
+C_CYAN='\033[36m'
+C_BG_GREEN='\033[42m'
+C_BG_RED='\033[41m'
+
+_has_color() {
+  [ -t 2 ] || [ -w /dev/console ] && return 0 || return 1
+}
+
+_plain() { printf '%s\n' "$*"; }
+_color() {
+  local color="$1"; shift
+  if _has_color; then
+    printf "%s%s%s\n" "$color" "$*" "$C_RESET"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+
 mkdir -p "$(dirname "$LOG_FILE")" "$STATE_DIR" "$KEYS_DIR" "$LICENSE_DIR"
 chmod 700 "$STATE_DIR" || true
 chmod 755 "$ASSET_DIR" "$KEYS_DIR" || true
 chmod 750 "$LICENSE_DIR" || true
 
-log() { echo "[$(date -Is)] $*" | tee -a "$LOG_FILE" >/dev/null; }
+log()  { echo "[$(date -Is)] $*" | tee -a "$LOG_FILE" >/dev/null; }
+log_ok()   { local m="$*"; echo "[$(date -Is)] OK    $m" | tee -a "$LOG_FILE" >/dev/null; _color "$C_GREEN"  "  [OK]    $m" >&2; }
+log_warn() { local m="$*"; echo "[$(date -Is)] WARN  $m" | tee -a "$LOG_FILE" >/dev/null; _color "$C_YELLOW" "  [WARN]  $m" >&2; }
+log_err()  { local m="$*"; echo "[$(date -Is)] ERROR $m" | tee -a "$LOG_FILE" >/dev/null; _color "$C_RED"    "  [ERROR] $m" >&2; }
 
 # 让现场操作员一眼看到结果：横幅同时写入日志、stderr(journald)、物理控制台
 broadcast() {
@@ -43,16 +70,46 @@ broadcast() {
   fi
 }
 
+broadcast_color() {
+  local color="$1"; shift
+  local plain="$*"
+  _plain "$plain" | tee -a "$LOG_FILE" >/dev/null
+  if _has_color; then
+    printf "%s%s%s\n" "$color" "$plain" "$C_RESET" >&2
+    if [ -w /dev/console ]; then
+      printf "%s%s%s\n" "$color" "$plain" "$C_RESET" > /dev/console 2>/dev/null || true
+    fi
+  else
+    printf '%s\n' "$plain" >&2
+    if [ -w /dev/console ]; then
+      printf '%s\n' "$plain" > /dev/console 2>/dev/null || true
+    fi
+  fi
+}
+
 banner_success() {
   local detail="${1:-}"
   broadcast ""
-  broadcast "================================================================================"
-  broadcast "/xxxxxxxxxxxxxxxxxxx  SUCCESS  xxxxxxxxxxxxxxxxxxx/   Drycontroller bootstrap"
-  [ -n "$detail" ] && broadcast "  $detail"
-  broadcast "  started:  ${BOOTSTRAP_STARTED_AT}"
-  broadcast "  finished: $(date -Is)"
-  broadcast "  sentinel: ${SENTINEL}"
-  broadcast "================================================================================"
+  broadcast_color "$C_GREEN"  "  ✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓"
+  broadcast_color "$C_GREEN"  "  ✓                                                              ✓"
+  broadcast_color "$C_GREEN"  "  ✓                   BOOTSTRAP  SUCCESS                         ✓"
+  broadcast_color "$C_GREEN"  "  ✓                                                              ✓"
+  [ -n "$detail" ] && broadcast_color "$C_GREEN" "  ✓  $detail"
+  broadcast_color "$C_GREEN"  "  ✓  started:  ${BOOTSTRAP_STARTED_AT}"
+  broadcast_color "$C_GREEN"  "  ✓  finished: $(date -Is)"
+  broadcast_color "$C_GREEN"  "  ✓                                                              ✓"
+  broadcast_color "$C_GREEN"  "  ✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓"
+  broadcast ""
+
+  # 大字绿色最终成功横幅
+  if _has_color; then
+    broadcast_color "$C_BG_GREEN"  "                                                              "
+    broadcast_color "$C_BG_GREEN"  "     PROVISIONING  COMPLETE                                    "
+    broadcast_color "$C_BG_GREEN"  "                                                              "
+    broadcast_color "$C_BG_GREEN"  "     All edge services are running.                            "
+    broadcast_color "$C_BG_GREEN"  "     Device: ${DEVICE_ID:-?}  Node: ${NODE_NAME:-?}            "
+    broadcast_color "$C_BG_GREEN"  "                                                              "
+  fi
   broadcast ""
 }
 
@@ -60,15 +117,18 @@ banner_failure() {
   local exit_code="$1"
   local reason="${2:-(unspecified)}"
   broadcast ""
-  broadcast "################################################################################"
-  broadcast "/XXXXXXXXXXXXXXXXXXX  FAILURE  XXXXXXXXXXXXXXXXXXX/   Drycontroller bootstrap"
-  broadcast "  exit_code: ${exit_code}"
-  broadcast "  reason:    ${reason}"
-  broadcast "  started:   ${BOOTSTRAP_STARTED_AT}"
-  broadcast "  failed_at: $(date -Is)"
-  broadcast "  log:       ${LOG_FILE}"
-  broadcast "  next:      检查上方日志，修正后 reboot 或 systemctl restart drycontroller-bootstrap.service"
-  broadcast "################################################################################"
+  broadcast_color "$C_RED"  "  ✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗"
+  broadcast_color "$C_RED"  "  ✗                                                              ✗"
+  broadcast_color "$C_RED"  "  ✗                   BOOTSTRAP  FAILED                           ✗"
+  broadcast_color "$C_RED"  "  ✗                                                              ✗"
+  broadcast_color "$C_RED"  "  ✗  exit_code: ${exit_code}"
+  broadcast_color "$C_RED"  "  ✗  reason:    ${reason}"
+  broadcast_color "$C_RED"  "  ✗  started:   ${BOOTSTRAP_STARTED_AT}"
+  broadcast_color "$C_RED"  "  ✗  failed_at: $(date -Is)"
+  broadcast_color "$C_RED"  "  ✗  log:       ${LOG_FILE}"
+  broadcast_color "$C_RED"  "  ✗  next:      检查日志，修正后 reboot 或 systemctl restart"
+  broadcast_color "$C_RED"  "  ✗                                                              ✗"
+  broadcast_color "$C_RED"  "  ✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗"
   broadcast ""
 }
 
@@ -201,7 +261,7 @@ mount_provisioning_usb() {
       rmdir "$probe" 2>/dev/null || true
     done
 
-    log "provisioning USB not yet visible (elapsed ${elapsed}s/${timeout}s)"
+    log_warn "provisioning USB not yet visible (elapsed ${elapsed}s/${timeout}s)"
     sleep "$interval"
     elapsed=$((elapsed + interval))
   done
@@ -220,7 +280,7 @@ if [ -z "${PROV_DIR:-}" ]; then
   fail "provisioning USB not found (scanned /media /mnt /run/media + all vfat/ext partitions for ${BOOTSTRAP_USB_WAIT_SEC:-60}s)" 2
 fi
 
-log "found provisioning dir: $PROV_DIR"
+log_ok "found provisioning dir: $PROV_DIR"
 
 PROV_JSON="$PROV_DIR/provisioning.json"
 COSIGN_PUB="$PROV_DIR/cosign.pub"
@@ -234,7 +294,7 @@ if [ ! -f "$COSIGN_PUB" ]; then
   REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
   REPO_PUB="${REPO_ROOT}/configs/keys/cosign.pub"
   if [ -f "$REPO_PUB" ]; then
-    log "U 盘未提供 cosign.pub，回退使用仓库内置: $REPO_PUB"
+    log_warn "U 盘未提供 cosign.pub，回退使用仓库内置: $REPO_PUB"
     COSIGN_PUB="$REPO_PUB"
   else
     log "missing cosign.pub: $COSIGN_PUB (and no fallback at $REPO_PUB)"
@@ -364,10 +424,10 @@ registry_login() {
   log "docker login to ${HARBOR_HOST} ..."
   if echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_HOST}" -u "${HARBOR_ROBOT_USER}" --password-stdin >> "$LOG_FILE" 2>&1; then
     REGISTRY_LOGIN_DONE=1
-    log "docker login ok"
+    log_ok "docker login ok — ${HARBOR_HOST}"
     return 0
   fi
-  log "docker login failed"
+  log_err "docker login failed — ${HARBOR_HOST}"
   return 1
 }
 
@@ -469,7 +529,7 @@ if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
     if [ -d /usr/local/share/ca-certificates ]; then
       cp "${HEADSCALE_CA_CRT}" /usr/local/share/ca-certificates/headscale-ca.crt
       update-ca-certificates 2>/dev/null || true
-      log "headscale CA installed to system trust store"
+      log_ok "headscale CA installed to system trust store"
     else
       log "headscale CA cert written to ${HEADSCALE_CA_CRT} (no system ca-certificates dir)"
     fi
@@ -492,9 +552,9 @@ if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   done
   if [ "$TAILNET_READY" = "1" ]; then
     CLOUD_OPS_ALLOCATE_BASE_URL="$CLOUD_OPS_TAILNET_BASE_URL"
-    log "tailnet ready before allocation; allocating through ${CLOUD_OPS_ALLOCATE_BASE_URL}"
+    log_ok "tailnet ready before allocation; allocating through ${CLOUD_OPS_ALLOCATE_BASE_URL}"
   else
-    log "tailnet did not become ready before allocation; bootstrap will not fall back to public cloud url"
+    log_err "tailnet did not become ready before allocation; bootstrap will not fall back to public cloud url"
     exit 5
   fi
 fi
@@ -561,9 +621,9 @@ PY
       -d "$ALLOCATE_PAYLOAD" \
       -o "$ALLOCATION_RESP_FILE" >> "$LOG_FILE" 2>&1; then
       install -m 0600 "$ALLOCATION_RESP_FILE" "$ALLOCATION_CACHE_FILE"
-      log "cloud allocation ok; cached response -> $ALLOCATION_CACHE_FILE"
+      log_ok "cloud allocation ok; cached response -> $ALLOCATION_CACHE_FILE"
     else
-      log "cloud allocation failed; bootstrap will not be marked complete"
+      log_err "cloud allocation failed; bootstrap will not be marked complete"
       exit 5
     fi
   fi
@@ -694,11 +754,11 @@ if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
     sleep "$TAILNET_SLEEP_SEC"
   done
   if [ "$TAILNET_READY" = "1" ]; then
-    log "tailnet ready; cloud runtime url: ${CLOUD_OPS_RUNTIME_BASE_URL}"
+    log_ok "tailnet ready; cloud runtime url: ${CLOUD_OPS_RUNTIME_BASE_URL}"
     set_kv "EDGE_API_BIND_ADDR" "$TAILNET_IP"
     log "edge-api bind address set to tailnet ip: ${TAILNET_IP}"
   else
-    log "tailnet did not become ready; bootstrap will not fall back to public cloud url"
+    log_err "tailnet did not become ready; bootstrap will not fall back to public cloud url"
     exit 5
   fi
 else
@@ -741,9 +801,9 @@ PY
     -H "X-Enroll-Token: ${ENROLL_TOKEN}" \
     -d "$PAYLOAD" \
     -o "$LICENSE_RESP_FILE" >> "$LOG_FILE" 2>&1; then
-    log "license bind request ok"
+    log_ok "license bind request ok"
   else
-    log "license bind request failed; bootstrap will not be marked complete"
+    log_err "license bind request failed; bootstrap will not be marked complete"
     exit 5
   fi
 fi
@@ -783,9 +843,9 @@ for attempt in $(seq 1 "$VERIFY_RETRIES"); do
   sleep "$VERIFY_SLEEP_SEC"
 done
 if [ "$VERIFY_OK" = "1" ]; then
-  log "local license verify ok"
+  log_ok "local license verify ok"
 else
-  log "local license verify failed; bootstrap will not be marked complete"
+  log_err "local license verify failed; bootstrap will not be marked complete"
   exit 6
 fi
 
@@ -821,4 +881,4 @@ Path(os.environ["DEVICE_JSON"]).write_text(json.dumps(payload, ensure_ascii=Fals
 PY
 
 touch "$SENTINEL"
-log "bootstrap complete. sentinel written: $SENTINEL"
+log_ok "bootstrap complete. sentinel written: $SENTINEL"
