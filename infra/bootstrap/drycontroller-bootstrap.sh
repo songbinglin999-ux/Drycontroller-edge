@@ -400,11 +400,21 @@ ensure_docker_image() {
     return 0
   fi
 
+  # USB / bundle 内预构建镜像优先——零网络，本地秒级加载
   load_bootstrap_image_tars
   if docker image inspect "$local_image" >/dev/null 2>&1; then
-    log "required image loaded from USB: ${local_image}"
+    log "required image loaded from USB/bundle: ${local_image}"
     return 0
   fi
+
+  # 网络回退默认关闭。现场有网且 USB 缺镜像时，设置 BOOTSTRAP_ALLOW_NETWORK_FALLBACK=true
+  if [ "${BOOTSTRAP_ALLOW_NETWORK_FALLBACK:-false}" != "true" ]; then
+    log "required image unavailable (no USB/bundle match): ${local_image}"
+    log "to allow network pull, set BOOTSTRAP_ALLOW_NETWORK_FALLBACK=true in provisioning environment"
+    return 1
+  fi
+
+  log "network fallback enabled; attempting online pull for ${local_image}"
 
   if [ -n "$mirror_image" ]; then
     if registry_login; then
@@ -422,15 +432,14 @@ ensure_docker_image() {
     fi
   fi
 
-  if [ "${BOOTSTRAP_ALLOW_DOCKER_HUB_FALLBACK:-false}" = "true" ]; then
-    log "Docker Hub fallback enabled; pulling ${local_image}"
-    if docker pull "$local_image" >> "$LOG_FILE" 2>&1; then
-      return 0
-    fi
-    log "Docker Hub fallback pull failed: ${local_image}"
+  log "pulling required image from Docker Hub: ${local_image}"
+  if docker pull "$local_image" >> "$LOG_FILE" 2>&1; then
+    log "required image pulled from Docker Hub: ${local_image}"
+    return 0
   fi
+  log "Docker Hub pull failed: ${local_image}"
 
-  log "required image unavailable: ${local_image}"
+  log "required image unavailable after all fallbacks: ${local_image}"
   return 1
 }
 
@@ -448,6 +457,23 @@ if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"
   set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
   set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
+  # P1-N15 path B: install Headscale self-signed CA before Tailscale starts,
+  # so the client trusts the coordination server.  When ICP filing completes
+  # (path A), omit headscale_ca from provisioning.json and this block is a no-op.
+  HEADSCALE_CA="$(pyget headscale_ca 2>/dev/null || true)"
+  if [ -n "${HEADSCALE_CA:-}" ]; then
+    HEADSCALE_CA_CRT="/etc/drycontroller/keys/headscale-ca.crt"
+    mkdir -p /etc/drycontroller/keys
+    printf '%s' "${HEADSCALE_CA}" | base64 -d > "${HEADSCALE_CA_CRT}"
+    chmod 644 "${HEADSCALE_CA_CRT}"
+    if [ -d /usr/local/share/ca-certificates ]; then
+      cp "${HEADSCALE_CA_CRT}" /usr/local/share/ca-certificates/headscale-ca.crt
+      update-ca-certificates 2>/dev/null || true
+      log "headscale CA installed to system trust store"
+    else
+      log "headscale CA cert written to ${HEADSCALE_CA_CRT} (no system ca-certificates dir)"
+    fi
+  fi
   cd "$EDGE_ROOT"
   ensure_docker_image "tailscale/tailscale:stable" "${TAILSCALE_IMAGE}" || exit 3
   log "starting tailnet before cloud allocation..."
