@@ -22,7 +22,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${REPO_ROOT}/dist"
 COMPOSE_PROJECT="drycontroller-edge"
 
-log() { printf '[%s] %s\n' "$(date -Is)" "$*"; }
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
 
 BUILD_IMAGES=true
@@ -48,24 +48,23 @@ if [ "$BUILD_IMAGES" = true ]; then
   BEFORE="${DIST_DIR}/.image-ids-before.txt"
   docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > "$BEFORE"
 
-  # 构建 build-type 服务
-  COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" docker compose build --parallel 2>&1 | \
+  # 构建所有 build-type 服务（含 profile: ota 的 edge-ota-agent）
+  COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" COMPOSE_PROFILES="ota,remote-debug" docker compose build --parallel 2>&1 | \
     while IFS= read -r line; do log "  [build] $line"; done
 
-  # 拉取 base images
-  COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" docker compose pull --ignore-buildable 2>&1 | \
+  # 拉取 base images（含 profile: remote-debug 的 tailscale）
+  COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" COMPOSE_PROFILES="remote-debug" docker compose pull --ignore-buildable 2>&1 | \
     while IFS= read -r line; do log "  [pull] $line"; done
 
   # 构建后 snapshot
   AFTER="${DIST_DIR}/.image-ids-after.txt"
   docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > "$AFTER"
 
-  # 收集：新建/更新过的镜像 + compose project 前缀的构建镜像
+  # 收集镜像：project 前缀（构建镜像）+ compose file 中声明的 image + 快照差异
   IMAGE_LIST="${DIST_DIR}/bundle-images.list"
   {
-    # compose build 产生的镜像（以 project name 命名）
-    docker image ls --format '{{.Repository}}:{{.Tag}}' | grep "^${COMPOSE_PROJECT}_" || true
-    # 构建/拉取后新增或变更的镜像
+    docker image ls --format '{{.Repository}}:{{.Tag}}' | grep "^${COMPOSE_PROJECT}" || true
+    grep -h 'image:' docker-compose.yml | sed 's/.*image:[[:space:]]*//' | tr -d '"' | sort -u
     comm -13 "$BEFORE" "$AFTER" | awk '{print $1}'
   } | sort -u > "$IMAGE_LIST"
   rm -f "$BEFORE" "$AFTER"
