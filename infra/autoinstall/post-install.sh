@@ -74,4 +74,7 @@ systemctl disable drycontroller-edge-post-install.service >/dev/null 2>&1 || tru
 
 log "autoinstall host preparation complete"
 log "powering off; remove OS Installer USB and insert Provisioning USB for activation"
-systemctl poweroff
+umount -l /cdrom 2>/dev/null || true
+sync
+sleep 1
+/sbin/poweroff -f
