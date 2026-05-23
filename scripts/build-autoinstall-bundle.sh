@@ -157,29 +157,14 @@ install -m 0755 "${REPO_ROOT}/infra/autoinstall/post-install.sh" "${OUT_DIR}/pos
 install -m 0644 "${REPO_ROOT}/infra/autoinstall/drycontroller-edge-post-install.service" "${OUT_DIR}/drycontroller-edge-post-install.service"
 install -m 0600 "${REPO_ROOT}/infra/autoinstall/wifi.env.example" "${OUT_DIR}/wifi.env.example"
 
-(
-  cd "$REPO_ROOT"
-  tar \
-    --exclude='.git' \
-    --exclude='.env' \
-    --exclude='.env.*' \
-    --exclude='edge-local.env' \
-    --exclude='infra/autoinstall/password.env' \
-    --exclude='infra/autoinstall/wifi.env' \
-    --exclude='.venv' \
-    --exclude='.venv*' \
-    --exclude='.venv-*' \
-    --exclude='node_modules' \
-    --exclude='__pycache__' \
-    --exclude='.pytest_cache' \
-    --exclude='dist' \
-    --exclude='logs' \
-    --exclude='data' \
-    --exclude='tmp' \
-    --exclude='.DS_Store' \
-    --exclude='*.pyc' \
-    -czf "${OUT_DIR}/drycontroller-edge.tar.gz" .
-)
+# 源码 bundle 由 build-bundle-images.sh 统一产出；如果还没构建则自动触发
+BUNDLE_SCRIPT="${REPO_ROOT}/tools/build-bundle-images.sh"
+BUNDLE_SRC="${REPO_ROOT}/dist/drycontroller-edge.tar.gz"
+if [ ! -f "$BUNDLE_SRC" ]; then
+  echo "source bundle not found; running build-bundle-images.sh --bundle-only ..."
+  bash "$BUNDLE_SCRIPT" --bundle-only
+fi
+cp "$BUNDLE_SRC" "${OUT_DIR}/drycontroller-edge.tar.gz"
 
 cat <<EOF
 Autoinstall bundle written to:
