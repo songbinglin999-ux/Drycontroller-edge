@@ -73,8 +73,9 @@ bash "${SOURCE_ROOT}/infra/bootstrap/install-edge-host.sh" \
 systemctl disable drycontroller-edge-post-install.service >/dev/null 2>&1 || true
 
 log "autoinstall host preparation complete"
-log "rebooting to SSD; provisioning USB will be auto-detected after boot"
+log "shutting down. Remove OS Installer USB, insert Provisioning USB, then power on."
+log "after boot, provisioning will auto-detect the USB and activate the edge stack"
 umount -l /cdrom 2>/dev/null || true
 sync
 sleep 1
-/sbin/reboot -f
+/sbin/poweroff -f

@@ -44,22 +44,33 @@ if [ "$BUILD_IMAGES" = true ]; then
 
   cd "$REPO_ROOT"
 
-  # 构建 build-type 服务（edge-api, edge-daq, edge-monitor, ai-*, license-service, edge-ota-agent）
+  # 构建前快照
+  BEFORE="${DIST_DIR}/.image-ids-before.txt"
+  docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > "$BEFORE"
+
+  # 构建 build-type 服务
   COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" docker compose build --parallel 2>&1 | \
     while IFS= read -r line; do log "  [build] $line"; done
 
-  # 拉取 base images（tailscale, postgres, influxdb, mosquitto, prometheus, alertmanager, socket-proxy）
+  # 拉取 base images
   COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" docker compose pull --ignore-buildable 2>&1 | \
     while IFS= read -r line; do log "  [pull] $line"; done
 
-  # 收集需要保存的镜像列表
+  # 构建后 snapshot
+  AFTER="${DIST_DIR}/.image-ids-after.txt"
+  docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > "$AFTER"
+
+  # 收集：新建/更新过的镜像 + compose project 前缀的构建镜像
   IMAGE_LIST="${DIST_DIR}/bundle-images.list"
   {
-    # compose 构建的服务镜像
+    # compose build 产生的镜像（以 project name 命名）
     docker image ls --format '{{.Repository}}:{{.Tag}}' | grep "^${COMPOSE_PROJECT}_" || true
-    # compose 拉取的 base 镜像
-    docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^(tailscale/tailscale|tecnativa/docker-socket-proxy|postgres|influxdb|eclipse-mosquitto|prom/prometheus|prom/alertmanager):' || true
+    # 构建/拉取后新增或变更的镜像
+    comm -13 "$BEFORE" "$AFTER" | awk '{print $1}'
   } | sort -u > "$IMAGE_LIST"
+  rm -f "$BEFORE" "$AFTER"
+
+  COUNT="$(wc -l < "$IMAGE_LIST")"
 
   COUNT="$(wc -l < "$IMAGE_LIST")"
   if [ "$COUNT" -eq 0 ]; then
@@ -100,20 +111,11 @@ if [ "$BUILD_BUNDLE" = true ]; then
 
   log "bundle created: $BUNDLE ($(du -h "$BUNDLE" | cut -f1))"
 
-  # 把镜像 tar 也打进 bundle（如果存在）
+  # bundle-images.tar 与源码 bundle 分开存放，通过 post-install.sh 中的 tar -xzf
+  # 解压后与源码一起部署到 /opt。镜像 tar 由 bootstrap 中 load_bootstrap_image_tars()
+  # 从 USB 加载。
   if [ -f "${DIST_DIR}/bundle-images.tar" ]; then
-    log "appending bundle-images.tar to source bundle..."
-    cp "$BUNDLE" "${BUNDLE}.tmp"
-    tar -rf "${BUNDLE}.tmp" -C "$DIST_DIR" bundle-images.tar 2>/dev/null || {
-      # tar 追加对大文件不太可靠，回退到单独存放
-      log "tar append failed; keeping bundle-images.tar as separate file"
-      rm -f "${BUNDLE}.tmp"
-    }
-    if [ -f "${BUNDLE}.tmp" ]; then
-      gzip -f "${BUNDLE}.tmp"
-      mv "${BUNDLE}.tmp.gz" "$BUNDLE"
-      log "bundle with images: $BUNDLE ($(du -h "$BUNDLE" | cut -f1))"
-    fi
+    log "images tar: ${DIST_DIR}/bundle-images.tar ($(du -h "${DIST_DIR}/bundle-images.tar" | cut -f1))"
   fi
 fi
 
