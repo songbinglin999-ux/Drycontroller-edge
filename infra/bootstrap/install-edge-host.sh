@@ -174,16 +174,28 @@ configure_docker() {
   "log-opts": {
     "max-size": "100m",
     "max-file": "5"
-  }
+  },
+  "registry-mirrors": ["https://docker.m.daocloud.io"],
+  "dns": ["223.5.5.5", "114.114.114.114"],
+  "features": {"buildkit": false}
 }
 EOF
-    log "created /etc/docker/daemon.json with log rotation"
+    log "created /etc/docker/daemon.json with log rotation, registry mirror, dns, buildkit disabled"
   else
     log "/etc/docker/daemon.json exists; leaving it unchanged"
   fi
 
   systemctl enable docker.service >/dev/null 2>&1 || true
   systemctl restart docker.service
+}
+
+install_bootstrap_timeout_override() {
+  mkdir -p /etc/systemd/system/drycontroller-bootstrap.service.d
+  cat > /etc/systemd/system/drycontroller-bootstrap.service.d/override.conf <<'EOF'
+[Service]
+TimeoutStartSec=1800
+EOF
+  log "installed bootstrap timeout override: TimeoutStartSec=1800"
 }
 
 copy_edge_project() {
@@ -264,6 +276,7 @@ verify_prerequisites
 configure_docker
 copy_edge_project
 install_bootstrap_service
+install_bootstrap_timeout_override
 write_host_manifest
 
 log "host preparation complete"
