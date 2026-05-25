@@ -3,6 +3,9 @@
 """
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import time
 from typing import Callable, List, Optional, Set
@@ -17,13 +20,54 @@ from app.services.realtime_data import (
     get_realtime_data_service,
 )
 from app.core.security import is_control_api_key_allowed
+from app.core.config import settings
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
 WS_AUTH_TIMEOUT_SEC = 5.0
 
 
+def _server_identity_proofs(nonce: str) -> List[str]:
+    keys = list(dict.fromkeys([*settings.ADMIN_API_KEYS, *settings.CONTROL_API_KEYS]))
+    proofs = []
+    for key in keys:
+        digest = hmac.new(key.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256).digest()
+        proofs.append(base64.urlsafe_b64encode(digest).decode("ascii").rstrip("="))
+    return proofs
+
+
 async def _require_ws_control_auth(websocket: WebSocket) -> bool:
+    try:
+        message = await asyncio.wait_for(websocket.receive_text(), timeout=WS_AUTH_TIMEOUT_SEC)
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
+
+    try:
+        payload = json.loads(message)
+    except json.JSONDecodeError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
+
+    nonce = str(payload.get("nonce") or "")
+    if payload.get("type") != "hello" or not nonce:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
+
+    proofs = _server_identity_proofs(nonce)
+    if not proofs:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
+
+    await websocket.send_json(
+        {
+            "type": "server_hello",
+            "nonce": nonce,
+            "alg": "HMAC-SHA256",
+            "proofs": proofs,
+        }
+    )
+
     try:
         message = await asyncio.wait_for(websocket.receive_text(), timeout=WS_AUTH_TIMEOUT_SEC)
     except Exception:
@@ -40,6 +84,7 @@ async def _require_ws_control_auth(websocket: WebSocket) -> bool:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return False
 
+    await websocket.send_json({"type": "auth_ok"})
     return True
 
 
