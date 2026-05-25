@@ -226,6 +226,50 @@ async def test_outbox_drain_batches_multiple_rows_in_one_push(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_outbox_drain_splits_client_error_batch_to_isolate_bad_row(monkeypatch):
+    """Batch 4xx should not let one poison payload block healthy rows of the same kind."""
+    from app.services.outbox_drain import CloudSyncOutboxDrainer
+    from app.services import outbox_drain as drain_module
+
+    rows = [
+        _make_outbox_row(row_id=1, action="ok-1"),
+        _make_outbox_row(row_id=2, action="bad"),
+        _make_outbox_row(row_id=3, action="ok-2"),
+    ]
+    session = _FakeSession(rows=rows)
+    monkeypatch.setattr(drain_module, "AsyncSessionLocal", lambda: session)
+
+    drainer = CloudSyncOutboxDrainer()
+    push_calls: list[tuple[str, list[int]]] = []
+
+    async def fake_push(kind, rows_arg):
+        push_calls.append((kind, [row.id for row in rows_arg]))
+        if len(rows_arg) > 1:
+            return False, "http_422:bad item"
+        if rows_arg[0].payload["action"] == "bad":
+            return False, "http_422:bad item"
+        return True, ""
+
+    monkeypatch.setattr(drainer, "_push", fake_push)
+
+    before = dt.datetime.now(dt.timezone.utc)
+    pushed = await drainer.drain_once()
+
+    assert pushed == 2
+    assert push_calls == [("audit", [1, 2, 3]), ("audit", [1]), ("audit", [2]), ("audit", [3])]
+    assert rows[0].status == "synced"
+    assert rows[0].synced_at is not None
+    assert rows[2].status == "synced"
+    assert rows[2].synced_at is not None
+    assert rows[1].status == "pending"
+    assert rows[1].attempts == 1
+    assert rows[1].last_error == "http_422:bad item"
+    assert rows[1].next_retry_at is not None
+    assert rows[1].next_retry_at > before
+    assert session.committed is True
+
+
+@pytest.mark.asyncio
 async def test_outbox_drain_skips_when_advisory_lock_busy(monkeypatch):
     """ 多 worker 场景下拿不到 advisory lock 应直接返回 0，不读 row 也不调 _push。"""
     from app.services.outbox_drain import CloudSyncOutboxDrainer

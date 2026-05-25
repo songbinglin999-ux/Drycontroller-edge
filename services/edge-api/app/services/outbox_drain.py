@@ -30,6 +30,16 @@ def _retry_at(attempts: int) -> dt.datetime:
     return _utcnow() + dt.timedelta(seconds=delay)
 
 
+def _should_split_batch_error(error: str) -> bool:
+    if not error.startswith("http_"):
+        return False
+    try:
+        status_code = int(error.removeprefix("http_").split(":", 1)[0])
+    except ValueError:
+        return False
+    return status_code in {400, 409, 413, 422}
+
+
 class CloudSyncOutboxDrainer:
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
@@ -99,28 +109,58 @@ class CloudSyncOutboxDrainer:
 
         pushed = 0
         for kind, kind_rows in by_kind.items():
-            ok, error = await self._push(kind, kind_rows)
-            attempt_at = _utcnow()
-            for row in kind_rows:
-                row.last_attempt_at = attempt_at
-                if ok:
-                    row.status = "synced"
-                    row.synced_at = attempt_at
-                    row.last_error = None
-                    pushed += 1
-                    continue
-
-                row.attempts = int(row.attempts or 0) + 1
-                row.last_error = error[:4000]
-                max_attempts = row.max_attempts if row.max_attempts is not None else settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS
-                if max_attempts is not None and row.attempts >= int(max_attempts):
-                    row.status = "dead"
-                    row.next_retry_at = None
-                else:
-                    row.next_retry_at = _retry_at(row.attempts)
+            pushed += await self._push_kind_rows(kind, kind_rows)
 
         await db.commit()
         return pushed
+
+    async def _push_kind_rows(self, kind: str, rows: list[CloudSyncOutbox]) -> int:
+        ok, error = await self._push(kind, rows)
+        if ok:
+            attempt_at = _utcnow()
+            for row in rows:
+                self._mark_synced(row, attempt_at)
+            return len(rows)
+
+        if len(rows) > 1 and _should_split_batch_error(error):
+            logger.warning(
+                "cloud_sync_outbox_batch_split",
+                kind=kind,
+                count=len(rows),
+                error=error[:1000],
+            )
+            pushed = 0
+            for row in rows:
+                row_ok, row_error = await self._push(kind, [row])
+                attempt_at = _utcnow()
+                if row_ok:
+                    self._mark_synced(row, attempt_at)
+                    pushed += 1
+                else:
+                    self._mark_failed(row, row_error or error, attempt_at)
+            return pushed
+
+        attempt_at = _utcnow()
+        for row in rows:
+            self._mark_failed(row, error, attempt_at)
+        return 0
+
+    def _mark_synced(self, row: CloudSyncOutbox, attempt_at: dt.datetime) -> None:
+        row.last_attempt_at = attempt_at
+        row.status = "synced"
+        row.synced_at = attempt_at
+        row.last_error = None
+
+    def _mark_failed(self, row: CloudSyncOutbox, error: str, attempt_at: dt.datetime) -> None:
+        row.last_attempt_at = attempt_at
+        row.attempts = int(row.attempts or 0) + 1
+        row.last_error = error[:4000]
+        max_attempts = row.max_attempts if row.max_attempts is not None else settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS
+        if max_attempts is not None and row.attempts >= int(max_attempts):
+            row.status = "dead"
+            row.next_retry_at = None
+        else:
+            row.next_retry_at = _retry_at(row.attempts)
 
     async def _try_acquire_drain_lock(self, session: AsyncSession) -> bool:
         if session.get_bind().dialect.name != "postgresql":
