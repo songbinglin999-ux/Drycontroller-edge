@@ -27,5 +27,5 @@ python -m pip install -r requirements-test.txt
 export LOG_ROOT="${LOG_ROOT:-/tmp/drycontroller-logs}"
 mkdir -p "$LOG_ROOT"
 
-pytest "$@"
+pytest --cov=services --cov=common --cov-report=term-missing "$@"
 
