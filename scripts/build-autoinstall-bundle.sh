@@ -152,6 +152,26 @@ if placeholder not in text:
 path.write_text(text.replace(placeholder, password_hash), encoding="utf-8")
 PY
 fi
+USER_DATA_PATH="${OUT_DIR}/user-data" python3 - <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(__import__("os").environ["USER_DATA_PATH"])
+bad = []
+for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    stripped = line.strip()
+    if stripped.startswith("#"):
+        continue
+    if stripped.startswith(("uri:", "source:")) and "file:/cdrom" in stripped:
+        bad.append(f"line {lineno}: {stripped}")
+if bad:
+    print(
+        "user-data must not point installer apt sources at file:/cdrom: "
+        + ", ".join(bad),
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+PY
 install -m 0644 "${REPO_ROOT}/infra/autoinstall/meta-data" "${OUT_DIR}/meta-data"
 install -m 0755 "${REPO_ROOT}/infra/autoinstall/post-install.sh" "${OUT_DIR}/post-install.sh"
 install -m 0644 "${REPO_ROOT}/infra/autoinstall/drycontroller-edge-post-install.service" "${OUT_DIR}/drycontroller-edge-post-install.service"
