@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 import importlib
 
-import pytest
 
 
 PATH = Path(__file__).resolve()

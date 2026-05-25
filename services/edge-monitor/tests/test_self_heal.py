@@ -1,7 +1,6 @@
 import pytest
 
 from monitor.self_heal import (
-    SelfHealDecision,
     SelfHealExecutionResult,
     SelfHealExecutor,
     SelfHealManager,

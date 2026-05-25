@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 import warnings
 from functools import lru_cache
-from typing import List, Optional
+from typing import Optional
 
 from app.core.config import settings
 from app.services.influx import InfluxQueryService, get_influx_service

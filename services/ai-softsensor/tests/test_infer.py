@@ -4,7 +4,6 @@ ai-softsensor 推理模型单元测试
 
 import os
 import sys
-import time
 import types
 from pathlib import Path
 

@@ -2,7 +2,6 @@
 应用配置管理
 """
 
-import os
 import json
 from typing import List
 

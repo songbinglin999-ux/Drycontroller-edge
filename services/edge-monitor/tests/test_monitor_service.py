@@ -18,7 +18,6 @@ for path in {str(ROOT), str(SERVICE_ROOT)}:
     if path not in sys.path:
         sys.path.append(path)
 
-from typing import cast
 
 from monitor.main import MonitorService
 from monitor.self_heal import SelfHealExecutionResult, SelfHealExecutor

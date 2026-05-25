@@ -28,7 +28,7 @@ else:  # pragma: no cover
 
     structlog = _StructLogShim()
 
-from daq.publisher import DataPublisher
+from daq.publisher import DataPublisher  # noqa: E402
 
 logger: Any = structlog.get_logger(__name__)
 

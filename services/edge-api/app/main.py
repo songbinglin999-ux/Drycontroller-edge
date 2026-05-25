@@ -9,7 +9,6 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 import structlog
 from contextlib import asynccontextmanager
-import asyncio
 import time
 
 from app.core.config import settings

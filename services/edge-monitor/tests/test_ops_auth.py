@@ -7,7 +7,6 @@ edge-monitor /ops 高危接口鉴权单测（P0）
 - key 不匹配：403
 """
 
-import os
 import sys
 from pathlib import Path
 

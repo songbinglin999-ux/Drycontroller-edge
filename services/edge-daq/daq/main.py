@@ -54,11 +54,11 @@ except ModuleNotFoundError:
 event_recorder = setup_logging("edge-daq")
 logger = structlog.get_logger(__name__)
 
-from daq.modbus_client import ModbusClient
-from daq.plc_reader import PLCReader
-from daq.publisher import DataPublisher
-from daq.simulator import PLCSimulator
-from daq.control import ControlSubscriber
+from daq.modbus_client import ModbusClient  # noqa: E402
+from daq.plc_reader import PLCReader  # noqa: E402
+from daq.publisher import DataPublisher  # noqa: E402
+from daq.simulator import PLCSimulator  # noqa: E402
+from daq.control import ControlSubscriber  # noqa: E402
 
 
 class DAQService:

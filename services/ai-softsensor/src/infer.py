@@ -19,7 +19,6 @@ AI 软测量推理模块
 
 import structlog
 import numpy as np
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 logger = structlog.get_logger(__name__)

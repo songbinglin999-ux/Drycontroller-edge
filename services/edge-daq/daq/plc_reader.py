@@ -355,7 +355,6 @@ class PLCReader:
         对读取到的值进行校验、报警和发布（供单标签与批量共用）。
         """
         tag_name = tag_config.get("name")
-        address = tag_config.get("address")
         if value is None:
             return
 

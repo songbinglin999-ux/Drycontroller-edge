@@ -1,8 +1,6 @@
-import asyncio
 import pytest
 
 from daq.plc_reader import PLCReader
-from daq.modbus_client import PLC_HEARTBEAT_MISSING
 
 
 class FakeModbus:

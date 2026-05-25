@@ -48,7 +48,6 @@ from monitor.audit import SelfHealAuditor
 from monitor.discovery import DiscoveryAgent
 from monitor.self_heal import (
     SelfHealDecision,
-    SelfHealExecutor,
     SelfHealManager,
     SelfHealOutcome,
 )

@@ -181,17 +181,6 @@ async def test_ai_softsensor_history(monkeypatch):
 
 
 def test_ai_softsensor_model_info(tmp_path, monkeypatch):
-    config = {
-        "softsensor": {
-            "model_name": "moisture-predictor",
-            "model_version": "v1.0.0",
-            "input_features": ["TAG1"],
-        },
-        "optimizer": {
-            "model_name": "control-optimizer",
-            "model_version": "v0.1.0",
-        },
-    }
     config_path = tmp_path / "ai-config.yaml"
     config_path.write_text(
         "softsensor:\n"
