@@ -151,6 +151,7 @@ class UsbMakerApp(tk.Tk):
         self.prov_installer_token = tk.StringVar()
         self.prov_ts_login_server = tk.StringVar()
         self.prov_ts_authkey = tk.StringVar()
+        self.prov_ts_authkey_expires_at = tk.StringVar()
         self.prov_headscale_ca_path = tk.StringVar()
         self.prov_cosign_pub_path = tk.StringVar(
             value=str(REPO_ROOT / "configs" / "keys" / "cosign.pub")
@@ -322,6 +323,7 @@ class UsbMakerApp(tk.Tk):
         self._prov_row(ts, "Login Server", self.prov_ts_login_server, 0)
         self._prov_row(ts, "Auth Key", self.prov_ts_authkey, 1, show="*")
         self._prov_path_row(ts, "Headscale CA", self.prov_headscale_ca_path, 2, self._choose_headscale_ca)
+        self._prov_row(ts, "Auth Key 到期时间", self.prov_ts_authkey_expires_at, 3)
 
         # ── right column: registry note + cosign + images + disk ──
         registry_note = ttk.Labelframe(col_right, text="Registry 凭据", style="Card.TLabelframe", padding=10)
@@ -534,6 +536,7 @@ class UsbMakerApp(tk.Tk):
         installer_token = self.prov_installer_token.get().strip()
         ts_login_server = self.prov_ts_login_server.get().strip()
         ts_authkey = self.prov_ts_authkey.get().strip()
+        ts_authkey_expires_at = self.prov_ts_authkey_expires_at.get().strip()
         headscale_ca = self.prov_headscale_ca_path.get().strip()
         cosign_path = Path(self.prov_cosign_pub_path.get()).expanduser()
 
@@ -565,6 +568,7 @@ class UsbMakerApp(tk.Tk):
             "installer_token": installer_token,
             "ts_login_server": ts_login_server,
             "ts_authkey": ts_authkey,
+            "ts_authkey_expires_at": ts_authkey_expires_at,
             "headscale_ca_path": Path(headscale_ca).expanduser() if headscale_ca else None,
             "cosign_pub_path": cosign_path,
             "include_images": self.prov_include_images.get(),
@@ -601,6 +605,8 @@ class UsbMakerApp(tk.Tk):
                 cmd += ["--ts-login-server", str(plan["ts_login_server"])]
             if plan["ts_authkey"]:
                 cmd += ["--ts-authkey", str(plan["ts_authkey"])]
+            if plan["ts_authkey_expires_at"]:
+                cmd += ["--ts-authkey-expires-at", str(plan["ts_authkey_expires_at"])]
             if plan["headscale_ca_path"]:
                 cmd += ["--headscale-ca-cert", str(plan["headscale_ca_path"])]
             if plan["include_images"]:
