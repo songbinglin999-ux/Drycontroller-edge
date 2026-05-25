@@ -23,6 +23,15 @@ or:
 /usr/bin/python3 tools/os-installer-usb-maker/os_installer_usb_maker.py
 ```
 
+## Build macOS App
+
+```bash
+bash tools/os-installer-usb-maker/build_app.sh
+```
+
+This regenerates `DryController USB Maker.app` and `icon.icns`. They are local
+build artifacts and should not be committed.
+
 ## Preconditions
 
 - `infra/autoinstall/password.env` exists on the maker Mac.
