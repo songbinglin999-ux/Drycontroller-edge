@@ -90,6 +90,16 @@ services:
     volumes:
       - tailscale_state:/var/lib/tailscale
       - tailscale_run:/var/run/tailscale
+      # P1-N15 path B: mount headscale CA cert for self-signed TLS trust.
+      # When absent (path A / ICP-filed domain), the entrypoint wrapper is a no-op.
+      - /etc/drycontroller/keys:/etc/drycontroller/keys:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -f /etc/drycontroller/keys/headscale-ca.crt ]; then
+          cat /etc/drycontroller/keys/headscale-ca.crt >> /etc/ssl/certs/ca-certificates.crt
+        fi
+        exec /usr/local/bin/containerboot
     environment:
       # Headscale/Tailscale 登录信息（敏感）
       - TS_AUTHKEY=${TS_AUTHKEY}

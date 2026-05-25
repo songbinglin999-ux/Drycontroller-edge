@@ -25,6 +25,7 @@ LICENSE_DIR="${ASSET_DIR}/license"
 
 BOOTSTRAP_STARTED_AT="$(date -Is)"
 BOOTSTRAP_FAIL_REASON=""
+BOOTSTRAP_REGISTRY_STATUS="skipped"
 BOOTSTRAP_USB_MOUNT="/mnt/drycontroller-provisioning"
 
 # ── ANSI 颜色 ──────────────────────────────────────────────────────
@@ -144,6 +145,7 @@ write_status() {
     [ -n "$reason" ] && echo "reason=${reason}"
     [ -n "${DEVICE_ID:-}" ] && echo "device_id=${DEVICE_ID}"
     [ -n "${NODE_NAME:-}" ] && echo "node_name=${NODE_NAME}"
+    [ -n "${BOOTSTRAP_REGISTRY_STATUS:-}" ] && echo "registry_login_status=${BOOTSTRAP_REGISTRY_STATUS}"
   } > "${STATUS_FILE}.tmp"
   mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
   chmod 644 "$STATUS_FILE" || true
@@ -673,24 +675,35 @@ if [ -z "${TS_LOGIN_SERVER:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
   exit 2
 fi
 
-if [ -z "${HARBOR_HOST:-}" ] || [ -z "${HARBOR_ROBOT_USER:-}" ] || [ -z "${HARBOR_ROBOT_TOKEN:-}" ]; then
-  log "missing harbor credentials in provisioning.json or cloud allocation response"
-  exit 2
-fi
-
 CLOUD_OPS_RUNTIME_BASE_URL="${CLOUD_OPS_TAILNET_BASE_URL:-$CLOUD_OPS_BASE_URL}"
 
 # 1) 写入运维资产：cosign.pub
 install -m 0644 "$COSIGN_PUB" "${KEYS_DIR}/cosign.pub"
 log "installed cosign pubkey -> ${KEYS_DIR}/cosign.pub"
 
-# 2) 基础命令检查 + docker login（Harbor 是公网入口，与 tailnet 无关，前置以早 fail）
+# 2) 基础命令检查 + docker login。
+# 首次激活优先使用 Provisioning USB 里的离线镜像；registry 只影响后续 OTA/pull。
 if ! command -v docker >/dev/null 2>&1; then
   log "docker not found"
   exit 3
 fi
 
-registry_login || exit 3
+if [ -z "${HARBOR_HOST:-}" ] || [ -z "${HARBOR_ROBOT_USER:-}" ] || [ -z "${HARBOR_ROBOT_TOKEN:-}" ]; then
+  BOOTSTRAP_REGISTRY_STATUS="degraded_missing_credentials"
+  log_warn "registry credentials not provided; continuing with offline-loaded images only"
+  log_warn "  OTA image pulls will remain unavailable until registry credentials are configured"
+  log_warn "  Reason: provisioning.json / allocate response did not include harbor_* fields"
+else
+  if registry_login; then
+    BOOTSTRAP_REGISTRY_STATUS="ok"
+    log_ok "registry login verified; OTA image pulls available"
+  else
+    BOOTSTRAP_REGISTRY_STATUS="degraded_login_failed"
+    log_warn "registry login to ${HARBOR_HOST} failed; continuing with offline-loaded images only"
+    log_warn "  OTA image pulls will remain unavailable until registry credentials are valid"
+    log_warn "  Verify the token has not expired or been revoked in Gitea Container Registry"
+  fi
+fi
 
 set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
 set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"

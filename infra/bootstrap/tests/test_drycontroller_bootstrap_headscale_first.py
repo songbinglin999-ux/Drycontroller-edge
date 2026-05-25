@@ -20,15 +20,35 @@ def test_bootstrap_uses_tailnet_runtime_cloud_url_for_post_join_calls():
 def test_bootstrap_starts_tailnet_before_enroll_license_and_core_stack():
     text = _script_text()
 
-    docker_login = text.index('log "docker login to ${HARBOR_HOST} ..."')
+    image_ready = text.index('ensure_docker_image "tailscale/tailscale:stable" "${TAILSCALE_IMAGE}"')
     tailnet_start = text.index('log "starting tailnet before cloud allocation..."')
     allocation = text.index('log "allocating device identity from cloud-ops batch ${BATCH_ID}..."')
+    registry_degrade = text.index("registry login to ${HARBOR_HOST} failed; continuing with offline-loaded images")
     core_start = text.index('log "starting edge core stack..."')
     enroll_start = text.index("compose --profile remote-debug up -d edge-enroll")
     license_bind = text.index('log "binding license on cloud-ops..."')
 
-    # tailnet URL 模式必须先入网，再通过 tailnet allocate；Harbor login 仍在 core stack 前 fail-fast。
-    assert tailnet_start < allocation < docker_login < core_start < enroll_start < license_bind
+    # tailnet URL 模式必须先保证 tailscale 镜像可用，再入网并通过 tailnet allocate。
+    # Registry login 在 core stack 前尝试，但离线镜像已加载时不能挡死首次激活。
+    assert image_ready < tailnet_start < allocation < registry_degrade < core_start < enroll_start < license_bind
+
+
+def test_bootstrap_prefers_usb_or_private_tailscale_image_before_docker_hub():
+    text = _script_text()
+
+    assert 'TAILSCALE_IMAGE="$(pyget tailscale_image || true)"' in text
+    assert 'TAILSCALE_IMAGE="${TAILSCALE_IMAGE:-git.example.com/example-org/tailscale:stable}"' in text
+    assert 'load_bootstrap_image_tars' in text
+    assert 'pulling required image from private registry: ${mirror_image}' in text
+    assert 'BOOTSTRAP_ALLOW_NETWORK_FALLBACK:-false' in text
+
+
+def test_registry_login_failure_degrades_for_offline_activation():
+    text = _script_text()
+
+    assert "registry_login || exit 3" not in text
+    assert "registry credentials not provided; continuing with offline-loaded images" in text
+    assert "registry login to ${HARBOR_HOST} failed; continuing with offline-loaded images" in text
 
 
 def test_tailnet_mode_rebinds_license_instead_of_using_public_allocation_license():
@@ -36,7 +56,7 @@ def test_tailnet_mode_rebinds_license_instead_of_using_public_allocation_license
 
     assert 'if [ -n "${ALLOCATION_RESP_FILE:-}" ] && [ -z "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then' in text
     assert 'log "using signed license from cloud allocation response"' in text
-    assert 'log "tailnet did not become ready; bootstrap will not fall back to public cloud url"' in text
+    assert 'log_err "tailnet did not become ready; bootstrap will not fall back to public cloud url"' in text
 
 
 def test_tailnet_readiness_probes_cloud_ops_health_not_just_local_ip():
