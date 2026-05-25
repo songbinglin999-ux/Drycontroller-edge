@@ -187,7 +187,8 @@ services:
 
           # 方案 B：推送服务状态（edge-api 聚合的 system/status）
           # 重要：必须带 line 参数，否则 edge-api 会返回 system/# 的“全局最新”，可能被 bootstrap 消息覆盖
-          STATUS_URL="http://127.0.0.1:$${ENROLL_EDGE_API_PORT}/api/v1/system/status?line=$${LINE_ID}"
+          # edge-api 在宿主机上绑定的是 tailnet IP，不是 127.0.0.1
+          STATUS_URL="http://$${IP}:$${ENROLL_EDGE_API_PORT}/api/v1/system/status?line=$${LINE_ID}"
           # BusyBox wget 对带引号的 URL（例如 "\"http://...\""）会直接失败，因此这里不要转义引号
           STATUS_JSON="$$(wget -q -O - -T 4 "$${STATUS_URL}" 2>/dev/null || true)"
           if [ -n "$${STATUS_JSON}" ]; then
