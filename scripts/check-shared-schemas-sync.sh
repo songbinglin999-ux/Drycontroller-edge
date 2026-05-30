@@ -15,16 +15,14 @@
 
 set -euo pipefail
 
-GITEA_BASE="${GITEA_BASE:-https://git.example.com}"
+: "${GITEA_BASE:?GITEA_BASE is required (e.g. http://203.0.113.122:3030)}"
 CLOUD_OPS_OWNER="${CLOUD_OPS_OWNER:-example-org}"
 CLOUD_OPS_REPO="${CLOUD_OPS_REPO:-Drycontroller-cloudserver}"
 CLOUD_OPS_SCHEMA_PATH="services/cloud-ops/app/common/schemas"
 EDGE_SCHEMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/common/schemas"
 
-# Cross-repo byte-identical files — extend here when adding new shared schema
-CROSS_REPO_FILES=(
-  cloud_to_edge.py
-)
+# Cross-repo byte-identical files — extend via CROSS_REPO_FILES env (CSV) or edit here
+IFS=',' read -ra CROSS_REPO_FILES <<< "$(echo "${CROSS_REPO_FILES:-cloud_to_edge.py}" | tr -d ' ')"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
