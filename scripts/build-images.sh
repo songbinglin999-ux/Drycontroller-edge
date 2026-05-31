@@ -32,7 +32,7 @@ for service in "${SERVICES[@]}"; do
         -t edge/$service:$VERSION \
         -t edge/$service:latest \
         -f services/$service/Dockerfile \
-        services/$service/
+        .
     
     if [ $? -eq 0 ]; then
         echo "✅ $service 构建成功"
