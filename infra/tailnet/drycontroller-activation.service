@@ -1,0 +1,19 @@
+[Unit]
+Description=DryController factory activation (one-time on first boot)
+Documentation=https://drycontroller.dev/docs/activation
+Wants=network-online.target drycontroller-tailnet.service
+After=network-online.target drycontroller-tailnet.service
+Before=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/python3 -m app.services.activation_cli
+TimeoutStartSec=300
+RemainAfterExit=yes
+
+# Environment
+EnvironmentFile=-/etc/drycontroller/activation.env
+EnvironmentFile=-/etc/drycontroller/.env
+
+[Install]
+WantedBy=multi-user.target
