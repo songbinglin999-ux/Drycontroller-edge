@@ -555,6 +555,10 @@ PY
   chmod 0600 "$TAILNET_ENV_FILE" || true
 }
 
+# Legacy (non-factory-activation) re-auth path. The factory-activation path has a
+# parallel implementation in drycontroller-host-activation.sh:attempt_formal_tailnet_reauth.
+# Keep the failure semantics (preserve bootstrap tailnet, never break the survival path)
+# in sync between the two.
 attempt_formal_tailnet_reauth() {
   local license_resp_file="$1"
   local formal_authkey formal_hostname before_ip after_ip

@@ -328,6 +328,9 @@ reapply_edge_compose_binding() {
   fi
 }
 
+# Factory-activation re-auth path. The legacy path has a parallel implementation in
+# drycontroller-bootstrap.sh:attempt_formal_tailnet_reauth. Keep the failure semantics
+# (preserve bootstrap tailnet, never break the survival path) in sync between the two.
 attempt_formal_tailnet_reauth() {
   local authkey="$1"
   local hostname="$2"

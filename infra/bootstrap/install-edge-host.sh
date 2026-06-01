@@ -118,7 +118,6 @@ install_base_packages_apt() {
   apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    gnupg \
     python3 \
     tar \
     iproute2 \
@@ -155,30 +154,10 @@ install_tailscale_apt() {
     return
   fi
 
-  if apt-cache show tailscale >/dev/null 2>&1; then
-    log "installing tailscale from OS package repository"
-    apt-get install -y --no-install-recommends tailscale
-    return
-  fi
-
-  if [ -r /etc/os-release ]; then
-    # shellcheck disable=SC1091
-    . /etc/os-release
-  fi
-  if [ "${ID:-}" = "ubuntu" ] && [ -n "${VERSION_CODENAME:-}" ]; then
-    log "adding official Tailscale apt repository for Ubuntu ${VERSION_CODENAME}"
-    mkdir -p /usr/share/keyrings
-    curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.noarmor.gpg" \
-      -o /usr/share/keyrings/tailscale-archive-keyring.gpg
-    curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.tailscale-keyring.list" \
-      -o /etc/apt/sources.list.d/tailscale.list
-    apt-get update
-    apt-get install -y --no-install-recommends tailscale
-    return
-  fi
-
-  log "tailscale package not available from configured apt repositories"
-  log "install Tailscale before provisioning, or provide an OS image with tailscale preinstalled"
+  # Mainland China: pkgs.tailscale.com is unreachable from the field and there is
+  # no usable public tailscale apt mirror, so we do not attempt a network install.
+  # Provision hosts from an OS image with tailscale preinstalled.
+  die "tailscale is not installed; provision this host from an OS image with tailscale preinstalled"
 }
 
 install_host_packages() {
