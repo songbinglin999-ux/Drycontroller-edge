@@ -189,23 +189,59 @@ async def _reissue_ts_key(
         return None
 
 
-def _install_license(license_payload: dict[str, Any], public_key: str) -> None:
-    """Verify signature then install the production license and public key."""
+def _production_trust_anchor() -> Optional[bytes]:
+    """Pinned production-license trust anchor (base64 LICENSE_TRUSTED_PUBLIC_KEY),
+    consistent with edge-api's license-install path (ops.py `_trusted_license_public_key`).
+    Returns None when no anchor is pinned, in which case _install_license falls back to
+    the activation response key (logged as a downgrade)."""
     import base64 as _b64
-    from common.license_verifier import verify_signature, load_public_key
-
-    # Verify signature before installing
-    pub_bytes = _b64.b64decode(public_key.strip(), validate=True)
+    configured = str(settings.LICENSE_TRUSTED_PUBLIC_KEY or "").strip()
+    if not configured:
+        return None
     try:
-        verify_signature(license_payload, pub_bytes)
+        return _b64.b64decode(configured, validate=True)
+    except Exception as exc:
+        raise RuntimeError(f"invalid LICENSE_TRUSTED_PUBLIC_KEY: {exc}") from exc
+
+
+def _install_license(license_payload: dict[str, Any], public_key: str) -> None:
+    """Verify the production license against the pinned trust anchor, then install it.
+
+    When LICENSE_TRUSTED_PUBLIC_KEY is pinned, the activation response's public key is
+    NOT trusted as the verification key — only cross-checked. With no anchor pinned,
+    verification falls back to the response key (logged as a downgrade); production
+    deploys must pin the anchor so a forged activation response cannot self-sign."""
+    import base64 as _b64
+    from common.license_verifier import verify_signature
+
+    response_pub = public_key.strip()
+    anchor = _production_trust_anchor()
+    if anchor is not None:
+        verify_bytes = anchor
+        try:
+            if response_pub and _b64.b64decode(response_pub, validate=True) != anchor:
+                logger.warning("license_pubkey_response_differs_from_anchor_using_anchor")
+        except Exception:
+            logger.warning("license_pubkey_response_undecodable_using_anchor")
+    else:
+        if not response_pub:
+            raise RuntimeError("no license public key: trust anchor unpinned and response key empty")
+        logger.warning("license_pubkey_unpinned_trusting_activation_response")
+        verify_bytes = _b64.b64decode(response_pub, validate=True)
+
+    try:
+        verify_signature(license_payload, verify_bytes)
     except Exception as exc:
         logger.error("license_signature_verification_failed", error=str(exc))
         raise RuntimeError(f"license signature verification failed: {exc}") from exc
 
     _write_json(_PRODUCTION_LICENSE_PATH, license_payload)
     _PRODUCTION_LICENSE_PUB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PRODUCTION_LICENSE_PUB_PATH.write_text(public_key.strip() + "\n", encoding="utf-8")
-    logger.info("license_installed", path=str(_PRODUCTION_LICENSE_PATH))
+    # Persist the key actually used for verification so edge-api enforcement reads the
+    # same anchor: the pinned key when present, else the response key (legacy behaviour).
+    persisted_pub = str(settings.LICENSE_TRUSTED_PUBLIC_KEY or "").strip() if anchor is not None else response_pub
+    _PRODUCTION_LICENSE_PUB_PATH.write_text(persisted_pub + "\n", encoding="utf-8")
+    logger.info("license_installed", path=str(_PRODUCTION_LICENSE_PATH), pinned=anchor is not None)
 
 
 def _run_formal_tailscale_auth(authkey: str, hostname: str) -> bool:
