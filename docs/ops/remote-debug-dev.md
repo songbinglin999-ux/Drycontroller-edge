@@ -1,4 +1,4 @@
-# 边缘机远程运维（Docker 跑 Tailscale / Headscale）
+# 边缘机远程运维（宿主机 Tailscale / Headscale）
 
 适用场景：现场边缘机只有家用路由/NAT，**无法做公网入站**，但可以出站访问互联网；需要从云端对边缘机进行运维（探活/重启/拉日志等）。
 
@@ -18,11 +18,17 @@
 
 ---
 
-## 2) 边缘机启动 Tailscale（Docker 模式 B）
+## 2) 边缘机启动 Tailscale（宿主机保命层）
 
-边缘机侧 `Drycontroller/docker-compose.yml` 已提供 `tailscale` 服务（profile：`remote-debug`）。
+Tailscale 运行在宿主机 systemd 上，不再由 `docker compose` 管理。这样即使业务 compose 被 `down` 或 compose 文件损坏，远程通道仍可用于排障。
 
-在边缘机上设置环境变量（建议写到你们部署用的 `.env`/脚本里，不要提交到仓库）：
+一次性装机会由 `drycontroller-bootstrap.sh` 写入 `/etc/drycontroller/tailnet.env` 并启动：
+
+- `drycontroller-tailnet.service`
+- `drycontroller-enroll.service`
+
+手工调试时，可在边缘机上创建 `/etc/drycontroller/tailnet.env`（`0600`，不要提交到仓库）：
+
 - `TS_LOGIN_SERVER`：你的 headscale 地址（HTTPS），例如 `https://headscale.example.com`
 - `TS_AUTHKEY`：上一步生成的 preauth key（敏感）
 - `TS_HOSTNAME`（可选）：节点名，例如 `edge-001`（建议与云端节点名一致）
@@ -34,13 +40,16 @@
 - `ENROLL_INTERVAL_SEC`：心跳周期（默认 60 秒）
 
 启动：
-- `docker compose --profile remote-debug up -d tailscale edge-enroll`
+- `sudo systemctl enable --now drycontroller-tailnet.service`
+- `sudo systemctl enable --now drycontroller-enroll.service`
 
 查看状态：
-- `docker logs -f edge-tailscale`
-- `docker logs -f edge-enroll`
+- `systemctl status drycontroller-tailnet.service`
+- `journalctl -u drycontroller-tailnet.service -f`
+- `systemctl status drycontroller-enroll.service`
+- `journalctl -u drycontroller-enroll.service -f`
 
-> 该方案依赖 Linux 的 `/dev/net/tun` 和 `network_mode: host`；如果你的边缘机不是 Linux，请改用“宿主机直接安装 tailscale”的方式。
+> 该方案依赖 Linux + systemd + 宿主机 Tailscale。`install-edge-host.sh` 会安装宿主机脚本和 systemd unit；Tailscale CLI 必须在 provisioning 前可用。
 
 ---
 
@@ -60,11 +69,10 @@
 cloud-ops 通过 headscale 虚拟内网访问边缘机 `edge-api`（需要边缘端配置 `ADMIN_API_KEYS`/`CONTROL_API_KEYS`）。
 
 典型流程：
-- 边缘机上线自注册（自动）：`edge-enroll` 容器会周期性调用云端 `POST /api/v1/enroll`
+- 边缘机上线自注册（自动）：`drycontroller-enroll.service` 会周期性调用云端 `POST /api/v1/enroll`
 - 云端发起批量重启：`POST /api/v1/jobs/restart-service`
 - 云端拉取容器日志：`POST /api/v1/jobs/fetch-container-logs`
 
 详见：
 - `Drycontroller-cloudserver/docs/ops/cloud-ops.md`
-
 

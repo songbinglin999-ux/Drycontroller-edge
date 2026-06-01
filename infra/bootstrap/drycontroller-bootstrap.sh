@@ -2,7 +2,7 @@
 #
 # Drycontroller 一次性装机引导（开机自动执行）
 # - 目的：装机人员只需要“插 U 盘 + 重启”，无需命令行。
-# - 逻辑：扫描 U 盘上的 provisioning 包 -> 写入运维资产 -> docker login -> 启动 tailscale/enroll/核心服务 -> 云端 license 绑定 -> 标记完成。
+# - 逻辑：扫描 U 盘上的 provisioning 包 -> 写入运维资产 -> docker login -> 启动宿主机 tailnet/enroll + 核心服务 -> 云端 license 绑定 -> 标记完成。
 #
 # U 盘目录要求（任意挂载点下）：
 #   drycontroller-provisioning/provisioning.json
@@ -22,6 +22,7 @@ ALLOCATION_CACHE_FILE="${STATE_DIR}/allocation-response.json"
 ASSET_DIR="/etc/drycontroller"
 KEYS_DIR="${ASSET_DIR}/keys"
 LICENSE_DIR="${ASSET_DIR}/license"
+TAILNET_ENV_FILE="${ASSET_DIR}/tailnet.env"
 
 BOOTSTRAP_STARTED_AT="$(date -Is)"
 BOOTSTRAP_FAIL_REASON=""
@@ -340,9 +341,6 @@ TS_HOSTNAME="${TS_HOSTNAME:-${NODE_NAME:-$(hostname)}}"
 HARBOR_HOST="$(pyget harbor_host || true)"
 HARBOR_ROBOT_USER="$(pyget harbor_robot_user || true)"
 HARBOR_ROBOT_TOKEN="$(pyget harbor_robot_token || true)"
-TAILSCALE_IMAGE="$(pyget tailscale_image || true)"
-TAILSCALE_IMAGE="${TAILSCALE_IMAGE:-git.example.com/example-org/tailscale:stable}"
-
 if [ -z "${CLOUD_OPS_BASE_URL:-}" ]; then
   log "missing cloud_ops_base_url in provisioning.json"
   exit 2
@@ -415,6 +413,88 @@ compose() {
   fi
 }
 
+install_headscale_ca() {
+  local headscale_ca
+  headscale_ca="$(pyget headscale_ca 2>/dev/null || true)"
+  [ -n "${headscale_ca:-}" ] || return 0
+
+  local headscale_ca_crt="/etc/drycontroller/keys/headscale-ca.crt"
+  mkdir -p /etc/drycontroller/keys
+  printf '%s' "$headscale_ca" | base64 -d > "$headscale_ca_crt"
+  chmod 644 "$headscale_ca_crt"
+  if [ -d /usr/local/share/ca-certificates ]; then
+    cp "$headscale_ca_crt" /usr/local/share/ca-certificates/headscale-ca.crt
+    update-ca-certificates 2>/dev/null || true
+    log_ok "headscale CA installed to system trust store"
+  else
+    log "headscale CA cert written to ${headscale_ca_crt} (no system ca-certificates dir)"
+  fi
+}
+
+write_tailnet_env() {
+  local tmp
+  tmp="$(secret_mktemp)"
+  {
+    printf 'TS_LOGIN_SERVER=%q\n' "${TS_LOGIN_SERVER:-}"
+    printf 'TS_AUTHKEY=%q\n' "${TS_AUTHKEY:-}"
+    printf 'TS_HOSTNAME=%q\n' "${TS_HOSTNAME:-}"
+    printf 'TS_EXTRA_ARGS=%q\n' "${TS_EXTRA_ARGS:-}"
+    printf 'CLOUD_OPS_BASE_URL=%q\n' "${CLOUD_OPS_RUNTIME_BASE_URL:-$CLOUD_OPS_BASE_URL}"
+    printf 'CLOUD_OPS_ENROLL_TOKEN=%q\n' "${NODE_ENROLL_TOKEN:-${ENROLL_TOKEN:-}}"
+    printf 'CLOUD_OPS_ENROLL_TOKEN_HEADER=%q\n' "${CLOUD_OPS_ENROLL_TOKEN_HEADER:-X-Enroll-Token}"
+    printf 'ENROLL_NAME=%q\n' "${TS_HOSTNAME:-${NODE_NAME:-edge-node}}"
+    printf 'LINE_ID=%q\n' "${LINE_ID:-L1}"
+    printf 'ENROLL_EDGE_API_PORT=%q\n' "${EDGE_API_PORT:-8000}"
+    printf 'ENROLL_INTERVAL_SEC=%q\n' "${ENROLL_INTERVAL_SEC:-60}"
+  } > "$tmp"
+  install -m 0600 "$tmp" "$TAILNET_ENV_FILE"
+  log "wrote host tailnet env -> ${TAILNET_ENV_FILE}"
+}
+
+start_host_tailnet() {
+  command -v systemctl >/dev/null 2>&1 || {
+    log_err "systemctl not found; host tailnet requires systemd"
+    exit 4
+  }
+  command -v tailscale >/dev/null 2>&1 || {
+    log_err "tailscale CLI not found; install host Tailscale before provisioning"
+    exit 4
+  }
+  install_headscale_ca
+  write_tailnet_env
+  systemctl daemon-reload
+  systemctl enable drycontroller-tailnet.service >/dev/null 2>&1 || true
+  systemctl restart drycontroller-tailnet.service
+}
+
+wait_host_tailnet() {
+  local health_url="${1:-}"
+  local retries="${BOOTSTRAP_TAILNET_RETRIES:-60}"
+  local sleep_sec="${BOOTSTRAP_TAILNET_SLEEP_SEC:-2}"
+  TAILNET_IP=""
+
+  for attempt in $(seq 1 "$retries"); do
+    TAILNET_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+    if [ -n "$TAILNET_IP" ]; then
+      if [ -z "$health_url" ] || curl -fsS --max-time 5 "${health_url%/}/health" >/dev/null 2>&1; then
+        log_ok "host tailnet ready: ${TAILNET_IP}"
+        return 0
+      fi
+    fi
+    log "host tailnet not ready yet (attempt ${attempt}/${retries})"
+    sleep "$sleep_sec"
+  done
+  return 1
+}
+
+start_host_enroll() {
+  write_tailnet_env
+  systemctl daemon-reload
+  systemctl enable drycontroller-enroll.service >/dev/null 2>&1 || true
+  systemctl restart drycontroller-enroll.service
+  log_ok "host enroll service started"
+}
+
 REGISTRY_LOGIN_DONE=0
 registry_login() {
   if [ "$REGISTRY_LOGIN_DONE" = "1" ]; then
@@ -433,130 +513,24 @@ registry_login() {
   return 1
 }
 
-load_bootstrap_image_tars() {
-  local images_dir="${PROV_DIR}/images"
-  [ -d "$images_dir" ] || return 0
-
-  local found=0
-  while IFS= read -r -d '' image_tar; do
-    found=1
-    log "loading bootstrap image from USB: ${image_tar}"
-    docker load -i "$image_tar" >> "$LOG_FILE" 2>&1 || {
-      log "docker load failed: ${image_tar}"
-      return 1
-    }
-  done < <(find "$images_dir" -maxdepth 1 -type f \( -name '*.tar' -o -name '*.tar.gz' -o -name '*.tgz' \) -print0 2>/dev/null | sort -z)
-
-  if [ "$found" = "0" ]; then
-    log "bootstrap images directory exists but contains no image tar: ${images_dir}"
-  fi
-  return 0
-}
-
-ensure_docker_image() {
-  local local_image="$1"
-  local mirror_image="${2:-}"
-
-  if docker image inspect "$local_image" >/dev/null 2>&1; then
-    log "required image already local: ${local_image}"
-    return 0
-  fi
-
-  # USB / bundle 内预构建镜像优先——零网络，本地秒级加载
-  load_bootstrap_image_tars
-  if docker image inspect "$local_image" >/dev/null 2>&1; then
-    log "required image loaded from USB/bundle: ${local_image}"
-    return 0
-  fi
-
-  # 网络回退默认关闭。现场有网且 USB 缺镜像时，设置 BOOTSTRAP_ALLOW_NETWORK_FALLBACK=true
-  if [ "${BOOTSTRAP_ALLOW_NETWORK_FALLBACK:-false}" != "true" ]; then
-    log "required image unavailable (no USB/bundle match): ${local_image}"
-    log "to allow network pull, set BOOTSTRAP_ALLOW_NETWORK_FALLBACK=true in provisioning environment"
-    return 1
-  fi
-
-  log "network fallback enabled; attempting online pull for ${local_image}"
-
-  if [ -n "$mirror_image" ]; then
-    if registry_login; then
-      log "pulling required image from private registry: ${mirror_image}"
-      if docker pull "$mirror_image" >> "$LOG_FILE" 2>&1; then
-        if [ "$mirror_image" != "$local_image" ]; then
-          docker tag "$mirror_image" "$local_image"
-        fi
-        log "required image available from private registry: ${local_image}"
-        return 0
-      fi
-      log "private registry pull failed: ${mirror_image}"
-    else
-      log "private registry credentials unavailable before image pull"
-    fi
-  fi
-
-  log "pulling required image from Docker Hub: ${local_image}"
-  if docker pull "$local_image" >> "$LOG_FILE" 2>&1; then
-    log "required image pulled from Docker Hub: ${local_image}"
-    return 0
-  fi
-  log "Docker Hub pull failed: ${local_image}"
-
-  log "required image unavailable after all fallbacks: ${local_image}"
-  return 1
-}
-
+CLOUD_OPS_RUNTIME_BASE_URL="${CLOUD_OPS_TAILNET_BASE_URL:-$CLOUD_OPS_BASE_URL}"
 CLOUD_OPS_ALLOCATE_BASE_URL="$CLOUD_OPS_BASE_URL"
 if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   if [ -z "${TS_LOGIN_SERVER:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
     log "cloud_ops_tailnet_base_url requires ts_login_server and ts_authkey in provisioning.json before allocation"
     exit 2
   fi
-  if ! command -v docker >/dev/null 2>&1; then
-    log "docker not found"
-    exit 3
-  fi
+  TS_HOSTNAME="${TS_HOSTNAME:-${NODE_NAME:-$(hostname)}}"
   set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
   set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"
   set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
-  set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
-  # P1-N15 path B: install Headscale self-signed CA before Tailscale starts,
-  # so the client trusts the coordination server.  When ICP filing completes
-  # (path A), omit headscale_ca from provisioning.json and this block is a no-op.
-  HEADSCALE_CA="$(pyget headscale_ca 2>/dev/null || true)"
-  if [ -n "${HEADSCALE_CA:-}" ]; then
-    HEADSCALE_CA_CRT="/etc/drycontroller/keys/headscale-ca.crt"
-    mkdir -p /etc/drycontroller/keys
-    printf '%s' "${HEADSCALE_CA}" | base64 -d > "${HEADSCALE_CA_CRT}"
-    chmod 644 "${HEADSCALE_CA_CRT}"
-    if [ -d /usr/local/share/ca-certificates ]; then
-      cp "${HEADSCALE_CA_CRT}" /usr/local/share/ca-certificates/headscale-ca.crt
-      update-ca-certificates 2>/dev/null || true
-      log_ok "headscale CA installed to system trust store"
-    else
-      log "headscale CA cert written to ${HEADSCALE_CA_CRT} (no system ca-certificates dir)"
-    fi
-  fi
-  cd "$EDGE_ROOT"
-  ensure_docker_image "tailscale/tailscale:stable" "${TAILSCALE_IMAGE}" || exit 3
-  log "starting tailnet before cloud allocation..."
-  compose --profile remote-debug up -d tailscale
-  TAILNET_READY=0
-  TAILNET_RETRIES="${BOOTSTRAP_TAILNET_RETRIES:-60}"
-  TAILNET_SLEEP_SEC="${BOOTSTRAP_TAILNET_SLEEP_SEC:-2}"
-  for attempt in $(seq 1 "$TAILNET_RETRIES"); do
-    if docker exec edge-tailscale tailscale ip -4 >/dev/null 2>&1 \
-       && docker exec edge-tailscale wget -q -T 5 -O /dev/null "${CLOUD_OPS_TAILNET_BASE_URL%/}/health" >/dev/null 2>&1; then
-      TAILNET_READY=1
-      break
-    fi
-    log "tailnet not ready before allocation (attempt ${attempt}/${TAILNET_RETRIES})"
-    sleep "$TAILNET_SLEEP_SEC"
-  done
-  if [ "$TAILNET_READY" = "1" ]; then
+  log "starting host tailnet before cloud allocation..."
+  start_host_tailnet
+  if wait_host_tailnet "$CLOUD_OPS_TAILNET_BASE_URL"; then
     CLOUD_OPS_ALLOCATE_BASE_URL="$CLOUD_OPS_TAILNET_BASE_URL"
-    log_ok "tailnet ready before allocation; allocating through ${CLOUD_OPS_ALLOCATE_BASE_URL}"
+    log_ok "host tailnet ready before allocation; allocating through ${CLOUD_OPS_ALLOCATE_BASE_URL}"
   else
-    log_err "tailnet did not become ready before allocation; bootstrap will not fall back to public cloud url"
+    log_err "host tailnet did not become ready before allocation; bootstrap will not fall back to public cloud url"
     exit 5
   fi
 fi
@@ -675,8 +649,6 @@ if [ -z "${TS_LOGIN_SERVER:-}" ] || [ -z "${TS_AUTHKEY:-}" ]; then
   exit 2
 fi
 
-CLOUD_OPS_RUNTIME_BASE_URL="${CLOUD_OPS_TAILNET_BASE_URL:-$CLOUD_OPS_BASE_URL}"
-
 # 1) 写入运维资产：cosign.pub
 install -m 0644 "$COSIGN_PUB" "${KEYS_DIR}/cosign.pub"
 log "installed cosign pubkey -> ${KEYS_DIR}/cosign.pub"
@@ -708,7 +680,6 @@ fi
 set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
 set_kv "TS_AUTHKEY" "${TS_AUTHKEY}"
 set_kv "TS_HOSTNAME" "${TS_HOSTNAME}"
-set_kv "TS_EXTRA_ARGS" "--login-server=${TS_LOGIN_SERVER}"
 # 云分配模式下，edge-api 只通过 tailnet 对云端开放探活/运维入口。
 # 默认 compose 仍保持 127.0.0.1，避免未入网机器在现场 LAN 暴露管理口。
 set_kv "EDGE_API_BIND_ADDR" "127.0.0.1"
@@ -742,48 +713,38 @@ if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
 fi
 log "updated edge .env at ${ENV_FILE}"
 
-# 4) 启动 tailnet。Headscale-first：后续 enroll/license/OTA 使用 tailnet Cloud Ops URL。
+# 4) 启动宿主机 tailnet。Headscale-first：后续 enroll/license/OTA 使用 tailnet Cloud Ops URL。
 cd "$EDGE_ROOT"
 
-ensure_docker_image "tailscale/tailscale:stable" "${TAILSCALE_IMAGE}" || exit 3
-log "starting tailnet first (tailscale only)..."
-compose --profile remote-debug up -d tailscale
-
+log "starting host tailnet..."
+start_host_tailnet
 if [ -n "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   log "waiting for tailnet identity before cloud runtime calls..."
-  TAILNET_READY=0
-  TAILNET_IP=""
-  TAILNET_RETRIES="${BOOTSTRAP_TAILNET_RETRIES:-60}"
-  TAILNET_SLEEP_SEC="${BOOTSTRAP_TAILNET_SLEEP_SEC:-2}"
-  for attempt in $(seq 1 "$TAILNET_RETRIES"); do
-    # tailscale ip 证明拿到 tailnet IP；wget /health 证明 cloud-ops 经 tailnet 真可达（路由收敛 + ECS 端口放行）
-    TAILNET_IP="$(docker exec edge-tailscale tailscale ip -4 2>/dev/null | head -n 1 || true)"
-    if [ -n "$TAILNET_IP" ] \
-       && docker exec edge-tailscale wget -q -T 5 -O /dev/null "${CLOUD_OPS_RUNTIME_BASE_URL%/}/health" >/dev/null 2>&1; then
-      TAILNET_READY=1
-      break
-    fi
-    log "tailnet not ready yet (attempt ${attempt}/${TAILNET_RETRIES})"
-    sleep "$TAILNET_SLEEP_SEC"
-  done
-  if [ "$TAILNET_READY" = "1" ]; then
-    log_ok "tailnet ready; cloud runtime url: ${CLOUD_OPS_RUNTIME_BASE_URL}"
+  if wait_host_tailnet "$CLOUD_OPS_RUNTIME_BASE_URL"; then
+    log_ok "host tailnet ready; cloud runtime url: ${CLOUD_OPS_RUNTIME_BASE_URL}"
     set_kv "EDGE_API_BIND_ADDR" "$TAILNET_IP"
     log "edge-api bind address set to tailnet ip: ${TAILNET_IP}"
   else
-    log_err "tailnet did not become ready; bootstrap will not fall back to public cloud url"
+    log_err "host tailnet did not become ready; bootstrap will not fall back to public cloud url"
     exit 5
   fi
 else
   log "cloud_ops_tailnet_base_url not provided; using cloud_ops_base_url for runtime cloud calls"
+  if wait_host_tailnet ""; then
+    set_kv "EDGE_API_BIND_ADDR" "$TAILNET_IP"
+    log "edge-api bind address set to tailnet ip: ${TAILNET_IP}"
+  else
+    log_err "host tailnet did not produce an IPv4 address"
+    exit 5
+  fi
 fi
 
-# 5) 启动 edge（含 enroll；以及 ota profile：edge-ota-agent）
+# 5) 启动 edge（业务 compose；enroll 由宿主机 systemd 管理；ota profile 单独启用）
 log "starting edge core stack..."
 compose up -d
 
-log "starting tailnet enroll (profile remote-debug)..."
-compose --profile remote-debug up -d edge-enroll
+log "starting host enroll service..."
+start_host_enroll
 
 log "starting ota agent (profile ota)..."
 compose --profile ota up -d edge-ota-agent

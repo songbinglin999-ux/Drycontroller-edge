@@ -12,6 +12,7 @@ set -euo pipefail
 EDGE_ROOT="/opt/Drycontroller-edge"
 INSTALL_PACKAGES=true
 INSTALL_DOCKER=true
+INSTALL_TAILSCALE=true
 ENABLE_BOOTSTRAP=true
 START_BOOTSTRAP=false
 REPO_SOURCE=""
@@ -26,6 +27,7 @@ Options:
   --source PATH          Source repo/package directory. Default: repository root containing this script
   --skip-packages        Do not run apt-get; only verify prerequisites
   --skip-docker          Do not install Docker; only verify it exists
+  --skip-tailscale       Do not install Tailscale; only verify it exists
   --no-enable-service    Install bootstrap files but do not enable the systemd service
   --start-bootstrap      Start drycontroller-bootstrap.service after installing it
   -h, --help             Show this help
@@ -61,10 +63,15 @@ while [ $# -gt 0 ]; do
     --skip-packages)
       INSTALL_PACKAGES=false
       INSTALL_DOCKER=false
+      INSTALL_TAILSCALE=false
       shift
       ;;
     --skip-docker)
       INSTALL_DOCKER=false
+      shift
+      ;;
+    --skip-tailscale)
+      INSTALL_TAILSCALE=false
       shift
       ;;
     --no-enable-service)
@@ -101,6 +108,8 @@ fi
 [ -f "${REPO_SOURCE}/env.example" ] || die "env.example not found in source: ${REPO_SOURCE}"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-bootstrap.sh" ] || die "bootstrap script missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-bootstrap.service" ] || die "bootstrap service missing in source"
+[ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-tailnet.sh" ] || die "host tailnet script missing in source"
+[ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-enroll.sh" ] || die "host enroll script missing in source"
 
 install_base_packages_apt() {
   export DEBIAN_FRONTEND=noninteractive
@@ -108,6 +117,7 @@ install_base_packages_apt() {
   apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    gnupg \
     python3 \
     tar \
     iproute2 \
@@ -138,6 +148,38 @@ install_docker_apt() {
   fi
 }
 
+install_tailscale_apt() {
+  if command -v tailscale >/dev/null 2>&1; then
+    log "tailscale already installed: $(tailscale version 2>/dev/null | head -n 1 || true)"
+    return
+  fi
+
+  if apt-cache show tailscale >/dev/null 2>&1; then
+    log "installing tailscale from OS package repository"
+    apt-get install -y --no-install-recommends tailscale
+    return
+  fi
+
+  if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+  fi
+  if [ "${ID:-}" = "ubuntu" ] && [ -n "${VERSION_CODENAME:-}" ]; then
+    log "adding official Tailscale apt repository for Ubuntu ${VERSION_CODENAME}"
+    mkdir -p /usr/share/keyrings
+    curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.noarmor.gpg" \
+      -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+    curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.tailscale-keyring.list" \
+      -o /etc/apt/sources.list.d/tailscale.list
+    apt-get update
+    apt-get install -y --no-install-recommends tailscale
+    return
+  fi
+
+  log "tailscale package not available from configured apt repositories"
+  log "install Tailscale before provisioning, or provide an OS image with tailscale preinstalled"
+}
+
 install_host_packages() {
   if [ "$INSTALL_PACKAGES" != true ]; then
     log "package installation skipped"
@@ -148,6 +190,9 @@ install_host_packages() {
     install_base_packages_apt
     if [ "$INSTALL_DOCKER" = true ]; then
       install_docker_apt
+    fi
+    if [ "$INSTALL_TAILSCALE" = true ]; then
+      install_tailscale_apt
     fi
     return
   fi
@@ -163,6 +208,7 @@ verify_prerequisites() {
   fi
   command -v python3 >/dev/null 2>&1 || die "python3 is not installed"
   command -v curl >/dev/null 2>&1 || die "curl is not installed"
+  command -v tailscale >/dev/null 2>&1 || die "tailscale is not installed"
 }
 
 configure_docker() {
@@ -234,7 +280,11 @@ copy_edge_project() {
 
 install_bootstrap_service() {
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-bootstrap.sh" /usr/local/sbin/drycontroller-bootstrap.sh
+  install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-tailnet.sh" /usr/local/sbin/drycontroller-host-tailnet.sh
+  install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-enroll.sh" /usr/local/sbin/drycontroller-host-enroll.sh
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-bootstrap.service" /etc/systemd/system/drycontroller-bootstrap.service
+  install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-tailnet.service" /etc/systemd/system/drycontroller-tailnet.service
+  install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-enroll.service" /etc/systemd/system/drycontroller-enroll.service
 
   mkdir -p /etc/drycontroller/keys /etc/drycontroller/license /var/lib/drycontroller /var/log
   chmod 755 /etc/drycontroller /etc/drycontroller/keys
@@ -260,12 +310,15 @@ write_host_manifest() {
   cat > /var/lib/drycontroller/host-install.json <<EOF
 {
   "installed_at": "$(date -Is)",
-  "edge_root": "${EDGE_ROOT}",
-  "source": "${REPO_SOURCE}",
-  "bootstrap_service": "drycontroller-bootstrap.service",
-  "docker": "$(docker --version 2>/dev/null || true)",
-  "compose": "$(docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || true)"
-}
+    "edge_root": "${EDGE_ROOT}",
+    "source": "${REPO_SOURCE}",
+    "bootstrap_service": "drycontroller-bootstrap.service",
+    "tailnet_service": "drycontroller-tailnet.service",
+    "enroll_service": "drycontroller-enroll.service",
+    "docker": "$(docker --version 2>/dev/null || true)",
+    "compose": "$(docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || true)",
+    "tailscale": "$(tailscale version 2>/dev/null | head -n 1 || true)"
+  }
 EOF
   chmod 0600 /var/lib/drycontroller/host-install.json
 }
