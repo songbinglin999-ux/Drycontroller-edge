@@ -10,8 +10,8 @@ from typing import Any, Callable, Dict, List, Optional, cast
 import pytest
 
 PATH = Path(__file__).resolve()
-SERVICE_ROOT = PATH.parents[1]
-ROOT = PATH.parents[2]
+SERVICE_ROOT = PATH.parents[1]   # edge-api/
+ROOT = PATH.parents[3]           # Drycontroller-edge/ (项目根，含 common/)
 
 for entry in {str(ROOT), str(SERVICE_ROOT)}:
     if entry not in sys.path:
