@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-: "${GITEA_BASE:?GITEA_BASE is required (e.g. http://203.0.113.122:3030)}"
+: "${GITEA_BASE:?GITEA_BASE is required (e.g. https://git.example.com)}"
 CLOUD_OPS_OWNER="${CLOUD_OPS_OWNER:-example-org}"
 CLOUD_OPS_REPO="${CLOUD_OPS_REPO:-Drycontroller-cloudserver}"
 CLOUD_OPS_SCHEMA_PATH="services/cloud-ops/app/common/schemas"
