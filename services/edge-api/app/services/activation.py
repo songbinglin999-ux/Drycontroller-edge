@@ -254,11 +254,21 @@ async def run_activation(
         logger.error("factory_license_missing")
         return {"success": False, "state": current_state, "error": "factory_license_missing"}
 
-    factory_fingerprint = _license_fingerprint(_FACTORY_LICENSE_PATH)
+    # Use stored factory fingerprint if available (production license may have overwritten the file)
+    factory_fingerprint = state_data.get("factory_license_fingerprint") or _license_fingerprint(_FACTORY_LICENSE_PATH)
+    if not factory_fingerprint:
+        logger.error("factory_fingerprint_empty")
+        return {"success": False, "state": current_state, "error": "factory_fingerprint_empty"}
+
     machine_id = _machine_id()
     if not machine_id:
         logger.error("machine_id_missing")
         return {"success": False, "state": current_state, "error": "machine_id_missing"}
+
+    # Persist fingerprint for retries (production license overwrites the factory file)
+    if "factory_license_fingerprint" not in state_data:
+        state_data["factory_license_fingerprint"] = factory_fingerprint
+        _write_state(state_data)
 
     # Step 2: Check if tailnet is already up (bootstrap or formal)
     tailnet_ready = await _wait_for_tailnet(timeout_sec=10)
