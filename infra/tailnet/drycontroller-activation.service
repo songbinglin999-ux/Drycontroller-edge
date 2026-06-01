@@ -7,6 +7,7 @@ Before=docker.service
 
 [Service]
 Type=oneshot
+WorkingDirectory=/opt/drycontroller/edge-api
 ExecStart=/usr/local/bin/python3 -m app.services.activation_cli
 TimeoutStartSec=300
 RemainAfterExit=yes

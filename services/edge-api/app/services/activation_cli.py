@@ -10,12 +10,19 @@ Exit 1 = failure (systemd will retry on next boot).
 import asyncio
 import json
 import sys
-from pathlib import Path
 
 
 def main() -> int:
-    # Ensure the edge-api app module is importable
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "edge-opencode-factory-license" / "services" / "edge-api"))
+    # Ensure the edge-api app module is importable.
+    # When run via systemd, WorkingDirectory=/opt/drycontroller/edge-api so no path hack needed.
+    # When run manually from the repo, walk up to services/edge-api/.
+    from pathlib import Path as _Path
+    _here = _Path(__file__).resolve()
+    # app/services/activation_cli.py -> app -> edge-api
+    _edge_api_dir = _here.parent.parent.parent
+    if (_edge_api_dir / "app" / "main.py").is_file():
+        import sys as _sys
+        _sys.path.insert(0, str(_edge_api_dir))
 
     from app.services.activation import get_activation_state, run_activation
 

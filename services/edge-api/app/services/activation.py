@@ -179,12 +179,15 @@ def _install_license(license_payload: dict[str, Any], public_key: str) -> None:
 
 def _run_formal_tailscale_auth(authkey: str, hostname: str) -> bool:
     """Run tailscale up --reset with the formal auth key."""
+    login_server = settings.TS_LOGIN_SERVER
     argv = [
         "tailscale", "up",
         "--reset",
         f"--authkey={authkey}",
         f"--hostname={hostname}",
     ]
+    if login_server:
+        argv.append(f"--login-server={login_server}")
     result = _run_cmd(argv, timeout=60)
     if result.returncode == 0:
         logger.info("formal_tailscale_auth_success", hostname=hostname)
@@ -345,9 +348,10 @@ async def run_activation(
     # Step 6: Formal Tailscale auth
     formal_ts_authkey = activation_result.get("formal_ts_authkey")
     formal_ts_hostname = activation_result.get("formal_ts_hostname")
+    formal_join_ok = False
     if formal_ts_authkey and formal_ts_hostname:
-        success = _run_formal_tailscale_auth(formal_ts_authkey, formal_ts_hostname)
-        if success:
+        formal_join_ok = _run_formal_tailscale_auth(formal_ts_authkey, formal_ts_hostname)
+        if formal_join_ok:
             state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
             _write_state(state_data)
         else:
@@ -359,8 +363,10 @@ async def run_activation(
     # Step 7: Cleanup auth keys
     _cleanup_auth_keys()
 
-    # Step 8: Mark as fully activated
-    state_data["state"] = ActivationState.FORMAL_LICENSE_ACTIVE.value
+    # Step 8: Mark as fully activated only if formal join succeeded
+    if formal_join_ok or not formal_ts_authkey:
+        state_data["state"] = ActivationState.FORMAL_LICENSE_ACTIVE.value
+    # else: stay at CLOUD_ACTIVATED / BOOTSTRAP_TAILNET_JOINED, retry formal join later
     state_data["activated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     _write_state(state_data)
 
