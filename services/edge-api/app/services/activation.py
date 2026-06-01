@@ -171,13 +171,15 @@ async def _call_cloud_activation(
         return resp.json()
 
 
-async def _reissue_ts_key(fingerprint: str) -> Optional[dict[str, Any]]:
+async def _reissue_ts_key(
+    fingerprint: str, factory_license: dict[str, Any], machine_id: str
+) -> Optional[dict[str, Any]]:
     """Request a new TS auth key from Cloud Ops (when previous one was consumed)."""
     cloud_url = settings.CLOUD_OPS_BASE_URL.rstrip("/")
     url = f"{cloud_url}/api/v1/factory-activation/{fingerprint}/reissue-ts-key"
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url)
+            resp = await client.post(url, json={"factory_license": factory_license, "machine_id": machine_id})
             if resp.status_code == 200:
                 return resp.json()
             logger.warning("reissue_ts_key_failed", status=resp.status_code, body=resp.text[:200])
@@ -404,7 +406,7 @@ async def run_activation(
             # Key may have been consumed by tailscale up even though join failed.
             # Request a fresh key from Cloud Ops and retry once.
             logger.warning("formal_join_failed_requesting_new_key")
-            reissue = await _reissue_ts_key(factory_fingerprint)
+            reissue = await _reissue_ts_key(factory_fingerprint, factory_license_content, machine_id)
             if reissue and reissue.get("formal_ts_authkey"):
                 formal_join_ok = _run_formal_tailscale_auth(
                     reissue["formal_ts_authkey"],
