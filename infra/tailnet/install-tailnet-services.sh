@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INFRA_DIR="${SCRIPT_DIR}/../infra/tailnet"
+INFRA_DIR="${SCRIPT_DIR}"
 
 echo "Installing DryController tailnet services..."
 

@@ -142,6 +142,7 @@ async def _wait_for_tailnet(timeout_sec: int = 120) -> bool:
 
 async def _call_cloud_activation(
     *,
+    factory_license: dict[str, Any],
     factory_license_fingerprint: str,
     machine_id: str,
     bootstrap_ts_node: str,
@@ -154,6 +155,7 @@ async def _call_cloud_activation(
     url = f"{cloud_url}/api/v1/factory-activation"
 
     payload = {
+        "factory_license": factory_license,
         "factory_license_fingerprint": factory_license_fingerprint,
         "machine_id": machine_id,
         "bootstrap_ts_node": bootstrap_ts_node,
@@ -169,8 +171,35 @@ async def _call_cloud_activation(
         return resp.json()
 
 
+async def _reissue_ts_key(fingerprint: str) -> Optional[dict[str, Any]]:
+    """Request a new TS auth key from Cloud Ops (when previous one was consumed)."""
+    cloud_url = settings.CLOUD_OPS_BASE_URL.rstrip("/")
+    url = f"{cloud_url}/api/v1/factory-activation/{fingerprint}/reissue-ts-key"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url)
+            if resp.status_code == 200:
+                return resp.json()
+            logger.warning("reissue_ts_key_failed", status=resp.status_code, body=resp.text[:200])
+            return None
+    except Exception as exc:
+        logger.warning("reissue_ts_key_error", error=str(exc))
+        return None
+
+
 def _install_license(license_payload: dict[str, Any], public_key: str) -> None:
-    """Install the production license and public key."""
+    """Verify signature then install the production license and public key."""
+    import base64 as _b64
+    from common.license_verifier import verify_signature, load_public_key
+
+    # Verify signature before installing
+    pub_bytes = _b64.b64decode(public_key.strip(), validate=True)
+    try:
+        verify_signature(license_payload, pub_bytes)
+    except Exception as exc:
+        logger.error("license_signature_verification_failed", error=str(exc))
+        raise RuntimeError(f"license signature verification failed: {exc}") from exc
+
     _write_json(_PRODUCTION_LICENSE_PATH, license_payload)
     _PRODUCTION_LICENSE_PUB_PATH.parent.mkdir(parents=True, exist_ok=True)
     _PRODUCTION_LICENSE_PUB_PATH.write_text(public_key.strip() + "\n", encoding="utf-8")
@@ -254,6 +283,12 @@ async def run_activation(
         logger.error("factory_license_missing")
         return {"success": False, "state": current_state, "error": "factory_license_missing"}
 
+    # Read factory license content (needed to send to cloud for signature validation)
+    factory_license_content = _read_json(_FACTORY_LICENSE_PATH)
+    if not factory_license_content:
+        logger.error("factory_license_empty_or_invalid_json")
+        return {"success": False, "state": current_state, "error": "factory_license_empty_or_invalid_json"}
+
     # Use stored factory fingerprint if available (production license may have overwritten the file)
     factory_fingerprint = state_data.get("factory_license_fingerprint") or _license_fingerprint(_FACTORY_LICENSE_PATH)
     if not factory_fingerprint:
@@ -309,6 +344,7 @@ async def run_activation(
 
     try:
         activation_result = await _call_cloud_activation(
+            factory_license=factory_license_content,
             factory_license_fingerprint=factory_fingerprint,
             machine_id=machine_id,
             bootstrap_ts_node=bootstrap_ts_node,
@@ -365,8 +401,22 @@ async def run_activation(
             state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
             _write_state(state_data)
         else:
-            # Non-fatal: bootstrap tailnet still works, edge can retry later
-            logger.warning("formal_tailscale_auth_failed_continuing_with_bootstrap")
+            # Key may have been consumed by tailscale up even though join failed.
+            # Request a fresh key from Cloud Ops and retry once.
+            logger.warning("formal_join_failed_requesting_new_key")
+            reissue = await _reissue_ts_key(factory_fingerprint)
+            if reissue and reissue.get("formal_ts_authkey"):
+                formal_join_ok = _run_formal_tailscale_auth(
+                    reissue["formal_ts_authkey"],
+                    reissue.get("formal_ts_hostname") or formal_ts_hostname,
+                )
+                if formal_join_ok:
+                    state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
+                    _write_state(state_data)
+                else:
+                    logger.error("formal_join_failed_again_after_reissue")
+            else:
+                logger.warning("reissue_ts_key_unavailable")
     else:
         logger.info("no_formal_ts_authkey_provided")
 
