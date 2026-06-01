@@ -383,7 +383,7 @@ async def run_activation(
 
     return {
         "success": True,
-        "state": ActivationState.FORMAL_LICENSE_ACTIVE.value,
+        "state": state_data["state"],
         "device_id": activation_result.get("device_id"),
         "tenant_id": activation_result.get("tenant_id"),
         "line_id": activation_result.get("line_id"),
