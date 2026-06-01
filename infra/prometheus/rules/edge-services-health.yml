@@ -1,0 +1,90 @@
+# P2-16: edge-monitor / license-service / edge-ota-agent alert rules
+# 这三个服务当前无自定义 Prometheus 指标（仅暴露默认 process/* 指标）。
+# 先用 up + process 指标做最小覆盖；后续各服务补自定义指标后扩展。
+
+groups:
+  - name: edge-monitor-health
+    rules:
+      - alert: EdgeMonitorDown
+        expr: up{job="edge-monitor"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: edge-monitor
+        annotations:
+          summary: "edge-monitor 不可达"
+          description: "Prometheus 无法抓取 edge-monitor /metrics 持续 1 分钟以上。"
+
+      - alert: EdgeMonitorHighMemory
+        expr: process_resident_memory_bytes{job="edge-monitor"} > 500 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: warning
+          service: edge-monitor
+        annotations:
+          summary: "edge-monitor 内存占用过高"
+          description: "edge-monitor RSS 超过 500MB（当前 {{ $value | humanize }}），可能存在内存泄漏。"
+
+      - alert: EdgeMonitorRestarted
+        expr: changes(process_start_time_seconds{job="edge-monitor"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: edge-monitor
+        annotations:
+          summary: "edge-monitor 过去 1 小时内重启"
+          description: "检测到进程重启，请检查日志确认原因。"
+
+  - name: license-service-health
+    rules:
+      - alert: LicenseServiceDown
+        expr: up{job="license-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: license-service
+        annotations:
+          summary: "license-service 不可达"
+          description: "Prometheus 无法抓取 license-service /metrics 持续 1 分钟以上。"
+
+      - alert: LicenseServiceRestarted
+        expr: changes(process_start_time_seconds{job="license-service"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: license-service
+        annotations:
+          summary: "license-service 过去 1 小时内重启"
+          description: "检测到进程重启，请检查日志确认原因。"
+
+  - name: edge-ota-agent-health
+    rules:
+      - alert: EdgeOtaAgentDown
+        expr: up{job="edge-ota-agent"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: edge-ota-agent
+        annotations:
+          summary: "edge-ota-agent 不可达"
+          description: "Prometheus 无法抓取 edge-ota-agent /metrics 持续 1 分钟以上。"
+
+      - alert: EdgeOtaAgentHighMemory
+        expr: process_resident_memory_bytes{job="edge-ota-agent"} > 300 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: warning
+          service: edge-ota-agent
+        annotations:
+          summary: "edge-ota-agent 内存占用过高"
+          description: "edge-ota-agent RSS 超过 300MB（当前 {{ $value | humanize }}），OTA 操作可能异常。"
+
+      - alert: EdgeOtaAgentRestarted
+        expr: changes(process_start_time_seconds{job="edge-ota-agent"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: edge-ota-agent
+        annotations:
+          summary: "edge-ota-agent 过去 1 小时内重启"
+          description: "检测到进程重启，如有进行中的 OTA 操作需检查状态。"

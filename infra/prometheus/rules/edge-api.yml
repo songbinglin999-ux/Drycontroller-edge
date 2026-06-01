@@ -1,0 +1,55 @@
+# P2-16: edge-api alert rules
+# 源文件：此文件是 source of truth，Prometheus 通过 infra/prometheus/prometheus.yml 挂载 rules/ 目录。
+
+groups:
+  - name: edge-api
+    rules:
+      - alert: EdgeApiDown
+        expr: up{job="edge-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: edge-api
+        annotations:
+          summary: "edge-api 不可达"
+          description: "Prometheus 无法抓取 edge-api /metrics 持续 1 分钟以上。"
+
+      - alert: EdgeApiProcessDown
+        expr: edge_api_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: edge-api
+        annotations:
+          summary: "edge-api 进程异常"
+          description: "edge_api_up 指标为 0，服务进程可能已退出或未就绪。"
+
+      - alert: EdgeApiMqttDisconnected
+        expr: edge_api_mqtt_connected == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: edge-api
+        annotations:
+          summary: "edge-api MQTT 连接断开"
+          description: "edge-api 与 MQTT broker 断开持续 2 分钟以上，事件推送和 WS 流可能中断。"
+
+      - alert: EdgeApiWsStreamDown
+        expr: edge_api_ws_stream_started == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: edge-api
+        annotations:
+          summary: "edge-api WS 流未启动"
+          description: "edge-api WebSocket 流中继未启动，大屏实时数据可能不可用。"
+
+      - alert: EdgeApiEventBusDropped
+        expr: edge_api_event_bus_dropped_total > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: edge-api
+        annotations:
+          summary: "edge-api 事件总线丢弃消息"
+          description: "event_bus 累计丢弃 {{ $value }} 条消息，订阅者可能处理不过来。"
