@@ -1,0 +1,342 @@
+# Edge 架构 v2（分层重构）
+
+> **版本**：v2.1-draft
+> **日期**：2026-06-01
+> **背景**：基于 5/30 级联故障复盘 + P0-SAFETY 对账结论 + 控制策略重新分层；2026-06-01 已合并 Codex / Claude 评审意见入正文。
+> **状态**：目标架构 + 分阶段验收（非一次性重写）。控制闭环相关改造在 PLC 安全契约签收前默认 disabled。
+
+---
+
+## 0. 设计原则
+
+1. **存活优先**：远程通道和宿主机健康独立于业务容器，`docker compose down` 不应导致失联。
+2. **PLC 是最后安全屏障**：edge 系统故障时 PLC 必须能独立维持安全运行，edge 不承担最终安全责任。
+3. **最小容器数**：合并职责单一的微服务，减少编排复杂度和故障域。
+4. **离线 7x24**：不依赖云端，本地闭环完整可运行。
+5. **控制建议与控制命令分离**：AI 永不直接写 PLC；`edge-api` 是唯一 command issuer；`edge-daq` 只消费签名后的 command 并回 ACK/NAK。是否人工逐条确认取决于授权层级（见 §6.5）：默认 **manual**；经人工授权可进入 **autopilot** 自动签发，但 edge-api 这一层（range guard / 签名 / 审计）始终不被旁路。
+6. **保命层不依赖 tailnet 可用性**：LAN SSH + 防火墙默认 ACCEPT 是不可动摇的最终兜底，独立于 Tailscale 控制面是否可达。
+
+---
+
+## 1. 分层总览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     保命层（宿主机级）                        │
+│   Tailscale (systemd) ─ SSH (局域网) ─ host watchdog         │
+└──────────────────────────┬──────────────────────────────────┘
+┌──────────────────────────▼──────────────────────────────────┐
+│                     基础层（数据基础设施）                     │
+│   Postgres ─ Mosquitto ─ InfluxDB ─ Prometheus ─ Alertmanager│
+└──────────────────────────┬──────────────────────────────────┘
+┌──────────────────────────▼──────────────────────────────────┐
+│                     业务层（应用服务）                        │
+│   edge-api（含 license） ─ ai-softsensor ─ ai-ctrl-optimizer │
+└──────────────────────────┬──────────────────────────────────┘
+┌──────────────────────────▼──────────────────────────────────┐
+│                     监控层（可观测性）                        │
+│                    edge-monitor ─ ops-console                │
+└──────────────────────────┬──────────────────────────────────┘
+┌──────────────────────────▼──────────────────────────────────┐
+│                     控制层（PLC 交互）                       │
+│              edge-daq ─ PLC 本地闭环（PLC 侧）               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. 保命层 — 宿主机级
+
+**目标**：业务全挂时仍能远程接入排查。
+
+| 组件 | 职责 | 实现方式 |
+|---|---|---|
+| Tailscale | 远程 VPN 通道 | **systemd 服务**，不在 Docker 容器内，独立于 compose 生命周期 |
+| SSH | 局域网 fallback | 宿主机 sshd，Tailscale 不可达时走局域网接入 |
+| host watchdog | 监控 Docker daemon | systemd unit（`Restart=always`）或独立脚本，Docker daemon 异常时自动重启；watchdog 自身由 systemd 守护，避免单点 |
+
+**验收标准**：执行 `docker compose down` 后，通过 Tailscale SSH 仍可远程接入宿主机；通过 LAN SSH 同样可达。
+
+**5/30 教训**：Tailscale 跑在 Docker 容器内，`compose down` 一起被杀，远程通道永久断联。此层直接解决该问题。
+
+### 2.1 兜底底线（不可动摇）
+
+tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都脆（重启路由器即丢），因此**保命层不能把"能新建 Tailscale 连接"当作前提**。最终兜底是 **LAN SSH(22) + 网卡/路由 + 防火墙默认 ACCEPT**，独立于 tailnet 可用性。任何安全收紧都不得切断这条 LAN 接入路径。
+
+### 2.2 enroll 改造（不能标"不变"）
+
+`edge-enroll` 当前依赖 compose 里的 `tailscale` 服务、共享 `tailscaled.sock` 和容器卷。Tailscale 迁宿主机 systemd 后，enroll 必须二选一改造，否则 Phase 1 做完设备能 SSH 但云端设备注册/心跳断掉：
+
+- **宿主机 systemd oneshot/timer**：读取宿主机 `tailscale ip -4`，向 cloud-ops enroll。
+- **容器保留 enroll**：只读挂载宿主机 tailscale socket，或经宿主机命令代理拿 tailnet IP。
+
+---
+
+## 3. 基础层 — 数据基础设施
+
+**目标**：为上层提供可靠的数据存储和消息通道。
+
+| 组件 | 职责 | 端口 |
+|---|---|---|
+| Postgres 15 | 业务配置、告警规则、审计日志、Alembic 迁移 | 127.0.0.1:5432 |
+| Mosquitto 2.0 | MQTT 消息总线，4 用户隔离，ACL 控制，支持 TLS | 127.0.0.1:1883/8883 |
+| InfluxDB 2.7 | 时序数据、AI 推理结果、事件记录 | 127.0.0.1:8086 |
+| Prometheus | 指标采集，30 天留存 | 127.0.0.1:9090 |
+| Alertmanager | 告警聚合 | 127.0.0.1:9093 |
+| mosquitto-init | 一次性密码文件生成（run-once） | — |
+
+**设计约束**：
+- 所有端口默认绑定 `127.0.0.1`，不暴露工厂 LAN。
+- 有状态服务使用 Docker volume 持久化。
+- 无状态服务挂了数据不丢。
+
+---
+
+## 4. 业务层 — 应用服务
+
+**目标**：数据采集、AI 推理、控制建议、API 网关。
+
+### 4.1 edge-api（合并 license-service，唯一 command issuer）
+
+| 职责 | 说明 |
+|---|---|
+| 统一 REST/WebSocket 网关 | 唯一对外入口 |
+| 控制模式管理 | edge 模式 / 本地模式 / 模式切换 |
+| **唯一 command issuer** | 按授权层级签发 **signed control command**（manual：人工逐条确认；autopilot：人工授权后自动签发）；两种层级都过 range guard + 签名 + 审计，AI 不旁路（见 §6.5） |
+| range guard | 越界 setpoint 在签发前拒绝 |
+| 授权校验 | 合并原 license-service 的 `/verify` 逻辑，减少一个容器 |
+| Alembic 迁移 | 启动时自动执行 |
+| 审计与 outbox | 控制命令、告警事件、command ACK/NAK 落库同步 |
+
+**合并说明**：原 `license-service` 仅提供一个 `/verify` 接口，合并进 edge-api 后通过内部函数调用，减少一次网络跳转和一个容器编排。该合并**不是安全闭环的前置条件**（见 §9 Phase 5）。
+
+### 4.2 ai-softsensor
+
+| 职责 | 说明 |
+|---|---|
+| ONNX 推理 | 订阅 MQTT 实时点位，输出软测量含水率 |
+| 结果发布 | MQTT + InfluxDB 双写 |
+
+### 4.3 ai-ctrl-optimizer（输出"建议"，不直写 PLC）
+
+| 职责 | 说明 |
+|---|---|
+| 控制建议计算 | 订阅实时数据 + AI 含水率，计算最优 setpoint |
+| 输出形态 | 发布到**独立 suggestion topic/schema**，仅供 edge-api / ops-console 展示与决策；**绝不直达 edge-daq 或 PLC** |
+| 模式感知 | PLC 处于本地模式时，suggestion 继续计算但标记 `not_actionable` 并记录，不进入 command 签发链路 |
+
+**关键变化**：v1 中 ai-ctrl-optimizer 输出的 MQTT control command 由 edge-daq 直接写 PLC。v2 下它只产出 suggestion，能否变成 command 由 §6.5 协议裁决，闭环控制权在 PLC 侧。
+
+---
+
+## 5. 监控层 — 可观测性
+
+**目标**：系统健康监控、自动自愈、运维可视化。
+
+| 组件 | 职责 |
+|---|---|
+| edge-monitor | 服务探活（HTTP/TCP/容器状态）、自愈（阈值重启 + 熔断冷却）、PLC 模式状态监控、心跳健康监控、控制拒绝（NAK）可见、MQTT 状态发布、Alertmanager 集成 |
+| ops-console | 本地运维大屏（Svelte SPA），展示实时数据、告警、系统状态、当前控制模式、授权层级（manual/autopilot）与 suggestion |
+
+**edge-monitor 职责（相对 v1 新增）**：
+- 监控 PLC 模式状态（edge 模式 vs 本地模式 vs 维护锁定），切换时触发告警。
+- 监控 edge-daq 双心跳（主机存活 + 控制健康，见 §6.1）。
+- 控制命令被 PLC 拒绝（NAK）时可见并告警。
+- 监控 autopilot 授权状态，autopilot 被自动挂起回 manual 时告警。
+
+---
+
+## 6. 控制层 — PLC 交互
+
+**目标**：数据采集、签名 command 下发、双心跳维持、PLC 兜底控制。
+
+### 6.1 edge-daq
+
+| 职责 | 说明 |
+|---|---|
+| 数据采集 | Modbus TCP 读取 PLC 寄存器，发布到 MQTT + InfluxDB |
+| command 写入 | 只消费 edge-api 下发的**签名 command**，Modbus 写入 PLC，回 **ACK/NAK**；拒绝或写失败 NAK 且**不重放**危险写入 |
+| 双心跳写入 | 见下方语义拆分，**独立进程**，采集挂了心跳进程也要继续 |
+| 模式回读 | 读取 PLC 模式状态寄存器（edge / 本地 / 维护锁定），上报到 MQTT |
+
+**心跳语义拆分**（v1 的单一 `EDGE.HEARTBEAT` 不够，PLC 用它决定是否允许 edge 模式，若控制链路已失效却仍递增会更危险）：
+
+- `HOST_ALIVE`：主机或基础运行时还活着，**仅用于诊断**。
+- `EDGE_CONTROL_HEALTHY`（门控心跳）：仅当控制路径关键依赖（MQTT、edge-api、命令签名、range guard、Modbus 写链路）全部健康、模式状态明确、最近一次写入/ACK 契约满足时才递增；任一不满足即 **fail-closed**（停止递增），让 PLC 切本地模式。PLC 的看门狗监测的是这个门控心跳。
+
+### 6.2 PLC 本地闭环（PLC 侧实现）
+
+| 功能 | 说明 |
+|---|---|
+| 心跳看门狗 | 监测 `EDGE_CONTROL_HEALTHY` 寄存器，M 秒未更新判定 edge 控制不可信 |
+| 模式切换 | 门控心跳正常 → edge 模式；超时 → 本地模式（预设安全 setpoint） |
+| **维护锁定（maintenance lock）** | 人为锁定本地模式，需**手动解除**后才允许 edge 重新接管；**在 PLC 侧实现**，否则维修中 edge 心跳恢复仍可能强行夺回控制权 |
+| bumpless 切换 | 模式切换时输出不能跳变，平滑过渡 |
+| actuator clamp | 输出限幅，不超安全范围 |
+| 急停/联锁 | 硬件级安全，edge 不介入 |
+| 上电默认 | 上电后进入安全默认状态 |
+| DO 触点告警 | 心跳超时 → DO 闭合 → DTU 短信告警（**独立于 edge，独立于网络**） |
+| 模式回读寄存器 | edge 可读当前模式（edge / 本地 / 维护锁定） |
+
+### 6.3 控制模式切换流程
+
+```
+          门控心跳正常                门控心跳超时
+┌──────────┐    ┌──────────┐    ┌──────────┐
+│ edge 模式 │ →  │ 等待确认  │ →  │ 本地模式  │
+│          │    │ (防抖)    │    │ (PLC 兜底)│
+└──────────┘    └──────────┘    └──────────┘
+      ↑                                │
+      └────────── 心跳恢复 ────────────┘
+
+         维护锁定：人为置入 → 强制本地模式 → 仅手动解除可退出
+         （锁定期间忽略 edge 心跳恢复，不自动接管）
+```
+
+**防抖**：连续 K 次门控心跳丢失才判定故障，避免偶发丢包误切。
+
+### 6.4 PLC → 云端告警链路
+
+```
+正常路径：PLC → Modbus → edge-daq → MQTT → edge-api → cloud-ops
+独立路径：PLC → DO 触点 → 4G DTU → 短信 → 运维手机
+```
+
+独立路径在 edge 全挂时仍可工作。
+
+### 6.5 控制建议 / 控制命令协议（契约）
+
+| 环节 | 约定 |
+|---|---|
+| suggestion 发布 | ai-ctrl-optimizer 发布到独立 topic/schema，仅进入 edge-api / ops-console 展示；**绝不直达 PLC** |
+| suggestion → command | 由 **edge-api** 转为 signed control command；是否需人工逐条确认取决于授权层级（见下）；AI 不参与签发 |
+| command 消费 | edge-daq 只接受签名 command，Modbus 写入后回 ACK/NAK |
+| PLC 拒绝 | 拒绝原因可回读、审计、上报；NAK 不触发危险重放 |
+| 本地模式行为 | suggestion 标记 `not_actionable` 并记录，不进入签发链路 |
+
+**授权层级**（无论哪一级，edge-api 的 range guard / 签名 / 审计都不被旁路，AI 始终不直接写 PLC）：
+
+- **manual（默认）**：每条 suggestion 需人工确认，edge-api 才签发 command。
+- **autopilot（AI 自动驾驶）**：edge-api 自动把 suggestion 转签名 command 下发，由 PLC 侧 clamp / 本地模式 / 心跳门控 / 急停兜底。约束：
+  - **需人工显式授权开启**，默认不开；
+  - **仅 P0-SAFETY 关闭后允许启用**（依赖 PLC 兜底真实可用），未关闭前代码层 fail-closed 禁用；
+  - 授权一直有效，**直到运维手动退回 manual**；
+  - 进入本地模式 / 维护锁定 / 任一控制依赖 fail-closed 时**自动挂起回 manual**，恢复后**需重新人工授权**才能再次进入 autopilot。
+
+---
+
+## 7. 服务清单对比
+
+| 服务 | v1（当前） | v2（新架构） | 变更 |
+|---|---|---|---|
+| edge-api | ✓ | ✓ | 合并 license-service，成为唯一 command issuer |
+| edge-daq | ✓ | ✓ | 新增双心跳 + 模式回读 + 签名 command/ACK |
+| ai-softsensor | ✓ | ✓ | 不变 |
+| ai-ctrl-optimizer | ✓ | ✓ | 输出从"命令"改"建议"，不直写 PLC |
+| license-service | ✓ | ✗ | 合并进 edge-api |
+| edge-monitor | ✓ | ✓ | 新增 PLC 模式 / 心跳健康 / NAK 监控 |
+| ops-console | △（代码已存在，未接 compose） | ✓ | edge 本地维护控制台（Svelte/Vite，`ops-console/`），面向维护工程师，走 edge-api 管理员 API Key；当前无 Dockerfile/未接 compose，**部署形态待定**（见下） |
+| edge-ota-agent | ✓（profile: ota） | ✓ | 不变 |
+| postgres | ✓ | ✓ | 不变 |
+| influxdb | ✓ | ✓ | 不变 |
+| mosquitto | ✓ | ✓ | 不变 |
+| mosquitto-init | ✓ | ✓ | 不变 |
+| prometheus | ✓ | ✓ | 不变 |
+| alertmanager | ✓ | ✓ | 不变 |
+| docker-socket-proxy | ✓ | ✓ | 不变 |
+| docker-socket-proxy-ota | ✓ | ✓（profile: ota） | 不变 |
+| tailscale | ✓（profile: remote-debug，容器内） | ✗（迁 **systemd**，宿主机级） | 迁出容器 |
+| edge-enroll | ✓（profile: remote-debug） | ✓ | **需改造**（Tailscale 迁出后激活链路调整，见 §2.2） |
+| Grafana | — | **不加** | — |
+
+**容器数推导**：v1 compose 实测 **17 个 service**（已核实）。v2 = 17 − license-service（−1）− tailscale 迁 systemd（−1）= **15**；若 ops-console 落为 edge compose 内独立容器则 +1 = **16**。
+
+**ops-console 部署形态（推荐 edge-api StaticFiles 挂卷托管，容器数 15）**：身份与边界已由 `ops-console/README.md` 明确——edge 本地维护控制台（维护工程师用，可重启服务/看日志/调自愈参数，走 edge-api 管理员 API Key），区别于现场只读大屏（`Drycontroller-frontend`/bigscreen）和云端 cloud-console（多节点/租户/license/OTA/job）。代码已存在但未接 compose，落地排期靠后（见 §9 Phase 6）。形态对比：
+- **edge-api StaticFiles 挂卷托管（推荐）**：`npm run build` 产物（`ops-console/dist`）经宿主机目录只读挂进 edge-api，挂载在 `/console` 子路径，与 `/api/v1` 同源 → 零 CORS、WebSocket 同源；不新增容器，容器数 **15**；前端更新只替换挂卷产物，不重建 edge-api 镜像。
+- **独立 nginx 容器**：单独静态服务容器 → 新增 1 容器（**16**），且需反代 `/api` 或开 CORS；前后端发布解耦在单人开发下无实际收益，不选。
+
+> 注：基础层（§3）无 web server，"基础层 nginx 托管不新增容器"不成立——用 nginx 必然 +1；只有 edge-api 托管才能保持 15。
+
+---
+
+## 8. 与 P0-SAFETY 的对齐
+
+P0-SAFETY 要求 PLC 侧补全安全能力，edge 侧补全心跳和状态机。本架构直接覆盖：
+
+| P0-SAFETY 要求 | 本架构对应 |
+|---|---|
+| PLC 侧补 `EDGE.HEARTBEAT` | 6.1 双心跳（门控心跳 fail-closed） |
+| PLC 侧补 safe-stop | 6.2 PLC 本地闭环 - 上电默认 |
+| PLC 侧补 clamp | 6.2 PLC 本地闭环 - actuator clamp |
+| PLC 侧补急停/联锁 | 6.2 PLC 本地闭环 - 急停/联锁 |
+| PLC 侧补上电默认 | 6.2 PLC 本地闭环 - 上电默认 |
+| edge 侧补心跳 | 6.1 双心跳写入（独立进程） |
+| edge 侧补 range guard | 4.1 edge-api（签发前拒绝越界） |
+| edge 侧补状态机 | 6.3 控制模式切换流程（含维护锁定） |
+| edge 侧补 `/control/estop` | §9 Phase 3（edge 控制契约）落位 |
+| autopilot 启用门槛 | §6.5：仅 P0-SAFETY 关闭后可启用 |
+
+---
+
+## 9. 推进顺序
+
+MVP 范围（2026-07）与 v2 目标架构分开推进：根审计当前收敛的 7 月交付 = PLC 采集 → 工程量换算/基础统计 → 阈值告警 → 大屏，AI 与控制回写整体延后。控制写入在 P0-SAFETY 关闭前默认 disabled。
+
+| Phase | 内容 | 验收标准 |
+|---|---|---|
+| **Phase 0** | 点表 / MVP 数据链路：PLC tags、采集、工程量换算、阈值告警、大屏 | 现场点表落库；只读数据链路 E2E 跑通；控制写入默认关闭 |
+| **Phase 1** | 保命层：宿主机 Tailscale + LAN SSH + host watchdog + enroll 改造 | `compose down` 后 Tailscale/LAN SSH 均可达；cloud-ops 仍能识别设备 tailnet 地址 |
+| **Phase 2** | PLC 安全契约：心跳寄存器、模式寄存器、本地 setpoint、clamp、联锁、维护锁定、DO 告警 | 停止 edge 后 PLC 自动切本地；DO/DTU 告警不依赖 edge 网络 |
+| **Phase 3** | edge 控制契约：suggestion schema、signed command、ACK/NAK、range guard、`/control/estop`、autopilot 授权机制 | AI 不直写 PLC；未签名/越界/本地模式下 command 被拒并审计；autopilot 仅 P0-SAFETY 关闭后可启用，且可一键退回 manual |
+| **Phase 4** | 监控层补齐：PLC 模式监控、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、控制拒绝均可见且告警 |
+| **Phase 5** | license-service 合并 + 文档收敛 | 功能等价测试通过；旧端点/云端探测路径有兼容或迁移说明；文档与代码一致 |
+| **Phase 6** | ops-console 接入（edge-api StaticFiles 挂卷托管，见 §7）+ 鉴权整改（代码已存在，落地排期靠后） | `dist` 挂卷只读托管于 edge-api `/console`，容器数维持 15；整改 `VITE_ADMIN_API_KEY` 把长期管理员 Key 编译进前端静态产物的泄密隐患（改登录换短期 token，不再把长期 Key 打包进 JS）；维护工程师可访问，实时数据 / 告警 / 控制模式 / 授权层级 / suggestion 可见 |
+
+---
+
+## 10. 不变的部分
+
+以下设计在新架构中保持不变：
+
+- Headscale tailnet 隔离运维通道，PLC 不暴露公网。
+- degraded 状态机完整，edge 依赖异常时降级而非直接退出。
+- PLC 控制 idempotency window、MQTT/Influx 指数退避。
+- JWT secret 空值 fail-closed、API key 分级。
+- Job/JobItem 状态机。
+- 所有主机端口默认绑定 `127.0.0.1`。
+- Mosquitto 禁匿名、ACL 隔离。
+- 自愈机制：阈值触发 + 冷却 + 熔断升级。
+
+---
+
+## 11. 失败注入验收
+
+验收不能只覆盖正常路径，至少覆盖以下故障场景：
+
+| 场景 | 预期 |
+|---|---|
+| `docker compose down` | Tailscale/LAN SSH 仍可达；PLC 切本地或保持安全状态；云端显示业务离线但主机可达 |
+| kill `edge-daq` 主进程 | 门控心跳停止；PLC 防抖后切本地；edge-monitor/Alertmanager 告警 |
+| kill 心跳进程 | PLC 防抖后切本地；采集即使还在也不能保持 edge 模式 |
+| MQTT 不可用 | 门控心跳 fail-closed；不产生新可执行 command；状态可审计 |
+| InfluxDB 不可用 | 采集链路降级缓存；控制路径不因时序库异常失控 |
+| edge-api 不可用 | 无新 command 下发；PLC 不依赖 edge-api 维持安全 |
+| Modbus 写失败 | command NAK；不重放危险写入；告警可见 |
+| PLC 切本地模式 | suggestion 标 `not_actionable`；edge-api 拒绝控制写入 |
+| 越界 setpoint | edge-api range guard 拒绝；edge-daq 二次拒绝；PLC clamp 兜底 |
+| 维护锁定期间 edge 恢复 | PLC 不自动接管，需手动解除 |
+| autopilot 运行中 PLC 切本地 / 依赖 fail-closed | autopilot 自动挂起回 manual；恢复后需重新人工授权 |
+| 宿主机重启 | Tailscale、SSH、watchdog、业务 compose 按序恢复，无需现场介入 |
+
+---
+
+## 12. 需同步的文档
+
+v2 被采纳后须同步以下文档，否则团队会按旧链路继续实现：
+
+- `docs/ops/remote-debug-dev.md`：仍描述容器内 Tailscale。
+- `docs/ops/provisioning-bootstrap.md`：激活流程仍启动 compose profile 里的 `tailscale edge-enroll`。
+- `docs/architecture/data-flow.md`：仍保留 `ai-ctrl-optimizer → MQTT → edge-daq → PLC` 闭环描述。
+- `docs/architecture/control-strategy.md`：需改为 suggestion / command 双协议。
+- `docs/architecture/system-overview.md`：仍含 license-service 独立存在与 edge-daq 闭环 ACK。
+- `docs/ops/后端参数配置说明.md`：license-service、Tailscale、控制 topic/ACK 参数都会受影响。

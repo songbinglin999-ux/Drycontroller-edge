@@ -1,7 +1,7 @@
 # 🔄 数据流与消息流架构（Data Flow）
 
 > 版本：v1.0  
-> 关联文档：`system-overview.md` 第 5 章、`PROJECT_STRUCTURE.md`
+> 关联文档：`system-overview.md` 第 5 章
 
 ---
 
