@@ -1,0 +1,13 @@
+[Unit]
+Description=Drycontroller host factory activation
+Documentation=file:/opt/Drycontroller-edge/docs/ops/provisioning-bootstrap.md
+Wants=network-online.target drycontroller-tailnet.service
+After=network-online.target drycontroller-tailnet.service
+ConditionPathExists=/etc/drycontroller/tailnet.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/drycontroller-host-activation.sh
+
+[Install]
+WantedBy=multi-user.target

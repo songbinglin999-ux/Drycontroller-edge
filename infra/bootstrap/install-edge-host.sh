@@ -110,6 +110,7 @@ fi
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-bootstrap.service" ] || die "bootstrap service missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-tailnet.sh" ] || die "host tailnet script missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-enroll.sh" ] || die "host enroll script missing in source"
+[ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-activation.sh" ] || die "host activation script missing in source"
 
 install_base_packages_apt() {
   export DEBIAN_FRONTEND=noninteractive
@@ -282,9 +283,11 @@ install_bootstrap_service() {
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-bootstrap.sh" /usr/local/sbin/drycontroller-bootstrap.sh
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-tailnet.sh" /usr/local/sbin/drycontroller-host-tailnet.sh
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-enroll.sh" /usr/local/sbin/drycontroller-host-enroll.sh
+  install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-activation.sh" /usr/local/sbin/drycontroller-host-activation.sh
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-bootstrap.service" /etc/systemd/system/drycontroller-bootstrap.service
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-tailnet.service" /etc/systemd/system/drycontroller-tailnet.service
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-enroll.service" /etc/systemd/system/drycontroller-enroll.service
+  install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-activation.service" /etc/systemd/system/drycontroller-activation.service
 
   mkdir -p /etc/drycontroller/keys /etc/drycontroller/license /var/lib/drycontroller /var/log
   chmod 755 /etc/drycontroller /etc/drycontroller/keys
@@ -314,6 +317,7 @@ write_host_manifest() {
     "source": "${REPO_SOURCE}",
     "bootstrap_service": "drycontroller-bootstrap.service",
     "tailnet_service": "drycontroller-tailnet.service",
+    "activation_service": "drycontroller-activation.service",
     "enroll_service": "drycontroller-enroll.service",
     "docker": "$(docker --version 2>/dev/null || true)",
     "compose": "$(docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || true)",

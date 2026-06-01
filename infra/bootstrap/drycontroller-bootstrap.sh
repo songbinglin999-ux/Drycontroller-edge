@@ -28,6 +28,8 @@ BOOTSTRAP_STARTED_AT="$(date -Is)"
 BOOTSTRAP_FAIL_REASON=""
 BOOTSTRAP_REGISTRY_STATUS="skipped"
 BOOTSTRAP_USB_MOUNT="/mnt/drycontroller-provisioning"
+FACTORY_LICENSE_PREINSTALLED=false
+[ -f "${LICENSE_DIR}/license.json" ] && FACTORY_LICENSE_PREINSTALLED=true
 
 # ── ANSI 颜色 ──────────────────────────────────────────────────────
 C_RESET='\033[0m'
@@ -332,6 +334,18 @@ CLOUD_OPS_TAILNET_BASE_URL="$(pyget cloud_ops_tailnet_base_url || true)"
 ENROLL_TOKEN="$(pyget enroll_token || true)"
 BATCH_ID="$(pyget batch_id || true)"
 INSTALLER_TOKEN="$(pyget installer_token || true)"
+FACTORY_ACTIVATION_ENABLED="$(pyget factory_activation_enabled || true)"
+
+truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+should_run_host_activation() {
+  truthy "${FACTORY_ACTIVATION_ENABLED:-}" || [ "$FACTORY_LICENSE_PREINSTALLED" = true ]
+}
 
 TS_LOGIN_SERVER="$(pyget ts_login_server || true)"
 TS_AUTHKEY="$(pyget ts_authkey || true)"
@@ -436,12 +450,16 @@ write_tailnet_env() {
   tmp="$(secret_mktemp)"
   {
     printf 'TS_LOGIN_SERVER=%q\n' "${TS_LOGIN_SERVER:-}"
-    printf 'TS_AUTHKEY=%q\n' "${TS_AUTHKEY:-}"
+    if [ -n "${TS_AUTHKEY:-}" ]; then
+      printf 'TS_AUTHKEY=%q\n' "${TS_AUTHKEY:-}"
+    fi
     printf 'TS_HOSTNAME=%q\n' "${TS_HOSTNAME:-}"
     printf 'TS_EXTRA_ARGS=%q\n' "${TS_EXTRA_ARGS:-}"
     printf 'CLOUD_OPS_BASE_URL=%q\n' "${CLOUD_OPS_RUNTIME_BASE_URL:-$CLOUD_OPS_BASE_URL}"
     printf 'CLOUD_OPS_ENROLL_TOKEN=%q\n' "${NODE_ENROLL_TOKEN:-${ENROLL_TOKEN:-}}"
     printf 'CLOUD_OPS_ENROLL_TOKEN_HEADER=%q\n' "${CLOUD_OPS_ENROLL_TOKEN_HEADER:-X-Enroll-Token}"
+    printf 'EDGE_ENV_FILE=%q\n' "${ENV_FILE:-}"
+    printf 'EDGE_ROOT=%q\n' "${EDGE_ROOT:-}"
     printf 'ENROLL_NAME=%q\n' "${TS_HOSTNAME:-${NODE_NAME:-edge-node}}"
     printf 'LINE_ID=%q\n' "${LINE_ID:-L1}"
     printf 'ENROLL_EDGE_API_PORT=%q\n' "${EDGE_API_PORT:-8000}"
@@ -449,6 +467,12 @@ write_tailnet_env() {
   } > "$tmp"
   install -m 0600 "$tmp" "$TAILNET_ENV_FILE"
   log "wrote host tailnet env -> ${TAILNET_ENV_FILE}"
+}
+
+reload_tailnet_env() {
+  unset TS_AUTHKEY CLOUD_OPS_ENROLL_TOKEN EDGE_ENV_FILE EDGE_ROOT ENROLL_NAME
+  # shellcheck disable=SC1090
+  . "$TAILNET_ENV_FILE"
 }
 
 start_host_tailnet() {
@@ -493,6 +517,93 @@ start_host_enroll() {
   systemctl enable drycontroller-enroll.service >/dev/null 2>&1 || true
   systemctl restart drycontroller-enroll.service
   log_ok "host enroll service started"
+}
+
+start_host_activation() {
+  write_tailnet_env
+  systemctl daemon-reload
+  systemctl start drycontroller-activation.service
+}
+
+sync_formal_tailnet_binding() {
+  local current_ip current_hostname
+  current_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+  current_hostname="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("Self", {}).get("HostName", ""))' 2>/dev/null || true)"
+  [ -n "$current_ip" ] || return 0
+  set_kv "EDGE_API_BIND_ADDR" "$current_ip"
+  if [ -n "$current_hostname" ]; then
+    TS_HOSTNAME="$current_hostname"
+    set_kv "TS_HOSTNAME" "$current_hostname"
+  fi
+  log "edge-api bind address synced to current tailnet ip: ${current_ip}"
+}
+
+remove_bootstrap_tailnet_authkey() {
+  TAILNET_ENV_FILE="$TAILNET_ENV_FILE" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["TAILNET_ENV_FILE"])
+if not path.exists():
+    raise SystemExit(0)
+lines = path.read_text(encoding="utf-8").splitlines()
+kept = [line for line in lines if not line.startswith("TS_AUTHKEY=")]
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
+  chmod 0600 "$TAILNET_ENV_FILE" || true
+}
+
+attempt_formal_tailnet_reauth() {
+  local license_resp_file="$1"
+  local formal_authkey formal_hostname before_ip after_ip
+
+  formal_authkey="$(python3 - "$license_resp_file" <<'PY'
+import json
+import sys
+
+print((json.load(open(sys.argv[1], encoding="utf-8")).get("formal_ts_authkey") or "").strip())
+PY
+)"
+  [ -n "$formal_authkey" ] || {
+    log "license response did not include formal_ts_authkey; keeping bootstrap tailnet"
+    return 0
+  }
+  formal_hostname="$(python3 - "$license_resp_file" <<'PY'
+import json
+import sys
+
+resp = json.load(open(sys.argv[1], encoding="utf-8"))
+print((resp.get("formal_ts_hostname") or resp.get("node_name") or "").strip())
+PY
+)"
+  formal_hostname="${formal_hostname:-${TS_HOSTNAME:-${NODE_NAME:-$(hostname)}}}"
+
+  before_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+  log "attempting formal tailnet re-auth hostname=${formal_hostname}"
+  if tailscale up --authkey="${formal_authkey}" --login-server="${TS_LOGIN_SERVER}" --hostname="${formal_hostname}" >> "$LOG_FILE" 2>&1; then
+    after_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+    if [ -n "$after_ip" ]; then
+      TS_HOSTNAME="$formal_hostname"
+      set_kv "TS_HOSTNAME" "$formal_hostname"
+      set_kv "EDGE_API_BIND_ADDR" "$after_ip"
+      remove_bootstrap_tailnet_authkey
+      log_ok "formal tailnet re-auth ok; tailnet ip=${after_ip}; bootstrap TS_AUTHKEY removed"
+      return 0
+    fi
+    log_warn "formal tailnet re-auth returned success but no tailnet IPv4 is available"
+  else
+    log_warn "formal tailnet re-auth failed; preserving bootstrap tailnet for retry"
+  fi
+
+  after_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+  if [ -z "$after_ip" ] && [ -n "$before_ip" ]; then
+    log_warn "tailnet IP disappeared after failed formal re-auth; restarting bootstrap tailnet service"
+    systemctl restart drycontroller-tailnet.service || true
+    wait_host_tailnet "$CLOUD_OPS_RUNTIME_BASE_URL" || true
+  fi
+  return 0
 }
 
 REGISTRY_LOGIN_DONE=0
@@ -633,13 +744,15 @@ PY
 )"
 fi
 
-if [ -z "${ENROLL_TOKEN:-}" ]; then
+NODE_ENROLL_TOKEN="${NODE_ENROLL_TOKEN:-${ENROLL_TOKEN:-}}"
+if should_run_host_activation; then
+  log "factory activation mode enabled; device identity and production license will come from cloud activation"
+elif [ -z "${ENROLL_TOKEN:-}" ]; then
   log "missing enroll_token in provisioning.json or cloud allocation response"
   exit 2
 fi
-NODE_ENROLL_TOKEN="${NODE_ENROLL_TOKEN:-$ENROLL_TOKEN}"
 
-if [ -z "${DEVICE_ID:-}" ] || [ -z "${NODE_NAME:-}" ]; then
+if ! should_run_host_activation && { [ -z "${DEVICE_ID:-}" ] || [ -z "${NODE_NAME:-}" ]; }; then
   log "missing device_id or node_name in provisioning.json or cloud allocation response"
   exit 2
 fi
@@ -743,14 +856,71 @@ fi
 log "starting edge core stack..."
 compose up -d
 
-log "starting host enroll service..."
-start_host_enroll
+if [ -n "${NODE_ENROLL_TOKEN:-}" ]; then
+  log "starting host enroll service..."
+  start_host_enroll
+else
+  log_warn "node enroll token missing; host enroll service not started until activation supplies one"
+fi
 
 log "starting ota agent (profile ota)..."
 compose --profile ota up -d edge-ota-agent
 
 # 6) 云端登记/绑定 license，并保存本地签名 license
-if [ -n "${ALLOCATION_RESP_FILE:-}" ] && [ -z "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
+HOST_ACTIVATION_DONE=0
+if should_run_host_activation; then
+  log "starting host activation service..."
+  if start_host_activation; then
+    if [ -f "${LICENSE_DIR}/license.json" ] && [ -f "${KEYS_DIR}/license.pub" ]; then
+      HOST_ACTIVATION_DONE=1
+      # activation may install runtime credentials returned by Cloud Ops.
+      reload_tailnet_env
+      NODE_ENROLL_TOKEN="${CLOUD_OPS_ENROLL_TOKEN:-${NODE_ENROLL_TOKEN:-}}"
+      if [ -f "${STATE_DIR}/device.json" ]; then
+        eval "$(python3 - "${STATE_DIR}/device.json" <<'PY'
+import json
+import shlex
+import sys
+
+data = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+mapping = {
+  "DEVICE_ID": data.get("device_id"),
+  "TENANT_ID": data.get("tenant_id"),
+  "LINE_ID": data.get("line_id"),
+  "NODE_NAME": data.get("node_name"),
+  "TS_HOSTNAME": data.get("ts_hostname"),
+}
+for key, value in mapping.items():
+    if value:
+        print(f"{key}={shlex.quote(str(value))}")
+PY
+)"
+        [ -n "${DEVICE_ID:-}" ] && set_kv "DEVICE_ID" "${DEVICE_ID}"
+        [ -n "${LINE_ID:-}" ] && set_kv "LINE_ID" "${LINE_ID}"
+      fi
+      sync_formal_tailnet_binding
+      log "re-applying edge core stack after activation tailnet sync..."
+      compose up -d
+      if [ -n "${NODE_ENROLL_TOKEN:-}" ]; then
+        log "starting host enroll service after activation..."
+        start_host_enroll
+      else
+        log_warn "node enroll token still missing after activation; host enroll service remains stopped"
+      fi
+      log_ok "host activation completed with local license installed"
+    else
+      log_err "host activation finished but local license files are missing"
+      exit 6
+    fi
+  else
+    log_err "host activation failed; bootstrap will not be marked complete"
+    exit 5
+  fi
+fi
+
+if [ "$HOST_ACTIVATION_DONE" = "1" ]; then
+  log "using signed license installed by host activation"
+elif [ -n "${ALLOCATION_RESP_FILE:-}" ] && [ -z "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then
   LICENSE_RESP_FILE="$ALLOCATION_RESP_FILE"
   log "using signed license from cloud allocation response"
 else
@@ -782,6 +952,7 @@ PY
   fi
 fi
 
+if [ "$HOST_ACTIVATION_DONE" != "1" ]; then
 python3 - "$LICENSE_RESP_FILE" "${LICENSE_DIR}/license.json" "${KEYS_DIR}/license.pub" <<'PY'
 import json
 import sys
@@ -797,7 +968,10 @@ if not public_key:
 Path(sys.argv[2]).write_text(json.dumps(license_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 Path(sys.argv[3]).write_text(public_key + "\n", encoding="utf-8")
 PY
+
+attempt_formal_tailnet_reauth "$LICENSE_RESP_FILE"
 rm -f "$LICENSE_RESP_FILE"
+fi
 chmod 0640 "${LICENSE_DIR}/license.json" || true
 chmod 0640 "${KEYS_DIR}/license.pub" || true
 log "saved signed license -> ${LICENSE_DIR}/license.json"
@@ -823,18 +997,19 @@ else
   exit 6
 fi
 
-DEVICE_JSON="${STATE_DIR}/device.json" \
-DEVICE_ID="$DEVICE_ID" \
-TENANT_ID="$TENANT_ID" \
-LINE_ID="$LINE_ID" \
-NODE_NAME="$NODE_NAME" \
-TS_HOSTNAME="$TS_HOSTNAME" \
-CLOUD_OPS_BASE_URL="$CLOUD_OPS_BASE_URL" \
-CLOUD_OPS_RUNTIME_BASE_URL="$CLOUD_OPS_RUNTIME_BASE_URL" \
-CLOUD_OPS_TAILNET_BASE_URL="$CLOUD_OPS_TAILNET_BASE_URL" \
-ACTIVATED_AT="$(date -Is)" \
-BOOTSTRAPPED_AT="$(date -Is)" \
-python3 - <<'PY'
+if [ "$HOST_ACTIVATION_DONE" != "1" ]; then
+  DEVICE_JSON="${STATE_DIR}/device.json" \
+  DEVICE_ID="$DEVICE_ID" \
+  TENANT_ID="$TENANT_ID" \
+  LINE_ID="$LINE_ID" \
+  NODE_NAME="$NODE_NAME" \
+  TS_HOSTNAME="$TS_HOSTNAME" \
+  CLOUD_OPS_BASE_URL="$CLOUD_OPS_BASE_URL" \
+  CLOUD_OPS_RUNTIME_BASE_URL="$CLOUD_OPS_RUNTIME_BASE_URL" \
+  CLOUD_OPS_TAILNET_BASE_URL="$CLOUD_OPS_TAILNET_BASE_URL" \
+  ACTIVATED_AT="$(date -Is)" \
+  BOOTSTRAPPED_AT="$(date -Is)" \
+  python3 - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -853,6 +1028,7 @@ payload = {
 }
 Path(os.environ["DEVICE_JSON"]).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
+fi
 
 touch "$SENTINEL"
 log_ok "bootstrap complete. sentinel written: $SENTINEL"

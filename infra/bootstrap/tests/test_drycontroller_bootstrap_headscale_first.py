@@ -2,6 +2,9 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-bootstrap.sh"
+TAILNET_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-tailnet.sh"
+ACTIVATION_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-activation.sh"
+INSTALL_SCRIPT = Path(__file__).resolve().parents[1] / "install-edge-host.sh"
 
 
 def _script_text() -> str:
@@ -80,10 +83,11 @@ def test_background_enroll_uses_node_token_not_license_bind_token():
     text = _script_text()
 
     assert '"NODE_ENROLL_TOKEN": resp.get("node_enroll_token")' in text
-    assert 'NODE_ENROLL_TOKEN="${NODE_ENROLL_TOKEN:-$ENROLL_TOKEN}"' in text
+    assert 'NODE_ENROLL_TOKEN="${NODE_ENROLL_TOKEN:-${ENROLL_TOKEN:-}}"' in text
     assert 'set_kv "CLOUD_OPS_ENROLL_TOKEN" "${NODE_ENROLL_TOKEN}"' in text
     assert 'printf \'CLOUD_OPS_ENROLL_TOKEN=%q\\n\' "${NODE_ENROLL_TOKEN:-${ENROLL_TOKEN:-}}"' in text
     assert '-H "X-Enroll-Token: ${ENROLL_TOKEN}"' in text
+    assert 'if [ -n "${NODE_ENROLL_TOKEN:-}" ]; then\n  log "starting host enroll service..."' in text
 
 
 def test_allocation_response_is_cached_for_bootstrap_retry():
@@ -92,3 +96,130 @@ def test_allocation_response_is_cached_for_bootstrap_retry():
     assert 'ALLOCATION_CACHE_FILE="${STATE_DIR}/allocation-response.json"' in text
     assert 'using cached cloud allocation response' in text
     assert 'install -m 0600 "$ALLOCATION_RESP_FILE" "$ALLOCATION_CACHE_FILE"' in text
+
+
+def test_formal_tailnet_reauth_failure_preserves_bootstrap_tailnet():
+    text = _script_text()
+
+    assert "attempt_formal_tailnet_reauth \"$LICENSE_RESP_FILE\"" in text
+    assert "formal tailnet re-auth failed; preserving bootstrap tailnet for retry" in text
+    assert "systemctl restart drycontroller-tailnet.service || true" in text
+    assert "exit 5" not in text[text.index("attempt_formal_tailnet_reauth()"):text.index("REGISTRY_LOGIN_DONE=0")]
+
+
+def test_host_tailnet_allows_existing_formal_state_without_bootstrap_authkey():
+    text = TAILNET_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'existing_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"' in text
+    assert '[ -n "${TS_AUTHKEY:-}" ] || die "TS_AUTHKEY is required when no existing tailnet IPv4 is available"' in text
+    assert text.index('existing_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"') < text.index(
+        '[ -n "${TS_AUTHKEY:-}" ] || die "TS_AUTHKEY is required when no existing tailnet IPv4 is available"'
+    )
+
+
+def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet_on_formal_reauth_failure():
+    text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
+
+    assert "/api/v1/factory-activation" in text
+    assert "factory_license_fingerprint" in text
+    assert "formal_ts_authkey" in text
+    assert "formal tailnet re-auth failed; preserving bootstrap tailnet for retry" in text
+    assert "systemctl restart drycontroller-tailnet.service || true" in text
+    assert "sync_tailnet_env_after_formal_reauth" in text
+    assert "sync_edge_env_after_formal_reauth" in text
+    assert '"EDGE_API_BIND_ADDR"] = ip' in text
+    assert "reapply_edge_compose_binding" in text
+    assert "save_runtime_credentials" in text
+    assert 'resp.get("node_enroll_token") or resp.get("enroll_token")' in text
+    assert "import shlex" in text
+    assert 'replacement = f"CLOUD_OPS_ENROLL_TOKEN={shlex.quote(node_token)}"' in text
+    assert 'write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"' in text
+    assert 'log "production license installed; formal tailnet re-auth failed, bootstrap tailnet preserved"' in text
+
+
+def test_host_activation_requires_local_license_when_cloud_omits_payload():
+    text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
+
+    assert "activation response omitted license and no local license is installed" in text
+    assert "Path(sys.argv[2]).is_file() and Path(sys.argv[3]).is_file()" in text
+
+
+def test_host_activation_reuses_persisted_factory_fingerprint_after_production_license_install():
+    text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'state.get("factory_license_fingerprint")' in text
+    assert 'state["factory_license_fingerprint"] = fingerprint' in text
+    assert text.index('state["factory_license_fingerprint"] = fingerprint') < text.index(
+        'install_license_from_response "$response_file"'
+    )
+
+
+def test_host_activation_only_logs_complete_after_formal_tailnet_success():
+    text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
+
+    success = text.index('write_state "formal_license_active" "activation_complete"')
+    complete = text.index('log "activation complete"')
+    failed = text.index('write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"')
+    pending = text.index('write_state "cloud_activated" "production_license_installed_formal_tailnet_pending"')
+
+    assert success < complete < failed < pending
+
+
+def test_bootstrap_invokes_host_activation_before_legacy_license_bind_when_enabled():
+    text = _script_text()
+
+    assert 'FACTORY_ACTIVATION_ENABLED="$(pyget factory_activation_enabled || true)"' in text
+    assert "should_run_host_activation()" in text
+    assert "start_host_activation()" in text
+    assert text.index('log "starting host activation service..."') < text.index('log "binding license on cloud-ops..."')
+    assert 'if [ "$HOST_ACTIVATION_DONE" != "1" ]; then' in text
+
+
+def test_bootstrap_reapplies_edge_binding_after_factory_activation():
+    text = _script_text()
+
+    assert "sync_formal_tailnet_binding()" in text
+    assert "reload_tailnet_env()" in text
+    assert "unset TS_AUTHKEY" in text
+    assert 'if [ -n "${TS_AUTHKEY:-}" ]; then' in text
+    assert 'printf \'EDGE_ENV_FILE=%q\\n\' "${ENV_FILE:-}"' in text
+    assert 'printf \'EDGE_ROOT=%q\\n\' "${EDGE_ROOT:-}"' in text
+    assert 'set_kv "EDGE_API_BIND_ADDR" "$current_ip"' in text
+    assert 'log "re-applying edge core stack after activation tailnet sync..."' in text
+    assert text.index("reload_tailnet_env") < text.index("sync_formal_tailnet_binding")
+    assert text.index("sync_formal_tailnet_binding") < text.index('log "re-applying edge core stack after activation tailnet sync..."')
+
+
+def test_factory_activation_mode_does_not_require_legacy_identity_or_enroll_token():
+    text = _script_text()
+
+    assert 'elif [ -z "${ENROLL_TOKEN:-}" ]; then' in text
+    assert 'if ! should_run_host_activation && { [ -z "${DEVICE_ID:-}" ] || [ -z "${NODE_NAME:-}" ]; }; then' in text
+    assert text.index('log "factory activation mode enabled; device identity and production license will come from cloud activation"') < text.index(
+        'log "missing enroll_token in provisioning.json or cloud allocation response"'
+    )
+
+
+def test_factory_activation_preserves_device_json_written_by_activation_agent():
+    text = _script_text()
+
+    assert 'if [ -f "${STATE_DIR}/device.json" ]; then' in text
+    assert 'python3 - "${STATE_DIR}/device.json"' in text
+    assert 'if [ "$HOST_ACTIVATION_DONE" != "1" ]; then\n  DEVICE_JSON="${STATE_DIR}/device.json"' in text
+
+
+def test_factory_activation_starts_host_enroll_if_activation_installs_node_token():
+    text = _script_text()
+
+    assert '. "$TAILNET_ENV_FILE"' in text
+    assert 'NODE_ENROLL_TOKEN="${CLOUD_OPS_ENROLL_TOKEN:-${NODE_ENROLL_TOKEN:-}}"' in text
+    assert 'log "starting host enroll service after activation..."' in text
+    assert 'log_warn "node enroll token still missing after activation; host enroll service remains stopped"' in text
+
+
+def test_install_edge_host_installs_activation_agent_service():
+    text = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert "drycontroller-host-activation.sh" in text
+    assert "drycontroller-activation.service" in text
+    assert '"activation_service": "drycontroller-activation.service"' in text

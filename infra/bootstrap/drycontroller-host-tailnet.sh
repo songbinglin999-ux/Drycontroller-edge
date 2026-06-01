@@ -26,7 +26,6 @@ die() {
 . "$ENV_FILE"
 
 [ -n "${TS_LOGIN_SERVER:-}" ] || die "TS_LOGIN_SERVER is required"
-[ -n "${TS_AUTHKEY:-}" ] || die "TS_AUTHKEY is required"
 [ -n "${TS_HOSTNAME:-}" ] || die "TS_HOSTNAME is required"
 
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
@@ -47,6 +46,8 @@ if [ -n "$existing_ip" ]; then
   log "tailnet already has IPv4: ${existing_ip}"
   exit 0
 fi
+
+[ -n "${TS_AUTHKEY:-}" ] || die "TS_AUTHKEY is required when no existing tailnet IPv4 is available"
 
 args=(
   up
