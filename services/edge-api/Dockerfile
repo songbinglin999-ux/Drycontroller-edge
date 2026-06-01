@@ -24,6 +24,8 @@ COPY common/ ./common/
 COPY services/edge-api/app/ ./app/
 COPY services/edge-api/alembic.ini ./alembic.ini
 COPY services/edge-api/alembic/ ./alembic/
+COPY services/edge-api/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 RUN mkdir -p /logs/edge-api
 
@@ -35,5 +37,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8000/ready', timeout=5).raise_for_status()"
 
-# 启动前 alembic 接管 schema 升级；alembic 之后启 uvicorn
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# P2-N8: entrypoint 先 pg_dump 再 alembic upgrade，失败保留备份供恢复
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
