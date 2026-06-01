@@ -4,6 +4,11 @@ x-logging: &default-logging
     max-size: "100m"
     max-file: "5"
 
+x-ulimits: &default-ulimits
+  nofile:
+    soft: 65536
+    hard: 65536
+
 services:
   # ==================== Docker Socket Proxy（最小权限隔离 docker.sock） ====================
   # 说明：
@@ -371,6 +376,7 @@ services:
       context: .
       dockerfile: services/edge-api/Dockerfile
     container_name: edge-api
+    ulimits: *default-ulimits
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5)"]
       interval: 30s
@@ -450,6 +456,7 @@ services:
       context: .
       dockerfile: services/edge-daq/Dockerfile
     container_name: edge-daq
+    ulimits: *default-ulimits
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
       interval: 30s
@@ -502,6 +509,7 @@ services:
       context: .
       dockerfile: services/ai-softsensor/Dockerfile
     container_name: ai-softsensor
+    ulimits: *default-ulimits
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
       interval: 30s
@@ -541,6 +549,7 @@ services:
       context: .
       dockerfile: services/ai-ctrl-optimizer/Dockerfile
     container_name: ai-ctrl-optimizer
+    ulimits: *default-ulimits
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
       interval: 30s
@@ -582,6 +591,7 @@ services:
       context: .
       dockerfile: services/license-service/Dockerfile
     container_name: license-service
+    ulimits: *default-ulimits
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5)"]
       interval: 30s
@@ -626,6 +636,7 @@ services:
       context: .
       dockerfile: services/edge-monitor/Dockerfile
     container_name: edge-monitor
+    ulimits: *default-ulimits
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
       interval: 30s
@@ -673,7 +684,7 @@ services:
 
   # ==================== OTA Agent（在线升级执行器，profile=ota） ====================
   # 用途：
-  # - 作为“设备侧执行面”，负责执行在线升级（compose pull/up + /ready 校验 + 失败回滚）
+  # - 作为"设备侧执行面"，负责执行在线升级（compose pull/up + /ready 校验 + 失败回滚）
   # - 对外不暴露端口，建议只由 edge-api 代理调用（同 docker network）
   #
   # 安全提示：
@@ -684,6 +695,7 @@ services:
       context: .
       dockerfile: services/edge-ota-agent/Dockerfile
     container_name: edge-ota-agent
+    ulimits: *default-ulimits
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/ready', timeout=5)"]
       interval: 30s
