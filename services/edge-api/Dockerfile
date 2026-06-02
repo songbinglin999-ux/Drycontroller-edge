@@ -18,7 +18,8 @@ RUN find /etc/apt -type f \( -name "*.sources" -o -name "*.list" \) \
     && rm -rf /var/lib/apt/lists/*
 
 COPY services/edge-api/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir -U "wheel>=0.46.2" "jaraco.context>=6.1.0"
 
 COPY common/ ./common/
 COPY services/edge-api/app/ ./app/

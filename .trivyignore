@@ -1,0 +1,13 @@
+# System packages from python:3.11-slim base image - cannot be fixed without changing base image
+CVE-2026-5773   # curl - SMB file transfer issue
+CVE-2026-33747  # docker-cli - BuildKit arbitrary file
+CVE-2026-33748  # docker-cli - BuildKit unauthorized file access
+CVE-2026-42496  # perl-base - Archive::Tar symlinks
+CVE-2026-42497  # perl-base - Archive::Tar hardlinks
+
+# Application Python packages
+# starlette Range-header DoS (fixed 0.49.1): edge-api serves no StaticFiles/FileResponse,
+# so the Range merging path is unreachable / not exploitable. fastapi==0.115.6 pins
+# starlette<0.42, so bumping to 0.49.1 requires a coupled fastapi upgrade — defer to a
+# deliberate fastapi bump rather than break compatibility here.
+CVE-2025-62727  # starlette - Range header DoS, not exploitable (no StaticFiles)
