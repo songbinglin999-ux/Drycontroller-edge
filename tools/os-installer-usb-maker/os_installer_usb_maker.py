@@ -29,6 +29,14 @@ DEFAULT_TAILNET_ENV = AUTOINSTALL_DIR / "tailnet.env"
 DEFAULT_FACTORY_LICENSE = AUTOINSTALL_DIR / "factory-license.json"
 FIXED_OPERATOR_USER = "dryops"
 AIRPORT_BIN = Path("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport")
+FACTORY_MATERIALS_HELP = (
+    "批次材料由云端运维或工厂管理员准备，现场人员不要自己生成。\n\n"
+    "需要拿到两个文件：\n"
+    "1. tailnet.env：首次入网配置\n"
+    "2. factory-license.json：工厂授权文件\n\n"
+    f"拿到后放到这个目录：\n{AUTOINSTALL_DIR}\n\n"
+    "然后回到本工具点击“重新检查”。如果拿不到这两个文件，请联系云端运维。"
+)
 
 # ── colour palette ──────────────────────────────────────────────
 C = {
@@ -428,6 +436,35 @@ class UsbMakerApp(tk.Tk):
     def _card_factory_materials(self, parent: tk.Frame) -> None:
         card = self._make_card(parent, "批次材料", "这两个文件决定机器第一次入网和工厂授权。")
 
+        source = tk.Frame(card, bg=C["card_alt"], highlightthickness=1,
+                          highlightbackground=C["border"])
+        source.pack(fill=tk.X, pady=(0, 12))
+        tk.Label(
+            source,
+            text="材料来源：云端运维 / 工厂管理员下发",
+            bg=C["card_alt"],
+            fg=C["primary_dark"],
+            font=("Helvetica Neue", 12, "bold"),
+            padx=12,
+            pady=8,
+        ).pack(anchor="w")
+        tk.Label(
+            source,
+            text="现场只需要把 tailnet.env 和 factory-license.json 放进默认目录，再点击重新检查。",
+            bg=C["card_alt"],
+            fg=C["text_soft"],
+            font=("Helvetica Neue", 11),
+            wraplength=520,
+            justify=tk.LEFT,
+            padx=12,
+        ).pack(anchor="w")
+        source_actions = tk.Frame(source, bg=C["card_alt"])
+        source_actions.pack(fill=tk.X, padx=12, pady=(8, 10))
+        ttk.Button(source_actions, text="打开默认目录", style="Small.TButton",
+                   command=self._open_factory_materials_dir).pack(side=tk.LEFT)
+        ttk.Button(source_actions, text="查看获取说明", style="Small.TButton",
+                   command=self._show_factory_materials_help).pack(side=tk.LEFT, padx=(8, 0))
+
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
         ttk.Checkbutton(
@@ -441,9 +478,19 @@ class UsbMakerApp(tk.Tk):
         self._path_row(inner, "工厂授权", self.factory_license_var, 2, self._choose_factory_license)
         ttk.Label(
             card,
-            text="现场装机默认要包含这两个文件。换 bootstrap key 或 factory license 时，只替换批次文件。",
+            text="换 bootstrap key 或 factory license 时，只替换批次文件，不需要重做基础 OS bundle。",
             style="Card2.TLabel",
         ).pack(anchor="w", pady=(8, 0))
+
+    def _open_factory_materials_dir(self) -> None:
+        try:
+            AUTOINSTALL_DIR.mkdir(parents=True, exist_ok=True)
+            subprocess.Popen(["open", str(AUTOINSTALL_DIR)])
+        except Exception as exc:
+            messagebox.showerror("无法打开目录", f"请手动打开：\n{AUTOINSTALL_DIR}\n\n{exc}")
+
+    def _show_factory_materials_help(self) -> None:
+        messagebox.showinfo("批次材料从哪里来", FACTORY_MATERIALS_HELP)
 
     def _card_iso(self, parent: tk.Frame) -> None:
         card = self._make_card(parent, "镜像设置", "默认只需要确认输出文件名，高级选项不要随手改。")
@@ -827,11 +874,28 @@ class UsbMakerApp(tk.Tk):
         factory_license = Path(self.factory_license_var.get()).expanduser()
         if include_factory_materials:
             if not tailnet_env.is_file():
-                raise ValueError(f"tailnet.env 不存在：{tailnet_env}")
+                raise ValueError(
+                    "缺少 tailnet.env。\n\n"
+                    "这个文件由云端运维或工厂管理员下发，现场人员不要自己生成。\n"
+                    f"请把 tailnet.env 放到：\n{AUTOINSTALL_DIR}\n\n"
+                    "放好后点击“重新检查”。"
+                )
             if not factory_license.is_file():
-                raise ValueError(f"factory-license.json 不存在：{factory_license}")
-            validate_tailnet_env(tailnet_env)
-            validate_factory_license(factory_license)
+                raise ValueError(
+                    "缺少 factory-license.json。\n\n"
+                    "这个文件由云端运维或工厂管理员下发，现场人员不要自己生成。\n"
+                    f"请把 factory-license.json 放到：\n{AUTOINSTALL_DIR}\n\n"
+                    "放好后点击“重新检查”。"
+                )
+            try:
+                validate_tailnet_env(tailnet_env)
+                validate_factory_license(factory_license)
+            except ValueError as exc:
+                raise ValueError(
+                    "批次材料格式不正确。\n\n"
+                    "请确认这两个文件来自云端运维或工厂管理员，并重新下发一套批次材料。\n\n"
+                    f"检查结果：{exc}"
+                ) from exc
         disk = None
         if self.write_after_build_var.get():
             selected = self.disk_var.get()
