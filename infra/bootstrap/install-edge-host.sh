@@ -160,10 +160,15 @@ install_tailscale_apt() {
     return
   fi
 
-  # Mainland China: pkgs.tailscale.com is unreachable from the field and there is
-  # no usable public tailscale apt mirror, so we do not attempt a network install.
-  # Provision hosts from an OS image with tailscale preinstalled.
-  die "tailscale is not installed; provision this host from an OS image with tailscale preinstalled"
+  if apt-cache show tailscale >/dev/null 2>&1; then
+    log "installing tailscale from configured apt repository"
+    apt-get install -y --no-install-recommends tailscale
+    return
+  fi
+
+  # Mainland China: pkgs.tailscale.com is not a dependable field-time dependency.
+  # Factory media must either preinstall tailscale or include it in the offline apt repo.
+  die "tailscale is not installed; include tailscale in the OS image/offline apt repo"
 }
 
 install_host_packages() {

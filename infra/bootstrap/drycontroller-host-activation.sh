@@ -432,6 +432,7 @@ response_file="$(mktemp)"
 trap 'rm -f "$response_file"' EXIT
 
 FACTORY_LICENSE_FINGERPRINT="$(license_fingerprint)"
+export FACTORY_LICENSE_FINGERPRINT
 
 current_state="$(python3 - "$STATE_FILE" <<'PY'
 import json, sys
