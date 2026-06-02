@@ -159,6 +159,19 @@ drycontroller-apt/
 bundle-images.tar   # optional, first-boot Docker images for clean-room install
 ```
 
+真机 / 生产安装还需要放入同一介质根目录：
+
+```text
+tailnet.env
+factory-license.json
+```
+
+这两个文件是 factory activation 的**批次材料**，不是基础 OS bundle 的一部分。
+bootstrap tailnet key 或 factory license 轮换时，只替换这两个文件；不需要重新
+生成 edge source bundle、离线 apt repo 或业务镜像包。如果最终交付的是只读 ISO，
+仍需要 remaster 一次把新批次材料映射进 ISO 根目录；这只是重打最终介质，不是重新
+设计或重建 OS 安装内容。
+
 如果安装车间只有 WiFi，再额外放：
 
 ```text
@@ -282,6 +295,7 @@ drycontroller-edge-post-install.service
 - 目前是 Ubuntu Server autoinstall 方案，不覆盖 Debian、Alpine、Yocto。
 - `user-data` 仍需要在制作安装盘时替换密码 hash。
 - production media 必须预置真实 factory license、factory public trust anchor、production license public trust anchor 和 `/etc/drycontroller/tailnet.env`。
+- 当前 OS Maker 会把 `dist/autoinstall/tailnet.env` 与 `dist/autoinstall/factory-license.json` 映射到 ISO 根目录；如果取消包含 factory activation 材料，它会移除旧材料，避免误用上一个批次的 token/license。
 - staging UI approve -> edge retry -> formal tailnet confirm 闭环跑通前，不建议把该安装盘交给现场批量使用。
 
 ## 与 Provisioning USB 的关系

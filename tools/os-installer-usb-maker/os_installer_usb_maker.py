@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import plistlib
 import queue
@@ -11,22 +12,20 @@ import shlex
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
-from urllib.parse import urlparse
 
 TOOL_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOL_DIR.parents[1]
-WORKSPACE_ROOT = REPO_ROOT.parent
-CLOUDSERVER_GEN_PROVISIONING = WORKSPACE_ROOT / "Drycontroller-cloudserver" / "scripts" / "gen-provisioning-usb-package.py"
 DIST_DIR = REPO_ROOT / "dist"
 AUTOINSTALL_DIR = DIST_DIR / "autoinstall"
 DEFAULT_BASE_ISO = DIST_DIR / "drycontroller-os-installer-hybrid.iso"
 DEFAULT_PASSWORD_ENV = REPO_ROOT / "infra" / "autoinstall" / "password.env"
+DEFAULT_TAILNET_ENV = AUTOINSTALL_DIR / "tailnet.env"
+DEFAULT_FACTORY_LICENSE = AUTOINSTALL_DIR / "factory-license.json"
 FIXED_OPERATOR_USER = "dryops"
 
 # ── colour palette ──────────────────────────────────────────────
@@ -143,22 +142,10 @@ class UsbMakerApp(tk.Tk):
         self.disk_var = tk.StringVar()
         self.rebuild_apt_var = tk.BooleanVar(value=False)
         self.include_images_var = tk.BooleanVar(value=True)
+        self.include_factory_materials_var = tk.BooleanVar(value=True)
+        self.tailnet_env_var = tk.StringVar(value=str(DEFAULT_TAILNET_ENV))
+        self.factory_license_var = tk.StringVar(value=str(DEFAULT_FACTORY_LICENSE))
         self.write_after_build_var = tk.BooleanVar(value=True)
-
-        # ── Provisioning USB fields ──
-        self.prov_cloud_ops_url = tk.StringVar()
-        self.prov_cloud_ops_tailnet_url = tk.StringVar()
-        self.prov_batch_id = tk.StringVar()
-        self.prov_installer_token = tk.StringVar()
-        self.prov_ts_login_server = tk.StringVar()
-        self.prov_ts_authkey = tk.StringVar()
-        self.prov_ts_authkey_expires_at = tk.StringVar()
-        self.prov_headscale_ca_path = tk.StringVar()
-        self.prov_cosign_pub_path = tk.StringVar(
-            value=str(REPO_ROOT / "configs" / "keys" / "cosign.pub")
-        )
-        self.prov_include_images = tk.BooleanVar(value=True)
-        self.prov_disk_var = tk.StringVar()
 
         self.heading_font, self.mono_font = _apply_theme(self)
         self._build_ui()
@@ -215,15 +202,18 @@ class UsbMakerApp(tk.Tk):
         self._card_account(col_left)
         self._card_wifi(col_right)
 
-        # ── row 1: ISO card (full width) ──
+        # ── row 1: factory activation material card (full width) ──
+        self._card_factory_materials(root)
+
+        # ── row 2: ISO card (full width) ──
         self._card_iso(root)
 
-        # ── row 2: disk card (full width) ──
+        # ── row 3: disk card (full width) ──
         self._card_disk(root)
 
-        # ── row 3: actions ──
+        # ── row 4: actions ──
         actions = tk.Frame(root, bg=C["bg"])
-        actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        actions.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(16, 0))
         self.run_button = ttk.Button(actions, text="一键制作 USB 安装盘",
                                      style="Primary.TButton",
                                      command=self.start_build)
@@ -236,9 +226,6 @@ class UsbMakerApp(tk.Tk):
         self.status_label = tk.Label(actions, text="● 就绪", bg=C["bg"],
                                      fg=C["text_soft"], font=("Helvetica Neue", 11))
         self.status_label.pack(side=tk.RIGHT, pady=(4, 0))
-
-        # ── row 4: Provisioning USB ──
-        self._card_provisioning(root)
 
         # ── row 5: log ──
         self._card_log(root)
@@ -264,9 +251,29 @@ class UsbMakerApp(tk.Tk):
                   style="Card2.TLabel").grid(row=3, column=0, columnspan=2,
                                              sticky="w", pady=(6, 0))
 
+    def _card_factory_materials(self, parent: tk.Frame) -> None:
+        card = ttk.Labelframe(parent, text="Factory Activation 材料", style="Card.TLabelframe", padding=16)
+        card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+
+        inner = ttk.Frame(card, style="Card.TFrame")
+        inner.pack(fill=tk.X)
+        ttk.Checkbutton(
+            inner,
+            text="包含 tailnet.env 和 factory-license.json（真机 / 生产安装必选）",
+            variable=self.include_factory_materials_var,
+            style="Card.TCheckbutton",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self._path_row(inner, "tailnet.env", self.tailnet_env_var, 1, self._choose_tailnet_env)
+        self._path_row(inner, "factory license", self.factory_license_var, 2, self._choose_factory_license)
+        ttk.Label(
+            card,
+            text="这些是批次材料：轮换 bootstrap key 或 factory license 时替换这两个文件；基础 OS bundle 不需要重做。",
+            style="Card2.TLabel",
+        ).pack(anchor="w", pady=(8, 0))
+
     def _card_iso(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="安装镜像", style="Card.TLabelframe", padding=16)
-        card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
@@ -285,7 +292,7 @@ class UsbMakerApp(tk.Tk):
 
     def _card_disk(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="目标 U 盘", style="Card.TLabelframe", padding=16)
-        card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
@@ -300,96 +307,6 @@ class UsbMakerApp(tk.Tk):
         ttk.Checkbutton(card, text="构建完成后写入 U 盘",
                         variable=self.write_after_build_var,
                         style="Card.TCheckbutton").pack(anchor="w", pady=(10, 0))
-
-    def _card_provisioning(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="Provisioning USB（部署/激活 U 盘）",
-                              style="Card.TLabelframe", padding=16)
-        card.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(16, 0))
-
-        cols = ttk.Frame(card, style="Card.TFrame")
-        cols.pack(fill=tk.X)
-
-        col_left = ttk.Frame(cols, style="Card.TFrame")
-        col_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 12))
-        col_right = ttk.Frame(cols, style="Card.TFrame")
-        col_right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(12, 0))
-
-        # ── left column: Cloud Ops + Tailscale ──
-        cloud = ttk.Labelframe(col_left, text="Cloud Ops", style="Card.TLabelframe", padding=10)
-        cloud.pack(fill=tk.X, pady=(0, 8))
-        self._prov_row(cloud, "公网地址", self.prov_cloud_ops_url, 0)
-        self._prov_row(cloud, "Tailnet 地址", self.prov_cloud_ops_tailnet_url, 1)
-        self._prov_row(cloud, "Batch ID", self.prov_batch_id, 2)
-        self._prov_row(cloud, "Installer Token", self.prov_installer_token, 3, show="*")
-
-        ts = ttk.Labelframe(col_left, text="Tailscale", style="Card.TLabelframe", padding=10)
-        ts.pack(fill=tk.X)
-        self._prov_row(ts, "Login Server", self.prov_ts_login_server, 0)
-        self._prov_row(ts, "Auth Key", self.prov_ts_authkey, 1, show="*")
-        self._prov_path_row(ts, "Headscale CA", self.prov_headscale_ca_path, 2, self._choose_headscale_ca)
-        self._prov_row(ts, "Auth Key 到期时间", self.prov_ts_authkey_expires_at, 3)
-
-        # ── right column: registry note + cosign + images + disk ──
-        registry_note = ttk.Labelframe(col_right, text="Registry 凭据", style="Card.TLabelframe", padding=10)
-        registry_note.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(
-            registry_note,
-            text="Registry pull token 由 Cloud Ops 统一管理，\n"
-                 "通过 Provisioning Batch 绑定下发到 IPC，\n"
-                 "不在此手动输入。",
-            style="Card2.TLabel",
-        ).pack(anchor="w", pady=4)
-
-        other = ttk.Labelframe(col_right, text="其他", style="Card.TLabelframe", padding=10)
-        other.pack(fill=tk.X)
-
-        # cosign.pub row
-        cosign_frame = ttk.Frame(other, style="Card.TFrame")
-        cosign_frame.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(cosign_frame, text="cosign.pub", style="Card.TLabel",
-                  font=("Helvetica Neue", 11)).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Entry(cosign_frame, textvariable=self.prov_cosign_pub_path, width=24).pack(
-            side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(cosign_frame, text="选择", style="Small.TButton",
-                   command=self._choose_cosign_pub).pack(side=tk.LEFT, padx=(6, 0))
-
-        # images checkbox
-        ttk.Checkbutton(other, text="包含预构建 Docker 镜像（dist/bundle-images.tar）",
-                        variable=self.prov_include_images,
-                        style="Card.TCheckbutton").pack(anchor="w", pady=(0, 4))
-
-        # disk selector
-        disk_frame = ttk.Frame(other, style="Card.TFrame")
-        disk_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(disk_frame, text="目标 U 盘", style="Card.TLabel",
-                  font=("Helvetica Neue", 11)).pack(side=tk.LEFT, padx=(0, 8))
-        self.prov_disk_combo = ttk.Combobox(disk_frame, textvariable=self.prov_disk_var,
-                                            state="readonly", width=22)
-        self.prov_disk_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        # write button
-        ttk.Button(other, text="写入 Provisioning USB",
-                   style="Primary.TButton",
-                   command=self._start_provisioning_write).pack(pady=(4, 0))
-
-    def _prov_row(self, parent: ttk.Frame, label: str, var: tk.StringVar,
-                  row: int, show: str | None = None) -> None:
-        ttk.Label(parent, text=label, style="Card.TLabel",
-                  font=("Helvetica Neue", 11)).grid(row=row, column=0, sticky="w",
-                                                    padx=(0, 10), pady=3)
-        entry = ttk.Entry(parent, textvariable=var, show=show, width=22)
-        entry.grid(row=row, column=1, sticky="ew", pady=3)
-        parent.columnconfigure(1, weight=1)
-
-    def _prov_path_row(self, parent: ttk.Frame, label: str, var: tk.StringVar,
-                       row: int, chooser) -> None:
-        ttk.Label(parent, text=label, style="Card.TLabel",
-                  font=("Helvetica Neue", 11)).grid(row=row, column=0, sticky="w",
-                                                    padx=(0, 10), pady=3)
-        ttk.Entry(parent, textvariable=var, width=22).grid(row=row, column=1, sticky="ew", pady=3)
-        ttk.Button(parent, text="选择", style="Small.TButton",
-                   command=chooser).grid(row=row, column=2, padx=(6, 0), pady=3)
-        parent.columnconfigure(1, weight=1)
 
     def _card_log(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="日志", style="Card.TLabelframe", padding=12)
@@ -469,22 +386,23 @@ class UsbMakerApp(tk.Tk):
         if path:
             self.output_iso_var.set(path)
 
-    def _choose_cosign_pub(self) -> None:
+    def _choose_tailnet_env(self) -> None:
         path = filedialog.askopenfilename(
-            title="选择 cosign.pub",
-            initialdir=str(REPO_ROOT / "configs" / "keys"),
-            filetypes=[("Public key", "*.pub"), ("All files", "*.*")],
+            title="选择 tailnet.env",
+            initialdir=str(AUTOINSTALL_DIR),
+            filetypes=[("Env files", "*.env"), ("All files", "*.*")],
         )
         if path:
-            self.prov_cosign_pub_path.set(path)
+            self.tailnet_env_var.set(path)
 
-    def _choose_headscale_ca(self) -> None:
+    def _choose_factory_license(self) -> None:
         path = filedialog.askopenfilename(
-            title="选择 Headscale CA PEM",
-            filetypes=[("Certificate", "*.crt *.pem"), ("All files", "*.*")],
+            title="选择 factory-license.json",
+            initialdir=str(AUTOINSTALL_DIR),
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
         )
         if path:
-            self.prov_headscale_ca_path.set(path)
+            self.factory_license_var.set(path)
 
     # ── disk listing ─────────────────────────────────────────────
 
@@ -492,177 +410,16 @@ class UsbMakerApp(tk.Tk):
         self.disk_rows = list_external_disks()
         values = [format_disk(row) for row in self.disk_rows]
         self.disk_combo["values"] = values
-        self.prov_disk_combo["values"] = values
         if values:
             self.disk_var.set(values[0])
-            if not self.prov_disk_var.get():
-                self.prov_disk_var.set(values[0])
         else:
             self.disk_var.set("（未检测到外接磁盘）")
-            self.prov_disk_var.set("（未检测到外接磁盘）")
 
     # ── build flow ───────────────────────────────────────────────
 
     def start_build_iso_only(self) -> None:
         self.write_after_build_var.set(False)
         self.start_build()
-
-    # ── Provisioning USB ─────────────────────────────────────────
-
-    def _start_provisioning_write(self) -> None:
-        if self.running:
-            return
-        try:
-            plan = self._collect_provisioning_plan()
-        except ValueError as exc:
-            messagebox.showerror("配置不完整", str(exc))
-            return
-
-        disk = plan["disk"]
-        ok = messagebox.askyesno(
-            "确认写入 Provisioning U 盘",
-            "即将格式化并写入 Provisioning U 盘：\n\n"
-            f"{format_disk(disk)}\n\n"
-            "确认设备号和容量无误后再继续。\n"
-            "此操作会清空 U 盘上所有数据！",
-        )
-        if not ok:
-            return
-
-        self.running = True
-        self._append_log("Provisioning USB 制作中…", "info")
-        threading.Thread(target=self._write_provisioning_usb, args=(plan,), daemon=True).start()
-
-    def _collect_provisioning_plan(self) -> dict[str, object]:
-        cloud_ops_url = self.prov_cloud_ops_url.get().strip()
-        cloud_ops_tailnet_url = self.prov_cloud_ops_tailnet_url.get().strip()
-        batch_id = self.prov_batch_id.get().strip()
-        installer_token = self.prov_installer_token.get().strip()
-        ts_login_server = self.prov_ts_login_server.get().strip()
-        ts_authkey = self.prov_ts_authkey.get().strip()
-        ts_authkey_expires_at = self.prov_ts_authkey_expires_at.get().strip()
-        headscale_ca = self.prov_headscale_ca_path.get().strip()
-        cosign_path = Path(self.prov_cosign_pub_path.get()).expanduser()
-
-        if not cloud_ops_url:
-            raise ValueError("cloud_ops_base_url（公网地址）为必填项")
-        if not CLOUDSERVER_GEN_PROVISIONING.is_file():
-            raise ValueError(f"Provisioning generator 不存在：{CLOUDSERVER_GEN_PROVISIONING}")
-        if not cosign_path.is_file():
-            raise ValueError(f"cosign.pub 不存在：{cosign_path}")
-        if not batch_id or not installer_token:
-            raise ValueError("Provisioning USB 只能使用 Cloud Ops batch 模式：Batch ID 和 Installer Token 均为必填")
-        if cloud_ops_tailnet_url and (not ts_login_server or not ts_authkey):
-            raise ValueError("Tailnet 地址存在时，Login Server 和 Auth Key 均为必填")
-        login_host = urlparse(ts_login_server).hostname or ""
-        if login_host.replace(".", "").isdigit() and not headscale_ca:
-            raise ValueError("Login Server 使用 IP 地址时必须选择 Headscale CA PEM")
-        if headscale_ca and not Path(headscale_ca).expanduser().is_file():
-            raise ValueError(f"Headscale CA 不存在：{headscale_ca}")
-
-        selected = self.prov_disk_var.get()
-        disk = next((row for row in self.disk_rows if format_disk(row) == selected), None)
-        if disk is None:
-            raise ValueError("请选择目标 Provisioning U 盘")
-
-        return {
-            "cloud_ops_url": cloud_ops_url,
-            "cloud_ops_tailnet_url": cloud_ops_tailnet_url,
-            "batch_id": batch_id,
-            "installer_token": installer_token,
-            "ts_login_server": ts_login_server,
-            "ts_authkey": ts_authkey,
-            "ts_authkey_expires_at": ts_authkey_expires_at,
-            "headscale_ca_path": Path(headscale_ca).expanduser() if headscale_ca else None,
-            "cosign_pub_path": cosign_path,
-            "include_images": self.prov_include_images.get(),
-            "disk": disk,
-        }
-
-    def _write_provisioning_usb(self, plan: dict[str, object]) -> None:
-        try:
-            disk = plan["disk"]
-            assert isinstance(disk, dict)
-            identifier = str(disk["identifier"])
-            if not identifier.startswith("disk"):
-                raise RuntimeError(f"unexpected disk identifier: {identifier}")
-
-            build_dir = Path(tempfile.mkdtemp(prefix="drycontroller-provisioning-build-"))
-            cmd = [
-                sys.executable,
-                str(CLOUDSERVER_GEN_PROVISIONING),
-                "--out",
-                str(build_dir),
-                "--batch-id",
-                str(plan["batch_id"]),
-                "--installer-token",
-                str(plan["installer_token"]),
-                "--cloud-ops-base-url",
-                str(plan["cloud_ops_url"]),
-                "--cosign-pub",
-                str(plan["cosign_pub_path"]),
-                "--force",
-            ]
-            if plan["cloud_ops_tailnet_url"]:
-                cmd += ["--cloud-ops-tailnet-base-url", str(plan["cloud_ops_tailnet_url"])]
-            if plan["ts_login_server"]:
-                cmd += ["--ts-login-server", str(plan["ts_login_server"])]
-            if plan["ts_authkey"]:
-                cmd += ["--ts-authkey", str(plan["ts_authkey"])]
-            if plan["ts_authkey_expires_at"]:
-                cmd += ["--ts-authkey-expires-at", str(plan["ts_authkey_expires_at"])]
-            if plan["headscale_ca_path"]:
-                cmd += ["--headscale-ca-cert", str(plan["headscale_ca_path"])]
-            if plan["include_images"]:
-                images_src = DIST_DIR / "bundle-images.tar"
-                if images_src.is_file():
-                    cmd += ["--bootstrap-image-tar", str(images_src)]
-                else:
-                    self._append_log(f"  WARNING: 镜像 tar 不存在，跳过: {images_src}", "warn")
-
-            run_logged(self, cmd, cwd=WORKSPACE_ROOT / "Drycontroller-cloudserver")
-            prov_dir = build_dir / "drycontroller-provisioning"
-            if not (prov_dir / "provisioning.json").is_file():
-                raise RuntimeError("provisioning generator did not create provisioning.json")
-
-            # build Terminal script
-            script = Path(tempfile.gettempdir()) / "drycontroller-write-provisioning-usb.sh"
-            vol_name = "DRYPROV"
-            script.write_text(
-                "\n".join(
-                    [
-                        "#!/usr/bin/env bash",
-                        "set -euo pipefail",
-                        f"diskutil list /dev/{shlex.quote(identifier)}",
-                        f"diskutil unmountDisk force /dev/{shlex.quote(identifier)} >/dev/null 2>&1 || true",
-                        f"echo 'Formatting /dev/{shlex.quote(identifier)} as FAT32...'",
-                        f"diskutil eraseDisk FAT32 {shlex.quote(vol_name)} MBRFormat /dev/{shlex.quote(identifier)}",
-                        f"echo 'Copying provisioning files...'",
-                        f"cp -a {shlex.quote(str(prov_dir))} /Volumes/{shlex.quote(vol_name)}/",
-                        "/bin/sync",
-                        f"diskutil eject /dev/{shlex.quote(identifier)}",
-                        "echo 'Provisioning USB write complete.'",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            script.chmod(0o700)
-            self._append_log(f"Opening Terminal for sudo USB write: {script}")
-
-            osa = (
-                'tell application "Terminal"\n'
-                "  activate\n"
-                f'  do script "sudo bash {shlex.quote(str(script))}"\n'
-                "end tell\n"
-            )
-            subprocess.check_call(["osascript", "-e", osa])
-            self._append_log("Provisioning USB Terminal 已打开，请在终端中完成 sudo 授权", "info")
-        except Exception as exc:
-            self._append_log(f"ERROR: {exc}", "err")
-            self.after(0, lambda: messagebox.showerror("Provisioning USB 制作失败", str(exc)))
-        finally:
-            self.running = False
 
     def start_build(self) -> None:
         if self.running:
@@ -708,6 +465,16 @@ class UsbMakerApp(tk.Tk):
             raise ValueError("WiFi SSID 和 WiFi 密码必须同时填写，或同时留空。")
         if self.include_images_var.get() and not (DIST_DIR / "bundle-images.tar").is_file():
             raise ValueError("已勾选包含业务镜像，但 dist/bundle-images.tar 不存在。请先构建镜像包或取消勾选。")
+        include_factory_materials = self.include_factory_materials_var.get()
+        tailnet_env = Path(self.tailnet_env_var.get()).expanduser()
+        factory_license = Path(self.factory_license_var.get()).expanduser()
+        if include_factory_materials:
+            if not tailnet_env.is_file():
+                raise ValueError(f"tailnet.env 不存在：{tailnet_env}")
+            if not factory_license.is_file():
+                raise ValueError(f"factory-license.json 不存在：{factory_license}")
+            validate_tailnet_env(tailnet_env)
+            validate_factory_license(factory_license)
         disk = None
         if self.write_after_build_var.get():
             selected = self.disk_var.get()
@@ -722,6 +489,9 @@ class UsbMakerApp(tk.Tk):
             "wifi_interface": wifi_interface,
             "rebuild_apt": self.rebuild_apt_var.get(),
             "include_images": self.include_images_var.get(),
+            "include_factory_materials": include_factory_materials,
+            "tailnet_env": tailnet_env,
+            "factory_license": factory_license,
             "write_usb": self.write_after_build_var.get(),
             "disk": disk,
         }
@@ -816,6 +586,7 @@ def build_bundle(app: UsbMakerApp, plan: dict[str, object]) -> None:
         password=str(plan["wifi_password"]),
         interface=str(plan["wifi_interface"]),
     )
+    copy_factory_materials(app, plan)
 
     run_logged(
         app,
@@ -838,6 +609,57 @@ def write_wifi_env(ssid: str, password: str, interface: str) -> None:
         lines.append(f"WIFI_INTERFACE={shell_env_value(interface)}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+def validate_tailnet_env(path: Path) -> None:
+    keys = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key:
+            keys.add(key)
+    required = {"TS_LOGIN_SERVER", "TS_HOSTNAME", "TS_AUTHKEY", "CLOUD_OPS_BASE_URL"}
+    missing = sorted(required - keys)
+    if missing:
+        raise ValueError(f"tailnet.env 缺少必要字段：{', '.join(missing)}")
+
+
+def validate_factory_license(path: Path) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"factory-license.json 不是有效 JSON：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("factory-license.json 必须是 JSON object")
+    if payload.get("schema") != "drycontroller.factory-license.v1":
+        raise ValueError("factory-license.json 不是 drycontroller.factory-license.v1")
+    if not payload.get("signature"):
+        raise ValueError("factory-license.json 缺少 signature")
+    if not payload.get("expires_at"):
+        raise ValueError("factory-license.json 缺少 expires_at")
+
+
+def copy_factory_materials(app: UsbMakerApp, plan: dict[str, object]) -> None:
+    destinations = [DEFAULT_TAILNET_ENV, DEFAULT_FACTORY_LICENSE]
+    if not plan["include_factory_materials"]:
+        for dest in destinations:
+            if dest.exists():
+                dest.unlink()
+                app._append_log(f"Removed stale factory material: {dest.relative_to(REPO_ROOT)}", "warn")
+        app._append_log("Factory activation materials are not included in this ISO.", "warn")
+        return
+
+    pairs = [
+        (Path(plan["tailnet_env"]), DEFAULT_TAILNET_ENV, "tailnet.env"),
+        (Path(plan["factory_license"]), DEFAULT_FACTORY_LICENSE, "factory-license.json"),
+    ]
+    for src, dest, label in pairs:
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        dest.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        app._append_log(f"Including factory material: {label}")
 
 
 def shell_env_value(value: str) -> str:
