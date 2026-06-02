@@ -133,7 +133,7 @@ class UsbMakerApp(tk.Tk):
         self.base_iso_var = tk.StringVar(value=str(DEFAULT_BASE_ISO))
         timestamp = _dt.datetime.now().strftime("%Y%m%d-%H%M")
         self.output_iso_var = tk.StringVar(
-            value=str(DIST_DIR / f"drycontroller-os-installer-{timestamp}.iso")
+            value=str(DIST_DIR / f"OS{timestamp}.iso")
         )
         self.fixed_user_var = tk.StringVar(value=FIXED_OPERATOR_USER)
         self.password_source_var = tk.StringVar(value="默认密码配置")
@@ -854,6 +854,10 @@ def build_iso(app: UsbMakerApp, plan: dict[str, object]) -> None:
     ]
     if (AUTOINSTALL_DIR / "wifi.env").is_file():
         maps.append(("dist/autoinstall/wifi.env", "/wifi.env"))
+    if (AUTOINSTALL_DIR / "tailnet.env").is_file():
+        maps.append(("dist/autoinstall/tailnet.env", "/tailnet.env"))
+    if (AUTOINSTALL_DIR / "factory-license.json").is_file():
+        maps.append(("dist/autoinstall/factory-license.json", "/factory-license.json"))
 
     xorriso_args = [
         "xorriso",
@@ -965,6 +969,7 @@ def open_terminal_writer(app: UsbMakerApp, iso: Path, disk: dict[str, str]) -> N
     if not identifier.startswith("disk"):
         raise RuntimeError(f"unexpected disk identifier: {identifier}")
     raw_identifier = "r" + identifier
+    iso_size = iso.stat().st_size
     script = Path(tempfile.gettempdir()) / "drycontroller-write-os-installer-usb.sh"
     script.write_text(
         "\n".join(
@@ -975,8 +980,9 @@ def open_terminal_writer(app: UsbMakerApp, iso: Path, disk: dict[str, str]) -> N
                 f"diskutil unmountDisk force /dev/{shlex.quote(identifier)} >/dev/null 2>&1 || true",
                 f"/bin/dd if={shlex.quote(str(iso))} of=/dev/{shlex.quote(raw_identifier)} bs=4m status=progress",
                 "/bin/sync",
+                f"/usr/bin/cmp -n {iso_size} {shlex.quote(str(iso))} /dev/{shlex.quote(raw_identifier)}",
                 f"diskutil eject /dev/{shlex.quote(identifier)}",
-                "echo 'DryController OS Installer USB write complete.'",
+                "echo 'DryController OS Installer USB write + raw verify complete.'",
             ]
         )
         + "\n",
