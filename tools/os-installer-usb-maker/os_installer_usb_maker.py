@@ -32,11 +32,14 @@ AIRPORT_BIN = Path("/System/Library/PrivateFrameworks/Apple80211.framework/Versi
 
 # ── colour palette ──────────────────────────────────────────────
 C = {
-    "bg":              "#eef2f6",
+    "bg":              "#f4f6f3",
     "card":            "#ffffff",
-    "card_alt":        "#f8fafc",
-    "primary":         "#1d4ed8",
-    "primary_dark":    "#0f172a",
+    "card_alt":        "#eef4f0",
+    "sidebar":         "#16211d",
+    "sidebar_soft":    "#26352f",
+    "primary":         "#0f766e",
+    "primary_dark":    "#10231f",
+    "primary_hover":   "#0b5f59",
     "primary_fg":      "#ffffff",
     "danger":          "#dc2626",
     "danger_light":    "#fef2f2",
@@ -47,8 +50,8 @@ C = {
     "warning_light":   "#fffbeb",
     "text":            "#111827",
     "text_soft":       "#475569",
-    "border":          "#d7dee8",
-    "border_strong":   "#b6c2d2",
+    "border":          "#d8e0db",
+    "border_strong":   "#b9c7c0",
     "log_bg":          "#0f172a",
     "log_fg":          "#cbd5e1",
     "log_info":        "#38bdf8",
@@ -56,7 +59,8 @@ C = {
     "log_err":         "#f87171",
     "entry_bg":        "#ffffff",
     "readonly_bg":     "#f1f5f9",
-    "accent_light":    "#dbeafe",
+    "accent":          "#84cc16",
+    "accent_light":    "#dcfce7",
 }
 
 
@@ -76,15 +80,8 @@ def _apply_theme(root: tk.Tk) -> None:
     style.configure(".", background=C["bg"], foreground=C["text"])
     style.configure("TLabel", background=C["bg"], foreground=C["text"])
     style.configure("TFrame", background=C["bg"])
-    style.configure("TLabelframe", background=C["bg"], foreground=C["text"])
-    style.configure("TLabelframe.Label", background=C["bg"], foreground=C["text"],
-                    font=("Helvetica Neue", 12, "bold"))
 
     # ── card frame ──
-    style.configure("Card.TLabelframe", background=C["card"], relief="solid",
-                    borderwidth=1, bordercolor=C["border_strong"])
-    style.configure("Card.TLabelframe.Label", background=C["card"],
-                    foreground=C["primary_dark"], font=("Helvetica Neue", 13, "bold"))
     style.configure("Card.TFrame", background=C["card"])
     style.configure("Card.TLabel", background=C["card"], foreground=C["text"])
     style.configure("Card2.TLabel", background=C["card"], foreground=C["text_soft"],
@@ -101,7 +98,7 @@ def _apply_theme(root: tk.Tk) -> None:
                     borderwidth=0, relief="flat", padding=(28, 12),
                     font=("Helvetica Neue", 13, "bold"))
     style.map("Primary.TButton",
-              background=[("active", "#1e40af"), ("disabled", "#94a3b8")],
+              background=[("active", C["primary_hover"]), ("disabled", "#94a3b8")],
               foreground=[("disabled", "#e2e8f0")])
 
     # ── secondary button ──
@@ -182,32 +179,32 @@ class UsbMakerApp(tk.Tk):
 
     def _build_ui(self) -> None:
         # header
-        header = tk.Frame(self, bg=C["primary_dark"], height=96)
+        header = tk.Frame(self, bg=C["sidebar"], height=104)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
-        header_text = tk.Frame(header, bg=C["primary_dark"])
-        header_text.pack(side=tk.LEFT, padx=24, pady=14)
+        header_text = tk.Frame(header, bg=C["sidebar"])
+        header_text.pack(side=tk.LEFT, padx=28, pady=16)
         tk.Label(
             header_text, text="现场装机工具",
-            bg=C["accent_light"], fg=C["primary"],
+            bg=C["accent"], fg=C["primary_dark"],
             font=("Helvetica Neue", 11, "bold"),
             padx=10, pady=3,
         ).pack(anchor="w", pady=(0, 6))
         tk.Label(
             header_text, text="DryController 装机 U 盘制作",
-            bg=C["primary_dark"], fg=C["primary_fg"],
-            font=("Helvetica Neue", 21, "bold"),
+            bg=C["sidebar"], fg=C["primary_fg"],
+            font=("Helvetica Neue", 24, "bold"),
         ).pack(anchor="w")
         tk.Label(
-            header_text, text="先检查材料，再确认 U 盘。绿色就绪后再写入。",
-            bg=C["primary_dark"], fg="#cbd5e1",
+            header_text, text="检查材料、选择 U 盘、生成 ISO、写入安装盘，一屏完成。",
+            bg=C["sidebar"], fg="#cbd5e1",
             font=("Helvetica Neue", 12),
         ).pack(anchor="w", pady=(3, 0))
-        tk.Label(
-            header, text="macOS / Factory activation",
-            bg=C["primary_dark"], fg="#93c5fd",
-            font=("Helvetica Neue", 12, "bold"),
-        ).pack(side=tk.RIGHT, padx=24, pady=28)
+        header_meta = tk.Frame(header, bg=C["sidebar_soft"])
+        header_meta.pack(side=tk.RIGHT, padx=28, pady=24)
+        tk.Label(header_meta, text="Factory activation", bg=C["sidebar_soft"],
+                 fg="#d9f99d", font=("Helvetica Neue", 12, "bold"),
+                 padx=14, pady=8).pack()
 
         footer = tk.Frame(self, bg=C["card"], height=82, highlightthickness=1,
                           highlightbackground=C["border_strong"])
@@ -238,36 +235,34 @@ class UsbMakerApp(tk.Tk):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         root = tk.Frame(scroll_frame, bg=C["bg"])
-        root.pack(fill=tk.BOTH, expand=True, padx=24, pady=18)
-
-        # ── row 0: operator guide ──
-        self._card_operator_guide(root)
-
-        # ── row 1: readiness check ──
-        self._card_readiness(root)
-
-        # ── row 2: two-column card row ──
-        col_left = tk.Frame(root, bg=C["bg"])
-        col_left.grid(row=2, column=0, sticky="nsew", padx=(0, 8), pady=(12, 0))
-        col_right = tk.Frame(root, bg=C["bg"])
-        col_right.grid(row=2, column=1, sticky="nsew", padx=(8, 0), pady=(12, 0))
-        root.columnconfigure(0, weight=1)
+        root.pack(fill=tk.BOTH, expand=True, padx=24, pady=22)
+        root.columnconfigure(0, minsize=330)
         root.columnconfigure(1, weight=1)
 
-        self._card_account(col_left)
-        self._card_wifi(col_right)
+        left = tk.Frame(root, bg=C["bg"])
+        left.grid(row=0, column=0, sticky="new", padx=(0, 16))
+        right = tk.Frame(root, bg=C["bg"])
+        right.grid(row=0, column=1, sticky="nsew")
+        root.rowconfigure(0, weight=1)
 
-        # ── row 3: factory activation material card (full width) ──
-        self._card_factory_materials(root)
+        self._card_operator_guide(left)
+        self._card_readiness(left)
+        self._card_disk(left)
 
-        # ── row 4: ISO card (full width) ──
-        self._card_iso(root)
+        top = tk.Frame(right, bg=C["bg"])
+        top.pack(fill=tk.X)
+        top.columnconfigure(0, weight=1)
+        top.columnconfigure(1, weight=1)
+        account_col = tk.Frame(top, bg=C["bg"])
+        account_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        wifi_col = tk.Frame(top, bg=C["bg"])
+        wifi_col.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self._card_account(account_col)
+        self._card_wifi(wifi_col)
 
-        # ── row 5: disk card (full width) ──
-        self._card_disk(root)
-
-        # ── row 6: log ──
-        self._card_log(root)
+        self._card_factory_materials(right)
+        self._card_iso(right)
+        self._card_log(right)
 
     def _build_footer(self, parent: tk.Frame) -> None:
         status = tk.Frame(parent, bg=C["card"])
@@ -296,9 +291,43 @@ class UsbMakerApp(tk.Tk):
         )
         self.run_button.pack(side=tk.LEFT)
 
+    def _make_card(self, parent: tk.Frame, title: str, subtitle: str = "",
+                   *, fill: str = tk.X, expand: bool = False,
+                   subtitle_wrap: int = 360) -> tk.Frame:
+        card = tk.Frame(
+            parent,
+            bg=C["card"],
+            highlightthickness=1,
+            highlightbackground=C["border"],
+        )
+        card.pack(fill=fill, expand=expand, pady=(0, 14))
+
+        header = tk.Frame(card, bg=C["card"])
+        header.pack(fill=tk.X, padx=16, pady=(14, 8))
+        tk.Label(
+            header,
+            text=title,
+            bg=C["card"],
+            fg=C["primary_dark"],
+            font=("Helvetica Neue", 15, "bold"),
+        ).pack(anchor="w")
+        if subtitle:
+            tk.Label(
+                header,
+                text=subtitle,
+                bg=C["card"],
+                fg=C["text_soft"],
+                font=("Helvetica Neue", 11),
+                wraplength=subtitle_wrap,
+                justify=tk.LEFT,
+            ).pack(anchor="w", pady=(3, 0))
+
+        body = tk.Frame(card, bg=C["card"])
+        body.pack(fill=tk.BOTH if expand else tk.X, expand=expand, padx=16, pady=(0, 16))
+        return body
+
     def _card_operator_guide(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="操作步骤", style="Card.TLabelframe", padding=16)
-        card.grid(row=0, column=0, columnspan=2, sticky="ew")
+        card = self._make_card(parent, "装机流程", "按顺序处理，绿色状态后再写盘。", subtitle_wrap=260)
 
         steps = [
             ("1", "确认准备状态", "缺失项会显示在下方，先补齐再开始。"),
@@ -307,30 +336,31 @@ class UsbMakerApp(tk.Tk):
             ("4", "开始制作", "写入会清空 U 盘，完成后按日志提示拔出。"),
         ]
         for index, (number, title, body) in enumerate(steps):
-            step = ttk.Frame(card, style="Card.TFrame")
-            step.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
+            step = tk.Frame(card, bg=C["card"])
+            step.pack(fill=tk.X, pady=(0 if index == 0 else 10, 0))
             badge = tk.Label(
                 step,
                 text=number,
                 width=2,
-                bg=C["accent_light"],
-                fg=C["primary"],
+                bg=C["sidebar"],
+                fg=C["primary_fg"],
                 font=("Helvetica Neue", 13, "bold"),
             )
             badge.pack(side=tk.LEFT, padx=(0, 10), ipady=3)
-            text = ttk.Frame(step, style="Card.TFrame")
+            text = tk.Frame(step, bg=C["card"])
             text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            ttk.Label(text, text=title, style="Card.TLabel", font=("Helvetica Neue", 12, "bold")).pack(anchor="w")
-            ttk.Label(text, text=body, style="Card2.TLabel", wraplength=180).pack(anchor="w", pady=(3, 0))
-            card.columnconfigure(index, weight=1)
+            tk.Label(text, text=title, bg=C["card"], fg=C["text"],
+                     font=("Helvetica Neue", 12, "bold")).pack(anchor="w")
+            tk.Label(text, text=body, bg=C["card"], fg=C["text_soft"],
+                     font=("Helvetica Neue", 11), wraplength=245,
+                     justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
 
     def _card_readiness(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="准备状态", style="Card.TLabelframe", padding=16)
-        card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card = self._make_card(parent, "准备状态", "红色项必须处理；黄色项表示可继续但要确认。", subtitle_wrap=260)
 
         summary = tk.Frame(card, bg=C["card_alt"], highlightthickness=1,
                            highlightbackground=C["border"])
-        summary.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        summary.pack(fill=tk.X, pady=(0, 12))
         tk.Label(summary, textvariable=self.readiness_summary_var,
                  bg=C["card_alt"], fg=C["text"],
                  font=("Helvetica Neue", 13, "bold"),
@@ -345,11 +375,10 @@ class UsbMakerApp(tk.Tk):
             ("target_disk", "目标 U 盘"),
         ]
         for index, (key, label) in enumerate(items):
-            row = index // 2
-            col = index % 2
-            item = ttk.Frame(card, style="Card.TFrame")
-            item.grid(row=row + 1, column=col, sticky="ew", padx=(0 if col == 0 else 16, 0), pady=(0, 8))
-            ttk.Label(item, text=label, style="Card.TLabel", font=("Helvetica Neue", 12)).pack(side=tk.LEFT)
+            item = tk.Frame(card, bg=C["card"])
+            item.pack(fill=tk.X, pady=(0, 8))
+            tk.Label(item, text=label, bg=C["card"], fg=C["text"],
+                     font=("Helvetica Neue", 12)).pack(side=tk.LEFT)
             status = tk.Label(
                 item,
                 text="待检查",
@@ -361,14 +390,11 @@ class UsbMakerApp(tk.Tk):
             )
             status.pack(side=tk.RIGHT)
             self.readiness_labels[key] = status
-            card.columnconfigure(col, weight=1)
-        ttk.Button(card, text="重新检查", style="Small.TButton", command=self._refresh_readiness).grid(
-            row=4, column=0, sticky="w", pady=(4, 0)
-        )
+        ttk.Button(card, text="重新检查", style="Small.TButton",
+                   command=self._refresh_readiness).pack(anchor="w", pady=(4, 0))
 
     def _card_account(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="账号配置", style="Card.TLabelframe", padding=16)
-        card.pack(fill=tk.BOTH, expand=True)
+        card = self._make_card(parent, "账号", "固定运维账号，密码来自本机安全配置。", fill=tk.BOTH, expand=True)
 
         self._readonly_row(card, "运维账号", self.fixed_user_var, 0)
         self._readonly_row(card, "登录密码", self.password_source_var, 1)
@@ -377,8 +403,7 @@ class UsbMakerApp(tk.Tk):
                                              sticky="w", pady=(6, 0))
 
     def _card_wifi(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="现场网络", style="Card.TLabelframe", padding=16)
-        card.pack(fill=tk.BOTH, expand=True)
+        card = self._make_card(parent, "现场网络", "有网线就保持关闭；无网线再预置 WiFi。", fill=tk.BOTH, expand=True)
 
         ttk.Checkbutton(
             card,
@@ -401,8 +426,7 @@ class UsbMakerApp(tk.Tk):
                                              sticky="w", pady=(6, 0))
 
     def _card_factory_materials(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="批次材料", style="Card.TLabelframe", padding=16)
-        card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card = self._make_card(parent, "批次材料", "这两个文件决定机器第一次入网和工厂授权。")
 
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
@@ -422,8 +446,7 @@ class UsbMakerApp(tk.Tk):
         ).pack(anchor="w", pady=(8, 0))
 
     def _card_iso(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="镜像设置", style="Card.TLabelframe", padding=16)
-        card.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card = self._make_card(parent, "镜像设置", "默认只需要确认输出文件名，高级选项不要随手改。")
 
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
@@ -445,17 +468,18 @@ class UsbMakerApp(tk.Tk):
                   style="Card2.TLabel").pack(anchor="w", pady=(8, 0))
 
     def _card_disk(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="目标 U 盘", style="Card.TLabelframe", padding=16)
-        card.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card = self._make_card(parent, "目标 U 盘", "写入前必须人工核对盘名和容量。", subtitle_wrap=260)
 
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
 
-        ttk.Label(inner, text="选择 U 盘", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 8))
-        self.disk_combo = ttk.Combobox(inner, textvariable=self.disk_var,
-                                       state="readonly", width=50)
+        ttk.Label(inner, text="选择 U 盘", style="Card.TLabel").pack(anchor="w")
+        picker = ttk.Frame(inner, style="Card.TFrame")
+        picker.pack(fill=tk.X, pady=(6, 0))
+        self.disk_combo = ttk.Combobox(picker, textvariable=self.disk_var,
+                                       state="readonly", width=30)
         self.disk_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(inner, text="刷新", style="Small.TButton",
+        ttk.Button(picker, text="刷新", style="Small.TButton",
                    command=self.refresh_disks).pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Checkbutton(card, text="构建完成后写入 U 盘",
@@ -474,9 +498,7 @@ class UsbMakerApp(tk.Tk):
         warning.pack(anchor="w", fill=tk.X, pady=(8, 0))
 
     def _card_log(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="日志", style="Card.TLabelframe", padding=12)
-        card.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
-        parent.rowconfigure(6, weight=1)
+        card = self._make_card(parent, "制作日志", "失败时先看这里的最后几行。", fill=tk.BOTH, expand=True)
 
         log_frame = tk.Frame(card, bg=C["log_bg"])
         log_frame.pack(fill=tk.BOTH, expand=True)
