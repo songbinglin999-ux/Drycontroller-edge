@@ -2,6 +2,16 @@
 
 Operator-facing macOS UI for building the DryController OS Installer USB.
 
+The UI is intentionally built for non-developer operators:
+
+1. Check the "准备状态" panel.
+2. Select or confirm the batch materials.
+3. Confirm the target USB disk name and size.
+4. Click the primary button to build and write the installer.
+
+Fields that normally do not need changes keep safe defaults. WiFi stays off by
+default and is only enabled when the install area has no wired network.
+
 ## Scope
 
 - Fixed operator account: `dryops`.
@@ -9,6 +19,8 @@ Operator-facing macOS UI for building the DryController OS Installer USB.
 - Optional WiFi inputs: SSID, password, and interface.
 - Factory activation material inputs: `tailnet.env` and `factory-license.json`.
 - Device identity, production license, formal tailnet key, OTA permission, and later credentials are issued by Cloud Ops after first contact and operator approval.
+- The primary action is disabled until required local materials and the target
+  disk are present.
 
 This tool no longer creates a Provisioning USB. The old batch / installer-token
 flow is legacy/emergency only and must not be used as the normal factory install

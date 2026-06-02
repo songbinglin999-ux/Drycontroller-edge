@@ -36,6 +36,8 @@ C = {
     "primary_fg":      "#ffffff",
     "danger":          "#ef4444",
     "danger_fg":       "#ffffff",
+    "success":         "#16a34a",
+    "warning":         "#d97706",
     "text":            "#1e293b",
     "text_soft":       "#64748b",
     "border":          "#e2e8f0",
@@ -136,6 +138,7 @@ class UsbMakerApp(tk.Tk):
         )
         self.fixed_user_var = tk.StringVar(value=FIXED_OPERATOR_USER)
         self.password_source_var = tk.StringVar(value="默认密码配置")
+        self.use_wifi_var = tk.BooleanVar(value=False)
         self.wifi_ssid_var = tk.StringVar()
         self.wifi_password_var = tk.StringVar()
         self.wifi_interface_var = tk.StringVar()
@@ -146,28 +149,40 @@ class UsbMakerApp(tk.Tk):
         self.tailnet_env_var = tk.StringVar(value=str(DEFAULT_TAILNET_ENV))
         self.factory_license_var = tk.StringVar(value=str(DEFAULT_FACTORY_LICENSE))
         self.write_after_build_var = tk.BooleanVar(value=True)
+        self.readiness_labels: dict[str, tk.Label] = {}
+        self.wifi_entries: list[ttk.Entry] = []
 
         self.heading_font, self.mono_font = _apply_theme(self)
         self._build_ui()
+        self._install_traces()
         self.refresh_disks()
+        self._toggle_wifi_inputs()
+        self._refresh_readiness()
         self.after(100, self._drain_log_queue)
 
     # ── UI construction ──────────────────────────────────────────
 
     def _build_ui(self) -> None:
         # header
-        header = tk.Frame(self, bg=C["primary"], height=72)
+        header = tk.Frame(self, bg=C["primary"], height=84)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
+        header_text = tk.Frame(header, bg=C["primary"])
+        header_text.pack(side=tk.LEFT, padx=24, pady=14)
         tk.Label(
-            header, text="🖥  DryController OS Installer USB Maker",
+            header_text, text="DryController 装机 U 盘制作",
             bg=C["primary"], fg=C["primary_fg"],
-            font=("Helvetica Neue", 18, "bold"),
-        ).pack(side=tk.LEFT, padx=24, pady=18)
+            font=("Helvetica Neue", 19, "bold"),
+        ).pack(anchor="w")
         tk.Label(
-            header, text="v4 · macOS",
+            header_text, text="按步骤检查材料，确认目标 U 盘，然后开始制作。",
+            bg=C["primary"], fg="#dbeafe",
+            font=("Helvetica Neue", 12),
+        ).pack(anchor="w", pady=(3, 0))
+        tk.Label(
+            header, text="macOS",
             bg=C["primary"], fg="#93c5fd",
-            font=("Helvetica Neue", 11),
+            font=("Helvetica Neue", 12, "bold"),
         ).pack(side=tk.RIGHT, padx=24, pady=22)
 
         # scrollable main area
@@ -176,8 +191,9 @@ class UsbMakerApp(tk.Tk):
         scroll_frame = tk.Frame(canvas, bg=C["bg"])
 
         scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw", tags="frame")
+        window_id = canvas.create_window((0, 0), window=scroll_frame, anchor="nw", tags="frame")
         canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -191,34 +207,40 @@ class UsbMakerApp(tk.Tk):
         root = tk.Frame(scroll_frame, bg=C["bg"])
         root.pack(fill=tk.BOTH, expand=True, padx=20, pady=16)
 
-        # ── row 0: two-column card row ──
+        # ── row 0: operator guide ──
+        self._card_operator_guide(root)
+
+        # ── row 1: readiness check ──
+        self._card_readiness(root)
+
+        # ── row 2: two-column card row ──
         col_left = tk.Frame(root, bg=C["bg"])
-        col_left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        col_left.grid(row=2, column=0, sticky="nsew", padx=(0, 8), pady=(12, 0))
         col_right = tk.Frame(root, bg=C["bg"])
-        col_right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        col_right.grid(row=2, column=1, sticky="nsew", padx=(8, 0), pady=(12, 0))
         root.columnconfigure(0, weight=1)
         root.columnconfigure(1, weight=1)
 
         self._card_account(col_left)
         self._card_wifi(col_right)
 
-        # ── row 1: factory activation material card (full width) ──
+        # ── row 3: factory activation material card (full width) ──
         self._card_factory_materials(root)
 
-        # ── row 2: ISO card (full width) ──
+        # ── row 4: ISO card (full width) ──
         self._card_iso(root)
 
-        # ── row 3: disk card (full width) ──
+        # ── row 5: disk card (full width) ──
         self._card_disk(root)
 
-        # ── row 4: actions ──
+        # ── row 6: actions ──
         actions = tk.Frame(root, bg=C["bg"])
-        actions.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(16, 0))
-        self.run_button = ttk.Button(actions, text="一键制作 USB 安装盘",
+        actions.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        self.run_button = ttk.Button(actions, text="开始制作并写入 U 盘",
                                      style="Primary.TButton",
                                      command=self.start_build)
         self.run_button.pack(side=tk.LEFT)
-        ttk.Button(actions, text="仅构建 ISO",
+        ttk.Button(actions, text="只生成 ISO，不写 U 盘",
                    style="Secondary.TButton",
                    command=self.start_build_iso_only).pack(side=tk.LEFT, padx=(12, 0))
 
@@ -227,8 +249,62 @@ class UsbMakerApp(tk.Tk):
                                      fg=C["text_soft"], font=("Helvetica Neue", 11))
         self.status_label.pack(side=tk.RIGHT, pady=(4, 0))
 
-        # ── row 5: log ──
+        # ── row 7: log ──
         self._card_log(root)
+
+    def _card_operator_guide(self, parent: tk.Frame) -> None:
+        card = ttk.Labelframe(parent, text="操作步骤", style="Card.TLabelframe", padding=16)
+        card.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        steps = [
+            ("1", "确认准备状态", "缺失项会显示在下方，先补齐再开始。"),
+            ("2", "选择批次材料", "真机安装必须包含 tailnet.env 和 factory-license.json。"),
+            ("3", "确认目标 U 盘", "只会列出外接磁盘，但仍要核对容量和盘名。"),
+            ("4", "开始制作", "写入会清空 U 盘，完成后按日志提示拔出。"),
+        ]
+        for index, (number, title, body) in enumerate(steps):
+            step = ttk.Frame(card, style="Card.TFrame")
+            step.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
+            badge = tk.Label(
+                step,
+                text=number,
+                width=2,
+                bg=C["primary"],
+                fg=C["primary_fg"],
+                font=("Helvetica Neue", 13, "bold"),
+            )
+            badge.pack(side=tk.LEFT, padx=(0, 10), ipady=3)
+            text = ttk.Frame(step, style="Card.TFrame")
+            text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            ttk.Label(text, text=title, style="Card.TLabel", font=("Helvetica Neue", 12, "bold")).pack(anchor="w")
+            ttk.Label(text, text=body, style="Card2.TLabel", wraplength=180).pack(anchor="w", pady=(3, 0))
+            card.columnconfigure(index, weight=1)
+
+    def _card_readiness(self, parent: tk.Frame) -> None:
+        card = ttk.Labelframe(parent, text="准备状态", style="Card.TLabelframe", padding=16)
+        card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+
+        items = [
+            ("base_iso", "基础 ISO"),
+            ("password_env", "dryops 密码配置"),
+            ("factory_materials", "Factory 材料"),
+            ("apt_repo", "离线 apt 包"),
+            ("images", "业务镜像包"),
+            ("target_disk", "目标 U 盘"),
+        ]
+        for index, (key, label) in enumerate(items):
+            row = index // 2
+            col = index % 2
+            item = ttk.Frame(card, style="Card.TFrame")
+            item.grid(row=row, column=col, sticky="ew", padx=(0 if col == 0 else 16, 0), pady=(0, 8))
+            ttk.Label(item, text=label, style="Card.TLabel", font=("Helvetica Neue", 12)).pack(side=tk.LEFT)
+            status = tk.Label(item, text="待检查", bg=C["card"], fg=C["text_soft"], font=("Helvetica Neue", 12, "bold"))
+            status.pack(side=tk.RIGHT)
+            self.readiness_labels[key] = status
+            card.columnconfigure(col, weight=1)
+        ttk.Button(card, text="重新检查", style="Small.TButton", command=self._refresh_readiness).grid(
+            row=3, column=0, sticky="w", pady=(4, 0)
+        )
 
     def _card_account(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="账号配置", style="Card.TLabelframe", padding=16)
@@ -241,63 +317,77 @@ class UsbMakerApp(tk.Tk):
                                              sticky="w", pady=(6, 0))
 
     def _card_wifi(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="WiFi（选填）", style="Card.TLabelframe", padding=16)
+        card = ttk.Labelframe(parent, text="现场网络", style="Card.TLabelframe", padding=16)
         card.pack(fill=tk.BOTH, expand=True)
 
-        self._entry_row(card, "SSID", self.wifi_ssid_var, 0)
-        self._entry_row(card, "密码", self.wifi_password_var, 1, show="*")
-        self._entry_row(card, "网卡名", self.wifi_interface_var, 2)
-        ttk.Label(card, text="网卡名留空则由 NetworkManager 自动选择",
-                  style="Card2.TLabel").grid(row=3, column=0, columnspan=2,
+        ttk.Checkbutton(
+            card,
+            text="安装现场没有网线，需要预置 WiFi",
+            variable=self.use_wifi_var,
+            style="Card.TCheckbutton",
+            command=self._toggle_wifi_inputs,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.wifi_entries = [
+            self._entry_row(card, "WiFi 名称", self.wifi_ssid_var, 1),
+            self._entry_row(card, "WiFi 密码", self.wifi_password_var, 2, show="*"),
+            self._entry_row(card, "网卡名", self.wifi_interface_var, 3),
+        ]
+        ttk.Label(card, text="有网线时不用填写；网卡名通常留空。",
+                  style="Card2.TLabel").grid(row=4, column=0, columnspan=2,
                                              sticky="w", pady=(6, 0))
 
     def _card_factory_materials(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="Factory Activation 材料", style="Card.TLabelframe", padding=16)
-        card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card = ttk.Labelframe(parent, text="批次材料", style="Card.TLabelframe", padding=16)
+        card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
         ttk.Checkbutton(
             inner,
-            text="包含 tailnet.env 和 factory-license.json（真机 / 生产安装必选）",
+            text="真机安装：包含入网配置和工厂授权文件",
             variable=self.include_factory_materials_var,
             style="Card.TCheckbutton",
+            command=self._refresh_readiness,
         ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        self._path_row(inner, "tailnet.env", self.tailnet_env_var, 1, self._choose_tailnet_env)
-        self._path_row(inner, "factory license", self.factory_license_var, 2, self._choose_factory_license)
+        self._path_row(inner, "入网配置", self.tailnet_env_var, 1, self._choose_tailnet_env)
+        self._path_row(inner, "工厂授权", self.factory_license_var, 2, self._choose_factory_license)
         ttk.Label(
             card,
-            text="这些是批次材料：轮换 bootstrap key 或 factory license 时替换这两个文件；基础 OS bundle 不需要重做。",
+            text="换 bootstrap key 或 factory license 时，只替换这两个批次文件；不用重做基础 OS bundle。",
             style="Card2.TLabel",
         ).pack(anchor="w", pady=(8, 0))
 
     def _card_iso(self, parent: tk.Frame) -> None:
-        card = ttk.Labelframe(parent, text="安装镜像", style="Card.TLabelframe", padding=16)
-        card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card = ttk.Labelframe(parent, text="镜像设置", style="Card.TLabelframe", padding=16)
+        card.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
 
         self._path_row(inner, "基础 ISO", self.base_iso_var, 0, self._choose_base_iso)
-        self._path_row(inner, "输出 ISO", self.output_iso_var, 1, self._choose_output_iso)
+        self._path_row(inner, "输出文件", self.output_iso_var, 1, self._choose_output_iso)
 
         cb_frame = ttk.Frame(card, style="Card.TFrame")
         cb_frame.pack(fill=tk.X, pady=(10, 0))
         ttk.Checkbutton(cb_frame, text="重新生成离线 apt 包仓库（网络较慢时不要勾选）",
                         variable=self.rebuild_apt_var,
-                        style="Card.TCheckbutton").pack(side=tk.LEFT)
+                        style="Card.TCheckbutton",
+                        command=self._refresh_readiness).pack(side=tk.LEFT)
         ttk.Checkbutton(cb_frame, text="包含首版业务 Docker 镜像（dist/bundle-images.tar）",
                         variable=self.include_images_var,
-                        style="Card.TCheckbutton").pack(side=tk.LEFT, padx=(16, 0))
+                        style="Card.TCheckbutton",
+                        command=self._refresh_readiness).pack(side=tk.LEFT, padx=(16, 0))
+        ttk.Label(card, text="一般只改输出文件名；基础 ISO 和高级选项默认保持不变。",
+                  style="Card2.TLabel").pack(anchor="w", pady=(8, 0))
 
     def _card_disk(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="目标 U 盘", style="Card.TLabelframe", padding=16)
-        card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        card.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
         inner = ttk.Frame(card, style="Card.TFrame")
         inner.pack(fill=tk.X)
 
-        ttk.Label(inner, text="外接磁盘", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(inner, text="选择 U 盘", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 8))
         self.disk_combo = ttk.Combobox(inner, textvariable=self.disk_var,
                                        state="readonly", width=50)
         self.disk_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -306,12 +396,15 @@ class UsbMakerApp(tk.Tk):
 
         ttk.Checkbutton(card, text="构建完成后写入 U 盘",
                         variable=self.write_after_build_var,
-                        style="Card.TCheckbutton").pack(anchor="w", pady=(10, 0))
+                        style="Card.TCheckbutton",
+                        command=self._refresh_readiness).pack(anchor="w", pady=(10, 0))
+        ttk.Label(card, text="写入会清空选中的 U 盘。只选择要给 IPC 装机的那只 U 盘。",
+                  style="Card2.TLabel").pack(anchor="w", pady=(6, 0))
 
     def _card_log(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="日志", style="Card.TLabelframe", padding=12)
-        card.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
-        parent.rowconfigure(5, weight=1)
+        card.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        parent.rowconfigure(7, weight=1)
 
         log_frame = tk.Frame(card, bg=C["log_bg"])
         log_frame.pack(fill=tk.BOTH, expand=True)
@@ -347,13 +440,14 @@ class UsbMakerApp(tk.Tk):
         parent.columnconfigure(1, weight=1)
 
     def _entry_row(self, parent: ttk.Frame, label: str, var: tk.StringVar,
-                   row: int, show: str | None = None) -> None:
+                   row: int, show: str | None = None) -> ttk.Entry:
         ttk.Label(parent, text=label, style="Card.TLabel",
                   font=("Helvetica Neue", 12)).grid(row=row, column=0, sticky="w",
                                                     padx=(0, 12), pady=5)
         entry = ttk.Entry(parent, textvariable=var, show=show, width=28)
         entry.grid(row=row, column=1, sticky="ew", pady=5)
         parent.columnconfigure(1, weight=1)
+        return entry
 
     def _path_row(self, parent: ttk.Frame, label: str, var: tk.StringVar,
                   row: int, chooser) -> None:
@@ -375,6 +469,7 @@ class UsbMakerApp(tk.Tk):
         )
         if path:
             self.base_iso_var.set(path)
+            self._refresh_readiness()
 
     def _choose_output_iso(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -385,6 +480,7 @@ class UsbMakerApp(tk.Tk):
         )
         if path:
             self.output_iso_var.set(path)
+            self._refresh_readiness()
 
     def _choose_tailnet_env(self) -> None:
         path = filedialog.askopenfilename(
@@ -394,6 +490,7 @@ class UsbMakerApp(tk.Tk):
         )
         if path:
             self.tailnet_env_var.set(path)
+            self._refresh_readiness()
 
     def _choose_factory_license(self) -> None:
         path = filedialog.askopenfilename(
@@ -403,6 +500,7 @@ class UsbMakerApp(tk.Tk):
         )
         if path:
             self.factory_license_var.set(path)
+            self._refresh_readiness()
 
     # ── disk listing ─────────────────────────────────────────────
 
@@ -414,6 +512,91 @@ class UsbMakerApp(tk.Tk):
             self.disk_var.set(values[0])
         else:
             self.disk_var.set("（未检测到外接磁盘）")
+        self._refresh_readiness()
+
+    def _install_traces(self) -> None:
+        for var in (
+            self.base_iso_var,
+            self.tailnet_env_var,
+            self.factory_license_var,
+            self.disk_var,
+            self.include_factory_materials_var,
+            self.include_images_var,
+            self.write_after_build_var,
+        ):
+            var.trace_add("write", lambda *_: self._refresh_readiness())
+        self.use_wifi_var.trace_add("write", lambda *_: self._toggle_wifi_inputs())
+
+    def _toggle_wifi_inputs(self) -> None:
+        state = tk.NORMAL if self.use_wifi_var.get() else tk.DISABLED
+        for entry in self.wifi_entries:
+            entry.configure(state=state)
+        self._refresh_readiness()
+
+    def _set_ready_status(self, key: str, ok: bool, text: str, warn: bool = False) -> None:
+        label = self.readiness_labels.get(key)
+        if label is None:
+            return
+        if ok:
+            color = C["success"] if not warn else C["warning"]
+        else:
+            color = C["danger"]
+        label.configure(text=text, fg=color)
+
+    def _refresh_readiness(self) -> None:
+        if not self.readiness_labels:
+            return
+        ready = True
+        base_iso = Path(self.base_iso_var.get()).expanduser()
+        base_ok = base_iso.is_file()
+        ready = ready and base_ok
+        self._set_ready_status("base_iso", base_ok, "已就绪" if base_ok else "缺失")
+
+        password_ok = DEFAULT_PASSWORD_ENV.is_file()
+        ready = ready and password_ok
+        self._set_ready_status("password_env", password_ok, "已就绪" if password_ok else "缺失")
+
+        if self.include_factory_materials_var.get():
+            tailnet = Path(self.tailnet_env_var.get()).expanduser()
+            factory_license = Path(self.factory_license_var.get()).expanduser()
+            materials_ok = tailnet.is_file() and factory_license.is_file()
+            detail = "已就绪" if materials_ok else "缺失"
+            if materials_ok:
+                try:
+                    validate_tailnet_env(tailnet)
+                    validate_factory_license(factory_license)
+                except ValueError:
+                    materials_ok = False
+                    detail = "格式错误"
+            ready = ready and materials_ok
+            self._set_ready_status("factory_materials", materials_ok, detail)
+        else:
+            self._set_ready_status("factory_materials", True, "未包含", warn=True)
+
+        apt_ok = (AUTOINSTALL_DIR / "drycontroller-apt" / "Packages").is_file()
+        self._set_ready_status("apt_repo", apt_ok, "已就绪" if apt_ok else "会生成", warn=not apt_ok)
+
+        if self.include_images_var.get():
+            images_ok = (DIST_DIR / "bundle-images.tar").is_file()
+            ready = ready and images_ok
+            self._set_ready_status("images", images_ok, "已就绪" if images_ok else "缺失")
+        else:
+            self._set_ready_status("images", True, "未包含", warn=True)
+
+        if self.write_after_build_var.get():
+            selected = self.disk_var.get()
+            disk_ok = any(format_disk(row) == selected for row in self.disk_rows)
+            ready = ready and disk_ok
+            self._set_ready_status("target_disk", disk_ok, "已选择" if disk_ok else "未检测到")
+        else:
+            self._set_ready_status("target_disk", True, "不写入", warn=True)
+
+        if hasattr(self, "run_button") and not self.running:
+            self.run_button.configure(state=tk.NORMAL if ready else tk.DISABLED)
+        if hasattr(self, "status_label") and not self.running:
+            status = "● 就绪" if ready else "● 请先补齐缺失项"
+            color = C["success"] if ready else C["danger"]
+            self.status_label.configure(text=status, fg=color)
 
     # ── build flow ───────────────────────────────────────────────
 
@@ -435,9 +618,10 @@ class UsbMakerApp(tk.Tk):
             assert disk is not None
             ok = messagebox.askyesno(
                 "确认写入 U 盘",
-                "即将清空并写入这个外接磁盘：\n\n"
+                "下一步会清空并写入这个外接磁盘：\n\n"
                 f"{format_disk(disk)}\n\n"
-                "确认设备号和容量无误后再继续。",
+                "请确认它是装机 U 盘，不是电脑硬盘或其他资料盘。\n"
+                "确认无误后再继续。",
             )
             if not ok:
                 return
@@ -458,11 +642,16 @@ class UsbMakerApp(tk.Tk):
                 "默认密码文件不存在：infra/autoinstall/password.env\n"
                 "先在制作机上创建该文件；它已被 .gitignore 忽略，不会进入安装盘源码包。"
             )
-        wifi_ssid = self.wifi_ssid_var.get().strip()
-        wifi_password = self.wifi_password_var.get()
-        wifi_interface = self.wifi_interface_var.get().strip()
-        if bool(wifi_ssid) != bool(wifi_password):
-            raise ValueError("WiFi SSID 和 WiFi 密码必须同时填写，或同时留空。")
+        if self.use_wifi_var.get():
+            wifi_ssid = self.wifi_ssid_var.get().strip()
+            wifi_password = self.wifi_password_var.get()
+            wifi_interface = self.wifi_interface_var.get().strip()
+            if not wifi_ssid or not wifi_password:
+                raise ValueError("已勾选预置 WiFi，请填写 WiFi 名称和密码。")
+        else:
+            wifi_ssid = ""
+            wifi_password = ""
+            wifi_interface = ""
         if self.include_images_var.get() and not (DIST_DIR / "bundle-images.tar").is_file():
             raise ValueError("已勾选包含业务镜像，但 dist/bundle-images.tar 不存在。请先构建镜像包或取消勾选。")
         include_factory_materials = self.include_factory_materials_var.get()
@@ -513,8 +702,7 @@ class UsbMakerApp(tk.Tk):
             self.after(0, lambda: messagebox.showerror("制作失败", str(exc)))
         finally:
             self.running = False
-            self.after(0, lambda: self.run_button.configure(state=tk.NORMAL))
-            self.after(0, lambda: self.status_label.configure(text="● 就绪", fg=C["text_soft"]))
+            self.after(0, self._refresh_readiness)
 
     def _append_log(self, line: str, tag: str = "") -> None:
         self.log_queue.put(f"{tag}:{line}" if tag else line)
