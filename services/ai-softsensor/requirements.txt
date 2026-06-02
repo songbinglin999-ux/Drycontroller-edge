@@ -15,7 +15,7 @@ python-dotenv==1.0.0
 structlog==24.1.0
 
 # HTTP/健康检查
-aiohttp==3.9.1
+aiohttp==3.9.4
 
 # 监控指标（P0）
 prometheus-client==0.19.0

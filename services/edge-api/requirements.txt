@@ -1,5 +1,5 @@
 # FastAPI 核心依赖
-fastapi==0.109.0
+fastapi==0.115.6
 uvicorn[standard]==0.27.0
 # 兼容 Python 3.13：选择带 cp313 wheel 的版本，避免本地编译（pydantic-core/asyncpg）
 pydantic==2.10.6
@@ -26,13 +26,13 @@ prometheus-client==0.19.0
 
 # HTTP 客户端
 httpx==0.26.0
-aiohttp==3.9.1
+aiohttp==3.9.4
 requests==2.31.0
 cryptography==48.0.0
 
 # 数据验证和序列化
 orjson==3.9.12
-ujson==5.9.0
+ujson==5.12.1
 
 # WebSocket
 websockets==12.0
