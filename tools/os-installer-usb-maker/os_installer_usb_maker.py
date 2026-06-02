@@ -131,9 +131,9 @@ class UsbMakerApp(tk.Tk):
 
         # ── variables ──
         self.base_iso_var = tk.StringVar(value=str(DEFAULT_BASE_ISO))
-        timestamp = _dt.datetime.now().strftime("%Y%m%d-%H%M")
+        release_date = _dt.datetime.now().strftime("%Y%m%d")
         self.output_iso_var = tk.StringVar(
-            value=str(DIST_DIR / f"OS{timestamp}.iso")
+            value=str(DIST_DIR / f"OS{release_date}-alpha.iso")
         )
         self.fixed_user_var = tk.StringVar(value=FIXED_OPERATOR_USER)
         self.password_source_var = tk.StringVar(value="默认密码配置")

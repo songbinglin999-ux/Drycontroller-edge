@@ -11,6 +11,10 @@ Operator-facing macOS UI for building the DryController OS Installer USB.
 
 The UI does not show or ask for the operator password. It passes the local, ignored password env file to `scripts/build-autoinstall-bundle.sh`, which injects only a sha512-crypt hash into `dist/autoinstall/user-data`.
 
+Usable release images are named `OSYYYYMMDD-alpha.iso` or
+`OSYYYYMMDD-beta.iso`. The UI defaults to the current date plus `alpha`;
+change the suffix in the output ISO field when promoting a later build.
+
 ## Run
 
 ```bash
