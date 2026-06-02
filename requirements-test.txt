@@ -4,7 +4,7 @@ pytest-cov==4.1.0
 ruff==0.9.9
 
 # 统一 API/框架版本（用于测试环境）
-fastapi==0.110.0
+fastapi==0.115.6
 uvicorn==0.23.2
 starlette==0.40.0
 pydantic==2.10.6
