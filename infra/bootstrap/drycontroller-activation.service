@@ -4,10 +4,13 @@ Documentation=file:/opt/Drycontroller-edge/docs/ops/provisioning-bootstrap.md
 Wants=network-online.target drycontroller-tailnet.service
 After=network-online.target drycontroller-tailnet.service
 ConditionPathExists=/etc/drycontroller/tailnet.env
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/drycontroller-host-activation.sh
+Restart=on-failure
+RestartSec=60
 
 [Install]
 WantedBy=multi-user.target

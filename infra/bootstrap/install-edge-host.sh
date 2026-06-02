@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Prepare a plain Linux host for Drycontroller edge provisioning.
+# Prepare a plain Linux host for Drycontroller edge factory activation.
 #
 # This script installs the host-level prerequisites and places the edge project
-# plus the one-time USB bootstrap service where non-developer installers expect
-# them. Device identity and cloud credentials are intentionally left to the USB
-# provisioning package consumed by drycontroller-bootstrap.sh.
+# plus the host tailnet / activation services where non-developer installers
+# expect them. Device identity and production authorization are issued later by
+# Cloud Ops after the edge first joins the bootstrap tailnet.
 #
 set -euo pipefail
 
@@ -13,8 +13,8 @@ EDGE_ROOT="/opt/Drycontroller-edge"
 INSTALL_PACKAGES=true
 INSTALL_DOCKER=true
 INSTALL_TAILSCALE=true
-ENABLE_BOOTSTRAP=true
-START_BOOTSTRAP=false
+ENABLE_LEGACY_BOOTSTRAP=false
+START_LEGACY_BOOTSTRAP=false
 REPO_SOURCE=""
 
 usage() {
@@ -28,14 +28,15 @@ Options:
   --skip-packages        Do not run apt-get; only verify prerequisites
   --skip-docker          Do not install Docker; only verify it exists
   --skip-tailscale       Do not install Tailscale; only verify it exists
-  --no-enable-service    Install bootstrap files but do not enable the systemd service
-  --start-bootstrap      Start drycontroller-bootstrap.service after installing it
+  --enable-legacy-bootstrap
+                         Enable drycontroller-bootstrap.service for the old Provisioning USB path
+  --start-legacy-bootstrap
+                         Start drycontroller-bootstrap.service after installing it
   -h, --help             Show this help
 
 Expected follow-up:
-  Insert a USB drive containing drycontroller-provisioning/provisioning.json
-  and reboot, or run:
-    sudo systemctl start drycontroller-bootstrap.service
+  Install factory license + /etc/drycontroller/tailnet.env in the OS image,
+  then boot with network access to Headscale/Cloud Ops tailnet activation.
 EOF
 }
 
@@ -75,11 +76,16 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --no-enable-service)
-      ENABLE_BOOTSTRAP=false
+      ENABLE_LEGACY_BOOTSTRAP=false
       shift
       ;;
-    --start-bootstrap)
-      START_BOOTSTRAP=true
+    --enable-legacy-bootstrap)
+      ENABLE_LEGACY_BOOTSTRAP=true
+      shift
+      ;;
+    --start-bootstrap|--start-legacy-bootstrap)
+      ENABLE_LEGACY_BOOTSTRAP=true
+      START_LEGACY_BOOTSTRAP=true
       shift
       ;;
     -h|--help)
@@ -274,15 +280,18 @@ install_bootstrap_service() {
   chmod 700 /var/lib/drycontroller
 
   systemctl daemon-reload
-  if [ "$ENABLE_BOOTSTRAP" = true ]; then
+  systemctl enable drycontroller-tailnet.service drycontroller-activation.service
+  log "enabled drycontroller-tailnet.service and drycontroller-activation.service"
+
+  if [ "$ENABLE_LEGACY_BOOTSTRAP" = true ]; then
     systemctl enable drycontroller-bootstrap.service
-    log "enabled drycontroller-bootstrap.service"
+    log "enabled legacy drycontroller-bootstrap.service"
   else
-    log "bootstrap service installed but not enabled"
+    log "legacy bootstrap service installed but not enabled"
   fi
 
-  if [ "$START_BOOTSTRAP" = true ]; then
-    log "starting drycontroller-bootstrap.service"
+  if [ "$START_LEGACY_BOOTSTRAP" = true ]; then
+    log "starting legacy drycontroller-bootstrap.service"
     systemctl start drycontroller-bootstrap.service
   fi
 }
@@ -316,5 +325,5 @@ install_bootstrap_timeout_override
 write_host_manifest
 
 log "host preparation complete"
-log "next: insert USB with drycontroller-provisioning/provisioning.json and reboot"
-log "or run: systemctl start drycontroller-bootstrap.service"
+log "next: boot with factory license and /etc/drycontroller/tailnet.env installed"
+log "legacy Provisioning USB path remains available via: systemctl start drycontroller-bootstrap.service"

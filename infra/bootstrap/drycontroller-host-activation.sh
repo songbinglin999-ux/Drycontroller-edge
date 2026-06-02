@@ -36,6 +36,8 @@ die() {
 CLOUD_OPS_BASE_URL="${CLOUD_OPS_BASE_URL:-}"
 TS_LOGIN_SERVER="${TS_LOGIN_SERVER:-}"
 TS_HOSTNAME="${TS_HOSTNAME:-${ENROLL_NAME:-$(hostname)}}"
+EDGE_ROOT="${EDGE_ROOT:-/opt/Drycontroller-edge}"
+EDGE_ENV_FILE="${EDGE_ENV_FILE:-${EDGE_ROOT}/.env}"
 REQUESTED_TENANT_ID="${REQUESTED_TENANT_ID:-${TENANT_ID:-}}"
 REQUESTED_LINE_ID="${REQUESTED_LINE_ID:-${LINE_ID:-}}"
 
@@ -83,7 +85,7 @@ tailnet_hostname() {
 
 license_fingerprint() {
   ensure_factory_license_archive
-  STATE_FILE="$STATE_FILE" python3 - "$FACTORY_LICENSE_ARCHIVE_PATH" <<'PY'
+  STATE_FILE="$STATE_FILE" MACHINE_ID="$(machine_id)" python3 - "$FACTORY_LICENSE_ARCHIVE_PATH" <<'PY'
 import hashlib
 import json
 import os
@@ -91,6 +93,7 @@ import sys
 from pathlib import Path
 
 state_path = Path(os.environ["STATE_FILE"])
+machine_id = os.environ.get("MACHINE_ID", "").strip()
 state = {}
 if state_path.exists():
     try:
@@ -98,12 +101,13 @@ if state_path.exists():
     except Exception:
         state = {}
 
-existing = (state.get("factory_license_fingerprint") or "").strip()
-if existing:
-    print(existing)
-    raise SystemExit(0)
-
-fingerprint = hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest()
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+h = hashlib.sha256()
+h.update(raw)
+h.update(b"\0")
+h.update(machine_id.encode("utf-8"))
+fingerprint = h.hexdigest()
 state["factory_license_fingerprint"] = fingerprint
 state_path.parent.mkdir(parents=True, exist_ok=True)
 tmp = state_path.with_suffix(state_path.suffix + ".tmp")
@@ -146,7 +150,6 @@ machine_id() {
 
 write_activation_payload() {
   ensure_factory_license_archive
-  FACTORY_LICENSE_FINGERPRINT="$(license_fingerprint)" \
   MACHINE_ID="$(machine_id)" \
   BOOTSTRAP_TS_NODE="$(tailnet_hostname)" \
   BOOTSTRAP_TS_IP="$(tailnet_ip)" \
@@ -360,6 +363,32 @@ reapply_edge_compose_binding() {
   fi
 }
 
+confirm_formal_tailnet_joined() {
+  local ip="$1"
+  local confirm_url="${CLOUD_OPS_BASE_URL%/}/api/v1/factory-activation/${FACTORY_LICENSE_FINGERPRINT}/confirm-formal-tailnet"
+  local confirm_payload
+  confirm_payload="$(FACTORY_LICENSE_PATH="$FACTORY_LICENSE_ARCHIVE_PATH" MACHINE_ID="$(machine_id)" FORMAL_TAILNET_IP="$ip" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = {
+    "factory_license": json.loads(Path(os.environ["FACTORY_LICENSE_PATH"]).read_text(encoding="utf-8")),
+    "machine_id": os.environ.get("MACHINE_ID", "").strip(),
+    "formal_ts_ip": os.environ.get("FORMAL_TAILNET_IP", "").strip() or None,
+}
+print(json.dumps(payload, ensure_ascii=False))
+PY
+)"
+  if curl -fsS -H "Content-Type: application/json" -d "$confirm_payload" -o /dev/null "$confirm_url"; then
+    log "formal tailnet join confirmed with Cloud Ops"
+    return 0
+  else
+    log "formal tailnet join confirm failed; keeping local activation state"
+    return 1
+  fi
+}
+
 # Factory-activation re-auth path. The legacy path has a parallel implementation in
 # drycontroller-bootstrap.sh:attempt_formal_tailnet_reauth. Keep the failure semantics
 # (preserve bootstrap tailnet, never break the survival path) in sync between the two.
@@ -373,7 +402,7 @@ attempt_formal_tailnet_reauth() {
   local before_ip after_ip
   before_ip="$(tailnet_ip)"
   log "attempting formal tailnet re-auth hostname=${hostname}"
-  if tailscale up --authkey="${authkey}" --login-server="${TS_LOGIN_SERVER}" --hostname="${hostname}"; then
+  if tailscale up --reset --authkey="${authkey}" --login-server="${TS_LOGIN_SERVER}" --hostname="${hostname}"; then
     after_ip="$(tailnet_ip)"
     [ -n "$after_ip" ] || {
       log "formal re-auth returned success but no tailnet IPv4 is available; keeping bootstrap auth material"
@@ -382,6 +411,10 @@ attempt_formal_tailnet_reauth() {
     sync_tailnet_env_after_formal_reauth "$hostname"
     sync_edge_env_after_formal_reauth "$after_ip" "$hostname"
     reapply_edge_compose_binding
+    if ! confirm_formal_tailnet_joined "$after_ip"; then
+      write_state "formal_tailnet_joined" "formal_tailnet_confirm_failed"
+      return 75
+    fi
     log "formal tailnet re-auth ok ip=${after_ip}; bootstrap TS_AUTHKEY removed from ${ENV_FILE}"
     return 0
   fi
@@ -398,6 +431,32 @@ attempt_formal_tailnet_reauth() {
 response_file="$(mktemp)"
 trap 'rm -f "$response_file"' EXIT
 
+FACTORY_LICENSE_FINGERPRINT="$(license_fingerprint)"
+
+current_state="$(python3 - "$STATE_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.exists():
+    print("")
+    raise SystemExit(0)
+try:
+    print((json.loads(path.read_text(encoding="utf-8")).get("state") or "").strip())
+except Exception:
+    print("")
+PY
+)"
+if [ "$current_state" = "formal_tailnet_joined" ]; then
+  if confirm_formal_tailnet_joined "$(tailnet_ip)"; then
+    write_state "formal_license_active" "activation_complete"
+    log "activation complete"
+    exit 0
+  fi
+  write_state "formal_tailnet_joined" "formal_tailnet_confirm_failed"
+  exit 75
+fi
+
 write_state "bootstrap_tailnet_joined" "calling_cloud_activation"
 activation_url="${CLOUD_OPS_BASE_URL%/}/api/v1/factory-activation"
 log "calling cloud activation: ${activation_url}"
@@ -408,6 +467,17 @@ if ! curl -fsS \
   "$activation_url"; then
   write_state "bootstrap_tailnet_joined" "cloud_activation_failed"
   die "cloud activation request failed"
+fi
+
+response_state="$(python3 - "$response_file" <<'PY'
+import json, sys
+print((json.load(open(sys.argv[1], encoding="utf-8")).get("state") or "").strip())
+PY
+)"
+if [ "$response_state" = "pending_ops_approval" ]; then
+  write_state "pending_ops_approval" "waiting_for_ops_approval"
+  log "factory activation is pending ops approval; bootstrap tailnet preserved"
+  exit 75
 fi
 
 install_license_from_response "$response_file"
@@ -428,10 +498,16 @@ PY
 )"
 
 if [ -n "$formal_authkey" ]; then
-  if attempt_formal_tailnet_reauth "$formal_authkey" "$formal_hostname"; then
+  set +e
+  attempt_formal_tailnet_reauth "$formal_authkey" "$formal_hostname"
+  formal_status=$?
+  set -e
+  if [ "$formal_status" -eq 0 ]; then
     write_state "formal_tailnet_joined" "formal_tailnet_reauth_ok"
     write_state "formal_license_active" "activation_complete"
     log "activation complete"
+  elif [ "$formal_status" -eq 75 ]; then
+    exit 75
   else
     write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"
     log "production license installed; formal tailnet re-auth failed, bootstrap tailnet preserved"

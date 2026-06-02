@@ -124,12 +124,19 @@ def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet
     assert '"factory_license": json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))' in text
     assert "factory_license_fingerprint" in text
     assert "formal_ts_authkey" in text
+    assert '"pending_ops_approval"' in text
+    assert "factory activation is pending ops approval; bootstrap tailnet preserved" in text
+    assert 'exit 75' in text
+    assert 'tailscale up --reset --authkey="${authkey}"' in text
     assert "formal tailnet re-auth failed; preserving bootstrap tailnet for retry" in text
     assert "systemctl restart drycontroller-tailnet.service || true" in text
     assert "sync_tailnet_env_after_formal_reauth" in text
     assert "sync_edge_env_after_formal_reauth" in text
     assert '"EDGE_API_BIND_ADDR"] = ip' in text
+    assert 'EDGE_ENV_FILE="${EDGE_ENV_FILE:-${EDGE_ROOT}/.env}"' in text
     assert "reapply_edge_compose_binding" in text
+    assert "confirm_formal_tailnet_joined" in text
+    assert "/confirm-formal-tailnet" in text
     assert "save_runtime_credentials" in text
     assert 'resp.get("node_enroll_token") or resp.get("enroll_token")' in text
     assert "import shlex" in text
@@ -145,12 +152,22 @@ def test_host_activation_requires_local_license_when_cloud_omits_payload():
     assert "Path(sys.argv[2]).is_file() and Path(sys.argv[3]).is_file()" in text
 
 
-def test_host_activation_reuses_persisted_factory_fingerprint_after_production_license_install():
+def test_host_activation_service_retries_pending_ops_approval():
+    text = (Path(__file__).resolve().parents[1] / "drycontroller-activation.service").read_text(encoding="utf-8")
+
+    assert "StartLimitIntervalSec=0" in text
+    assert "Restart=on-failure" in text
+    assert "RestartSec=60" in text
+
+
+def test_host_activation_persists_server_compatible_factory_fingerprint_before_production_license_install():
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
 
     assert "FACTORY_LICENSE_ARCHIVE_PATH" in text
     assert "ensure_factory_license_archive" in text
-    assert 'state.get("factory_license_fingerprint")' in text
+    assert 'json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))' in text
+    assert 'h.update(b"\\0")' in text
+    assert 'FACTORY_LICENSE_FINGERPRINT="$(license_fingerprint)"' in text
     assert 'state["factory_license_fingerprint"] = fingerprint' in text
     assert text.index("ensure_factory_license_archive") < text.index('install_license_from_response "$response_file"')
     assert text.index('state["factory_license_fingerprint"] = fingerprint') < text.index(
@@ -189,6 +206,7 @@ def test_bootstrap_reapplies_edge_binding_after_factory_activation():
     assert 'printf \'EDGE_ENV_FILE=%q\\n\' "${ENV_FILE:-}"' in text
     assert 'printf \'EDGE_ROOT=%q\\n\' "${EDGE_ROOT:-}"' in text
     assert 'set_kv "EDGE_API_BIND_ADDR" "$current_ip"' in text
+    assert 'tailscale up --reset --authkey="${formal_authkey}"' in text
     assert 'log "re-applying edge core stack after activation tailnet sync..."' in text
     assert text.index("reload_tailnet_env") < text.index("sync_formal_tailnet_binding")
     assert text.index("sync_formal_tailnet_binding") < text.index('log "re-applying edge core stack after activation tailnet sync..."')
@@ -227,3 +245,6 @@ def test_install_edge_host_installs_activation_agent_service():
     assert "drycontroller-host-activation.sh" in text
     assert "drycontroller-activation.service" in text
     assert '"activation_service": "drycontroller-activation.service"' in text
+    assert "systemctl enable drycontroller-tailnet.service drycontroller-activation.service" in text
+    assert "ENABLE_LEGACY_BOOTSTRAP=false" in text
+    assert "legacy drycontroller-bootstrap.service" in text

@@ -586,7 +586,7 @@ PY
 
   before_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
   log "attempting formal tailnet re-auth hostname=${formal_hostname}"
-  if tailscale up --authkey="${formal_authkey}" --login-server="${TS_LOGIN_SERVER}" --hostname="${formal_hostname}" >> "$LOG_FILE" 2>&1; then
+  if tailscale up --reset --authkey="${formal_authkey}" --login-server="${TS_LOGIN_SERVER}" --hostname="${formal_hostname}" >> "$LOG_FILE" 2>&1; then
     after_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
     if [ -n "$after_ip" ]; then
       TS_HOSTNAME="$formal_hostname"

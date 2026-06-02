@@ -2,16 +2,15 @@
 
 ## 目标
 
-把“安装 Ubuntu + Docker + edge repo + systemd bootstrap service”变成标准安装盘流程。现场人员不需要手动安装 Ubuntu、填写租户参数、执行 Docker 命令或复制 license 文件。
+把“安装 Ubuntu + Docker + edge repo + host tailnet / activation service”变成标准安装盘流程。现场人员不需要手动安装 Ubuntu、填写租户参数、执行 Docker 命令或复制 license 文件。
 
-## 两种 U 盘
+## 正常交付介质
 
-| U 盘 | 用途 | 现场人员是否填写参数 |
+| 介质 | 用途 | 现场人员是否填写参数 |
 |---|---|---|
-| **OS Installer USB（系统安装 U 盘）** | 把空白 IPC 安装成标准 DryController Edge Host。 | 否 |
-| **Provisioning USB（部署/激活 U 盘）** | 首次开机激活设备身份、Headscale、Harbor、license。 | 否 |
+| **OS Installer USB（系统安装 U 盘）** | 把空白 IPC 安装成标准 DryController Edge Host，并预置 factory license / bootstrap tailnet 配置。 | 否 |
 
-OS Installer USB 只负责基础 OS。设备号、节点名、API key、license、tailnet 和 registry 凭据都由 Provisioning USB 和 cloud-ops 分配。
+正常路径不再使用 Provisioning USB。设备号、节点名、production license、formal tailnet key 和后续权限由 Cloud Ops 在首次上线并经运维确认后签发。旧 Provisioning USB 仅保留为 legacy/emergency 路径，不能作为新流程验收标准。
 
 > 注意：OS Installer USB 是整机重装介质。安装器会选择最大的非安装介质磁盘，清除旧 Windows / Linux 分区和文件系统元数据，并重建 DryController Edge Host 分区。
 
@@ -211,9 +210,10 @@ drycontroller-edge-post-install.service
 - 配置 Docker 日志轮转
 - 复制 edge repo 到 `/opt/Drycontroller-edge`
 - 创建 `/opt/Drycontroller-edge/.env`
-- 安装并启用 `drycontroller-bootstrap.service`
+- 安装并启用 `drycontroller-tailnet.service`
+- 安装并启用 `drycontroller-activation.service`
+- 默认不启用旧 `drycontroller-bootstrap.service`
 - 写入 `/var/lib/drycontroller/host-install.json`
-- 如果 Provisioning USB 已经插入，会立即启动 `drycontroller-bootstrap.service`
 - host install 成功后禁用自身，避免后续重复执行
 
 ## 磁盘分区策略
@@ -244,17 +244,19 @@ drycontroller-edge-post-install.service
 
 ### 阶段 2：激活设备
 
-1. 插入 Provisioning USB。
-2. 开机。
-3. 首次进入系统后，机器会先自动连接 WiFi，再完成 Docker / edge host 安装，然后自动启动 bootstrap。
-4. 等待 edge 自动 bootstrap。
-5. 在云端 console 查看节点出现，并显示 reachable。
+1. 开机，确保有到 Headscale login endpoint 的出站网络。
+2. 首次进入系统后，机器会先自动连接 WiFi（如配置），再完成 Docker / edge host 安装。
+3. host Tailscale 使用 factory bootstrap credential 加入受限 bootstrap tailnet。
+4. activation service 调 Cloud Ops，云端记录为 `pending_ops_approval`。
+5. 运维在 cloud-console 确认真实设备后点击「签发正式授权」。
+6. edge 下一次 activation 重试领取 production license 和 formal tailnet key，完成 formal re-auth。
+7. 在云端 console 查看节点显示 reachable / activated。
 
 成功标准：
 
 - cloud-console 中出现节点。
 - 节点 reachable。
-- license verify 成功。
+- production license verify 成功。
 - 出厂 preflight `success=true`。
 
 ## 失败排查
@@ -268,26 +270,22 @@ drycontroller-edge-post-install.service
 | 安装完成但没有自动关机 | 查看 `/var/log/installer/`，确认 late-commands 是否执行。 |
 | 首次开机后没有继续 host install | 查看 `/var/log/drycontroller-autoinstall.log` 和 `systemctl status drycontroller-edge-post-install.service`。 |
 | WiFi 连不上 | 检查安装盘根目录是否有 `wifi.env`，SSID/密码是否正确；必要时设置 `WIFI_INTERFACE`。 |
-| 激活阶段找不到 U 盘 | 确认 U 盘里存在 `drycontroller-provisioning/provisioning.json`。 |
-| 激活失败 | 查看 `/var/log/drycontroller-bootstrap.log`，同时在 cloud-ops 查看 provisioning batch、license、Headscale 和 Harbor 配置。 |
+| 激活阶段一直停在待确认 | 在 cloud-console Factory Activations 页面确认真实设备后点击「签发正式授权」。 |
+| 激活失败 | 查看 `/var/log/drycontroller-host-tailnet.log`、`/var/log/drycontroller-host-activation.log` 和 `systemctl status drycontroller-tailnet.service drycontroller-activation.service`，同时在 Cloud Ops 查看 factory activation、license 和 Headscale 配置。 |
 
 ## 当前限制
 
 - 目前是 Ubuntu Server autoinstall 方案，不覆盖 Debian、Alpine、Yocto。
 - `user-data` 仍需要在制作安装盘时替换密码 hash。
-- apt 包安装依赖网络或可用 Ubuntu mirror；全离线 apt mirror 尚未打包。
-- 第一次真实 Linux edge e2e 前，不建议把该安装盘交给现场批量使用。
+- production media 必须预置真实 factory license、factory public trust anchor、production license public trust anchor 和 `/etc/drycontroller/tailnet.env`。
+- staging UI approve -> edge retry -> formal tailnet confirm 闭环跑通前，不建议把该安装盘交给现场批量使用。
 
 ## 与 Provisioning USB 的关系
 
-OS Installer USB 不包含业务身份和长期凭据。Provisioning USB 仍按云端分配模式制作，只保留：
+Provisioning USB 已从正常路径移除。旧 `drycontroller-provisioning/provisioning.json`
+流程只作为 legacy/emergency bootstrap 保留，需要显式启用
+`--enable-legacy-bootstrap` 或手动启动 `drycontroller-bootstrap.service`。
 
-```json
-{
-  "cloud_ops_base_url": "https://ops.example.com",
-  "batch_id": "factory-2026-05-a",
-  "installer_token": "xxxxx"
-}
-```
-
-云端批次负责保存 Headscale / Harbor 参数，并为每台 edge 分配设备号、节点名、per-node API key 和签名 license。
+新路径里 OS Installer USB / factory image 预置 factory license 和 bootstrap
+tailnet credential。Cloud Ops 在设备首次上线并经运维确认后分配设备号、
+节点名、production license、formal tailnet key 和后续权限。

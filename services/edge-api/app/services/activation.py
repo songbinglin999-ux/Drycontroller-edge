@@ -5,7 +5,7 @@ Handles the bootstrap tailnet -> Cloud Ops -> formal license/key flow.
 Runs as a background service on first boot, or can be triggered manually.
 
 State machine:
-  factory_installed -> bootstrap_tailnet_joined -> cloud_activated -> formal_tailnet_joined -> formal_license_active
+  factory_installed -> bootstrap_tailnet_joined -> pending_ops_approval -> cloud_activated -> formal_tailnet_joined -> formal_license_active
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ logger = structlog.get_logger(__name__)
 class ActivationState(str, Enum):
     FACTORY_INSTALLED = "factory_installed"
     BOOTSTRAP_TAILNET_JOINED = "bootstrap_tailnet_joined"
+    PENDING_OPS_APPROVAL = "pending_ops_approval"
     CLOUD_ACTIVATED = "cloud_activated"
     FORMAL_TAILNET_JOINED = "formal_tailnet_joined"
     FORMAL_LICENSE_ACTIVE = "formal_license_active"
@@ -65,12 +66,24 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def _license_fingerprint(license_path: Path) -> str:
-    """SHA-256 of the license file content."""
+def _license_fingerprint(license_path: Path, machine_id: str) -> str:
+    """Server-compatible activation fingerprint: factory license + machine_id."""
     if not license_path.is_file():
         return ""
-    raw = license_path.read_bytes()
-    return hashlib.sha256(raw).hexdigest()
+    payload = _read_json(license_path)
+    if not payload or not machine_id:
+        return ""
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    h = hashlib.sha256()
+    h.update(raw)
+    h.update(b"\0")
+    h.update(machine_id.encode("utf-8"))
+    return h.hexdigest()
 
 
 def _factory_license_source_path() -> Path:
@@ -123,7 +136,7 @@ def get_activation_state() -> dict[str, Any]:
         "device_json_exists": device_json_exists,
         "tailscale_state_exists": tailscale_state_exists,
         "machine_id": _machine_id(),
-        "factory_license_fingerprint": _license_fingerprint(factory_license_source) if factory_license_exists else None,
+        "factory_license_fingerprint": _license_fingerprint(factory_license_source, _machine_id()) if factory_license_exists else None,
         "cloud_ops_base_url": settings.CLOUD_OPS_BASE_URL or None,
         "ts_login_server": settings.TS_LOGIN_SERVER or None,
         **{k: v for k, v in state_data.items() if k != "state"},
@@ -207,6 +220,30 @@ async def _reissue_ts_key(
     except Exception as exc:
         logger.warning("reissue_ts_key_error", error=str(exc))
         return None
+
+
+async def _confirm_formal_tailnet(
+    fingerprint: str,
+    factory_license: dict[str, Any],
+    machine_id: str,
+) -> bool:
+    cloud_url = settings.CLOUD_OPS_BASE_URL.rstrip("/")
+    url = f"{cloud_url}/api/v1/factory-activation/{fingerprint}/confirm-formal-tailnet"
+    ts_ip = _run_cmd(["tailscale", "ip", "-4"], timeout=5).stdout.splitlines()
+    payload = {
+        "factory_license": factory_license,
+        "machine_id": machine_id,
+        "formal_ts_ip": ts_ip[0].strip() if ts_ip else None,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            logger.info("formal_tailnet_confirmed_with_cloud", fingerprint=fingerprint[:16])
+            return True
+    except Exception as exc:
+        logger.warning("formal_tailnet_confirm_failed", error=str(exc))
+        return False
 
 
 def _production_trust_anchor() -> Optional[bytes]:
@@ -380,18 +417,18 @@ async def run_activation(
         logger.error("factory_license_archive_failed", error=str(exc))
         return {"success": False, "state": current_state, "error": "factory_license_archive_failed"}
 
-    factory_fingerprint = state_data.get("factory_license_fingerprint") or _license_fingerprint(factory_license_path)
-    if not factory_fingerprint:
-        logger.error("factory_fingerprint_empty")
-        return {"success": False, "state": current_state, "error": "factory_fingerprint_empty"}
-
     machine_id = _machine_id()
     if not machine_id:
         logger.error("machine_id_missing")
         return {"success": False, "state": current_state, "error": "machine_id_missing"}
 
-    # Persist fingerprint for retries (production license overwrites the factory file)
-    if "factory_license_fingerprint" not in state_data:
+    factory_fingerprint = _license_fingerprint(factory_license_path, machine_id)
+    if not factory_fingerprint:
+        logger.error("factory_fingerprint_empty")
+        return {"success": False, "state": current_state, "error": "factory_fingerprint_empty"}
+
+    # Persist server-compatible activation fingerprint for retries.
+    if state_data.get("factory_license_fingerprint") != factory_fingerprint:
         state_data["factory_license_fingerprint"] = factory_fingerprint
         _write_state(state_data)
 
@@ -410,6 +447,20 @@ async def run_activation(
         tailnet_ready = await _wait_for_tailnet(timeout_sec=120)
         if not tailnet_ready:
             return {"success": False, "state": ActivationState.FACTORY_INSTALLED.value, "error": "tailnet_timeout"}
+
+    if current_state == ActivationState.FORMAL_TAILNET_JOINED.value:
+        if await _confirm_formal_tailnet(factory_fingerprint, factory_license_content, machine_id):
+            state_data["state"] = ActivationState.FORMAL_LICENSE_ACTIVE.value
+            state_data["message"] = "activation_complete"
+            state_data["activated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            _write_state(state_data)
+            _BOOTSTRAP_SENTINEL.parent.mkdir(parents=True, exist_ok=True)
+            _BOOTSTRAP_SENTINEL.touch()
+            return {"success": True, "state": ActivationState.FORMAL_LICENSE_ACTIVE.value, "message": "activation_complete"}
+        state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
+        state_data["message"] = "formal_tailnet_confirm_failed"
+        _write_state(state_data)
+        return {"success": False, "state": ActivationState.FORMAL_TAILNET_JOINED.value, "error": "formal_tailnet_confirm_failed"}
 
     state_data["state"] = ActivationState.BOOTSTRAP_TAILNET_JOINED.value
     _write_state(state_data)
@@ -467,6 +518,12 @@ async def run_activation(
     license_pub = activation_result.get("license_public_key")
     if license_payload and license_pub:
         _install_license(license_payload, license_pub)
+    elif activation_result.get("state") == ActivationState.PENDING_OPS_APPROVAL.value:
+        state_data["state"] = ActivationState.PENDING_OPS_APPROVAL.value
+        state_data["message"] = "waiting_for_ops_approval"
+        _write_state(state_data)
+        logger.info("factory_activation_pending_ops_approval")
+        return {"success": True, "state": ActivationState.PENDING_OPS_APPROVAL.value, "message": "waiting_for_ops_approval"}
     else:
         logger.error("cloud_activation_missing_license")
         return {"success": False, "state": state_data["state"], "error": "cloud_activation_missing_license"}
@@ -491,6 +548,7 @@ async def run_activation(
         if formal_join_ok:
             state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
             _write_state(state_data)
+            formal_join_ok = await _confirm_formal_tailnet(factory_fingerprint, factory_license_content, machine_id)
         else:
             # Key may have been consumed by tailscale up even though join failed.
             # Request a fresh key from Cloud Ops and retry once.
@@ -504,6 +562,7 @@ async def run_activation(
                 if formal_join_ok:
                     state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
                     _write_state(state_data)
+                    formal_join_ok = await _confirm_formal_tailnet(factory_fingerprint, factory_license_content, machine_id)
                 else:
                     logger.error("formal_join_failed_again_after_reissue")
             else:
@@ -515,11 +574,20 @@ async def run_activation(
     _cleanup_auth_keys()
 
     # Step 8: Mark as fully activated only if formal join succeeded
-    if formal_join_ok or not formal_ts_authkey:
+    if formal_join_ok:
         state_data["state"] = ActivationState.FORMAL_LICENSE_ACTIVE.value
     # else: stay at CLOUD_ACTIVATED / BOOTSTRAP_TAILNET_JOINED, retry formal join later
     state_data["activated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     _write_state(state_data)
+
+    if state_data["state"] != ActivationState.FORMAL_LICENSE_ACTIVE.value:
+        return {
+            "success": False,
+            "state": state_data["state"],
+            "device_id": activation_result.get("device_id"),
+            "tenant_id": activation_result.get("tenant_id"),
+            "error": "formal_tailnet_confirm_failed" if state_data["state"] == ActivationState.FORMAL_TAILNET_JOINED.value else "formal_tailnet_pending",
+        }
 
     # Create bootstrap sentinel
     _BOOTSTRAP_SENTINEL.parent.mkdir(parents=True, exist_ok=True)
