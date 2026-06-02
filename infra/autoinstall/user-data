@@ -95,6 +95,7 @@ autoinstall:
     - cp -a /cdrom/drycontroller-apt/. /target/opt/drycontroller-apt/
     - sh -c 'echo "deb [trusted=yes] file:/opt/drycontroller-apt ./" > /target/etc/apt/sources.list && rm -f /target/etc/apt/sources.list.d/ubuntu.sources /target/etc/apt/sources.list.d/drycontroller-offline.list'
     - cp -a /cdrom/drycontroller-edge.tar.gz /target/opt/drycontroller-edge.tar.gz
+    - sh -c 'if [ -f /cdrom/bundle-images.tar ]; then mkdir -p /target/opt/drycontroller-images; cp -a /cdrom/bundle-images.tar /target/opt/drycontroller-images/bundle-images.tar; chmod 0600 /target/opt/drycontroller-images/bundle-images.tar; fi'
     - sh -c 'if [ -f /cdrom/wifi.env ]; then cp -a /cdrom/wifi.env /target/opt/drycontroller-wifi.env; chmod 0600 /target/opt/drycontroller-wifi.env; fi'
     - sh -c 'if [ -f /cdrom/tailnet.env ]; then mkdir -p /target/etc/drycontroller; cp -a /cdrom/tailnet.env /target/etc/drycontroller/tailnet.env; chmod 0600 /target/etc/drycontroller/tailnet.env; fi'
     - sh -c 'if [ -f /cdrom/factory-license.json ]; then mkdir -p /target/etc/drycontroller/license /target/var/lib/drycontroller; cp -a /cdrom/factory-license.json /target/etc/drycontroller/license/license.json; cp -a /cdrom/factory-license.json /target/var/lib/drycontroller/factory-license.json; chmod 0600 /target/etc/drycontroller/license/license.json /target/var/lib/drycontroller/factory-license.json; fi'

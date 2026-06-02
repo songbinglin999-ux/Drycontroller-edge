@@ -41,6 +41,7 @@ build artifacts and should not be committed.
 - `infra/autoinstall/password.env` exists on the maker Mac.
 - `dist/drycontroller-os-installer-hybrid.iso` exists as the known bootable base ISO.
 - `dist/autoinstall/drycontroller-apt/Packages` exists, or the UI option to rebuild the offline apt repo is enabled.
+- `dist/bundle-images.tar` exists when the default "include business Docker images" option is enabled.
 - Docker is available if host `xorriso` is not installed.
 
 USB writing is destructive. The UI only lists external physical disks, but the operator must still verify the disk name, size, and device number before confirming.

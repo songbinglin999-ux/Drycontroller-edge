@@ -142,6 +142,7 @@ class UsbMakerApp(tk.Tk):
         self.wifi_interface_var = tk.StringVar()
         self.disk_var = tk.StringVar()
         self.rebuild_apt_var = tk.BooleanVar(value=False)
+        self.include_images_var = tk.BooleanVar(value=True)
         self.write_after_build_var = tk.BooleanVar(value=True)
 
         # ── Provisioning USB fields ──
@@ -278,6 +279,9 @@ class UsbMakerApp(tk.Tk):
         ttk.Checkbutton(cb_frame, text="重新生成离线 apt 包仓库（网络较慢时不要勾选）",
                         variable=self.rebuild_apt_var,
                         style="Card.TCheckbutton").pack(side=tk.LEFT)
+        ttk.Checkbutton(cb_frame, text="包含首版业务 Docker 镜像（dist/bundle-images.tar）",
+                        variable=self.include_images_var,
+                        style="Card.TCheckbutton").pack(side=tk.LEFT, padx=(16, 0))
 
     def _card_disk(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="目标 U 盘", style="Card.TLabelframe", padding=16)
@@ -702,6 +706,8 @@ class UsbMakerApp(tk.Tk):
         wifi_interface = self.wifi_interface_var.get().strip()
         if bool(wifi_ssid) != bool(wifi_password):
             raise ValueError("WiFi SSID 和 WiFi 密码必须同时填写，或同时留空。")
+        if self.include_images_var.get() and not (DIST_DIR / "bundle-images.tar").is_file():
+            raise ValueError("已勾选包含业务镜像，但 dist/bundle-images.tar 不存在。请先构建镜像包或取消勾选。")
         disk = None
         if self.write_after_build_var.get():
             selected = self.disk_var.get()
@@ -715,6 +721,7 @@ class UsbMakerApp(tk.Tk):
             "wifi_password": wifi_password,
             "wifi_interface": wifi_interface,
             "rebuild_apt": self.rebuild_apt_var.get(),
+            "include_images": self.include_images_var.get(),
             "write_usb": self.write_after_build_var.get(),
             "disk": disk,
         }
@@ -858,6 +865,8 @@ def build_iso(app: UsbMakerApp, plan: dict[str, object]) -> None:
         maps.append(("dist/autoinstall/tailnet.env", "/tailnet.env"))
     if (AUTOINSTALL_DIR / "factory-license.json").is_file():
         maps.append(("dist/autoinstall/factory-license.json", "/factory-license.json"))
+    if plan["include_images"]:
+        maps.append(("dist/bundle-images.tar", "/bundle-images.tar"))
 
     xorriso_args = [
         "xorriso",

@@ -156,6 +156,7 @@ post-install.sh
 drycontroller-edge-post-install.service
 drycontroller-edge.tar.gz
 drycontroller-apt/
+bundle-images.tar   # optional, first-boot Docker images for clean-room install
 ```
 
 如果安装车间只有 WiFi，再额外放：
@@ -176,6 +177,8 @@ WIFI_PASSWORD=replace-with-password
 ```bash
 WIFI_INTERFACE=wlan0
 ```
+
+`bundle-images.tar` 来自 `dist/bundle-images.tar`，用于首版 clean-room 装机。包含它时，安装器会复制到 `/opt/drycontroller-images/bundle-images.tar`，首次开机在 Docker 安装完成后自动 `docker load`，避免人工 `scp` 镜像包。
 
 ### 5. 配置 autoinstall 启动参数
 
@@ -207,6 +210,7 @@ drycontroller-edge-post-install.service
 - 解压 `drycontroller-edge.tar.gz`
 - 调用 `infra/bootstrap/install-edge-host.sh`
 - 从 `/opt/drycontroller-apt` 离线安装或校验 Docker / Docker Compose / Python / curl
+- 如果存在 `/opt/drycontroller-images/bundle-images.tar`，自动导入首版业务 Docker 镜像并删除 tar
 - 配置 Docker 日志轮转
 - 复制 edge repo 到 `/opt/Drycontroller-edge`
 - 创建 `/opt/Drycontroller-edge/.env`

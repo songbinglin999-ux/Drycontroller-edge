@@ -5,6 +5,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-bootstrap.sh"
 TAILNET_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-tailnet.sh"
 ACTIVATION_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-activation.sh"
 INSTALL_SCRIPT = Path(__file__).resolve().parents[1] / "install-edge-host.sh"
+AUTOINSTALL_DIR = Path(__file__).resolve().parents[2] / "autoinstall"
+USB_MAKER = Path(__file__).resolve().parents[3] / "tools" / "os-installer-usb-maker" / "os_installer_usb_maker.py"
 
 
 def _script_text() -> str:
@@ -149,6 +151,20 @@ def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet
     assert 'updates["LINE_ID"] = resp["line_id"].strip()' in text
     assert 'write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"' in text
     assert 'log "production license installed; formal tailnet re-auth failed, bootstrap tailnet preserved"' in text
+
+
+def test_autoinstall_media_carries_and_loads_first_boot_image_bundle():
+    user_data = (AUTOINSTALL_DIR / "user-data").read_text(encoding="utf-8")
+    post_install = (AUTOINSTALL_DIR / "post-install.sh").read_text(encoding="utf-8")
+    maker = USB_MAKER.read_text(encoding="utf-8")
+
+    assert "/cdrom/bundle-images.tar" in user_data
+    assert "/target/opt/drycontroller-images/bundle-images.tar" in user_data
+    assert 'IMAGE_BUNDLE="/opt/drycontroller-images/bundle-images.tar"' in post_install
+    assert 'docker load -i "$IMAGE_BUNDLE"' in post_install
+    assert 'rm -f "$IMAGE_BUNDLE"' in post_install
+    assert "self.include_images_var = tk.BooleanVar(value=True)" in maker
+    assert 'maps.append(("dist/bundle-images.tar", "/bundle-images.tar"))' in maker
 
 
 def test_host_activation_requires_local_license_when_cloud_omits_payload():

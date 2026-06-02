@@ -36,6 +36,9 @@ Terminology:
   media root. It contains Docker runtime, Docker Compose v2, NetworkManager, and
   host package dependencies so factory/site installs do not depend on public
   mirror reachability.
+- `bundle-images.tar`: optional first-boot Docker image bundle copied from
+  `dist/bundle-images.tar`. Include it for clean-room installs that must bring
+  up compose without registry access.
 
 ## Required USB Root Files
 
@@ -49,6 +52,7 @@ drycontroller-edge-post-install.service
 wifi.env              # optional, copied from wifi.env.example and filled by operator/team
 drycontroller-edge.tar.gz
 drycontroller-apt/
+bundle-images.tar     # optional but recommended for clean-room first boot
 ```
 
 `drycontroller-edge.tar.gz` must contain the edge repository. The tar can contain
@@ -80,6 +84,10 @@ The autoinstall profile does not override Subiquity's apt configuration during
 the installer phase. It only verifies that `drycontroller-apt/` exists, copies it
 into the target as `/opt/drycontroller-apt`, and points the installed system at
 that offline repo for first-boot Docker/runtime package installation.
+
+If `/bundle-images.tar` exists on the installer media, it is copied to
+`/opt/drycontroller-images/bundle-images.tar`. First boot loads it with
+`docker load` after Docker is installed, then removes the tar to save disk.
 
 ## Installer Login And SSH
 
