@@ -10,7 +10,10 @@ The UI is intentionally built for non-developer operators:
 4. Click the primary button to build and write the installer.
 
 Fields that normally do not need changes keep safe defaults. WiFi stays off by
-default and is only enabled when the install area has no wired network.
+default and is only enabled when the install area has no wired network. When
+WiFi is enabled, the SSID field can scan this Mac's visible WiFi networks for a
+drop-down selection, while still allowing manual entry for hidden or off-site
+factory networks.
 
 ## Scope
 

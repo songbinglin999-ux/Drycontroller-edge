@@ -8,6 +8,7 @@ import json
 import os
 import plistlib
 import queue
+import re
 import shlex
 import shutil
 import stat
@@ -27,6 +28,7 @@ DEFAULT_PASSWORD_ENV = REPO_ROOT / "infra" / "autoinstall" / "password.env"
 DEFAULT_TAILNET_ENV = AUTOINSTALL_DIR / "tailnet.env"
 DEFAULT_FACTORY_LICENSE = AUTOINSTALL_DIR / "factory-license.json"
 FIXED_OPERATOR_USER = "dryops"
+AIRPORT_BIN = Path("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport")
 
 # ── colour palette ──────────────────────────────────────────────
 C = {
@@ -142,6 +144,7 @@ class UsbMakerApp(tk.Tk):
         self.wifi_ssid_var = tk.StringVar()
         self.wifi_password_var = tk.StringVar()
         self.wifi_interface_var = tk.StringVar()
+        self.wifi_scan_status_var = tk.StringVar(value="勾选后可扫描本机可见 WiFi，也可手动输入。")
         self.disk_var = tk.StringVar()
         self.rebuild_apt_var = tk.BooleanVar(value=False)
         self.include_images_var = tk.BooleanVar(value=True)
@@ -150,7 +153,9 @@ class UsbMakerApp(tk.Tk):
         self.factory_license_var = tk.StringVar(value=str(DEFAULT_FACTORY_LICENSE))
         self.write_after_build_var = tk.BooleanVar(value=True)
         self.readiness_labels: dict[str, tk.Label] = {}
-        self.wifi_entries: list[ttk.Entry] = []
+        self.wifi_inputs: list[ttk.Widget] = []
+        self.wifi_ssid_combo: ttk.Combobox | None = None
+        self.wifi_scan_button: ttk.Button | None = None
 
         self.heading_font, self.mono_font = _apply_theme(self)
         self._build_ui()
@@ -327,13 +332,17 @@ class UsbMakerApp(tk.Tk):
             style="Card.TCheckbutton",
             command=self._toggle_wifi_inputs,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self.wifi_entries = [
-            self._entry_row(card, "WiFi 名称", self.wifi_ssid_var, 1),
+        self.wifi_ssid_combo = self._wifi_ssid_row(card, 1)
+        self.wifi_inputs = [
+            self.wifi_ssid_combo,
             self._entry_row(card, "WiFi 密码", self.wifi_password_var, 2, show="*"),
             self._entry_row(card, "网卡名", self.wifi_interface_var, 3),
         ]
-        ttk.Label(card, text="有网线时不用填写；网卡名通常留空。",
+        ttk.Label(card, textvariable=self.wifi_scan_status_var,
                   style="Card2.TLabel").grid(row=4, column=0, columnspan=2,
+                                             sticky="w", pady=(6, 0))
+        ttk.Label(card, text="有网线时不用填写；网卡名通常留空。",
+                  style="Card2.TLabel").grid(row=5, column=0, columnspan=2,
                                              sticky="w", pady=(6, 0))
 
     def _card_factory_materials(self, parent: tk.Frame) -> None:
@@ -449,6 +458,18 @@ class UsbMakerApp(tk.Tk):
         parent.columnconfigure(1, weight=1)
         return entry
 
+    def _wifi_ssid_row(self, parent: ttk.Frame, row: int) -> ttk.Combobox:
+        ttk.Label(parent, text="WiFi 名称", style="Card.TLabel",
+                  font=("Helvetica Neue", 12)).grid(row=row, column=0, sticky="w",
+                                                    padx=(0, 12), pady=5)
+        picker = ttk.Combobox(parent, textvariable=self.wifi_ssid_var, width=28)
+        picker.grid(row=row, column=1, sticky="ew", pady=5)
+        self.wifi_scan_button = ttk.Button(parent, text="扫描", style="Small.TButton",
+                                           command=self.refresh_wifi_networks)
+        self.wifi_scan_button.grid(row=row, column=2, padx=(8, 0), pady=5)
+        parent.columnconfigure(1, weight=1)
+        return picker
+
     def _path_row(self, parent: ttk.Frame, label: str, var: tk.StringVar,
                   row: int, chooser) -> None:
         ttk.Label(parent, text=label, style="Card.TLabel",
@@ -514,6 +535,31 @@ class UsbMakerApp(tk.Tk):
             self.disk_var.set("（未检测到外接磁盘）")
         self._refresh_readiness()
 
+    def refresh_wifi_networks(self) -> None:
+        if not self.use_wifi_var.get():
+            return
+        self.wifi_scan_status_var.set("正在扫描附近 WiFi...")
+        if self.wifi_scan_button is not None:
+            self.wifi_scan_button.configure(state=tk.DISABLED)
+        threading.Thread(target=self._scan_wifi_networks, daemon=True).start()
+
+    def _scan_wifi_networks(self) -> None:
+        try:
+            networks = list_detected_wifi_networks()
+            message = f"检测到 {len(networks)} 个 WiFi；可下拉选择，也可手动输入。" if networks else "未检测到 WiFi；可手动输入。"
+        except Exception as exc:
+            networks = []
+            message = f"扫描失败，可手动输入 WiFi 名称：{exc}"
+
+        def finish() -> None:
+            if self.wifi_ssid_combo is not None:
+                self.wifi_ssid_combo["values"] = networks
+            self.wifi_scan_status_var.set(message)
+            if self.wifi_scan_button is not None:
+                self.wifi_scan_button.configure(state=tk.NORMAL if self.use_wifi_var.get() else tk.DISABLED)
+
+        self.after(0, finish)
+
     def _install_traces(self) -> None:
         for var in (
             self.base_iso_var,
@@ -529,8 +575,10 @@ class UsbMakerApp(tk.Tk):
 
     def _toggle_wifi_inputs(self) -> None:
         state = tk.NORMAL if self.use_wifi_var.get() else tk.DISABLED
-        for entry in self.wifi_entries:
-            entry.configure(state=state)
+        for widget in self.wifi_inputs:
+            widget.configure(state=state)
+        if self.wifi_scan_button is not None:
+            self.wifi_scan_button.configure(state=state)
         self._refresh_readiness()
 
     def _set_ready_status(self, key: str, ok: bool, text: str, warn: bool = False) -> None:
@@ -956,6 +1004,103 @@ def list_external_disks() -> list[dict[str, str]]:
             }
         )
     return rows
+
+
+def list_detected_wifi_networks() -> list[str]:
+    networks: list[str] = []
+    if AIRPORT_BIN.is_file():
+        try:
+            raw = subprocess.check_output(
+                [str(AIRPORT_BIN), "-s"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=8,
+            )
+            networks.extend(parse_airport_scan(raw))
+        except Exception:
+            pass
+    if not networks:
+        networks.extend(list_preferred_wifi_networks())
+    return dedupe_strings(networks)
+
+
+def parse_airport_scan(raw: str) -> list[str]:
+    lines = raw.splitlines()
+    header_index = next(
+        (idx for idx, line in enumerate(lines) if "SSID" in line and "BSSID" in line),
+        None,
+    )
+    if header_index is None:
+        return []
+    header = lines[header_index]
+    bssid_col = header.find("BSSID")
+    networks: list[str] = []
+    for line in lines[header_index + 1:]:
+        if not line.strip():
+            continue
+        ssid = line[:bssid_col].strip() if bssid_col > 0 else ""
+        if not ssid:
+            match = re.match(r"\s*(.*?)\s+(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\s+", line)
+            ssid = match.group(1).strip() if match else ""
+        if ssid:
+            networks.append(ssid)
+    return networks
+
+
+def list_preferred_wifi_networks() -> list[str]:
+    networks: list[str] = []
+    for device in list_wifi_devices():
+        try:
+            raw = subprocess.check_output(
+                ["networksetup", "-listpreferredwirelessnetworks", device],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            continue
+        for line in raw.splitlines()[1:]:
+            ssid = line.strip()
+            if ssid:
+                networks.append(ssid)
+    return networks
+
+
+def list_wifi_devices() -> list[str]:
+    try:
+        raw = subprocess.check_output(
+            ["networksetup", "-listallhardwareports"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    devices: list[str] = []
+    current_is_wifi = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Hardware Port:"):
+            port = stripped.split(":", 1)[1].strip().lower()
+            current_is_wifi = port in {"wi-fi", "wifi", "airport"}
+        elif current_is_wifi and stripped.startswith("Device:"):
+            device = stripped.split(":", 1)[1].strip()
+            if device:
+                devices.append(device)
+            current_is_wifi = False
+    return devices
+
+
+def dedupe_strings(values: list[str]) -> list[str]:
+    seen = set()
+    result: list[str] = []
+    for value in values:
+        cleaned = value.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
 
 
 def disk_info(identifier: str) -> dict[str, object]:
