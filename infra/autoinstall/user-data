@@ -35,6 +35,67 @@ autoinstall:
   early-commands:
     - test -d /cdrom/dists || (echo "missing /cdrom/dists; OS Installer USB must keep the Ubuntu ISO apt repository at the media root" >&2; exit 1)
     - test -f /cdrom/drycontroller-apt/Packages || (echo "missing /cdrom/drycontroller-apt/Packages; build and copy the offline apt repo before booting the OS Installer USB" >&2; exit 1)
+    - |
+      python3 - <<'PY'
+      from pathlib import Path
+
+      def install_media_parent():
+          mounts = Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
+          source = ""
+          for line in mounts:
+              parts = line.split()
+              if len(parts) >= 2 and parts[1] == "/cdrom":
+                  source = parts[0]
+                  break
+          if not source.startswith("/dev/"):
+              return ""
+          name = Path(source).name
+          sys_path = Path("/sys/class/block") / name
+          if not sys_path.exists():
+              return name
+          parent = sys_path.resolve().parent.name
+          return parent if parent != "block" else name
+
+      skip = {install_media_parent()}
+      candidates = []
+      for entry in Path("/sys/block").iterdir():
+          name = entry.name
+          if (
+              name in skip
+              or name.startswith(("loop", "ram", "zram", "fd", "sr", "dm-"))
+          ):
+              continue
+          removable = (entry / "removable").read_text(encoding="utf-8").strip()
+          if removable == "1":
+              continue
+          size = int((entry / "size").read_text(encoding="utf-8").strip())
+          candidates.append((size, name))
+
+      if not candidates:
+          raise SystemExit("no non-removable install disk found")
+
+      _, disk = max(candidates)
+      config = Path("/autoinstall.yaml")
+      text = config.read_text(encoding="utf-8")
+      try:
+          import yaml
+
+          data = yaml.safe_load(text)
+          for item in data["autoinstall"]["storage"]["config"]:
+              if item.get("id") == "install-disk":
+                  item["match"] = {"path": f"/dev/{disk}"}
+                  break
+          else:
+              raise SystemExit("install-disk config not found")
+          config.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+      except ModuleNotFoundError:
+          old = "        match:\n          size: largest\n"
+          new = f"        match:\n          path: /dev/{disk}\n"
+          if old not in text:
+              raise SystemExit("install-disk match block not found")
+          config.write_text(text.replace(old, new), encoding="utf-8")
+      print(f"DryController autoinstall target disk: /dev/{disk}")
+      PY
 
   storage:
     swap:
@@ -105,5 +166,10 @@ autoinstall:
     - curtin in-target --target=/target -- systemctl enable drycontroller-edge-post-install.service
     - curtin in-target --target=/target -- systemctl set-default multi-user.target
     - curtin in-target --target=/target -- sh -c 'echo DryController Edge first boot install is pending > /etc/motd'
+
+  error-commands:
+    - mkdir -p /target/var/log/drycontroller-installer-failure || true
+    - cp -a /var/log/installer /target/var/log/drycontroller-installer-failure/installer || true
+    - sh -c 'journalctl -b > /target/var/log/drycontroller-installer-failure/journal.log' || true
 
   shutdown: poweroff
