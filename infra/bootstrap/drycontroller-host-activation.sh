@@ -13,6 +13,7 @@ ENV_FILE="${DRYCONTROLLER_TAILNET_ENV:-/etc/drycontroller/tailnet.env}"
 STATE_FILE="${DRYCONTROLLER_ACTIVATION_STATE:-/var/lib/drycontroller/activation-state.json}"
 DEVICE_JSON="${DRYCONTROLLER_DEVICE_JSON:-/var/lib/drycontroller/device.json}"
 LICENSE_FILE_PATH="${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}"
+FACTORY_LICENSE_ARCHIVE_PATH="${FACTORY_LICENSE_ARCHIVE_PATH:-/var/lib/drycontroller/factory-license.json}"
 LICENSE_PUBLIC_KEY_PATH="${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}"
 EDGE_ENV_FILE="${EDGE_ENV_FILE:-}"
 LOG_PREFIX="[drycontroller-activation]"
@@ -81,8 +82,8 @@ tailnet_hostname() {
 }
 
 license_fingerprint() {
-  [ -f "$LICENSE_FILE_PATH" ] || die "missing factory license: $LICENSE_FILE_PATH"
-  STATE_FILE="$STATE_FILE" python3 - "$LICENSE_FILE_PATH" <<'PY'
+  ensure_factory_license_archive
+  STATE_FILE="$STATE_FILE" python3 - "$FACTORY_LICENSE_ARCHIVE_PATH" <<'PY'
 import hashlib
 import json
 import os
@@ -113,22 +114,52 @@ PY
   chmod 0600 "$STATE_FILE" || true
 }
 
+ensure_factory_license_archive() {
+  if [ -f "$FACTORY_LICENSE_ARCHIVE_PATH" ]; then
+    return 0
+  fi
+  [ -f "$LICENSE_FILE_PATH" ] || die "missing factory license: $LICENSE_FILE_PATH"
+  FACTORY_LICENSE_ARCHIVE_PATH="$FACTORY_LICENSE_ARCHIVE_PATH" python3 - "$LICENSE_FILE_PATH" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(os.environ["FACTORY_LICENSE_ARCHIVE_PATH"])
+payload = json.loads(src.read_text(encoding="utf-8"))
+if not isinstance(payload, dict) or not payload.get("signature"):
+    raise SystemExit("factory license is not a signed license JSON")
+if payload.get("schema") != "drycontroller.factory-license.v1":
+    raise SystemExit("license JSON is not a factory license")
+dst.parent.mkdir(parents=True, exist_ok=True)
+tmp = dst.with_suffix(dst.suffix + ".tmp")
+tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+tmp.replace(dst)
+PY
+  chmod 0600 "$FACTORY_LICENSE_ARCHIVE_PATH" || true
+}
+
 machine_id() {
   cat /etc/machine-id 2>/dev/null || true
 }
 
 write_activation_payload() {
+  ensure_factory_license_archive
   FACTORY_LICENSE_FINGERPRINT="$(license_fingerprint)" \
   MACHINE_ID="$(machine_id)" \
   BOOTSTRAP_TS_NODE="$(tailnet_hostname)" \
   BOOTSTRAP_TS_IP="$(tailnet_ip)" \
   REQUESTED_TENANT_ID="$REQUESTED_TENANT_ID" \
   REQUESTED_LINE_ID="$REQUESTED_LINE_ID" \
-  python3 - <<'PY'
+  python3 - "$FACTORY_LICENSE_ARCHIVE_PATH" <<'PY'
 import json
 import os
+import sys
+from pathlib import Path
 
 payload = {
+    "factory_license": json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")),
     "factory_license_fingerprint": os.environ["FACTORY_LICENSE_FINGERPRINT"],
     "machine_id": os.environ.get("MACHINE_ID", "").strip(),
     "bootstrap_ts_node": os.environ.get("BOOTSTRAP_TS_NODE", "").strip(),
@@ -146,6 +177,7 @@ PY
 
 install_license_from_response() {
   local response_file="$1"
+  ensure_factory_license_archive
   mkdir -p "$(dirname "$LICENSE_FILE_PATH")" "$(dirname "$LICENSE_PUBLIC_KEY_PATH")"
   python3 - "$response_file" "$LICENSE_FILE_PATH" "$LICENSE_PUBLIC_KEY_PATH" <<'PY'
 import json

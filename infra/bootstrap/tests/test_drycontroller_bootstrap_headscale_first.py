@@ -121,6 +121,7 @@ def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
 
     assert "/api/v1/factory-activation" in text
+    assert '"factory_license": json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))' in text
     assert "factory_license_fingerprint" in text
     assert "formal_ts_authkey" in text
     assert "formal tailnet re-auth failed; preserving bootstrap tailnet for retry" in text
@@ -147,8 +148,11 @@ def test_host_activation_requires_local_license_when_cloud_omits_payload():
 def test_host_activation_reuses_persisted_factory_fingerprint_after_production_license_install():
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
 
+    assert "FACTORY_LICENSE_ARCHIVE_PATH" in text
+    assert "ensure_factory_license_archive" in text
     assert 'state.get("factory_license_fingerprint")' in text
     assert 'state["factory_license_fingerprint"] = fingerprint' in text
+    assert text.index("ensure_factory_license_archive") < text.index('install_license_from_response "$response_file"')
     assert text.index('state["factory_license_fingerprint"] = fingerprint') < text.index(
         'install_license_from_response "$response_file"'
     )

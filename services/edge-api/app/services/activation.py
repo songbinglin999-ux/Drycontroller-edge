@@ -15,6 +15,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 from enum import Enum
 from pathlib import Path
@@ -40,10 +41,12 @@ class ActivationState(str, Enum):
 # Paths
 _STATE_FILE = Path("/var/lib/drycontroller/activation-state.json")
 _FACTORY_LICENSE_PATH = Path("/etc/drycontroller/license/license.json")
+_FACTORY_LICENSE_ARCHIVE_PATH = Path("/var/lib/drycontroller/factory-license.json")
 _FACTORY_LICENSE_PUB_PATH = Path("/etc/drycontroller/keys/license.pub")
 _PRODUCTION_LICENSE_PATH = Path("/etc/drycontroller/license/license.json")
 _PRODUCTION_LICENSE_PUB_PATH = Path("/etc/drycontroller/keys/license.pub")
 _DEVICE_JSON_PATH = Path("/var/lib/drycontroller/device.json")
+_TAILNET_ENV_PATH = Path(os.getenv("DRYCONTROLLER_TAILNET_ENV", "/etc/drycontroller/tailnet.env"))
 _BOOTSTRAP_SENTINEL = Path("/var/lib/drycontroller/.bootstrapped")
 _TAILSCALE_CONFIG_DIR = Path("/var/lib/tailscale")
 
@@ -70,6 +73,22 @@ def _license_fingerprint(license_path: Path) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _factory_license_source_path() -> Path:
+    return _FACTORY_LICENSE_ARCHIVE_PATH if _FACTORY_LICENSE_ARCHIVE_PATH.is_file() else _FACTORY_LICENSE_PATH
+
+
+def _ensure_factory_license_archive() -> None:
+    if _FACTORY_LICENSE_ARCHIVE_PATH.is_file():
+        return
+    payload = _read_json(_FACTORY_LICENSE_PATH)
+    if not payload or not payload.get("signature"):
+        raise RuntimeError("factory license is not a signed license JSON")
+    if payload.get("schema") != "drycontroller.factory-license.v1":
+        raise RuntimeError("license JSON is not a factory license")
+    _write_json(_FACTORY_LICENSE_ARCHIVE_PATH, payload)
+    os.chmod(_FACTORY_LICENSE_ARCHIVE_PATH, 0o600)
+
+
 def _machine_id() -> str:
     """Read /etc/machine-id."""
     try:
@@ -91,7 +110,8 @@ def get_activation_state() -> dict[str, Any]:
     state_data = _read_state()
     current_state = state_data.get("state", ActivationState.FACTORY_INSTALLED.value)
 
-    factory_license_exists = _FACTORY_LICENSE_PATH.is_file()
+    factory_license_source = _factory_license_source_path()
+    factory_license_exists = factory_license_source.is_file()
     factory_pub_exists = _FACTORY_LICENSE_PUB_PATH.is_file()
     device_json_exists = _DEVICE_JSON_PATH.is_file()
     tailscale_state_exists = (_TAILSCALE_CONFIG_DIR / "tailscaled.state").is_file()
@@ -103,7 +123,7 @@ def get_activation_state() -> dict[str, Any]:
         "device_json_exists": device_json_exists,
         "tailscale_state_exists": tailscale_state_exists,
         "machine_id": _machine_id(),
-        "factory_license_fingerprint": _license_fingerprint(_FACTORY_LICENSE_PATH) if factory_license_exists else None,
+        "factory_license_fingerprint": _license_fingerprint(factory_license_source) if factory_license_exists else None,
         "cloud_ops_base_url": settings.CLOUD_OPS_BASE_URL or None,
         "ts_login_server": settings.TS_LOGIN_SERVER or None,
         **{k: v for k, v in state_data.items() if k != "state"},
@@ -235,6 +255,7 @@ def _install_license(license_payload: dict[str, Any], public_key: str) -> None:
         logger.error("license_signature_verification_failed", error=str(exc))
         raise RuntimeError(f"license signature verification failed: {exc}") from exc
 
+    _ensure_factory_license_archive()
     _write_json(_PRODUCTION_LICENSE_PATH, license_payload)
     _PRODUCTION_LICENSE_PUB_PATH.parent.mkdir(parents=True, exist_ok=True)
     # Persist the key actually used for verification so edge-api enforcement reads the
@@ -273,6 +294,29 @@ def _save_device_identity(data: dict[str, Any]) -> None:
     """Save device identity to /var/lib/drycontroller/device.json."""
     _write_json(_DEVICE_JSON_PATH, data)
     logger.info("device_identity_saved", path=str(_DEVICE_JSON_PATH))
+
+
+def _save_runtime_credentials(response: dict[str, Any]) -> None:
+    node_token = str(response.get("node_enroll_token") or response.get("enroll_token") or "").strip()
+    if not node_token:
+        return
+
+    _TAILNET_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines = _TAILNET_ENV_PATH.read_text(encoding="utf-8").splitlines() if _TAILNET_ENV_PATH.exists() else []
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if line.startswith("CLOUD_OPS_ENROLL_TOKEN="):
+            if not replaced:
+                out.append(f"CLOUD_OPS_ENROLL_TOKEN={shlex.quote(node_token)}")
+                replaced = True
+            continue
+        out.append(line)
+    if not replaced:
+        out.append(f"CLOUD_OPS_ENROLL_TOKEN={shlex.quote(node_token)}")
+    _TAILNET_ENV_PATH.write_text("\n".join(out) + "\n", encoding="utf-8")
+    os.chmod(_TAILNET_ENV_PATH, 0o600)
+    logger.info("runtime_credentials_saved", path=str(_TAILNET_ENV_PATH))
 
 
 def _cleanup_auth_keys() -> None:
@@ -317,18 +361,26 @@ async def run_activation(
         return {"success": True, "state": current_state, "message": "already_activated"}
 
     # Step 1: Verify factory license exists
-    if not _FACTORY_LICENSE_PATH.is_file():
+    factory_license_path = _factory_license_source_path()
+    if not factory_license_path.is_file():
         logger.error("factory_license_missing")
         return {"success": False, "state": current_state, "error": "factory_license_missing"}
 
     # Read factory license content (needed to send to cloud for signature validation)
-    factory_license_content = _read_json(_FACTORY_LICENSE_PATH)
+    factory_license_content = _read_json(factory_license_path)
     if not factory_license_content:
         logger.error("factory_license_empty_or_invalid_json")
         return {"success": False, "state": current_state, "error": "factory_license_empty_or_invalid_json"}
 
-    # Use stored factory fingerprint if available (production license may have overwritten the file)
-    factory_fingerprint = state_data.get("factory_license_fingerprint") or _license_fingerprint(_FACTORY_LICENSE_PATH)
+    try:
+        _ensure_factory_license_archive()
+        factory_license_path = _FACTORY_LICENSE_ARCHIVE_PATH
+        factory_license_content = _read_json(factory_license_path)
+    except Exception as exc:
+        logger.error("factory_license_archive_failed", error=str(exc))
+        return {"success": False, "state": current_state, "error": "factory_license_archive_failed"}
+
+    factory_fingerprint = state_data.get("factory_license_fingerprint") or _license_fingerprint(factory_license_path)
     if not factory_fingerprint:
         logger.error("factory_fingerprint_empty")
         return {"success": False, "state": current_state, "error": "factory_fingerprint_empty"}
@@ -408,6 +460,7 @@ async def run_activation(
     state_data["node_name"] = activation_result.get("node_name")
     state_data["first_online_at"] = activation_result.get("first_online_at")
     _write_state(state_data)
+    _save_runtime_credentials(activation_result)
 
     # Step 4: Install production license
     license_payload = activation_result.get("license_payload")
