@@ -32,25 +32,31 @@ AIRPORT_BIN = Path("/System/Library/PrivateFrameworks/Apple80211.framework/Versi
 
 # ── colour palette ──────────────────────────────────────────────
 C = {
-    "bg":              "#f0f4f8",
+    "bg":              "#eef2f6",
     "card":            "#ffffff",
-    "primary":         "#2563eb",
+    "card_alt":        "#f8fafc",
+    "primary":         "#1d4ed8",
+    "primary_dark":    "#0f172a",
     "primary_fg":      "#ffffff",
-    "danger":          "#ef4444",
+    "danger":          "#dc2626",
+    "danger_light":    "#fef2f2",
     "danger_fg":       "#ffffff",
-    "success":         "#16a34a",
-    "warning":         "#d97706",
-    "text":            "#1e293b",
-    "text_soft":       "#64748b",
-    "border":          "#e2e8f0",
+    "success":         "#15803d",
+    "success_light":   "#ecfdf5",
+    "warning":         "#b45309",
+    "warning_light":   "#fffbeb",
+    "text":            "#111827",
+    "text_soft":       "#475569",
+    "border":          "#d7dee8",
+    "border_strong":   "#b6c2d2",
     "log_bg":          "#0f172a",
     "log_fg":          "#cbd5e1",
     "log_info":        "#38bdf8",
     "log_warn":        "#fbbf24",
     "log_err":         "#f87171",
-    "entry_bg":        "#f8fafc",
+    "entry_bg":        "#ffffff",
     "readonly_bg":     "#f1f5f9",
-    "accent_light":    "#eff6ff",
+    "accent_light":    "#dbeafe",
 }
 
 
@@ -63,7 +69,7 @@ def _apply_theme(root: tk.Tk) -> None:
     default_font.configure(family="Helvetica Neue", size=12)
     root.option_add("*Font", default_font)
 
-    heading_font = font.Font(family="Helvetica Neue", size=15, weight="bold")
+    heading_font = font.Font(family="Helvetica Neue", size=16, weight="bold")
     mono_font = font.Font(family="SF Mono", size=11)
 
     # ── general styles ──
@@ -76,40 +82,44 @@ def _apply_theme(root: tk.Tk) -> None:
 
     # ── card frame ──
     style.configure("Card.TLabelframe", background=C["card"], relief="solid",
-                    borderwidth=1, bordercolor=C["border"])
+                    borderwidth=1, bordercolor=C["border_strong"])
     style.configure("Card.TLabelframe.Label", background=C["card"],
-                    foreground=C["text"], font=("Helvetica Neue", 12, "bold"))
+                    foreground=C["primary_dark"], font=("Helvetica Neue", 13, "bold"))
     style.configure("Card.TFrame", background=C["card"])
     style.configure("Card.TLabel", background=C["card"], foreground=C["text"])
     style.configure("Card2.TLabel", background=C["card"], foreground=C["text_soft"],
-                    font=("Helvetica Neue", 10))
+                    font=("Helvetica Neue", 11))
 
     # ── entry ──
     style.configure("TEntry", fieldbackground=C["entry_bg"],
-                    borderwidth=1, relief="solid", padding=6)
+                    borderwidth=1, relief="solid", padding=8)
     style.configure("Readonly.TEntry", fieldbackground=C["readonly_bg"])
 
     # ── primary button ──
     style.configure("Primary.TButton",
                     background=C["primary"], foreground=C["primary_fg"],
-                    borderwidth=0, relief="flat", padding=(24, 10),
+                    borderwidth=0, relief="flat", padding=(28, 12),
                     font=("Helvetica Neue", 13, "bold"))
     style.map("Primary.TButton",
-              background=[("active", "#1d4ed8"), ("disabled", "#94a3b8")],
+              background=[("active", "#1e40af"), ("disabled", "#94a3b8")],
               foreground=[("disabled", "#e2e8f0")])
 
     # ── secondary button ──
     style.configure("Secondary.TButton",
-                    background=C["bg"], foreground=C["text"],
+                    background=C["card"], foreground=C["text"],
                     borderwidth=1, relief="solid", padding=(18, 8),
                     font=("Helvetica Neue", 12))
     style.map("Secondary.TButton",
-              background=[("active", "#e2e8f0")])
+              background=[("active", "#f1f5f9"), ("disabled", "#e2e8f0")],
+              foreground=[("disabled", "#94a3b8")])
 
     # ── small button ──
     style.configure("Small.TButton",
-                    background=C["bg"], foreground=C["text"],
-                    borderwidth=1, relief="solid", padding=(10, 4))
+                    background=C["card"], foreground=C["text"],
+                    borderwidth=1, relief="solid", padding=(12, 6))
+    style.map("Small.TButton",
+              background=[("active", "#f1f5f9"), ("disabled", "#e2e8f0")],
+              foreground=[("disabled", "#94a3b8")])
 
     # ── checkbutton ──
     style.configure("Card.TCheckbutton", background=C["card"], foreground=C["text"])
@@ -124,8 +134,8 @@ class UsbMakerApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("DryController OS Installer USB Maker")
-        self.geometry("960x800")
-        self.minsize(860, 680)
+        self.geometry("1080x840")
+        self.minsize(940, 700)
         self.configure(bg=C["bg"])
 
         self.log_queue: queue.Queue[str] = queue.Queue()
@@ -152,10 +162,13 @@ class UsbMakerApp(tk.Tk):
         self.tailnet_env_var = tk.StringVar(value=str(DEFAULT_TAILNET_ENV))
         self.factory_license_var = tk.StringVar(value=str(DEFAULT_FACTORY_LICENSE))
         self.write_after_build_var = tk.BooleanVar(value=True)
+        self.readiness_summary_var = tk.StringVar(value="正在检查装机材料...")
+        self.next_action_var = tk.StringVar(value="等待检查结果")
         self.readiness_labels: dict[str, tk.Label] = {}
         self.wifi_inputs: list[ttk.Widget] = []
         self.wifi_ssid_combo: ttk.Combobox | None = None
         self.wifi_scan_button: ttk.Button | None = None
+        self.secondary_run_button: ttk.Button | None = None
 
         self.heading_font, self.mono_font = _apply_theme(self)
         self._build_ui()
@@ -169,30 +182,45 @@ class UsbMakerApp(tk.Tk):
 
     def _build_ui(self) -> None:
         # header
-        header = tk.Frame(self, bg=C["primary"], height=84)
+        header = tk.Frame(self, bg=C["primary_dark"], height=96)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
-        header_text = tk.Frame(header, bg=C["primary"])
+        header_text = tk.Frame(header, bg=C["primary_dark"])
         header_text.pack(side=tk.LEFT, padx=24, pady=14)
         tk.Label(
+            header_text, text="现场装机工具",
+            bg=C["accent_light"], fg=C["primary"],
+            font=("Helvetica Neue", 11, "bold"),
+            padx=10, pady=3,
+        ).pack(anchor="w", pady=(0, 6))
+        tk.Label(
             header_text, text="DryController 装机 U 盘制作",
-            bg=C["primary"], fg=C["primary_fg"],
-            font=("Helvetica Neue", 19, "bold"),
+            bg=C["primary_dark"], fg=C["primary_fg"],
+            font=("Helvetica Neue", 21, "bold"),
         ).pack(anchor="w")
         tk.Label(
-            header_text, text="按步骤检查材料，确认目标 U 盘，然后开始制作。",
-            bg=C["primary"], fg="#dbeafe",
+            header_text, text="先检查材料，再确认 U 盘。绿色就绪后再写入。",
+            bg=C["primary_dark"], fg="#cbd5e1",
             font=("Helvetica Neue", 12),
         ).pack(anchor="w", pady=(3, 0))
         tk.Label(
-            header, text="macOS",
-            bg=C["primary"], fg="#93c5fd",
+            header, text="macOS / Factory activation",
+            bg=C["primary_dark"], fg="#93c5fd",
             font=("Helvetica Neue", 12, "bold"),
-        ).pack(side=tk.RIGHT, padx=24, pady=22)
+        ).pack(side=tk.RIGHT, padx=24, pady=28)
+
+        footer = tk.Frame(self, bg=C["card"], height=82, highlightthickness=1,
+                          highlightbackground=C["border_strong"])
+        footer.pack(side=tk.BOTTOM, fill=tk.X)
+        footer.pack_propagate(False)
+        self._build_footer(footer)
+
+        body = tk.Frame(self, bg=C["bg"])
+        body.pack(fill=tk.BOTH, expand=True)
 
         # scrollable main area
-        canvas = tk.Canvas(self, bg=C["bg"], highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=canvas.yview)
+        canvas = tk.Canvas(body, bg=C["bg"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=canvas.yview)
         scroll_frame = tk.Frame(canvas, bg=C["bg"])
 
         scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -210,7 +238,7 @@ class UsbMakerApp(tk.Tk):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         root = tk.Frame(scroll_frame, bg=C["bg"])
-        root.pack(fill=tk.BOTH, expand=True, padx=20, pady=16)
+        root.pack(fill=tk.BOTH, expand=True, padx=24, pady=18)
 
         # ── row 0: operator guide ──
         self._card_operator_guide(root)
@@ -238,24 +266,35 @@ class UsbMakerApp(tk.Tk):
         # ── row 5: disk card (full width) ──
         self._card_disk(root)
 
-        # ── row 6: actions ──
-        actions = tk.Frame(root, bg=C["bg"])
-        actions.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(16, 0))
-        self.run_button = ttk.Button(actions, text="开始制作并写入 U 盘",
-                                     style="Primary.TButton",
-                                     command=self.start_build)
-        self.run_button.pack(side=tk.LEFT)
-        ttk.Button(actions, text="只生成 ISO，不写 U 盘",
-                   style="Secondary.TButton",
-                   command=self.start_build_iso_only).pack(side=tk.LEFT, padx=(12, 0))
-
-        # status indicator
-        self.status_label = tk.Label(actions, text="● 就绪", bg=C["bg"],
-                                     fg=C["text_soft"], font=("Helvetica Neue", 11))
-        self.status_label.pack(side=tk.RIGHT, pady=(4, 0))
-
-        # ── row 7: log ──
+        # ── row 6: log ──
         self._card_log(root)
+
+    def _build_footer(self, parent: tk.Frame) -> None:
+        status = tk.Frame(parent, bg=C["card"])
+        status.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=24, pady=12)
+
+        self.status_label = tk.Label(status, text="检查中", bg=C["card"],
+                                     fg=C["text_soft"], font=("Helvetica Neue", 12, "bold"))
+        self.status_label.pack(anchor="w")
+        tk.Label(status, textvariable=self.next_action_var, bg=C["card"],
+                 fg=C["text_soft"], font=("Helvetica Neue", 11)).pack(anchor="w", pady=(4, 0))
+
+        buttons = tk.Frame(parent, bg=C["card"])
+        buttons.pack(side=tk.RIGHT, padx=24, pady=14)
+        self.secondary_run_button = ttk.Button(
+            buttons,
+            text="只生成 ISO",
+            style="Secondary.TButton",
+            command=self.start_build_iso_only,
+        )
+        self.secondary_run_button.pack(side=tk.LEFT, padx=(0, 12))
+        self.run_button = ttk.Button(
+            buttons,
+            text="开始制作并写入 U 盘",
+            style="Primary.TButton",
+            command=self.start_build,
+        )
+        self.run_button.pack(side=tk.LEFT)
 
     def _card_operator_guide(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="操作步骤", style="Card.TLabelframe", padding=16)
@@ -274,8 +313,8 @@ class UsbMakerApp(tk.Tk):
                 step,
                 text=number,
                 width=2,
-                bg=C["primary"],
-                fg=C["primary_fg"],
+                bg=C["accent_light"],
+                fg=C["primary"],
                 font=("Helvetica Neue", 13, "bold"),
             )
             badge.pack(side=tk.LEFT, padx=(0, 10), ipady=3)
@@ -289,6 +328,14 @@ class UsbMakerApp(tk.Tk):
         card = ttk.Labelframe(parent, text="准备状态", style="Card.TLabelframe", padding=16)
         card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
+        summary = tk.Frame(card, bg=C["card_alt"], highlightthickness=1,
+                           highlightbackground=C["border"])
+        summary.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        tk.Label(summary, textvariable=self.readiness_summary_var,
+                 bg=C["card_alt"], fg=C["text"],
+                 font=("Helvetica Neue", 13, "bold"),
+                 padx=12, pady=9).pack(anchor="w")
+
         items = [
             ("base_iso", "基础 ISO"),
             ("password_env", "dryops 密码配置"),
@@ -301,14 +348,22 @@ class UsbMakerApp(tk.Tk):
             row = index // 2
             col = index % 2
             item = ttk.Frame(card, style="Card.TFrame")
-            item.grid(row=row, column=col, sticky="ew", padx=(0 if col == 0 else 16, 0), pady=(0, 8))
+            item.grid(row=row + 1, column=col, sticky="ew", padx=(0 if col == 0 else 16, 0), pady=(0, 8))
             ttk.Label(item, text=label, style="Card.TLabel", font=("Helvetica Neue", 12)).pack(side=tk.LEFT)
-            status = tk.Label(item, text="待检查", bg=C["card"], fg=C["text_soft"], font=("Helvetica Neue", 12, "bold"))
+            status = tk.Label(
+                item,
+                text="待检查",
+                bg=C["readonly_bg"],
+                fg=C["text_soft"],
+                font=("Helvetica Neue", 11, "bold"),
+                padx=10,
+                pady=3,
+            )
             status.pack(side=tk.RIGHT)
             self.readiness_labels[key] = status
             card.columnconfigure(col, weight=1)
         ttk.Button(card, text="重新检查", style="Small.TButton", command=self._refresh_readiness).grid(
-            row=3, column=0, sticky="w", pady=(4, 0)
+            row=4, column=0, sticky="w", pady=(4, 0)
         )
 
     def _card_account(self, parent: tk.Frame) -> None:
@@ -317,7 +372,7 @@ class UsbMakerApp(tk.Tk):
 
         self._readonly_row(card, "运维账号", self.fixed_user_var, 0)
         self._readonly_row(card, "登录密码", self.password_source_var, 1)
-        ttk.Label(card, text="密码从 infra/autoinstall/password.env 注入 SHA-512 hash",
+        ttk.Label(card, text="这里通常不用修改。密码从 password.env 注入 SHA-512 hash。",
                   style="Card2.TLabel").grid(row=2, column=0, columnspan=2,
                                              sticky="w", pady=(6, 0))
 
@@ -331,7 +386,7 @@ class UsbMakerApp(tk.Tk):
             variable=self.use_wifi_var,
             style="Card.TCheckbutton",
             command=self._toggle_wifi_inputs,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         self.wifi_ssid_combo = self._wifi_ssid_row(card, 1)
         self.wifi_inputs = [
             self.wifi_ssid_combo,
@@ -339,10 +394,10 @@ class UsbMakerApp(tk.Tk):
             self._entry_row(card, "网卡名", self.wifi_interface_var, 3),
         ]
         ttk.Label(card, textvariable=self.wifi_scan_status_var,
-                  style="Card2.TLabel").grid(row=4, column=0, columnspan=2,
+                  style="Card2.TLabel").grid(row=4, column=0, columnspan=3,
                                              sticky="w", pady=(6, 0))
         ttk.Label(card, text="有网线时不用填写；网卡名通常留空。",
-                  style="Card2.TLabel").grid(row=5, column=0, columnspan=2,
+                  style="Card2.TLabel").grid(row=5, column=0, columnspan=3,
                                              sticky="w", pady=(6, 0))
 
     def _card_factory_materials(self, parent: tk.Frame) -> None:
@@ -362,7 +417,7 @@ class UsbMakerApp(tk.Tk):
         self._path_row(inner, "工厂授权", self.factory_license_var, 2, self._choose_factory_license)
         ttk.Label(
             card,
-            text="换 bootstrap key 或 factory license 时，只替换这两个批次文件；不用重做基础 OS bundle。",
+            text="现场装机默认要包含这两个文件。换 bootstrap key 或 factory license 时，只替换批次文件。",
             style="Card2.TLabel",
         ).pack(anchor="w", pady=(8, 0))
 
@@ -381,11 +436,11 @@ class UsbMakerApp(tk.Tk):
         ttk.Checkbutton(cb_frame, text="重新生成离线 apt 包仓库（网络较慢时不要勾选）",
                         variable=self.rebuild_apt_var,
                         style="Card.TCheckbutton",
-                        command=self._refresh_readiness).pack(side=tk.LEFT)
+                        command=self._refresh_readiness).pack(anchor="w")
         ttk.Checkbutton(cb_frame, text="包含首版业务 Docker 镜像（dist/bundle-images.tar）",
                         variable=self.include_images_var,
                         style="Card.TCheckbutton",
-                        command=self._refresh_readiness).pack(side=tk.LEFT, padx=(16, 0))
+                        command=self._refresh_readiness).pack(anchor="w", pady=(6, 0))
         ttk.Label(card, text="一般只改输出文件名；基础 ISO 和高级选项默认保持不变。",
                   style="Card2.TLabel").pack(anchor="w", pady=(8, 0))
 
@@ -407,13 +462,21 @@ class UsbMakerApp(tk.Tk):
                         variable=self.write_after_build_var,
                         style="Card.TCheckbutton",
                         command=self._refresh_readiness).pack(anchor="w", pady=(10, 0))
-        ttk.Label(card, text="写入会清空选中的 U 盘。只选择要给 IPC 装机的那只 U 盘。",
-                  style="Card2.TLabel").pack(anchor="w", pady=(6, 0))
+        warning = tk.Label(
+            card,
+            text="写入会清空选中的 U 盘。只选择要给 IPC 装机的那只 U 盘。",
+            bg=C["danger_light"],
+            fg=C["danger"],
+            font=("Helvetica Neue", 11, "bold"),
+            padx=10,
+            pady=6,
+        )
+        warning.pack(anchor="w", fill=tk.X, pady=(8, 0))
 
     def _card_log(self, parent: tk.Frame) -> None:
         card = ttk.Labelframe(parent, text="日志", style="Card.TLabelframe", padding=12)
-        card.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
-        parent.rowconfigure(7, weight=1)
+        card.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        parent.rowconfigure(6, weight=1)
 
         log_frame = tk.Frame(card, bg=C["log_bg"])
         log_frame.pack(fill=tk.BOTH, expand=True)
@@ -586,22 +649,28 @@ class UsbMakerApp(tk.Tk):
         if label is None:
             return
         if ok:
-            color = C["success"] if not warn else C["warning"]
+            fg = C["success"] if not warn else C["warning"]
+            bg = C["success_light"] if not warn else C["warning_light"]
         else:
-            color = C["danger"]
-        label.configure(text=text, fg=color)
+            fg = C["danger"]
+            bg = C["danger_light"]
+        label.configure(text=text, fg=fg, bg=bg)
 
     def _refresh_readiness(self) -> None:
         if not self.readiness_labels:
             return
-        ready = True
+        blocking: list[str] = []
+        warnings: list[str] = []
+
         base_iso = Path(self.base_iso_var.get()).expanduser()
         base_ok = base_iso.is_file()
-        ready = ready and base_ok
+        if not base_ok:
+            blocking.append("基础 ISO")
         self._set_ready_status("base_iso", base_ok, "已就绪" if base_ok else "缺失")
 
         password_ok = DEFAULT_PASSWORD_ENV.is_file()
-        ready = ready and password_ok
+        if not password_ok:
+            blocking.append("密码配置")
         self._set_ready_status("password_env", password_ok, "已就绪" if password_ok else "缺失")
 
         if self.include_factory_materials_var.get():
@@ -616,33 +685,59 @@ class UsbMakerApp(tk.Tk):
                 except ValueError:
                     materials_ok = False
                     detail = "格式错误"
-            ready = ready and materials_ok
+            if not materials_ok:
+                blocking.append("Factory 材料")
             self._set_ready_status("factory_materials", materials_ok, detail)
         else:
+            warnings.append("未包含 Factory 材料")
             self._set_ready_status("factory_materials", True, "未包含", warn=True)
 
         apt_ok = (AUTOINSTALL_DIR / "drycontroller-apt" / "Packages").is_file()
+        if not apt_ok:
+            warnings.append("离线 apt 包会自动生成")
         self._set_ready_status("apt_repo", apt_ok, "已就绪" if apt_ok else "会生成", warn=not apt_ok)
 
         if self.include_images_var.get():
             images_ok = (DIST_DIR / "bundle-images.tar").is_file()
-            ready = ready and images_ok
+            if not images_ok:
+                blocking.append("业务镜像包")
             self._set_ready_status("images", images_ok, "已就绪" if images_ok else "缺失")
         else:
+            warnings.append("未包含业务镜像")
             self._set_ready_status("images", True, "未包含", warn=True)
+
+        iso_ready = not blocking
 
         if self.write_after_build_var.get():
             selected = self.disk_var.get()
             disk_ok = any(format_disk(row) == selected for row in self.disk_rows)
-            ready = ready and disk_ok
+            if not disk_ok:
+                blocking.append("目标 U 盘")
             self._set_ready_status("target_disk", disk_ok, "已选择" if disk_ok else "未检测到")
         else:
+            warnings.append("只生成 ISO，不写 U 盘")
             self._set_ready_status("target_disk", True, "不写入", warn=True)
+
+        ready = not blocking
+        if ready:
+            if warnings:
+                self.readiness_summary_var.set("必需材料已就绪；注意：" + "；".join(warnings[:2]))
+            else:
+                self.readiness_summary_var.set("全部必需材料已就绪，可以开始制作。")
+            if self.write_after_build_var.get():
+                self.next_action_var.set("核对目标 U 盘后，点击右侧主按钮开始。")
+            else:
+                self.next_action_var.set("当前只生成 ISO；需要写盘时再勾选写入 U 盘。")
+        else:
+            self.readiness_summary_var.set("先处理缺失项：" + "、".join(blocking[:4]))
+            self.next_action_var.set("补齐红色状态项后点击“重新检查”。")
 
         if hasattr(self, "run_button") and not self.running:
             self.run_button.configure(state=tk.NORMAL if ready else tk.DISABLED)
+        if self.secondary_run_button is not None and not self.running:
+            self.secondary_run_button.configure(state=tk.NORMAL if iso_ready else tk.DISABLED)
         if hasattr(self, "status_label") and not self.running:
-            status = "● 就绪" if ready else "● 请先补齐缺失项"
+            status = "就绪" if ready else "需要处理缺失项"
             color = C["success"] if ready else C["danger"]
             self.status_label.configure(text=status, fg=color)
 
@@ -676,7 +771,10 @@ class UsbMakerApp(tk.Tk):
 
         self.running = True
         self.run_button.configure(state=tk.DISABLED)
-        self.status_label.configure(text="● 制作中…", fg=C["primary"])
+        if self.secondary_run_button is not None:
+            self.secondary_run_button.configure(state=tk.DISABLED)
+        self.status_label.configure(text="制作中", fg=C["primary"])
+        self.next_action_var.set("制作过程会写入下方日志，请等待完成提示。")
         self.log.delete("1.0", tk.END)
         threading.Thread(target=self._run_plan, args=(plan,), daemon=True).start()
 
