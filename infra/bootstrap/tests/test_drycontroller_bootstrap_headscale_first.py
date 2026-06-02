@@ -137,10 +137,16 @@ def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet
     assert "reapply_edge_compose_binding" in text
     assert "confirm_formal_tailnet_joined" in text
     assert "/confirm-formal-tailnet" in text
+    assert "start_host_enroll_service_if_configured" in text
+    assert 'grep -q \'^CLOUD_OPS_ENROLL_TOKEN=\' "$ENV_FILE"' in text
+    assert "systemctl enable drycontroller-enroll.service" in text
+    assert "systemctl restart drycontroller-enroll.service" in text
     assert "save_runtime_credentials" in text
     assert 'resp.get("node_enroll_token") or resp.get("enroll_token")' in text
     assert "import shlex" in text
-    assert 'replacement = f"CLOUD_OPS_ENROLL_TOKEN={shlex.quote(node_token)}"' in text
+    assert 'updates["CLOUD_OPS_ENROLL_TOKEN"] = node_token' in text
+    assert 'updates["TENANT_ID"] = resp["tenant_id"].strip()' in text
+    assert 'updates["LINE_ID"] = resp["line_id"].strip()' in text
     assert 'write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"' in text
     assert 'log "production license installed; formal tailnet re-auth failed, bootstrap tailnet preserved"' in text
 
@@ -150,6 +156,14 @@ def test_host_activation_requires_local_license_when_cloud_omits_payload():
 
     assert "activation response omitted license and no local license is installed" in text
     assert "Path(sys.argv[2]).is_file() and Path(sys.argv[3]).is_file()" in text
+
+
+def test_host_enroll_exports_payload_environment():
+    text = (Path(__file__).resolve().parents[1] / "drycontroller-host-enroll.sh").read_text(encoding="utf-8")
+
+    assert "export ENROLL_NAME ENROLL_EDGE_API_PORT LINE_ID" in text
+    assert 'export TAILNET_IP ENROLL_EDGE_API_PORT LINE_ID' in text
+    assert '"line_id": os.environ.get("LINE_ID") or None' in text
 
 
 def test_host_activation_service_retries_pending_ops_approval():

@@ -36,6 +36,7 @@ CLOUD_OPS_ENROLL_TOKEN_HEADER="${CLOUD_OPS_ENROLL_TOKEN_HEADER:-X-Enroll-Token}"
 ENROLL_EDGE_API_PORT="${ENROLL_EDGE_API_PORT:-8000}"
 ENROLL_INTERVAL_SEC="${ENROLL_INTERVAL_SEC:-60}"
 LINE_ID="${LINE_ID:-L1}"
+export ENROLL_NAME ENROLL_EDGE_API_PORT LINE_ID
 
 json_payload() {
   python3 - "$@" <<'PY'
@@ -49,6 +50,7 @@ if mode == "enroll":
         "name": os.environ["ENROLL_NAME"],
         "address": os.environ["TAILNET_IP"],
         "edge_api_port": int(os.environ["ENROLL_EDGE_API_PORT"]),
+        "line_id": os.environ.get("LINE_ID") or None,
     }
 elif mode == "status":
     payload = {

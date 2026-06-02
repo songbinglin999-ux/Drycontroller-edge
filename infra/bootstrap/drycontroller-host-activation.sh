@@ -249,23 +249,31 @@ from pathlib import Path
 
 resp = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 node_token = (resp.get("node_enroll_token") or resp.get("enroll_token") or "").strip()
-if not node_token:
+updates = {}
+if node_token:
+    updates["CLOUD_OPS_ENROLL_TOKEN"] = node_token
+if (resp.get("tenant_id") or "").strip():
+    updates["TENANT_ID"] = resp["tenant_id"].strip()
+if (resp.get("line_id") or "").strip():
+    updates["LINE_ID"] = resp["line_id"].strip()
+if not updates:
     raise SystemExit(0)
 
 path = Path(os.environ["ENV_FILE"])
 lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-replacement = f"CLOUD_OPS_ENROLL_TOKEN={shlex.quote(node_token)}"
 out = []
-replaced = False
+seen = set()
 for line in lines:
-    if line.startswith("CLOUD_OPS_ENROLL_TOKEN="):
-        if not replaced:
-            out.append(replacement)
-            replaced = True
+    key = line.split("=", 1)[0]
+    if key in updates:
+        if key not in seen:
+            out.append(f"{key}={shlex.quote(updates[key])}")
+            seen.add(key)
         continue
     out.append(line)
-if not replaced:
-    out.append(replacement)
+for key, value in updates.items():
+    if key not in seen:
+        out.append(f"{key}={shlex.quote(value)}")
 tmp = path.with_suffix(path.suffix + ".tmp")
 tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
 tmp.replace(path)
@@ -363,6 +371,20 @@ reapply_edge_compose_binding() {
   fi
 }
 
+start_host_enroll_service_if_configured() {
+  [ -f "$ENV_FILE" ] || return 0
+  grep -q '^CLOUD_OPS_ENROLL_TOKEN=' "$ENV_FILE" || {
+    log "node enroll token unavailable; drycontroller-enroll.service remains stopped"
+    return 0
+  }
+  command -v systemctl >/dev/null 2>&1 || return 0
+  log "starting host enroll service after activation"
+  systemctl enable drycontroller-enroll.service >/dev/null 2>&1 || true
+  if ! systemctl restart drycontroller-enroll.service; then
+    log "drycontroller-enroll.service start failed; operator must inspect enroll logs"
+  fi
+}
+
 confirm_formal_tailnet_joined() {
   local ip="$1"
   local confirm_url="${CLOUD_OPS_BASE_URL%/}/api/v1/factory-activation/${FACTORY_LICENSE_FINGERPRINT}/confirm-formal-tailnet"
@@ -451,6 +473,7 @@ PY
 if [ "$current_state" = "formal_tailnet_joined" ]; then
   if confirm_formal_tailnet_joined "$(tailnet_ip)"; then
     write_state "formal_license_active" "activation_complete"
+    start_host_enroll_service_if_configured
     log "activation complete"
     exit 0
   fi
@@ -506,6 +529,7 @@ if [ -n "$formal_authkey" ]; then
   if [ "$formal_status" -eq 0 ]; then
     write_state "formal_tailnet_joined" "formal_tailnet_reauth_ok"
     write_state "formal_license_active" "activation_complete"
+    start_host_enroll_service_if_configured
     log "activation complete"
   elif [ "$formal_status" -eq 75 ]; then
     exit 75
