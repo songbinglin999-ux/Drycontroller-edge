@@ -27,30 +27,68 @@ IFS=',' read -ra CROSS_REPO_FILES <<< "$(echo "${CROSS_REPO_FILES:-cloud_to_edge
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-REF="${REF:-main}"
+DEFAULT_REF="${DEFAULT_REF:-main}"
+candidate_refs=""
+append_ref() {
+  local ref="$1"
+  [ -n "$ref" ] || return 0
+  case " $candidate_refs " in
+    *" $ref "*) return 0 ;;
+  esac
+  candidate_refs="${candidate_refs:+$candidate_refs }$ref"
+}
+if [ -n "${REF:-}" ]; then
+  append_ref "$REF"
+else
+  append_ref "${GITHUB_HEAD_REF:-}"
+  append_ref "${GITHUB_REF_NAME:-}"
+  append_ref "$DEFAULT_REF"
+fi
+
 auth_header=""
 if [ -n "${GITEA_TOKEN:-}" ]; then
   auth_header="Authorization: token $GITEA_TOKEN"
 fi
 
+fetch_peer_schema() {
+  local raw_url_base="$1"
+  local output="$2"
+  local ref
+  local http_code
+
+  fetched_ref=""
+  fetched_http_code=""
+  fetched_url=""
+  for ref in $candidate_refs; do
+    fetched_url="${raw_url_base}?ref=${ref}"
+    if [ -n "$auth_header" ]; then
+      http_code=$(curl -sS --max-time 30 -H "$auth_header" -o "$output" -w '%{http_code}' "$fetched_url") || http_code="000"
+    else
+      http_code=$(curl -sS --max-time 30 -o "$output" -w '%{http_code}' "$fetched_url") || http_code="000"
+    fi
+    fetched_http_code="$http_code"
+    if [ "$http_code" = "200" ]; then
+      fetched_ref="$ref"
+      return 0
+    fi
+  done
+  return 1
+}
+
 failed=0
 for f in "${CROSS_REPO_FILES[@]}"; do
   edge="$EDGE_SCHEMA_DIR/$f"
-  cloud_raw_url="${GITEA_BASE}/api/v1/repos/${CLOUD_OPS_OWNER}/${CLOUD_OPS_REPO}/raw/${CLOUD_OPS_SCHEMA_PATH}/${f}?ref=${REF}"
+  cloud_raw_url="${GITEA_BASE}/api/v1/repos/${CLOUD_OPS_OWNER}/${CLOUD_OPS_REPO}/raw/${CLOUD_OPS_SCHEMA_PATH}/${f}"
   cloud_local="$TMP_DIR/$f"
 
-  echo "==> fetch $f from cloud-ops via Gitea API (ref=$REF)"
-  if [ -n "$auth_header" ]; then
-    http_code=$(curl -sS --max-time 30 -H "$auth_header" -o "$cloud_local" -w '%{http_code}' "$cloud_raw_url" || echo "000")
-  else
-    http_code=$(curl -sS --max-time 30 -o "$cloud_local" -w '%{http_code}' "$cloud_raw_url" || echo "000")
-  fi
-  if [ "$http_code" != "200" ]; then
-    echo "❌ failed to fetch $f (HTTP $http_code) from $cloud_raw_url"
+  echo "==> fetch $f from cloud-ops via Gitea API"
+  if ! fetch_peer_schema "$cloud_raw_url" "$cloud_local"; then
+    echo "❌ failed to fetch $f (HTTP $fetched_http_code) from $fetched_url"
     head -3 "$cloud_local" 2>/dev/null | sed 's/^/    /'
     failed=1
     continue
   fi
+  echo "    ref=$fetched_ref"
 
   if [ ! -f "$edge" ]; then
     echo "❌ $f missing on edge side ($edge)"
