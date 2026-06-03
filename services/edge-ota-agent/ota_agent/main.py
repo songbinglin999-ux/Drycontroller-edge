@@ -211,7 +211,7 @@ def _update_operation(op_id: str, patch: dict[str, Any]) -> dict[str, Any]:
 async def _run_online(op_id: str, payload: OtaStartRequest) -> None:
     """
     在 ota-agent 容器内直接执行脚本（需要容器内具备 bash + docker-compose 客户端）。
-    - 该脚本会通过 /var/run/docker.sock 操作宿主机 Docker Engine
+    - 该脚本会通过 DOCKER_HOST 指向的 docker-socket-proxy-ota 操作宿主机 Docker Engine
     - 该脚本会访问 localhost:${EDGE_API_PORT}/${EDGE_DAQ_HEALTH_PORT} 做 /ready 校验，因此 ota-agent 应与宿主机共享网络：
       - 推荐：docker-compose 侧给 ota-agent 设置 network_mode=host（后续可做更细的网络设计）
       - MVP：你们当前实现用 edge-daq 健康端口绑定 127.0.0.1:8082 来满足校验

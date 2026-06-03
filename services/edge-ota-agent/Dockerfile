@@ -20,7 +20,7 @@ RUN find /etc/apt -type f \( -name "*.sources" -o -name "*.list" \) \
     docker-compose \
     && rm -rf /var/lib/apt/lists/*
 # 不装 docker.io：那是 daemon 包（带 containerd 依赖 ~400MB 解压峰值）。
-# ota-agent 是 client，通过 mount /var/run/docker.sock 调 host daemon，
+# ota-agent 是 client，通过 DOCKER_HOST 指向的 docker-socket-proxy-ota 调 host daemon，
 # docker-cli + docker-compose（v1 python 客户端，ota-update.sh 优先用）
 # 已经够用。这一改让 docker build 内存峰值从 ~2.5GB 降到 ~600MB，
 # 普通 Docker Desktop（默认 2GB 内存）就能 build 过。
