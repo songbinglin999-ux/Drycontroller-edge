@@ -50,7 +50,9 @@ boundaries:
 ## Quick Start
 
 Use this only for local development or staging simulation. Factory installation
-should use the OS Installer USB plus Provisioning USB flow.
+should use the OS Installer USB with factory activation materials
+(`tailnet.env` and `factory-license.json`). Provisioning USB is legacy/emergency
+only and is not generated for new factory media.
 
 ```bash
 cp env.example .env
@@ -78,7 +80,7 @@ Important runtime files and generated state:
 
 | Path | Purpose |
 |---|---|
-| `.env` | Edge runtime environment, generated/updated by bootstrap in production |
+| `.env` | Edge runtime environment, generated/updated by activation/bootstrap in production |
 | `configs/tags.yaml` | PLC tag map |
 | `configs/ai-config.yaml` | AI model configuration |
 | `configs/monitor.yaml` | Health and self-heal policy |
@@ -86,7 +88,7 @@ Important runtime files and generated state:
 | `/etc/drycontroller/keys/cosign.pub` | OTA image signature trust root |
 | `/etc/drycontroller/keys/license.pub` | License verification public key |
 | `/etc/drycontroller/license/license.json` | Signed local license |
-| `/var/lib/drycontroller/.bootstrapped` | Successful bootstrap sentinel |
+| `/var/lib/drycontroller/.bootstrapped` | Legacy bootstrap sentinel; new factory activation can complete with `formal_license_active` |
 
 `configs-runtime/plc.yaml` takes precedence over PLC fields in `.env`. This is
 intentional: Cloud Ops can update Modbus host/port/slave settings without
@@ -113,38 +115,42 @@ handshake implemented by `Drycontroller-frontend/packages/utils/src/websocket.ts
 
 ## Installation Media
 
-DryController uses two different USB artifacts:
+DryController uses one mainline installation artifact:
 
 | Artifact | Maintained by | Purpose |
 |---|---|---|
-| OS Installer USB | This repo | Install Ubuntu, Docker, edge repo, and `drycontroller-bootstrap.service` |
-| Provisioning USB | `Drycontroller-cloudserver` | Activate device identity, Headscale, registry, cosign, license, and cloud registration |
+| OS Installer USB | This repo | Install Ubuntu, Docker, edge repo, host activation services, `tailnet.env`, and `factory-license.json` |
 
 OS Installer USB documentation:
 
 - `docs/ops/edge-os-autoinstall.md`
 - `infra/autoinstall/README.md`
 
+Provisioning USB documentation is kept only for archived legacy/emergency
+bootstrap. Do not use it as the normal factory path or as an acceptance
+condition for new installs.
+
 macOS imaging note: use the raw device, for example `/dev/rdisk2`, not
 `/dev/disk2`, when writing installer media with `dd`.
 
 ## Bootstrap And Tailnet
 
-The production bootstrap path is Headscale-first when the Provisioning USB
-contains `cloud_ops_tailnet_base_url`.
+The production bootstrap path is factory-license first:
 
 High-level sequence:
 
-1. Read `drycontroller-provisioning/provisioning.json`.
-2. Install `cosign.pub` and license trust material.
-3. Start Tailscale using the configured Headscale login server.
-4. Call Cloud Ops allocation over tailnet when a tailnet runtime URL is present.
-5. Write generated `.env` values and start the edge stack.
-6. Bind license, verify it locally, write device identity, and mark bootstrap
-   success.
+1. OS Installer copies `tailnet.env` and `factory-license.json`.
+2. Host Tailscale joins the bootstrap tailnet.
+3. `drycontroller-activation.service` calls Cloud Ops factory activation.
+4. Cloud Ops approval signs the production license and formal tailnet key.
+5. Host activation reauths into the formal tailnet, syncs `.env`, starts host
+   enroll, and starts the edge stack.
+6. Edge preflight accepts `formal_license_active` as the new mainline completion
+   signal.
 
-If tailnet runtime URL is configured and tailnet readiness fails, bootstrap must
-fail closed rather than silently falling back to public Cloud Ops.
+If tailnet readiness fails, activation must fail closed rather than silently
+falling back to public Cloud Ops. Legacy `drycontroller-provisioning/` bootstrap
+is retained only for emergency compatibility.
 
 ## Verification
 
@@ -156,14 +162,16 @@ services/edge-api/.venv/bin/python -m pytest services/edge-api/tests -q
 bash -n infra/bootstrap/drycontroller-bootstrap.sh
 ```
 
-Cross-repo bootstrap/provisioning tests are run from the top-level
-`DryController` workspace:
+Mainline bootstrap/preflight tests are run from the top-level `DryController`
+workspace:
 
 ```bash
 Drycontroller-edge/.venv-test/bin/python -m pytest \
-  Drycontroller-edge/infra/bootstrap/tests/test_drycontroller_bootstrap_headscale_first.py \
-  Drycontroller-cloudserver/scripts/tests/test_gen_provisioning_usb_package.py -q
+  Drycontroller-edge/infra/bootstrap/tests/test_drycontroller_bootstrap_headscale_first.py -q
 ```
+
+Run the legacy Provisioning USB generator tests only when touching the archived
+compatibility path.
 
 Run only the relevant subset for a scoped change, but use actual commands before
 claiming a path is verified.
@@ -173,7 +181,7 @@ claiming a path is verified.
 | Doc | Purpose |
 |---|---|
 | `docs/ops/edge-os-autoinstall.md` | OS Installer USB operator flow |
-| `docs/ops/provisioning-bootstrap.md` | Edge bootstrap details |
+| `docs/ops/provisioning-bootstrap.md` | Legacy Provisioning USB bootstrap details |
 | `docs/ops/db-migrations.md` | Edge Alembic migration flow |
 | `CONTRIBUTING.md` | Git hooks and contribution rules |
 | `QUICKSTART.md` | Older quick-start notes; verify against current audit before relying on them |

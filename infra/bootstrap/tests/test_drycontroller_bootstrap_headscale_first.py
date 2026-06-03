@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 
@@ -135,6 +136,8 @@ def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet
     assert "sync_tailnet_env_after_formal_reauth" in text
     assert "sync_edge_env_after_formal_reauth" in text
     assert '"EDGE_API_BIND_ADDR"] = ip' in text
+    assert 'for key in ("TS_LOGIN_SERVER", "CLOUD_OPS_BASE_URL", "CLOUD_OPS_ENROLL_TOKEN", "CLOUD_OPS_ENROLL_TOKEN_HEADER")' in text
+    assert "updates[key] = value" in text
     assert 'EDGE_ENV_FILE="${EDGE_ENV_FILE:-${EDGE_ROOT}/.env}"' in text
     assert "reapply_edge_compose_binding" in text
     assert "confirm_formal_tailnet_joined" in text
@@ -151,6 +154,68 @@ def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet
     assert 'updates["LINE_ID"] = resp["line_id"].strip()' in text
     assert 'write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"' in text
     assert 'log "production license installed; formal tailnet re-auth failed, bootstrap tailnet preserved"' in text
+
+
+def test_host_activation_syncs_cloud_runtime_env_into_edge_env(tmp_path):
+    text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
+    start = text.index("sync_edge_env_after_formal_reauth() {")
+    end = text.index("\nreapply_edge_compose_binding() {", start)
+    function_text = text[start:end]
+
+    tailnet_env = tmp_path / "tailnet.env"
+    tailnet_env.write_text(
+        "\n".join(
+            [
+                "TS_LOGIN_SERVER=https://headscale.example:8443",
+                "TS_HOSTNAME=edge-bootstrap",
+                "CLOUD_OPS_BASE_URL=http://100.100.0.1:8088",
+                "CLOUD_OPS_ENROLL_TOKEN=node-token-1",
+                "CLOUD_OPS_ENROLL_TOKEN_HEADER=X-Enroll-Token",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    edge_env = tmp_path / ".env"
+    edge_env.write_text(
+        "\n".join(
+            [
+                "UNCHANGED=1",
+                "CLOUD_OPS_BASE_URL=http://old-cloud",
+                "CLOUD_OPS_ENROLL_TOKEN=old-token",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    runner = tmp_path / "run-sync.sh"
+    runner.write_text(
+        "\n".join(
+            [
+                "set -euo pipefail",
+                "log() { :; }",
+                function_text,
+                f"ENV_FILE={tailnet_env}",
+                f"EDGE_ENV_FILE={edge_env}",
+                'sync_edge_env_after_formal_reauth "100.100.0.4" "edge-formal"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["bash", str(runner)], check=True)
+
+    lines = edge_env.read_text(encoding="utf-8").splitlines()
+    assert "UNCHANGED=1" in lines
+    assert "EDGE_API_BIND_ADDR=100.100.0.4" in lines
+    assert "TS_HOSTNAME=edge-formal" in lines
+    assert "TS_LOGIN_SERVER=https://headscale.example:8443" in lines
+    assert "CLOUD_OPS_BASE_URL=http://100.100.0.1:8088" in lines
+    assert "CLOUD_OPS_ENROLL_TOKEN=node-token-1" in lines
+    assert "CLOUD_OPS_ENROLL_TOKEN_HEADER=X-Enroll-Token" in lines
+    assert sum(line.startswith("CLOUD_OPS_BASE_URL=") for line in lines) == 1
+    assert sum(line.startswith("CLOUD_OPS_ENROLL_TOKEN=") for line in lines) == 1
 
 
 def test_autoinstall_media_carries_and_loads_first_boot_image_bundle():
@@ -216,6 +281,18 @@ def test_host_activation_only_logs_complete_after_formal_tailnet_success():
     assert success < complete < failed < pending
 
 
+def test_host_activation_is_idempotent_after_formal_license_active():
+    text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
+
+    active = text.index('if [ "$current_state" = "formal_license_active" ]; then')
+    sync = text.index('sync_edge_env_after_formal_reauth "$(tailnet_ip)" "${TS_HOSTNAME:-}"', active)
+    start_enroll = text.index("start_host_enroll_service_if_configured", sync)
+    exit_ok = text.index("exit 0", start_enroll)
+    call_activation = text.index('write_state "bootstrap_tailnet_joined" "calling_cloud_activation"')
+
+    assert active < sync < start_enroll < exit_ok < call_activation
+
+
 def test_bootstrap_invokes_host_activation_before_legacy_license_bind_when_enabled():
     text = _script_text()
 
@@ -236,6 +313,8 @@ def test_bootstrap_reapplies_edge_binding_after_factory_activation():
     assert 'printf \'EDGE_ENV_FILE=%q\\n\' "${ENV_FILE:-}"' in text
     assert 'printf \'EDGE_ROOT=%q\\n\' "${EDGE_ROOT:-}"' in text
     assert 'set_kv "EDGE_API_BIND_ADDR" "$current_ip"' in text
+    assert 'set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_BASE_URL}"' in text
+    assert 'set_kv "CLOUD_OPS_ENROLL_TOKEN" "${CLOUD_OPS_ENROLL_TOKEN}"' in text
     assert 'tailscale up --reset --authkey="${formal_authkey}"' in text
     assert 'log "re-applying edge core stack after activation tailnet sync..."' in text
     assert text.index("reload_tailnet_env") < text.index("sync_formal_tailnet_binding")

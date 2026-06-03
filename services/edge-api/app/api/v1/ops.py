@@ -198,6 +198,48 @@ def _preflight_file_check(checks: list[dict[str, Any]], check_id: str, path: Pat
         _preflight_check(checks, check_id, "fail", "missing_file", hint=hint, detail={"path": str(path)})
 
 
+def _preflight_bootstrap_completion(checks: list[dict[str, Any]]) -> None:
+    sentinel_path = Path(os.getenv("PREFLIGHT_BOOTSTRAP_SENTINEL", "/var/lib/drycontroller/.bootstrapped"))
+    if sentinel_path.is_file():
+        _preflight_check(checks, "bootstrap.sentinel", "pass", "ok", detail={"path": str(sentinel_path)})
+        return
+
+    activation_state_path = Path(os.getenv("PREFLIGHT_ACTIVATION_STATE", "/var/lib/drycontroller/activation-state.json"))
+    activation_state = ""
+    if activation_state_path.is_file():
+        try:
+            data = json.loads(activation_state_path.read_text(encoding="utf-8"))
+            activation_state = str(data.get("state") or "").strip()
+        except Exception:
+            activation_state = ""
+    if activation_state == "formal_license_active":
+        _preflight_check(
+            checks,
+            "bootstrap.sentinel",
+            "pass",
+            "formal_activation_active",
+            detail={
+                "path": str(sentinel_path),
+                "activation_state_path": str(activation_state_path),
+                "activation_state": activation_state,
+            },
+        )
+        return
+
+    _preflight_check(
+        checks,
+        "bootstrap.sentinel",
+        "fail",
+        "missing_bootstrap_completion",
+        hint="complete factory activation or legacy bootstrap before shipping",
+        detail={
+            "path": str(sentinel_path),
+            "activation_state_path": str(activation_state_path),
+            "activation_state": activation_state or None,
+        },
+    )
+
+
 def _preflight_device_identity(checks: list[dict[str, Any]]) -> None:
     path = Path(os.getenv("PREFLIGHT_DEVICE_JSON", "/var/lib/drycontroller/device.json"))
     if not path.is_file():
@@ -325,12 +367,7 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
     checks: list[dict[str, Any]] = []
     allow_degraded = not req.strict
 
-    _preflight_file_check(
-        checks,
-        "bootstrap.sentinel",
-        Path(os.getenv("PREFLIGHT_BOOTSTRAP_SENTINEL", "/var/lib/drycontroller/.bootstrapped")),
-        hint="run USB/bootstrap provisioning before shipping",
-    )
+    _preflight_bootstrap_completion(checks)
     _preflight_device_identity(checks)
     _preflight_file_check(
         checks,

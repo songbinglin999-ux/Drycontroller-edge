@@ -535,6 +535,10 @@ sync_formal_tailnet_binding() {
     TS_HOSTNAME="$current_hostname"
     set_kv "TS_HOSTNAME" "$current_hostname"
   fi
+  [ -n "${TS_LOGIN_SERVER:-}" ] && set_kv "TS_LOGIN_SERVER" "${TS_LOGIN_SERVER}"
+  [ -n "${CLOUD_OPS_BASE_URL:-}" ] && set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_BASE_URL}"
+  [ -n "${CLOUD_OPS_ENROLL_TOKEN:-}" ] && set_kv "CLOUD_OPS_ENROLL_TOKEN" "${CLOUD_OPS_ENROLL_TOKEN}"
+  [ -n "${CLOUD_OPS_ENROLL_TOKEN_HEADER:-}" ] && set_kv "CLOUD_OPS_ENROLL_TOKEN_HEADER" "${CLOUD_OPS_ENROLL_TOKEN_HEADER}"
   log "edge-api bind address synced to current tailnet ip: ${current_ip}"
 }
 

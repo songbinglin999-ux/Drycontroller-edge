@@ -324,9 +324,24 @@ sync_edge_env_after_formal_reauth() {
     log "EDGE_ENV_FILE not set; skipping edge .env tailnet binding sync"
     return 0
   }
-  EDGE_ENV_FILE="$EDGE_ENV_FILE" FORMAL_TAILNET_IP="$ip" FORMAL_HOSTNAME="$hostname" python3 - <<'PY'
+  EDGE_ENV_FILE="$EDGE_ENV_FILE" ENV_FILE="$ENV_FILE" FORMAL_TAILNET_IP="$ip" FORMAL_HOSTNAME="$hostname" python3 - <<'PY'
 import os
+import shlex
 from pathlib import Path
+
+def read_env(path: Path) -> dict[str, str]:
+    values = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            tokens = shlex.split(line, comments=True, posix=True)
+        except ValueError:
+            continue
+        if len(tokens) == 1 and "=" in tokens[0]:
+            key, value = tokens[0].split("=", 1)
+            values[key] = value
+    return values
 
 path = Path(os.environ["EDGE_ENV_FILE"])
 if not path.exists():
@@ -334,10 +349,15 @@ if not path.exists():
 updates = {}
 ip = os.environ.get("FORMAL_TAILNET_IP", "").strip()
 hostname = os.environ.get("FORMAL_HOSTNAME", "").strip()
+host_env = read_env(Path(os.environ["ENV_FILE"]))
 if ip:
     updates["EDGE_API_BIND_ADDR"] = ip
 if hostname:
     updates["TS_HOSTNAME"] = hostname
+for key in ("TS_LOGIN_SERVER", "CLOUD_OPS_BASE_URL", "CLOUD_OPS_ENROLL_TOKEN", "CLOUD_OPS_ENROLL_TOKEN_HEADER"):
+    value = host_env.get(key, "").strip()
+    if value:
+        updates[key] = value
 if not updates:
     raise SystemExit(0)
 lines = path.read_text(encoding="utf-8").splitlines()
@@ -470,8 +490,16 @@ except Exception:
     print("")
 PY
 )"
+if [ "$current_state" = "formal_license_active" ]; then
+  sync_edge_env_after_formal_reauth "$(tailnet_ip)" "${TS_HOSTNAME:-}"
+  start_host_enroll_service_if_configured
+  log "activation already complete"
+  exit 0
+fi
 if [ "$current_state" = "formal_tailnet_joined" ]; then
-  if confirm_formal_tailnet_joined "$(tailnet_ip)"; then
+  current_tailnet_ip="$(tailnet_ip)"
+  if confirm_formal_tailnet_joined "$current_tailnet_ip"; then
+    sync_edge_env_after_formal_reauth "$current_tailnet_ip" "${TS_HOSTNAME:-}"
     write_state "formal_license_active" "activation_complete"
     start_host_enroll_service_if_configured
     log "activation complete"
