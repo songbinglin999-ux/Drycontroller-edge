@@ -21,6 +21,9 @@ def _load_module(tmp_path: Path):
     os.environ["OTA_DATA_DIR"] = str(tmp_path / "data")
     os.environ["OTA_LOG_DIR"] = str(tmp_path / "logs")
     os.environ["OTA_WORK_DIR"] = str(tmp_path / "work")
+    os.environ["LOG_ROOT"] = str(tmp_path / "logs")
+    os.environ["REGISTRY_DOCKER_CONFIG_PATH"] = str(tmp_path / "registry" / "config.json")
+    os.environ["REGISTRY_CREDENTIAL_STATUS_PATH"] = str(tmp_path / "registry" / "status.json")
     if "ota_agent.main" in sys.modules:
         return importlib.reload(sys.modules["ota_agent.main"])
     return importlib.import_module("ota_agent.main")
@@ -67,3 +70,92 @@ def test_write_and_read_json(tmp_path: Path):
     assert obj["a"] == 1
     assert obj["b"] == "x"
 
+
+def test_registry_credential_check_requires_active_status(tmp_path: Path):
+    ota_main = _load_module(tmp_path)
+    payload = ota_main.OtaStartRequest(mode="online")
+    missing = ota_main._registry_credential_check(payload)
+    assert missing["ok"] is False
+    assert missing["reason"] == "registry_credential_missing"
+
+    status_path = tmp_path / "registry" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    ota_main._write_json(
+        status_path,
+        {
+            "status": "active",
+            "credential_id": "cred-1",
+            "registry_host": "git.example.com",
+            "username": "robot$edge",
+            "secret_fingerprint": "fp-1",
+            "version": 2,
+            "updated_at": ota_main._now().isoformat(),
+        },
+    )
+    missing_config = ota_main._registry_credential_check(payload)
+    assert missing_config["ok"] is False
+    assert missing_config["reason"] == "registry_docker_config_missing"
+
+    config_path = tmp_path / "registry" / "config.json"
+    ota_main._write_json(
+        config_path,
+        {
+            "auths": {
+                "git.example.com": {
+                    "auth": "cm9ib3QkZWRnZTpyb2JvdC1zZWNyZXQ=",
+                }
+            }
+        },
+    )
+    ok = ota_main._registry_credential_check(
+        ota_main.OtaStartRequest(
+            mode="online",
+            registry_credential_id="cred-1",
+            registry_credential_version=2,
+            registry_secret_fingerprint="fp-1",
+        )
+    )
+    assert ok["ok"] is True
+
+    stale = ota_main._registry_credential_check(
+        ota_main.OtaStartRequest(mode="online", registry_credential_id="cred-1", registry_credential_version=3)
+    )
+    assert stale["ok"] is False
+    assert stale["reason"] == "registry_credential_version_stale"
+
+
+def test_registry_credential_check_follows_docker_config_env(tmp_path: Path, monkeypatch):
+    ota_main = _load_module(tmp_path)
+    monkeypatch.delenv("REGISTRY_DOCKER_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path / "custom-docker"))
+
+    status_path = tmp_path / "registry" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    ota_main._write_json(
+        status_path,
+        {
+            "status": "active",
+            "credential_id": "cred-1",
+            "registry_host": "git.example.com",
+            "username": "robot$edge",
+            "secret_fingerprint": "fp-1",
+            "version": 2,
+            "updated_at": ota_main._now().isoformat(),
+        },
+    )
+    docker_config_path = tmp_path / "custom-docker" / "config.json"
+    docker_config_path.parent.mkdir(parents=True)
+    ota_main._write_json(
+        docker_config_path,
+        {
+            "auths": {
+                "git.example.com": {
+                    "auth": "cm9ib3QkZWRnZTpyb2JvdC1zZWNyZXQ=",
+                }
+            }
+        },
+    )
+
+    result = ota_main._registry_credential_check(ota_main.OtaStartRequest(mode="online"))
+
+    assert result["ok"] is True

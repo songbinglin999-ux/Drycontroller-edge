@@ -5,6 +5,8 @@ edge-api License 安装闭环测试。
 """
 
 import sys
+import base64
+import json
 from pathlib import Path
 
 import pytest
@@ -166,6 +168,65 @@ def test_license_install_rejects_bad_signature(tmp_path: Path):
     assert resp.json()["detail"]["error"] == "license_signature_invalid"
 
 
+def test_registry_credential_refresh_writes_docker_config(tmp_path: Path):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    settings.REGISTRY_DOCKER_CONFIG_PATH = str(tmp_path / "registry" / "config.json")
+    settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(tmp_path / "registry" / "status.json")
+
+    resp = _client().post(
+        "/api/v1/ops/registry-credentials/refresh",
+        json={
+            "credential_id": "cred-1",
+            "registry_host": "https://git.example.com/",
+            "username": "robot$edge",
+            "secret": "robot-secret",
+            "secret_fingerprint": "fp-1",
+            "version": 2,
+        },
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["credential"]["registry_host"] == "git.example.com"
+    assert "secret" not in body["credential"]
+    assert "robot-secret" not in json.dumps(body)
+
+    docker_config = json.loads(Path(settings.REGISTRY_DOCKER_CONFIG_PATH).read_text(encoding="utf-8"))
+    auth = docker_config["auths"]["git.example.com"]["auth"]
+    assert base64.b64decode(auth).decode("utf-8") == "robot$edge:robot-secret"
+
+    status = json.loads(Path(settings.REGISTRY_CREDENTIAL_STATUS_PATH).read_text(encoding="utf-8"))
+    assert status["credential_id"] == "cred-1"
+    assert status["version"] == 2
+
+    Path(settings.REGISTRY_DOCKER_CONFIG_PATH).write_text('{"auths": {}}\n', encoding="utf-8")
+    resp = _client().get(
+        "/api/v1/ops/registry-credentials/status",
+        headers={"X-API-Key": "admin-1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reason"] == "registry_docker_config_auth_missing"
+
+
+def test_ota_start_requires_registry_credential_status(tmp_path: Path):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(tmp_path / "missing-status.json")
+    settings.REGISTRY_DOCKER_CONFIG_PATH = str(tmp_path / "missing-config.json")
+
+    resp = _client().post(
+        "/api/v1/ops/ota/start",
+        json={"mode": "online"},
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "registry_credential_missing"
+
+
 def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatch):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
@@ -210,6 +271,50 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     assert body["status"] == "degraded"
     assert body["summary"]["fail"] == 0
     assert recorded[0]["status"] == "degraded"
+
+
+def test_preflight_check_ota_requires_registry_credential(tmp_path: Path, monkeypatch):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
+    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
+    settings.REGISTRY_DOCKER_CONFIG_PATH = str(tmp_path / "registry" / "config.json")
+    settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(tmp_path / "registry" / "status.json")
+    Path(settings.LICENSE_FILE_PATH).write_text("{}", encoding="utf-8")
+    Path(settings.LICENSE_PUBLIC_KEY_PATH).write_text("pub", encoding="utf-8")
+    device_json = tmp_path / "device.json"
+    device_json.write_text('{"device_id":"d1","tenant_id":"t1","node_name":"n1"}', encoding="utf-8")
+    sentinel = tmp_path / ".bootstrapped"
+    sentinel.write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(device_json))
+    monkeypatch.setenv("PREFLIGHT_BOOTSTRAP_SENTINEL", str(sentinel))
+    monkeypatch.setattr(settings, "CLOUD_OPS_BASE_URL", "http://cloud")
+    monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "token")
+    monkeypatch.setattr(settings, "TS_LOGIN_SERVER", "http://headscale")
+
+    async def fake_verify():
+        return {"url": "mock", "status_code": 200, "body": {"valid": True}}
+
+    async def fake_http_check(checks, check_id, url, *, degraded_ok, allow_degraded, timeout=5.0):
+        ops_module._preflight_check(checks, check_id, "pass", "ok", detail={"url": url})
+
+    monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
+    monkeypatch.setattr(ops_module, "_preflight_http_check", fake_http_check)
+
+    async def fake_record_preflight_run(_payload):
+        return None
+
+    monkeypatch.setattr(ops_module, "record_preflight_run", fake_record_preflight_run)
+
+    resp = _client().post(
+        "/api/v1/ops/preflight",
+        json={"strict": False, "check_ota": True},
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert resp.status_code == 409
+    checks = {item["id"]: item for item in resp.json()["detail"]["checks"]}
+    assert checks["registry.credential"]["reason"] == "registry_credential_missing"
 
 
 def test_preflight_fails_when_required_files_missing(tmp_path: Path, monkeypatch):

@@ -28,6 +28,7 @@ DATA_DIR = Path(os.getenv("OTA_DATA_DIR", "/data/ota")).resolve()
 LOG_DIR = Path(os.getenv("OTA_LOG_DIR", "/logs/edge-ota-agent")).resolve()
 WORK_DIR = Path(os.getenv("OTA_WORK_DIR", "/work")).resolve()
 COSIGN_PUBKEY_PATH = Path(os.getenv("OTA_COSIGN_PUBKEY_PATH", "/etc/drycontroller/keys/cosign.pub")).resolve()
+REGISTRY_CREDENTIAL_STATUS_PATH = Path(os.getenv("REGISTRY_CREDENTIAL_STATUS_PATH", "/etc/drycontroller/registry/status.json")).resolve()
 
 
 def _ensure_dir(path: Path, fallback: Path) -> Path:
@@ -146,6 +147,10 @@ class OtaStartRequest(BaseModel):
     dry_run: bool = False
     # 超时（秒）：避免无限跑挂
     timeout_sec: int = Field(60 * 30, ge=60, le=60 * 60 * 6)  # 30min..6h
+    require_registry_credentials: bool = True
+    registry_credential_id: str | None = None
+    registry_credential_version: int | None = Field(None, ge=1)
+    registry_secret_fingerprint: str | None = None
 
 
 class OtaOperationOut(BaseModel):
@@ -244,6 +249,7 @@ async def _run_online(op_id: str, payload: OtaStartRequest) -> None:
         env = {**os.environ}
         env.setdefault("EDGE_API_READY_URL", "http://edge-api:8000/ready")
         env.setdefault("EDGE_DAQ_READY_URL", "http://edge-daq:8080/ready")
+        env.setdefault("DOCKER_CONFIG", "/etc/drycontroller/registry")
         # 现场兜底：允许通过环境变量跳过校验（默认不跳过）
         # - 用于 PLC/外设暂时离线但仍需完成“服务升级/回滚”的场景
         if env.get("OTA_SKIP_READY", "").lower() in {"1", "true", "yes"}:
@@ -349,6 +355,84 @@ def _extract_images_from_compose_yaml(yaml_text: str) -> list[str]:
     return out
 
 
+def _parse_ts(value: Any) -> dt.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        return parsed.astimezone(dt.UTC)
+    except Exception:
+        return None
+
+
+def _registry_docker_config_path() -> Path:
+    explicit_path = os.getenv("REGISTRY_DOCKER_CONFIG_PATH")
+    if explicit_path:
+        return Path(explicit_path).resolve()
+    docker_config_dir = os.getenv("DOCKER_CONFIG")
+    if docker_config_dir:
+        return (Path(docker_config_dir) / "config.json").resolve()
+    return Path("/etc/drycontroller/registry/config.json").resolve()
+
+
+def _registry_credential_check(payload: OtaStartRequest) -> dict[str, Any]:
+    if not REGISTRY_CREDENTIAL_STATUS_PATH.is_file():
+        return {
+            "ok": False,
+            "reason": "registry_credential_missing",
+            "detail": {"status_path": str(REGISTRY_CREDENTIAL_STATUS_PATH)},
+        }
+    try:
+        data = json.loads(REGISTRY_CREDENTIAL_STATUS_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "registry_credential_status_invalid_json",
+            "detail": {"status_path": str(REGISTRY_CREDENTIAL_STATUS_PATH), "error": str(exc)},
+        }
+    if not isinstance(data, dict) or data.get("status") != "active":
+        return {"ok": False, "reason": "registry_credential_missing", "detail": data if isinstance(data, dict) else {}}
+    missing = [
+        key
+        for key in ("credential_id", "registry_host", "username", "secret_fingerprint", "version", "updated_at")
+        if not data.get(key)
+    ]
+    if missing:
+        return {"ok": False, "reason": "registry_credential_status_incomplete", "detail": {**data, "missing": missing}}
+    docker_config_path = _registry_docker_config_path()
+    if not docker_config_path.is_file():
+        return {"ok": False, "reason": "registry_docker_config_missing", "detail": data}
+    try:
+        docker_config = json.loads(docker_config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"ok": False, "reason": "registry_docker_config_invalid_json", "detail": {**data, "error": str(exc)}}
+    auths = docker_config.get("auths") if isinstance(docker_config, dict) else None
+    entry = auths.get(data.get("registry_host")) if isinstance(auths, dict) else None
+    if not isinstance(entry, dict) or not entry.get("auth"):
+        return {"ok": False, "reason": "registry_docker_config_auth_missing", "detail": data}
+    if payload.registry_credential_id and data.get("credential_id") != payload.registry_credential_id:
+        return {"ok": False, "reason": "registry_credential_id_mismatch", "detail": data}
+    if payload.registry_credential_version is not None:
+        try:
+            current_version = int(data.get("version") or 0)
+        except Exception:
+            current_version = 0
+        if current_version < int(payload.registry_credential_version):
+            return {"ok": False, "reason": "registry_credential_version_stale", "detail": data}
+    if payload.registry_secret_fingerprint and data.get("secret_fingerprint") != payload.registry_secret_fingerprint:
+        return {"ok": False, "reason": "registry_credential_fingerprint_mismatch", "detail": data}
+
+    max_age_hours = float(os.getenv("REGISTRY_CREDENTIAL_MAX_AGE_HOURS", "0") or "0")
+    updated_at = _parse_ts(data.get("updated_at"))
+    if max_age_hours > 0 and updated_at is not None:
+        age_hours = (_now() - updated_at).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            return {"ok": False, "reason": "registry_credential_stale", "detail": {**data, "age_hours": age_hours}}
+    return {"ok": True, "reason": "ok", "detail": data}
+
+
 async def _cosign_verify_images(op_id: str, images: list[str], *, enforce: bool) -> None:
     """
     对每个 image 执行：cosign verify --key <pubkey> <image>
@@ -433,6 +517,10 @@ async def start_ota(payload: OtaStartRequest, _: str = Depends(require_ops_api_k
         raise HTTPException(status_code=400, detail="only_online_supported_in_mvp")
     if payload.dry_run:
         raise HTTPException(status_code=400, detail="dry_run_not_supported_in_mvp")
+    if payload.require_registry_credentials and os.getenv("OTA_SKIP_PULL", "").lower() not in {"1", "true", "yes"}:
+        credential = _registry_credential_check(payload)
+        if not credential["ok"]:
+            raise HTTPException(status_code=409, detail={"success": False, "error": credential["reason"], "credential": credential["detail"]})
 
     async with runtime.lock:
         op = _create_operation(payload)
@@ -470,5 +558,3 @@ if __name__ == "__main__":
         port=int(os.getenv("PORT", "8090")),
         log_level=os.getenv("LOG_LEVEL", "info").lower(),
     )
-
-

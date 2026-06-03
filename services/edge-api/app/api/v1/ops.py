@@ -25,6 +25,7 @@ from common.schemas.cloud_to_edge import (
     MonitorConfigUpdate,
     OtaStartRequest,
     PlcConfigApplyRequest,
+    RegistryCredentialRefreshRequest,
     SelfHealToggleRequest,
     ServiceOverride,
 )
@@ -34,6 +35,10 @@ from app.core.config import settings
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
+from app.services.registry_credentials import (
+    install_registry_credential,
+    registry_credential_check,
+)
 from app.services.audit import api_key_actor, write_audit
 from app.services.config_version import record_config_version
 from app.services.ota_history import record_ota_operation
@@ -227,6 +232,18 @@ def _preflight_device_identity(checks: list[dict[str, Any]]) -> None:
     )
 
 
+def _preflight_registry_credential(checks: list[dict[str, Any]]) -> None:
+    result = registry_credential_check()
+    _preflight_check(
+        checks,
+        "registry.credential",
+        "pass" if result["ok"] else "fail",
+        result["reason"],
+        hint="run Cloud Ops registry credential refresh before online OTA" if not result["ok"] else "",
+        detail=result["detail"],
+    )
+
+
 async def _preflight_http_check(
     checks: list[dict[str, Any]],
     check_id: str,
@@ -361,6 +378,7 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
             degraded_ok=False,
             allow_degraded=allow_degraded,
         )
+        _preflight_registry_credential(checks)
     else:
         _preflight_check(
             checks,
@@ -368,6 +386,13 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
             "degraded" if allow_degraded else "fail",
             "skipped",
             hint="edge-ota-agent check skipped; set check_ota=true for final OTA acceptance",
+        )
+        _preflight_check(
+            checks,
+            "registry.credential",
+            "degraded" if allow_degraded else "fail",
+            "skipped",
+            hint="registry credential check skipped; set check_ota=true before online OTA",
         )
 
     ts_login_server = (settings.TS_LOGIN_SERVER or "").strip()
@@ -404,6 +429,35 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
     if not payload["success"]:
         raise HTTPException(status_code=409, detail=payload)
     return payload
+
+
+@router.get("/registry-credentials/status")
+async def get_registry_credential_status(_: str = Depends(require_admin_api_key)):
+    result = registry_credential_check()
+    return {"success": result["ok"], "reason": result["reason"], "credential": result["detail"]}
+
+
+@router.post("/registry-credentials/refresh")
+async def refresh_registry_credential(req: RegistryCredentialRefreshRequest, api_key: str = Depends(require_admin_api_key)):
+    try:
+        status_payload = install_registry_credential(req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"success": False, "error": str(exc)}) from exc
+
+    await write_audit(
+        actor=api_key_actor(api_key, role="admin"),
+        action="registry_credential.refresh",
+        resource_type="registry_credential",
+        resource_id=req.credential_id,
+        result="success",
+        detail={
+            "registry_host": status_payload["registry_host"],
+            "username": status_payload["username"],
+            "version": status_payload["version"],
+            "secret_fingerprint": status_payload["secret_fingerprint"],
+        },
+    )
+    return {"success": True, "credential": status_payload}
 
 
 @router.post("/license/install")
@@ -536,6 +590,14 @@ async def ota_start(
     api_key: str = Depends(require_admin_api_key),
 ):
     # 透传到 ota-agent（MVP 仅支持 online）
+    if req.require_registry_credentials and req.mode == "online":
+        result = registry_credential_check(
+            expected_credential_id=req.registry_credential_id,
+            expected_version=req.registry_credential_version,
+            expected_secret_fingerprint=req.registry_secret_fingerprint,
+        )
+        if not result["ok"]:
+            raise HTTPException(status_code=409, detail={"success": False, "error": result["reason"], "credential": result["detail"]})
     request_payload = req.model_dump(exclude_none=True)
     result = await client.start(api_key=api_key, payload=request_payload)
     await record_ota_operation(result, request_payload=request_payload)

@@ -55,6 +55,19 @@ class OtaStartRequest(BaseModel):
     cosign_enforce: bool = Field(False, description="是否强制 cosign 验签（推荐逐步开启）")
     dry_run: bool = False
     timeout_sec: int = Field(60 * 30, ge=60, le=60 * 60 * 6)
+    require_registry_credentials: bool = Field(True, description="online OTA 前要求本机有有效 registry pull credential")
+    registry_credential_id: Optional[str] = Field(None, max_length=64)
+    registry_credential_version: Optional[int] = Field(None, ge=1)
+    registry_secret_fingerprint: Optional[str] = Field(None, max_length=64)
+
+
+class RegistryCredentialRefreshRequest(BaseModel):
+    credential_id: str = Field(..., min_length=1, max_length=64)
+    registry_host: str = Field(..., min_length=1, max_length=256)
+    username: str = Field(..., min_length=1, max_length=256)
+    secret: str = Field(..., min_length=1)
+    secret_fingerprint: str = Field(..., min_length=1, max_length=64)
+    version: int = Field(..., ge=1)
 
 
 class PlcConfigApplyRequest(BaseModel):

@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     
     # OTA Agent（执行面，建议仅由 edge-api 代理调用）
     OTA_AGENT_API_BASE: str = "http://edge-ota-agent:8090"
+    REGISTRY_DOCKER_CONFIG_PATH: str = "/etc/drycontroller/registry/config.json"
+    REGISTRY_CREDENTIAL_STATUS_PATH: str = "/etc/drycontroller/registry/status.json"
+    REGISTRY_CREDENTIAL_MAX_AGE_HOURS: float = 0.0
 
     # Cloud sync outbox：edge 本地 audit 等事件先写 cloud_sync_outbox，再后台推送 cloud-ops。
     CLOUD_SYNC_OUTBOX_ENABLED: bool = True

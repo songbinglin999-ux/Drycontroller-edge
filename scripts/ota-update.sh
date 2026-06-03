@@ -38,6 +38,61 @@ require_cmd() {
   fi
 }
 
+require_registry_credential() {
+  local status_path="${REGISTRY_CREDENTIAL_STATUS_PATH:-/etc/drycontroller/registry/status.json}"
+  if [ ! -f "$status_path" ]; then
+    log_error "缺少 registry pull credential 状态文件：$status_path"
+    return 1
+  fi
+  local docker_config_dir
+  docker_config_dir=$(python3 - "$status_path" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = sys.argv[1]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception as exc:
+    print(f"invalid registry credential status json: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+required = ["credential_id", "registry_host", "username", "secret_fingerprint", "version", "updated_at"]
+missing = [key for key in required if not data.get(key)]
+if data.get("status") != "active" or missing:
+    print(f"registry credential is not active or incomplete: missing={missing}", file=sys.stderr)
+    raise SystemExit(1)
+docker_config_dir = os.environ.get("DOCKER_CONFIG")
+if docker_config_dir:
+    config_path = Path(docker_config_dir) / "config.json"
+else:
+    config_path = Path(
+        os.environ.get("REGISTRY_DOCKER_CONFIG_PATH")
+        or data.get("docker_config_path")
+        or str(Path(path).with_name("config.json"))
+    )
+    docker_config_dir = str(config_path.parent)
+if not config_path.is_file():
+    print(f"missing registry docker config: {config_path}", file=sys.stderr)
+    raise SystemExit(1)
+try:
+    docker_config = json.load(open(config_path, encoding="utf-8"))
+except Exception as exc:
+    print(f"invalid registry docker config json: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+auths = docker_config.get("auths") if isinstance(docker_config, dict) else None
+entry = auths.get(data["registry_host"]) if isinstance(auths, dict) else None
+if not isinstance(entry, dict) or not entry.get("auth"):
+    print(f"registry docker config missing auth for {data['registry_host']}", file=sys.stderr)
+    raise SystemExit(1)
+print(docker_config_dir)
+PY
+) || return $?
+  if [ -z "${DOCKER_CONFIG:-}" ]; then
+    export DOCKER_CONFIG="$docker_config_dir"
+  fi
+}
+
 # compose 兼容：优先 docker-compose
 compose() {
   if command -v docker-compose >/dev/null 2>&1; then
@@ -442,6 +497,13 @@ main() {
       log_info "在线升级：docker pull + cosign verify + up -d"
       ok=0
       if [ "$SKIP_PULL" = false ]; then
+        require_registry_credential
+        rc=$?
+        if [ $rc -ne 0 ]; then
+          ok=$rc
+        fi
+      fi
+      if [ "$SKIP_PULL" = false ] && [ $ok -eq 0 ]; then
         compose pull
         rc=$?
         if [ $rc -ne 0 ]; then
@@ -460,7 +522,7 @@ main() {
         fi
       fi
       if [ $ok -eq 0 ]; then
-      compose up -d --remove-orphans
+        compose up -d --remove-orphans
         rc=$?
         if [ $rc -ne 0 ]; then
           log_error "compose up 失败（rc=$rc）"
@@ -468,7 +530,7 @@ main() {
         fi
       fi
       if [ $ok -eq 0 ]; then
-      verify_ready_and_smoke
+        verify_ready_and_smoke
         rc=$?
         if [ $rc -ne 0 ]; then
           log_error "验证失败（rc=$rc）"
@@ -536,4 +598,3 @@ main() {
 }
 
 main
-

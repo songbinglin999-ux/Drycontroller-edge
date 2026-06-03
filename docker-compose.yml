@@ -250,6 +250,10 @@ services:
       - LICENSE_PUBLIC_KEY_PATH=${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}
       - LICENSE_TRUSTED_PUBLIC_KEY=${LICENSE_TRUSTED_PUBLIC_KEY:-}
       - LICENSE_SERVICE_BASE=${LICENSE_SERVICE_BASE:-http://license-service:8000}
+      # Registry pull credential lifecycle: Cloud Ops refresh writes Docker auth + status here.
+      - REGISTRY_DOCKER_CONFIG_PATH=${REGISTRY_DOCKER_CONFIG_PATH:-/etc/drycontroller/registry/config.json}
+      - REGISTRY_CREDENTIAL_STATUS_PATH=${REGISTRY_CREDENTIAL_STATUS_PATH:-/etc/drycontroller/registry/status.json}
+      - REGISTRY_CREDENTIAL_MAX_AGE_HOURS=${REGISTRY_CREDENTIAL_MAX_AGE_HOURS:-0}
       # 大屏现场状态摘要只读展示云端/tailnet 配置状态
       - CLOUD_OPS_BASE_URL=${CLOUD_OPS_BASE_URL:-}
       - CLOUD_OPS_ENROLL_TOKEN=${CLOUD_OPS_ENROLL_TOKEN:-}
@@ -267,6 +271,7 @@ services:
       # license install 只写 license 文件本身（上面那行 RW），不写公钥；
       # 公钥由 bootstrap.sh 一次性写入，或 LICENSE_TRUSTED_PUBLIC_KEY env 提供。
       - /etc/drycontroller/keys:/etc/drycontroller/keys:ro
+      - /etc/drycontroller/registry:/etc/drycontroller/registry
       # 只读读取 bootstrap sentinel，供大屏现场状态摘要显示装机状态
       - /var/lib/drycontroller:/var/lib/drycontroller:ro
     ports:
@@ -564,11 +569,15 @@ services:
       - OTA_SKIP_PULL=${OTA_SKIP_PULL:-false}
       # cosign 公钥（运维资产，只读挂载到容器）
       - OTA_COSIGN_PUBKEY_PATH=${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}
+      - DOCKER_CONFIG=${DOCKER_CONFIG:-/etc/drycontroller/registry}
+      - REGISTRY_CREDENTIAL_STATUS_PATH=${REGISTRY_CREDENTIAL_STATUS_PATH:-/etc/drycontroller/registry/status.json}
+      - REGISTRY_CREDENTIAL_MAX_AGE_HOURS=${REGISTRY_CREDENTIAL_MAX_AGE_HOURS:-0}
     volumes:
       # 关键：把仓库根目录挂载到“与宿主机一致的路径”，让 compose 解析出来的 bind mount src 能在宿主机上真实存在
       - ./:/opt/Drycontroller-edge
       # 运维资产：cosign 公钥（默认宿主机 /etc/drycontroller/keys/cosign.pub）
       - ${OTA_COSIGN_PUBKEY_HOST_PATH:-/etc/drycontroller/keys/cosign.pub}:${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}:ro
+      - /etc/drycontroller/registry:/etc/drycontroller/registry:ro
       - ./logs/edge-ota-agent:/logs/edge-ota-agent
       - ./data/ota:/data/ota
     networks:
