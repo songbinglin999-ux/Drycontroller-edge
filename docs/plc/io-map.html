@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>产线 I/O 点表与工艺流程图 — DryController</title>
+<style>
+  :root{
+    --fg:#1f2733; --muted:#5b6675; --line:#e2e6ec; --bg:#ffffff;
+    --accent:#2f6fb0; --accent-soft:#eef4fb;
+    --th-bg:#f0f3f7; --zebra:#fafbfc; --ok:#1e8a4c;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; color:var(--fg); background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",
+                "Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:16px; line-height:1.7;
+    padding:0 40px 100px;
+    -webkit-font-smoothing:antialiased;
+  }
+  header.doc-head{border-bottom:3px solid var(--accent); margin:32px 0 8px; padding-bottom:16px;}
+  header.doc-head .title{font-size:27px; font-weight:700; margin:0 0 10px}
+  header.doc-head .meta{color:var(--muted); font-size:14px; line-height:1.9}
+  header.doc-head .meta b{color:#27344a; font-weight:600}
+  h2{font-size:21px; line-height:1.3; margin:8px 0 12px; color:#27344a}
+  h2:first-child{margin-top:0}
+  p{margin:10px 0}
+  a{color:var(--accent)}
+  strong{color:#10243d}
+  .note{color:var(--muted); font-size:14px}
+  /* 左右布局：左流程图固定，右点表滚动 */
+  .layout{display:flex; gap:28px; align-items:flex-start; margin-top:18px}
+  .flow-pane{flex:0 0 560px; position:sticky; top:0; align-self:flex-start;
+    max-height:100vh; overflow:auto; padding:14px 6px 24px; border-right:1px solid var(--line)}
+  .table-pane{flex:1 1 auto; min-width:0}
+  @media (max-width:980px){
+    body{padding:0 18px 70px}
+    .layout{flex-direction:column}
+    .flow-pane{flex:none; width:auto; position:static; max-height:none; border-right:none;
+      border-bottom:1px solid var(--line)}
+  }
+  /* 表格 */
+  table{border-collapse:collapse; width:100%; margin:12px 0; font-size:14.5px;
+    border:1px solid var(--line); border-radius:8px; overflow:hidden}
+  th,td{border:1px solid var(--line); padding:9px 13px; text-align:left; vertical-align:top}
+  th{background:var(--th-bg); font-weight:600; color:#27344a}
+  tbody tr:nth-child(even){background:var(--zebra)}
+  td:first-child{white-space:nowrap; font-weight:600; color:#27344a}
+  table.wrap td:first-child{white-space:normal; font-weight:400; color:var(--fg)}
+  tr.group td{background:#eef2f7; font-weight:700; color:#27344a; letter-spacing:.02em}
+  table.io td:first-child{white-space:nowrap; font-weight:600; color:var(--muted)}
+  .tag-new{display:inline-block; background:#e7f6ee; color:var(--ok); font-size:12px; font-weight:600; padding:0 7px; border-radius:999px}
+  /* 工艺流程图 */
+  .flow{display:flex; flex-direction:column; align-items:center; margin:20px 0; width:100%}
+  .flow .stage{display:grid; grid-template-columns:1fr 150px 1fr; align-items:center; column-gap:12px; width:100%}
+  .flow .stage>.left{justify-self:end; display:flex; justify-content:flex-end; align-items:center}
+  .flow .stage>.right{justify-self:start; display:flex; flex-wrap:wrap; gap:6px; align-items:center}
+  .flow .node{background:#3a3a3a; color:#fff; text-align:center; padding:12px 10px; border-radius:8px; font-weight:600; line-height:1.3}
+  .flow .node small{display:block; color:#cfd3d8; font-weight:400; font-size:11px; margin-top:2px}
+  .flow .link{display:flex; align-items:center; justify-content:center; gap:8px; min-height:30px}
+  .flow .link::before{content:"↓"; color:#9aa1a8; font-size:18px; line-height:1}
+  .flow .conn-label{color:var(--muted); font-size:12px}
+  .flow .boiler-box{display:flex; align-items:center; gap:8px}
+  .flow .boiler-box .bcol{display:flex; flex-direction:column; gap:5px; align-items:flex-end}
+  .flow .boiler-box::after{content:"→"; color:#9aa1a8; font-weight:700; font-size:16px}
+  .flow .node.boiler{background:#7c2b2b; padding:9px 11px; font-size:13px; min-width:88px}
+  .flow .node.boiler small{color:#e7c9c9}
+  .flow .node.bin{background:#37577a}
+  .flow .node.host{background:#3a3a3a}
+  .flow .node.screen{background:#3d6457}
+  .flow .node.out{background:#4a3a64}
+  .flow-legend{display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin:10px 0 6px}
+  .flow-legend .lg{font-size:12px; color:#fff; padding:3px 10px; border-radius:6px}
+  .flow-legend .lg.bin{background:#37577a}
+  .flow-legend .lg.host{background:#3a3a3a}
+  .flow-legend .lg.screen{background:#3d6457}
+  .flow-legend .lg.boiler{background:#7c2b2b}
+  .flow-legend .lg.out{background:#4a3a64}
+  .pin{display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:600; text-decoration:none; white-space:nowrap}
+  .pin.drive{background:#5a3210; color:#f4dcc2}
+  .pin.sense{background:#123a5e; color:#cfe4f5}
+  .pin:hover{box-shadow:0 0 0 2px var(--accent)}
+  tr[id^="io-"]{scroll-margin-top:14px}
+  tr[id^="io-"]:target{background:#fff6d6}
+</style>
+</head>
+<body>
+
+<header class="doc-head">
+  <div class="title">产线 I/O 点表与工艺流程图</div>
+  <div class="meta">
+    <b>来源</b>：《物料输送干燥与筛分产线 · I/O 点表 V2（定频电机加装互感器）》 &nbsp;·&nbsp; <b>关联服务</b>：<code>edge-daq</code> / <code>configs/tags.yaml</code><br>
+    <b>安全责任划分</b>：见 <a href="plc-safety-contract.html">PLC 安全契约</a>（点表冻结时需与契约 §2.6 联锁、§2.10 坏值 fail-safe 对齐）<br>
+    <b>控制逻辑</b>：<a href="plc-control-logic.html">PLC 控制逻辑</a>（启停条件、联锁顺序、闭环策略） &nbsp;·&nbsp; <b>报警规范</b>：<a href="plc-alarm-spec.html">超限报警规范</a>（限值、等级、动作）<br>
+    <b>用法</b>：点击左侧流程图上的任一标签，右侧点表自动滚动并高亮对应行。
+  </div>
+</header>
+
+<div class="layout">
+
+  <aside class="flow-pane">
+    <h2>工艺流程图</h2>
+    <p class="note">物料自上而下：料斗1 → … → 滚筛 → 料斗7 → 出料。<strong>棕色</strong>标签 = 驱动（电机 DO / 变频 AO），<strong>蓝色</strong>标签 = 检测（DI / AI）；锅炉为侧挂供热分支。</p>
+    <div class="flow-legend"><span class="lg bin">料斗 / 缓冲</span><span class="lg host">主机（干燥）</span><span class="lg screen">滚筛</span><span class="lg boiler">锅炉（供热）</span><span class="lg out">出料</span></div>
+    <div class="flow">
+      <div class="stage"><div class="left"></div><span class="node bin">料斗1</span><div class="right"></div></div>
+      <div class="link"><a class="pin drive" href="#io-M1">M1·DO</a></div>
+      <div class="stage"><div class="left"></div><span class="node bin">料斗2</span><div class="right"><a class="pin sense" href="#io-LL1">LL1·DI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-M2">M2·DO</a></div>
+      <div class="stage"><div class="left"></div><span class="node bin">料斗3</span><div class="right"><a class="pin sense" href="#io-LL2">LL2·DI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-VFM1">VFM1·AO</a></div>
+      <div class="stage"><div class="left"></div><span class="node host">主机1</span><div class="right"><a class="pin drive" href="#io-M3">M3·DO</a><a class="pin drive" href="#io-VF1">VF1·AO</a><a class="pin sense" href="#io-FTT1">FTT1·AI</a><a class="pin sense" href="#io-I-M3">I-M3·AI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-M4">M4·DO</a></div>
+      <div class="stage"><div class="left"></div><span class="node bin">料斗4</span><div class="right"><a class="pin sense" href="#io-LL3">LL3·DI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-VFM2">VFM2·AO</a></div>
+      <div class="stage"><div class="left"><div class="boiler-box"><div class="bcol"><a class="pin drive" href="#io-M14">M14·DO 上料</a><a class="pin sense" href="#io-LL5">LL5·DI</a><a class="pin sense" href="#io-TT1">TT1·AI</a></div><span class="node boiler">锅炉1 B1<small>供热</small></span></div></div><span class="node host">主机2</span><div class="right"><a class="pin drive" href="#io-M5">M5·DO</a><a class="pin drive" href="#io-VF2">VF2·AO</a><a class="pin sense" href="#io-FTT2">FTT2·AI</a><a class="pin sense" href="#io-I-M5">I-M5·AI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-M6">M6·DO</a></div>
+      <div class="stage"><div class="left"></div><span class="node host">主机3</span><div class="right"><a class="pin drive" href="#io-M7">M7·DO 主电机</a><a class="pin sense" href="#io-I-M7">I-M7·AI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-M8">M8·DO</a></div>
+      <div class="stage"><div class="left"></div><span class="node bin">料斗5</span><div class="right"><a class="pin sense" href="#io-LL4">LL4·DI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-VFM3">VFM3·AO</a></div>
+      <div class="stage"><div class="left"><div class="boiler-box"><div class="bcol"><a class="pin drive" href="#io-M15">M15·DO 上料</a><a class="pin sense" href="#io-LL6">LL6·DI</a><a class="pin sense" href="#io-TT2">TT2·AI</a></div><span class="node boiler">锅炉2 B2<small>供热</small></span></div></div><span class="node host">主机4</span><div class="right"><a class="pin drive" href="#io-M9">M9·DO</a><a class="pin drive" href="#io-VF3">VF3·AO</a><a class="pin sense" href="#io-FTT3">FTT3·AI</a><a class="pin sense" href="#io-I-M9">I-M9·AI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-M10">M10·DO</a></div>
+      <div class="stage"><div class="left"></div><span class="node bin">料斗6</span><div class="right"><a class="pin sense" href="#io-MT1">MT1·AI</a></div></div>
+      <div class="link"><a class="pin drive" href="#io-M11">M11·DO</a></div>
+      <div class="stage"><div class="left"></div><span class="node screen">滚筛</span><div class="right"><a class="pin drive" href="#io-M12">M12·DO</a><a class="pin sense" href="#io-I-M12">I-M12·AI</a></div></div>
+      <div class="link"><span class="conn-label">重力下料</span></div>
+      <div class="stage"><div class="left"></div><span class="node bin">料斗7</span><div class="right"></div></div>
+      <div class="link"><a class="pin drive" href="#io-M13">M13·DO</a></div>
+      <div class="stage"><div class="left"></div><span class="node out">出料</span><div class="right"></div></div>
+    </div>
+  </aside>
+
+  <main class="table-pane">
+    <h2>I/O 点表（48 点）</h2>
+    <p class="note">更新要点：①所有定频电机加电流互感器(CT)→电机电流 AI；②新增下游滚筛/传送带(M10–M12)与锅炉上料(M13/M14、LL5/LL6)。变频设备(VFM/VF)电流取自变频器，不单设 CT。</p>
+    <table class="io wrap">
+      <thead><tr><th>序号</th><th>位号</th><th>名称</th><th>所属设备/位置</th><th>信号类型</th><th>量程/状态</th><th>关联控制 / 说明</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr class="group"><td colspan="8">DI · 检测（数字输入）</td></tr>
+        <tr id="io-LL1"><td>1</td><td>LL1</td><td>料斗2料位（单点）</td><td>料斗2</td><td>DI</td><td>有料/无料</td><td>控制 M1 上料；超时未到位→缺料报警</td><td></td></tr>
+        <tr id="io-LL2"><td>2</td><td>LL2</td><td>料斗3料位（单点）</td><td>料斗3</td><td>DI</td><td>有料/无料</td><td>控制 M2（同 LL1 逻辑）</td><td></td></tr>
+        <tr id="io-LL3"><td>3</td><td>LL3</td><td>料斗4料位（单点）</td><td>料斗4</td><td>DI</td><td>有料/无料</td><td>与 M4 出料联锁</td><td></td></tr>
+        <tr id="io-LL4"><td>4</td><td>LL4</td><td>料斗5料位（单点）</td><td>料斗5</td><td>DI</td><td>有料/无料</td><td>缓冲料位，控制 VFM3 防断料</td><td></td></tr>
+        <tr id="io-LL5"><td>5</td><td>LL5</td><td>锅炉1燃料料位</td><td>锅炉1 (B1)</td><td>DI</td><td>有料/无料</td><td>控制 M14 上料（逻辑同 LL1）；超时→缺燃料报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-LL6"><td>6</td><td>LL6</td><td>锅炉2燃料料位</td><td>锅炉2 (B2)</td><td>DI</td><td>有料/无料</td><td>控制 M15 上料（同上）</td><td><span class="tag-new">新增</span></td></tr>
+        <tr class="group"><td colspan="8">AI · 工艺检测（模拟输入）</td></tr>
+        <tr id="io-FTT1"><td>7</td><td>FTT1</td><td>主机1风温</td><td>主机1</td><td>AI</td><td>℃</td><td>联动 VF1 调速；超上限增料/高温报警</td><td></td></tr>
+        <tr id="io-FTT2"><td>8</td><td>FTT2</td><td>主机2风温</td><td>主机2</td><td>AI</td><td>℃</td><td>联动 VF2</td><td></td></tr>
+        <tr id="io-FTT3"><td>9</td><td>FTT3</td><td>主机4风温</td><td>主机4</td><td>AI</td><td>℃</td><td>联动 VF3</td><td></td></tr>
+        <tr id="io-TT1"><td>10</td><td>TT1</td><td>锅炉1温度</td><td>锅炉1 (B1)</td><td>AI</td><td>℃</td><td>低温/超温报警（供主机2）</td><td></td></tr>
+        <tr id="io-TT2"><td>11</td><td>TT2</td><td>锅炉2温度</td><td>锅炉2 (B2)</td><td>AI</td><td>℃</td><td>超温/低温报警（供主机4）</td><td></td></tr>
+        <tr id="io-MT1"><td>12</td><td>MT1</td><td>末端湿度</td><td>料斗6</td><td>AI</td><td>%</td><td>湿度高→减料/强化干燥；超限报警</td><td></td></tr>
+        <tr class="group"><td colspan="8">AI · 电机电流（互感器 CT）</td></tr>
+        <tr id="io-I-M1"><td>13</td><td>I-M1</td><td>M1 电流</td><td>料斗1→料斗2 输送</td><td>AI</td><td>A</td><td>经 CT；过流→反转清堵；过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M2"><td>14</td><td>I-M2</td><td>M2 电流</td><td>料斗2→料斗3 输送</td><td>AI</td><td>A</td><td>经 CT；过流清堵；过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M3"><td>15</td><td>I-M3</td><td>主机1 电流</td><td>主机1</td><td>AI</td><td>A</td><td>高负载减 VFM1；过载停料</td><td>定频经CT/变频取自变频器，待确认</td></tr>
+        <tr id="io-I-M4"><td>16</td><td>I-M4</td><td>M4 电流</td><td>主机1→料斗4 输送</td><td>AI</td><td>A</td><td>经 CT；过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M5"><td>17</td><td>I-M5</td><td>主机2 电流</td><td>主机2</td><td>AI</td><td>A</td><td>高负载减 VFM2</td><td>同 I-M3</td></tr>
+        <tr id="io-I-M6"><td>18</td><td>I-M6</td><td>M6 电流</td><td>主机2→主机3 输送</td><td>AI</td><td>A</td><td>经 CT；过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M7"><td>19</td><td>I-M7</td><td>主机3 电流</td><td>主机3（主电机）</td><td>AI</td><td>A</td><td>经 CT；高负载/过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M8"><td>20</td><td>I-M8</td><td>M8 电流</td><td>主机3→料斗5 输送</td><td>AI</td><td>A</td><td>经 CT；过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M9"><td>21</td><td>I-M9</td><td>主机4 电流</td><td>主机4</td><td>AI</td><td>A</td><td>高负载减 VFM3</td><td>同 I-M3</td></tr>
+        <tr id="io-I-M10"><td>22</td><td>I-M10</td><td>M10 电流</td><td>主机4→料斗6 输送</td><td>AI</td><td>A</td><td>经 CT；过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M11"><td>23</td><td>I-M11</td><td>M11 电流</td><td>料斗6→滚筛 输送</td><td>AI</td><td>A</td><td>经 CT；过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M12"><td>24</td><td>I-M12</td><td>滚筛 电流</td><td>滚筛</td><td>AI</td><td>A</td><td>经 CT；筛分负载/堵筛监测</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M13"><td>25</td><td>I-M13</td><td>M13 电流</td><td>料斗7→出料 输送</td><td>AI</td><td>A</td><td>经 CT；过载报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M14"><td>26</td><td>I-M14</td><td>M14 电流</td><td>锅炉1 上料</td><td>AI</td><td>A</td><td>经 CT；过载/堵料报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-I-M15"><td>27</td><td>I-M15</td><td>M15 电流</td><td>锅炉2 上料</td><td>AI</td><td>A</td><td>经 CT；过载/堵料报警</td><td><span class="tag-new">新增</span></td></tr>
+        <tr class="group"><td colspan="8">DO · 驱动（数字输出）</td></tr>
+        <tr id="io-M1"><td>28</td><td>M1</td><td>料斗1→料斗2 输送电机</td><td>—</td><td>DO</td><td>启/停</td><td>LL1 控制；I-M1 监测过流/过载</td><td></td></tr>
+        <tr id="io-M2"><td>29</td><td>M2</td><td>料斗2→料斗3 输送电机</td><td>—</td><td>DO</td><td>启/停</td><td>LL2 控制；I-M2 监测</td><td></td></tr>
+        <tr id="io-M3"><td>30</td><td>M3</td><td>主机1 主电机</td><td>主机1</td><td>DO</td><td>启/停</td><td>I-M3 监测；若为变频改 AO</td><td></td></tr>
+        <tr id="io-M4"><td>31</td><td>M4</td><td>主机1→料斗4 输送电机</td><td>—</td><td>DO</td><td>启/停</td><td>与 LL3 联锁；I-M4 监测</td><td></td></tr>
+        <tr id="io-M5"><td>32</td><td>M5</td><td>主机2 主电机</td><td>主机2</td><td>DO</td><td>启/停</td><td>I-M5 监测；若变频改 AO</td><td></td></tr>
+        <tr id="io-M6"><td>33</td><td>M6</td><td>主机2→主机3 输送电机</td><td>—</td><td>DO</td><td>启/停</td><td>故障联锁；I-M6 监测</td><td></td></tr>
+        <tr id="io-M7"><td>34</td><td>M7</td><td>主机3 主电机</td><td>主机3</td><td>DO</td><td>启/停</td><td>I-M7 监测；与上下游联锁；若变频改 AO</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-M8"><td>35</td><td>M8</td><td>主机3→料斗5 输送电机</td><td>—</td><td>DO</td><td>启/停</td><td>故障联锁；I-M8 监测</td><td></td></tr>
+        <tr id="io-M9"><td>36</td><td>M9</td><td>主机4 主电机</td><td>主机4</td><td>DO</td><td>启/停</td><td>I-M9 监测；若变频改 AO</td><td></td></tr>
+        <tr id="io-M10"><td>37</td><td>M10</td><td>主机4→料斗6 出料电机</td><td>—</td><td>DO</td><td>启/停</td><td>I-M10 监测</td><td></td></tr>
+        <tr id="io-M11"><td>38</td><td>M11</td><td>料斗6→滚筛 输送电机</td><td>—</td><td>DO</td><td>启/停</td><td>I-M11 监测</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-M12"><td>39</td><td>M12</td><td>滚筛 电机</td><td>滚筛</td><td>DO</td><td>启/停</td><td>转速若可调改 AO；I-M12 监测</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-M13"><td>40</td><td>M13</td><td>料斗7→出料 输送电机</td><td>—</td><td>DO</td><td>启/停</td><td>I-M13 监测</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-M14"><td>41</td><td>M14</td><td>锅炉1 上料电机</td><td>锅炉1</td><td>DO</td><td>启/停</td><td>LL5 控制（同 M1 逻辑）；I-M14 监测</td><td><span class="tag-new">新增</span></td></tr>
+        <tr id="io-M15"><td>42</td><td>M15</td><td>锅炉2 上料电机</td><td>锅炉2</td><td>DO</td><td>启/停</td><td>LL6 控制；I-M15 监测</td><td><span class="tag-new">新增</span></td></tr>
+        <tr class="group"><td colspan="8">AO · 变频给料/风机（模拟输出）</td></tr>
+        <tr id="io-VFM1"><td>43</td><td>VFM1</td><td>料斗3→主机1 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>随 I-M3/湿度调进料；电流取自变频器</td><td>含 DO启停、DI故障</td></tr>
+        <tr id="io-VFM2"><td>44</td><td>VFM2</td><td>料斗4→主机2 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>随 I-M5 调</td><td>含 DO启停、DI故障</td></tr>
+        <tr id="io-VFM3"><td>45</td><td>VFM3</td><td>料斗5→主机4 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>随 I-M9/LL4 调</td><td>含 DO启停、DI故障</td></tr>
+        <tr id="io-VF1"><td>46</td><td>VF1</td><td>主机1 变频风机</td><td>主机1</td><td>AO</td><td>0–100% / Hz</td><td>随 FTT1 调速</td><td></td></tr>
+        <tr id="io-VF2"><td>47</td><td>VF2</td><td>主机2 变频风机</td><td>主机2</td><td>AO</td><td>0–100% / Hz</td><td>随 FTT2</td><td></td></tr>
+        <tr id="io-VF3"><td>48</td><td>VF3</td><td>主机4 变频风机</td><td>主机4</td><td>AO</td><td>0–100% / Hz</td><td>随 FTT3</td><td></td></tr>
+        <tr class="group"><td>—</td><td>点数统计</td><td>DI</td><td>AI</td><td>DO</td><td>AO</td><td>总点数</td><td></td></tr>
+        <tr><td>—</td><td>合计</td><td>6</td><td>21</td><td>15</td><td>6</td><td>48</td><td></td></tr>
+      </tbody>
+    </table>
+
+    <h2>建议补充点位</h2>
+    <p class="note">未在示意图，供 PLC 完整性 / 安全 / 维护参考。其中「急停按钮、拉绳/跑偏开关、电机热继跳闸、轴承/成品超温、变频器故障」正是 <a href="plc-safety-contract.html">PLC 安全契约</a> §2.6 联锁、§2.10 坏值 fail-safe 关心的安全输入，点表冻结时需与契约对齐。</p>
+    <table class="wrap">
+      <thead><tr><th>序号</th><th>点位 / 信号</th><th>涉及设备</th><th>建议信号类型</th><th>用途 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>电机运行反馈</td><td>M1–M14 各电机</td><td>DI</td><td>启动指令后确认实际运行，无反馈→启动失败报警</td></tr>
+        <tr><td>2</td><td>电机热继 / 断路器跳闸</td><td>M1–M14 各电机</td><td>DI</td><td>独立硬件过载/短路保护（过流已由互感器 CT 实现）</td></tr>
+        <tr><td>3</td><td>变频器故障</td><td>VFM1-3 / VF1-3</td><td>DI</td><td>变频器故障联锁停机</td></tr>
+        <tr><td>4</td><td>变频器频率反馈</td><td>VFM1-3 / VF1-3</td><td>AI</td><td>给定与实际偏差报警；电流亦取自变频器</td></tr>
+        <tr><td>5</td><td>急停按钮</td><td>整线 / 各操作工位</td><td>DI</td><td>整线急停，必须手动复位</td></tr>
+        <tr><td>6</td><td>拉绳 / 跑偏开关</td><td>各传送带</td><td>DI</td><td>安全联锁停机</td></tr>
+        <tr><td>7</td><td>料斗高料位 / 溢料</td><td>料斗1–7</td><td>DI</td><td>防溢料（单点料位只测低位）</td></tr>
+        <tr><td>8</td><td>主机 / 滚筛 轴承温度</td><td>主机1/2/4、滚筛</td><td>AI</td><td>轴承超温保护</td></tr>
+        <tr><td>9</td><td>零速 / 打滑</td><td>主机、传送带、滚筛</td><td>DI</td><td>停转但下游仍送料的检测</td></tr>
+        <tr><td>10</td><td>系统负压</td><td>干燥 / 除尘段</td><td>AI</td><td>维持负压防扬尘</td></tr>
+        <tr><td>11</td><td>成品温度</td><td>出料 / 末端</td><td>AI</td><td>干热成品防自燃，必要时冷却</td></tr>
+        <tr><td>12</td><td>锅炉燃烧控制</td><td>锅炉1 / 2</td><td>AO+DO</td><td>调燃料维持温度设定（闭环）</td></tr>
+        <tr><td>13</td><td>声光报警输出</td><td>控制柜</td><td>DO</td><td>各类报警</td></tr>
+        <tr><td>14</td><td>运行小时累计 / 保养复位</td><td>全部电机</td><td>软点+DO/DI</td><td>保养提醒：PLC 累计运行小时，上位机管理与复位</td></tr>
+        <tr><td>15</td><td>整线启停 / 复位 / 手自动</td><td>控制系统</td><td>软点</td><td>逆向起动、顺向停机、模式切换</td></tr>
+      </tbody>
+    </table>
+  </main>
+
+</div>
+
+</body>
+</html>

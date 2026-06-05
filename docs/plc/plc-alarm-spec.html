@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>超限报警规范 — DryController</title>
+<style>
+  :root{
+    --fg:#1f2733; --muted:#5b6675; --line:#e2e6ec; --bg:#ffffff;
+    --accent:#2f6fb0; --accent-soft:#eef4fb;
+    --code-bg:#f5f7fa; --th-bg:#f0f3f7; --zebra:#fafbfc;
+    --warn:#b34700; --danger:#c0392b; --ok:#1e8a4c;
+    --sidebar:280px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; color:var(--fg); background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",
+                "Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:16px; line-height:1.7;
+    padding:0 48px 120px calc(var(--sidebar) + 40px);
+    -webkit-font-smoothing:antialiased;
+  }
+  header.doc-head{border-bottom:3px solid var(--accent); margin:32px 0 8px; padding-bottom:16px;}
+  header.doc-head .title{font-size:27px; font-weight:700; margin:0 0 10px}
+  header.doc-head .meta{color:var(--muted); font-size:14px; line-height:1.9}
+  header.doc-head .meta b{color:#27344a; font-weight:600}
+  nav#TOC{
+    position:fixed; top:0; left:0; bottom:0; width:var(--sidebar);
+    overflow-y:auto; background:#fbfcfd; border-right:1px solid var(--line);
+    padding:24px 18px; font-size:13px;
+  }
+  nav#TOC .toc-title{font-weight:700; font-size:12px; letter-spacing:.12em; color:var(--muted); margin-bottom:12px}
+  nav#TOC ul{list-style:none; margin:0; padding-left:0}
+  nav#TOC ul ul{padding-left:12px; margin:2px 0}
+  nav#TOC li{margin:2px 0}
+  nav#TOC a{color:var(--muted); text-decoration:none; display:block;
+    padding:3px 7px; border-radius:5px; line-height:1.4; font-size:12.5px}
+  nav#TOC a:hover{background:var(--accent-soft); color:var(--accent)}
+  nav#TOC a.active{background:var(--accent-soft); color:var(--accent); font-weight:600}
+  h2{font-size:21px; line-height:1.3; margin:40px 0 12px; padding-top:12px; border-top:1px solid var(--line)}
+  h3{font-size:17px; margin:24px 0 8px; color:#27344a}
+  p{margin:8px 0}
+  a{color:var(--accent)}
+  strong{color:#10243d}
+  ul,ol{margin:8px 0; padding-left:22px}
+  li{margin:3px 0}
+  hr{border:none; border-top:1px solid var(--line); margin:28px 0}
+  .note{color:var(--muted); font-size:14px}
+  .lead{font-weight:700; font-size:16px; color:#10243d; margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.88em;
+    background:var(--code-bg); padding:.12em .4em; border-radius:4px; color:#b5365f}
+  pre{background:var(--code-bg); border:1px solid var(--line); border-radius:7px;
+    padding:14px 16px; overflow-x:auto; line-height:1.4; font-size:13px}
+  pre code{background:none; padding:0; color:var(--fg); white-space:pre}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:14px;
+    border:1px solid var(--line); border-radius:7px; overflow:hidden}
+  th,td{border:1px solid var(--line); padding:8px 12px; text-align:left; vertical-align:top}
+  th{background:var(--th-bg); font-weight:600; color:#27344a}
+  tbody tr:nth-child(even){background:var(--zebra)}
+  td:first-child{white-space:nowrap; font-weight:600; color:#27344a}
+  table.wrap td:first-child{white-space:normal; font-weight:400; color:var(--fg)}
+  .tbd{color:var(--warn); font-style:italic}
+  .lvl-hi{background:#fde8e8; color:var(--danger); font-weight:700; padding:1px 8px; border-radius:999px; font-size:12px; white-space:nowrap}
+  .lvl-lo{background:#fff4e5; color:var(--warn); font-weight:700; padding:1px 8px; border-radius:999px; font-size:12px; white-space:nowrap}
+  .lvl-info{background:#eef4fb; color:var(--accent); font-weight:700; padding:1px 8px; border-radius:999px; font-size:12px; white-space:nowrap}
+  .lvl-emer{background:#c0392b; color:#fff; font-weight:700; padding:1px 8px; border-radius:999px; font-size:12px; white-space:nowrap}
+  blockquote{margin:14px 0; padding:10px 16px; background:var(--accent-soft);
+    border-left:4px solid var(--accent); border-radius:0 7px 7px 0; color:#2a3a52}
+  blockquote p{margin:4px 0}
+  @media (max-width:980px){
+    body{padding:0 18px 80px}
+    nav#TOC{position:static; width:auto; height:auto; border-right:none;
+      border-bottom:1px solid var(--line); margin:0 -18px 8px; padding:16px 18px}
+  }
+</style>
+</head>
+<body>
+
+<nav id="TOC">
+  <div class="toc-title">目录</div>
+  <ul>
+    <li><a href="#sec0">0. 报警分级与通用规则</a></li>
+    <li><a href="#sec1">1. 温度报警</a>
+      <ul>
+        <li><a href="#sec1-1">1.1 FTT1/2/3 主机风温</a></li>
+        <li><a href="#sec1-2">1.2 TT1/2 锅炉温度</a></li>
+        <li><a href="#sec1-3">1.3 轴承温度（预留）</a></li>
+        <li><a href="#sec1-4">1.4 成品温度（预留）</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec2">2. 电流报警</a>
+      <ul>
+        <li><a href="#sec2-1">2.1 定频电机过流/过载</a></li>
+        <li><a href="#sec2-2">2.2 变频器电流</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec3">3. 料位报警</a></li>
+    <li><a href="#sec4">4. 湿度报警</a></li>
+    <li><a href="#sec5">5. 通信与系统报警</a></li>
+    <li><a href="#sec6">6. 报警输出通道</a></li>
+    <li><a href="#sec7">7. 报警响应流程</a></li>
+    <li><a href="#secA">附录 A：报警限值汇总表</a></li>
+    <li><a href="#secB">附录 B：报警与安全契约对应</a></li>
+  </ul>
+</nav>
+
+<header class="doc-head">
+  <div class="title">超限报警规范</div>
+  <div class="meta">
+    <b>版本</b>：v0.1-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-04 &nbsp;·&nbsp; <b>状态</b>：框架搭建中<br>
+    <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-safety-contract.html">安全契约</a><br>
+    <b>说明</b>：本文档定义每个信号的报警限值、等级和动作。<span class="tbd">橙色斜体</span>为待工艺确认的占位值。
+  </div>
+</header>
+
+<hr>
+
+<h2 id="sec0">0. 报警分级与通用规则</h2>
+
+<h3>报警等级定义</h3>
+<table>
+  <thead><tr><th>等级</th><th>标记</th><th>含义</th><th>响应要求</th></tr></thead>
+  <tbody>
+    <tr><td><span class="lvl-info">INFO</span></td><td>I</td><td>提示性信息，不影响生产</td><td>记录日志，操作员知晓</td></tr>
+    <tr><td><span class="lvl-lo">预警</span></td><td>W</td><td>参数偏离正常范围，尚未影响生产</td><td>操作员关注，准备干预</td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>A</td><td>参数超限，需立即处理</td><td>声光报警 + 上报 cloud-ops + 操作员介入</td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>E</td><td>危险状态，自动触发保护动作</td><td>自动停机/安全化 + 声光报警 + 上报 + 人工确认</td></tr>
+  </tbody>
+</table>
+
+<h3>通用规则</h3>
+<table>
+  <tbody>
+    <tr><td>报警延迟</td><td>所有报警需持续 <code>T_debounce</code>（<span class="tbd">默认 3s</span>）才确认，避免瞬态抖动误报</td></tr>
+    <tr><td>报警锁存</td><td>报警触发后锁存，即使参数恢复正常，也需人工确认复位（防止一闪而过被漏看）</td></tr>
+    <tr><td>报警抑制</td><td>设备停机期间，该设备相关的过程报警自动抑制（如 M3 停机时 FTT1 高温不报警）；安全类报警不抑制</td></tr>
+    <tr><td>坏值处理</td><td>传感器坏值（断线/超量程/冻结）不产生过程报警，而是触发「传感器故障」报警（见安全契约 §2.10）</td></tr>
+    <tr><td>报警记录</td><td>所有报警事件记录到 edge-daq 审计日志，含时间戳、信号名、当前值、限值</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec1">1. 温度报警</h2>
+
+<h3 id="sec1-1">1.1 FTT1/2/3 主机风温</h3>
+<table>
+  <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>限值</th><th>动作</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="4">FTT1<br>主机1风温</td><td rowspan="4">主机1</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span>（预警上限）</td><td>操作员关注，检查进料/风速</td><td></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">TBD ℃</span>（报警上限）</td><td>声光报警 + 增大 VF1 风速 + 减少 VFM1 进料</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span>（危险上限）</td><td>停 VFM1（断料）+ 强制 VF1 全速 + 声光报警 + 上报</td><td>安全契约 §2.5 clamp 兜底</td></tr>
+    <tr><td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温预警）</td><td>检查锅炉1供热是否正常</td><td></td></tr>
+    <tr><td rowspan="4">FTT2<br>主机2风温</td><td rowspan="4">主机2</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同 FTT1 逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td rowspan="4">FTT3<br>主机4风温</td><td rowspan="4">主机4</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+  </tbody>
+</table>
+
+<blockquote><p><strong>限值层级关系</strong>：预警 &lt; 报警 &lt; 联锁。联锁值必须在 PLC clamp（安全契约 §2.5）范围内，且 ≤ 物理安全极限。</p></blockquote>
+
+<h3 id="sec1-2">1.2 TT1/2 锅炉温度</h3>
+<table>
+  <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>限值</th><th>动作</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="4">TT1<br>锅炉1温度</td><td rowspan="4">锅炉1 B1</td>
+      <td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温预警）</td><td>检查锅炉燃烧状态，可能熄火</td><td></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温报警）</td><td>锅炉故障报警 + 通知主机2降负荷</td><td>炉子温度不足影响干燥</td></tr>
+    <tr><td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span>（高温预警）</td><td>检查燃烧是否过旺</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span>（超温危险）</td><td>停 M14（停止上料）+ 声光报警 + 上报</td><td></td></tr>
+    <tr><td rowspan="4">TT2<br>锅炉2温度</td><td rowspan="4">锅炉2 B2</td>
+      <td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span></td><td>同 TT1 逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&lt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>停 M15 + 报警</td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec1-3">1.3 轴承温度（预留）</h3>
+<p class="note">建议补充点位（io-map.html 序号 8）。主机1/2/4 和滚筛轴承温度 AI 检测。</p>
+<table>
+  <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>限值</th><th>动作</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><td>轴承温度</td><td>主机/滚筛</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>安排检修</td><td>待加装传感器</td></tr>
+    <tr><td></td><td></td>
+      <td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>停对应设备 + 报警</td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec1-4">1.4 成品温度（预留）</h3>
+<p class="note">建议补充点位（io-map.html 序号 11）。出料/末端成品温度 AI，防干热自燃。</p>
+<table>
+  <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>限值</th><th>动作</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><td>成品温度</td><td>出料/末端</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>加强冷却 / 降低进料</td><td>待加装传感器</td></tr>
+    <tr><td></td><td></td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>声光报警 + 降负荷</td><td></td></tr>
+    <tr><td></td><td></td>
+      <td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>停线 + 报警 + 人工处置</td><td>防自燃</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec2">2. 电流报警</h2>
+
+<h3 id="sec2-1">2.1 定频电机过流/过载</h3>
+<blockquote><p>所有定频电机（M1–M15 除变频器外）通过 CT 互感器检测电流。变频设备（VFM1-3、VF1-3）电流取自变频器内部，不单设 CT。</p></blockquote>
+
+<table class="wrap">
+  <thead><tr><th>信号</th><th>设备</th><th>等级</th><th>限值</th><th>动作</th><th>持续时间</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="3">I-M1</td><td rowspan="3">M1 料斗1→2</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>记录日志，操作员关注</td><td>持续 <span class="tbd">5s</span></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>触发清堵逻辑（反转→正转）</td><td>瞬间</td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵 <span class="tbd">3次</span>失败</td><td>停 M1 + 清堵报警 + 人工介入</td><td>—</td></tr>
+
+    <tr><td rowspan="3">I-M2</td><td rowspan="3">M2 料斗2→3</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>同 I-M1</td><td></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停机 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="3">I-M3</td><td rowspan="3">M3 主机1</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">额定×100%</span></td><td>减少 VFM1 进料（控制逻辑 §2.1）</td><td>持续 <span class="tbd">5s</span></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>停 VFM1（停止进料）+ 报警</td><td>持续 <span class="tbd">3s</span></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M3 + 停 VFM1 + 停 M4 + 报警</td><td>瞬间</td></tr>
+
+    <tr><td rowspan="2">I-M4</td><td rowspan="2">M4 主机1→料斗4</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td>瞬间</td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M4 + 停 M3 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="3">I-M5</td><td rowspan="3">M5 主机2</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">额定×100%</span></td><td>减少 VFM2 进料</td><td></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>停 VFM2 + 报警</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M5 + 停 M6 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M6</td><td rowspan="2">M6 主机2→主机3</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M6 → 停 M5 + 停 M7（级联）+ 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M7</td><td rowspan="2">M7 主机3</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>减上游进料 + 报警</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M7 → 停 M6 → 停 M5 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M8</td><td rowspan="2">M8 主机3→料斗5</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M8 → 停 M7 → 停 M6 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="3">I-M9</td><td rowspan="3">M9 主机4</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">额定×100%</span></td><td>减少 VFM3 进料</td><td></td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>停 VFM3 + 报警</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M9 + 停 M10 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M10</td><td rowspan="2">M10 主机4→料斗6</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M10 + 停 M9 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M11</td><td rowspan="2">M11 料斗6→滚筛</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M11 + 停 M10 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M12</td><td rowspan="2">M12 滚筛</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵/堵筛检测</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M12 + 停 M11 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M13</td><td rowspan="2">M13 料斗7→出料</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M13 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M14</td><td rowspan="2">M14 锅炉1上料</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M14 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M15</td><td rowspan="2">M15 锅炉2上料</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M15 + 报警</td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec2-2">2.2 变频器电流</h3>
+<p class="note">VFM1-3、VF1-3 电流取自变频器内部，用于监测和联动调节，不触发清堵逻辑。</p>
+<table class="wrap">
+  <thead><tr><th>信号</th><th>设备</th><th>等级</th><th>限值</th><th>动作</th></tr></thead>
+  <tbody>
+    <tr><td>VFM1-3 电流</td><td>变频给料机</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">额定×100%</span></td><td>降低对应主机进料频率</td></tr>
+    <tr><td></td><td></td>
+      <td><span class="lvl-emer">联锁</span></td><td>变频器故障 DI 触发</td><td>停对应给料 + 停主机</td></tr>
+    <tr><td>VF1-3 电流</td><td>变频风机</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">额定×100%</span></td><td>降低风机频率</td></tr>
+    <tr><td></td><td></td>
+      <td><span class="lvl-emer">联锁</span></td><td>变频器故障 DI 触发</td><td>停对应主机 + 报警</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec3">3. 料位报警</h2>
+
+<table class="wrap">
+  <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>触发条件</th><th>动作</th><th>延迟</th></tr></thead>
+  <tbody>
+    <tr><td>LL1</td><td>料斗2</td>
+      <td><span class="lvl-hi">报警</span></td><td>M1 运行 <code>T_feed_max</code>（<span class="tbd">120s</span>）后 LL1 仍 = 0</td><td>停 M1 + 报警「料斗1缺料」（上游无料）</td><td>T_feed_max</td></tr>
+    <tr><td>LL2</td><td>料斗3</td>
+      <td><span class="lvl-hi">报警</span></td><td>M2 运行 T_feed_max 后 LL2 仍 = 0</td><td>停 M2 + 报警「料斗2缺料」</td><td>T_feed_max</td></tr>
+    <tr><td>LL3</td><td>料斗4</td>
+      <td><span class="lvl-info">INFO</span></td><td>LL3 = 1（料满）</td><td>停 M4（正常停料，非异常）</td><td>即时</td></tr>
+    <tr><td>LL3</td><td>料斗4</td>
+      <td><span class="lvl-hi">报警</span></td><td>LL3 = 1 持续 <span class="tbd">TBD 分钟</span>（下游长时间不消耗）</td><td>报警「料斗4满料堆积」</td><td>长时间</td></tr>
+    <tr><td>LL4</td><td>料斗5</td>
+      <td><span class="lvl-lo">预警</span></td><td>LL4 = 0（缺料）</td><td>请求上游 M8 补料 + 降/停 VFM3</td><td>即时</td></tr>
+    <tr><td>LL4</td><td>料斗5</td>
+      <td><span class="lvl-hi">报警</span></td><td>LL4 = 0 持续 <span class="tbd">TBD 分钟</span></td><td>报警「料斗5持续缺料」</td><td>长时间</td></tr>
+    <tr><td>LL5</td><td>锅炉1</td>
+      <td><span class="lvl-hi">报警</span></td><td>M14 运行 T_feed_max 后 LL5 仍 = 0</td><td>停 M14 + 报警「锅炉1缺燃料」</td><td>T_feed_max</td></tr>
+    <tr><td>LL6</td><td>锅炉2</td>
+      <td><span class="lvl-hi">报警</span></td><td>M15 运行 T_feed_max 后 LL6 仍 = 0</td><td>停 M15 + 报警「锅炉2缺燃料」</td><td>T_feed_max</td></tr>
+  </tbody>
+</table>
+
+<blockquote><p><strong>溢料保护</strong>：io-map 建议补充高料位 DI（序号 7），触发后强制停上游电机，等级为 <span class="lvl-emer">联锁</span>。</p></blockquote>
+
+<hr>
+
+<h2 id="sec4">4. 湿度报警</h2>
+
+<table>
+  <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>限值</th><th>动作</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="3">MT1<br>末端湿度</td><td rowspan="3">料斗6</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">H_target + H_band</span></td><td>降低 VFM1/2/3 进料 + 增大 VF1/2/3 风速</td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">H_alarm_high</span></td><td>声光报警 + 大幅降负荷</td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">H_emergency</span></td><td>停线 + 报警（成品不合格，不允许继续生产）</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec5">5. 通信与系统报警</h2>
+
+<table class="wrap">
+  <thead><tr><th>报警项</th><th>等级</th><th>触发条件</th><th>动作</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><td>Edge 心跳超时</td><td><span class="lvl-emer">联锁</span></td><td>EDGE_CONTROL_HEALTHY 看门狗超时（≈4s）</td><td>PLC 自动切手动模式（DO→DTU 短信<span class="tbd">暂缓</span>，§2.9）</td><td>安全契约 §2.1</td></tr>
+    <tr><td>Modbus 通信中断</td><td><span class="lvl-hi">报警</span></td><td>连续 <span class="tbd">3次</span> Modbus 读/写失败</td><td>记录日志 + 上报</td><td>Edge 侧检测</td></tr>
+    <tr><td>传感器坏值</td><td><span class="lvl-hi">报警</span></td><td>断线/超量程/长时间冻结</td><td>该回路切安全模式 + 报警</td><td>安全契约 §2.10</td></tr>
+    <tr><td>变频器故障</td><td><span class="lvl-emer">联锁</span></td><td>变频器故障 DI 触发</td><td>停对应设备 + 报警</td><td>io-map 建议补充</td></tr>
+    <tr><td>热继/断路器跳闸</td><td><span class="lvl-emer">联锁</span></td><td>热继 DI 触发</td><td>停对应电机 + 报警</td><td>io-map 建议补充</td></tr>
+    <tr><td>急停触发</td><td><span class="lvl-emer">联锁</span></td><td>急停按钮 DI</td><td>全线停机 + 报警</td><td>安全契约 §2.6</td></tr>
+    <tr><td>拉绳/跑偏</td><td><span class="lvl-emer">联锁</span></td><td>拉绳/跑偏 DI</td><td>停对应传送带 + 报警</td><td>io-map 建议补充</td></tr>
+    <tr><td>DO→DTU 自检失败 <span class="tbd">（暂缓）</span></td><td><span class="lvl-hi">报警</span></td><td>周期自检（每周）短信未收到</td><td>上报 cloud-ops + 人工检查 DTU</td><td>安全契约 §2.9（有人值守，暂缓）</td></tr>
+    <tr><td>掉电/重启</td><td><span class="lvl-hi">报警</span></td><td>PLC 上电回溯检测到掉电标志</td><td>补报锁存告警 + 保持手动模式待人工</td><td>安全契约 §2.7</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec6">6. 报警输出通道</h2>
+
+<table>
+  <thead><tr><th>通道</th><th>覆盖范围</th><th>独立性</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>声光报警器（DO）</td><td>所有 <span class="lvl-hi">报警</span> + <span class="lvl-emer">联锁</span></td><td>现场级</td><td>控制柜/操作台声光，PLC DO 直接驱动</td></tr>
+    <tr><td>Edge 日志 + cloud-ops</td><td>所有等级</td><td>网络依赖</td><td>edge-daq 审计日志 → cloud-ops 上报</td></tr>
+    <tr><td>DO→DTU 短信 <span class="tbd">（暂缓）</span></td><td>Edge 心跳超时</td><td>独立于 edge/网络</td><td>安全契约 §2.9，最后一道告警（有人值守，暂缓）</td></tr>
+    <tr><td>大屏弹窗</td><td>所有等级</td><td>网络依赖</td><td>前端 dashboard 实时弹窗</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec7">7. 报警响应流程</h2>
+
+<pre><code>报警触发（信号超限持续 T_debounce）
+  │
+  ├─ INFO → 记录日志 → 操作员知晓
+  │
+  ├─ 预警(W) → 记录日志 → 操作员关注/准备干预
+  │
+  ├─ 报警(A) → 声光报警 + 记录日志 + 上报 cloud-ops
+  │              → 操作员介入处理 → 确认复位
+  │
+  └─ 联锁(E) → 自动保护动作（停机/安全化）
+                 → 声光报警 + 上报 + 锁存
+                 → 操作员排查原因 → 处理 → 手动复位 → 恢复生产
+
+复位规则：
+  - 预警/报警：参数恢复正常后自动消除，但事件记录保留
+  - 联锁：参数恢复后仍锁存，必须人工确认复位
+  - 安全类联锁（急停/跑偏等）：必须排除故障后手动复位</code></pre>
+
+<hr>
+
+<h2 id="secA">附录 A：报警限值汇总表</h2>
+<p class="note">所有值均为占位，待工艺部门确认。</p>
+
+<table class="wrap">
+  <thead><tr><th>信号</th><th>单位</th><th>预警下限</th><th>报警下限</th><th>预警上限</th><th>报警上限</th><th>联锁上限</th><th>联锁下限</th></tr></thead>
+  <tbody>
+    <tr><td>FTT1 主机1风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
+    <tr><td>FTT2 主机2风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
+    <tr><td>FTT3 主机4风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
+    <tr><td>TT1 锅炉1温度</td><td>℃</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td>—</td></tr>
+    <tr><td>TT2 锅炉2温度</td><td>℃</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td>—</td></tr>
+    <tr><td>MT1 末端湿度</td><td>%</td><td>—</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
+    <tr><td>I-M3 主机1电流</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×100%</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>—</td></tr>
+    <tr><td>I-M5 主机2电流</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×100%</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>—</td></tr>
+    <tr><td>I-M9 主机4电流</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×100%</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>—</td></tr>
+    <tr><td>I-M1/M2/M4/M6/M8<br>M10–M15</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>清堵失败</td><td>—</td></tr>
+    <tr><td>轴承温度（预留）</td><td>℃</td><td>—</td><td>—</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td>—</td></tr>
+    <tr><td>成品温度（预留）</td><td>℃</td><td>—</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="secB">附录 B：报警与安全契约对应</h2>
+<table class="wrap">
+  <thead><tr><th>报警项</th><th>安全契约章节</th><th>关系</th></tr></thead>
+  <tbody>
+    <tr><td>Edge 心跳超时 → PLC 切本地</td><td>§2.1 门控心跳看门狗</td><td>报警即触发联锁动作</td></tr>
+    <tr><td>传感器坏值 → 回路安全模式</td><td>§2.10 坏值 fail-safe</td><td>坏值检测独立于过程报警</td></tr>
+    <tr><td>温度/电流超限 → PLC clamp</td><td>§2.5 Actuator Clamp</td><td>PLC 硬限幅兜底 edge 越界指令</td></tr>
+    <tr><td>急停/跑偏/热继</td><td>§2.6 急停/联锁</td><td>硬件级安全，不经过软件</td></tr>
+    <tr><td>掉电重启补报</td><td>§2.7 上电默认</td><td>锁存告警回溯上报</td></tr>
+    <tr><td>DO→DTU 短信 + 自检 <span class="tbd">（暂缓）</span></td><td>§2.9 DO 触点→DTU</td><td>独立告警通道</td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>

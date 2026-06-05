@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PLC 安全契约 — DryController</title>
+<style>
+  :root{
+    --fg:#1f2733; --muted:#5b6675; --line:#e2e6ec; --bg:#ffffff;
+    --accent:#2f6fb0; --accent-soft:#eef4fb;
+    --code-bg:#f5f7fa; --th-bg:#f0f3f7; --zebra:#fafbfc;
+    --warn:#b34700; --danger:#c0392b; --ok:#1e8a4c;
+    --sidebar:300px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; color:var(--fg); background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",
+                "Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:16px; line-height:1.7;
+    padding:0 56px 120px calc(var(--sidebar) + 48px);
+    -webkit-font-smoothing:antialiased;
+  }
+  header.doc-head{border-bottom:3px solid var(--accent); margin:36px 0 8px; padding-bottom:18px;}
+  header.doc-head .title{font-size:30px; font-weight:700; margin:0 0 10px}
+  header.doc-head .meta{color:var(--muted); font-size:14px; line-height:1.9}
+  header.doc-head .meta b{color:#27344a; font-weight:600}
+  /* 侧边目录 */
+  nav#TOC{
+    position:fixed; top:0; left:0; bottom:0; width:var(--sidebar);
+    overflow-y:auto; background:#fbfcfd; border-right:1px solid var(--line);
+    padding:28px 22px; font-size:13.5px;
+  }
+  nav#TOC .toc-title{font-weight:700; font-size:13px; letter-spacing:.12em; color:var(--muted); margin-bottom:14px}
+  nav#TOC ul{list-style:none; margin:0; padding-left:0}
+  nav#TOC ul ul{padding-left:14px; margin:2px 0}
+  nav#TOC li{margin:2px 0}
+  nav#TOC a{color:var(--muted); text-decoration:none; display:block;
+    padding:3px 8px; border-radius:6px; line-height:1.45}
+  nav#TOC a:hover{background:var(--accent-soft); color:var(--accent)}
+  nav#TOC a.active{background:var(--accent-soft); color:var(--accent); font-weight:600}
+  /* 标题 */
+  h2,h3{line-height:1.3; scroll-margin-top:24px}
+  h2{font-size:23px; margin:44px 0 14px; padding-top:14px; border-top:1px solid var(--line)}
+  h3{font-size:18px; margin:26px 0 10px; color:#27344a}
+  /* 正文 */
+  p{margin:10px 0}
+  a{color:var(--accent)}
+  strong{color:#10243d}
+  ul,ol{margin:10px 0; padding-left:24px}
+  li{margin:4px 0}
+  hr{border:none; border-top:1px solid var(--line); margin:30px 0}
+  .lead{font-weight:700; font-size:17px; color:#10243d; margin:14px 0}
+  .note{color:var(--muted)}
+  /* 代码 */
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.9em;
+    background:var(--code-bg); padding:.12em .4em; border-radius:5px; color:#b5365f}
+  pre{background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+    padding:16px 18px; overflow-x:auto; line-height:1.45}
+  pre code{background:none; padding:0; color:var(--fg); font-size:13px; white-space:pre}
+  /* 表格 */
+  table{border-collapse:collapse; width:100%; margin:16px 0; font-size:14.5px;
+    border:1px solid var(--line); border-radius:8px; overflow:hidden}
+  th,td{border:1px solid var(--line); padding:9px 13px; text-align:left; vertical-align:top}
+  th{background:var(--th-bg); font-weight:600; color:#27344a}
+  tbody tr:nth-child(even){background:var(--zebra)}
+  td:first-child{white-space:nowrap; font-weight:600; color:#27344a}
+  table.wrap td:first-child{white-space:normal; font-weight:400; color:var(--fg)}
+  /* 引用块 */
+  blockquote{margin:16px 0; padding:12px 18px; background:var(--accent-soft);
+    border-left:4px solid var(--accent); border-radius:0 8px 8px 0; color:#2a3a52}
+  blockquote p{margin:6px 0}
+  /* 状态总览 */
+  #status-overview{display:flex; flex-wrap:wrap; gap:14px; margin:22px 0 8px}
+  .stat-card{flex:1 1 180px; border:1px solid var(--line); border-radius:10px; padding:14px 18px; background:#fbfcfd}
+  .stat-card h4{margin:0 0 8px; font-size:13px; color:var(--muted); font-weight:600; letter-spacing:.04em}
+  .stat-card .nums{font-size:14px; line-height:2}
+  .pill{display:inline-block; padding:1px 9px; border-radius:999px; font-size:12.5px; font-weight:600; margin-right:6px}
+  .pill.bad{background:#fdecec; color:var(--danger)}
+  .pill.part{background:#fff4e5; color:var(--warn)}
+  .pill.ok{background:#e7f6ee; color:var(--ok)}
+  /* 响应式 */
+  @media (max-width:1000px){
+    body{padding:0 22px 80px}
+    nav#TOC{position:static; width:auto; height:auto; border-right:none;
+      border-bottom:1px solid var(--line); margin:0 -22px 8px; padding:18px 22px}
+  }
+</style>
+</head>
+<body>
+
+<nav id="TOC">
+  <div class="toc-title">目录</div>
+  <ul>
+    <li><a href="#sec1">1. 总则</a>
+      <ul>
+        <li><a href="#sec1-1">1.1 核心原则</a></li>
+        <li><a href="#sec1-2">1.2 当前状态</a></li>
+        <li><a href="#sec1-3">1.3 「安全状态」的定义</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec2">2. PLC 侧安全要求</a>
+      <ul>
+        <li><a href="#sec2-1">2.1 门控心跳看门狗</a></li>
+        <li><a href="#sec2-2">2.2 模式寄存器</a></li>
+        <li><a href="#sec2-3">2.3 控制模式切换流程</a></li>
+        <li><a href="#sec2-4">2.4 本地安全 Setpoint</a></li>
+        <li><a href="#sec2-5">2.5 Actuator Clamp</a></li>
+        <li><a href="#sec2-6">2.6 急停 / 联锁</a></li>
+        <li><a href="#sec2-7">2.7 上电默认 / 断电恢复</a></li>
+        <li><a href="#sec2-8">2.8 维修锁</a></li>
+        <li><a href="#sec2-9">2.9 DO 触点 → DTU 短信告警</a></li>
+        <li><a href="#sec2-10">2.10 传感器 / 反馈坏值 fail-safe</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec3">3. Edge 侧安全要求（我方，略）</a></li>
+    <li><a href="#sec4">4. 寄存器规划</a></li>
+    <li><a href="#sec5">5. 时序要求</a></li>
+    <li><a href="#sec6">6. 失败注入验收</a></li>
+    <li><a href="#sec7">7. 验收标准与关闭条件</a></li>
+    <li><a href="#sec8">8. 里程碑与依赖</a></li>
+    <li><a href="#sec9">9. 风险与免责</a></li>
+    <li><a href="#sec10">10. 签收</a></li>
+    <li><a href="#secA">附录 A：与审计条目对应</a></li>
+    <li><a href="#secB">附录 B：产线 I/O 点表（外部）</a></li>
+  </ul>
+</nav>
+
+<header class="doc-head">
+  <div class="title">PLC 安全契约（PLC Safety Contract）</div>
+  <div class="meta">
+    <b>版本</b>：v1.0-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-03 &nbsp;·&nbsp; <b>状态</b>：待集成商签收<br>
+    <b>适用范围</b>：DryController 边缘控制系统与 PLC 侧安全责任划分<br>
+    <b>关联架构</b>：<a href="../architecture/edge-architecture-v2.md">Edge 架构 v2</a><br>
+    <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">超限报警规范</a>
+  </div>
+</header>
+
+<div id="status-overview">
+  <div class="stat-card">
+    <h4>整体状态</h4>
+    <div class="nums">v1.0-draft · 待集成商签收<br>控制写入：默认 disabled</div>
+  </div>
+  <div class="stat-card">
+    <h4>PLC 侧验收（P1–P9）</h4>
+    <div class="nums"><span class="pill bad">未做 9</span> 0 / 9 通过</div>
+  </div>
+</div>
+
+<hr>
+
+<h2 id="sec1">1. 总则</h2>
+
+<h3 id="sec1-1">1.1 核心原则</h3>
+<p class="lead">PLC 是最后安全屏障，edge 不承担最终安全责任。</p>
+<ul>
+  <li>Edge 系统（上位机）负责数据采集、分析、展示和控制建议</li>
+  <li>PLC（可编程逻辑控制器）负责直接控制电机、阀门、加热器等硬件</li>
+  <li>任何单点故障（edge 挂了、网络断了、软件 bug）都不应导致安全事故</li>
+</ul>
+
+<h3 id="sec1-2">1.2 当前状态</h3>
+<table>
+  <thead><tr><th>侧</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td>PLC 侧</td><td><strong>全部未做</strong>，当前仅 Modbus passthrough（透传）</td></tr>
+    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），其余等 PLC 侧完成后跟进</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec1-3">1.3 「安全状态」的定义</h3>
+<p>本契约多处提到「切到手动模式 / 安全 setpoint / 安全默认」。对干燥工艺，安全状态 <strong>不等于「所有输出立即归零」</strong>：骤停加热和风机可能导致余热堆积、物料闷烧。</p>
+<ul>
+  <li>安全状态各执行器的具体目标值由 <strong>工艺部门</strong> 定义；工艺定义到位前，集成商不得默认用「全部输出归零」作为安全状态。</li>
+  <li>本契约只约束「进入安全状态」这一安全动作，<strong>不规定产线启停流程</strong>（由产线工艺控制负责）。</li>
+</ul>
+
+<hr>
+
+<h2 id="sec2">2. PLC 侧安全要求（集成商必须实现）</h2>
+
+<h3 id="sec2-1">2.1 门控心跳看门狗</h3>
+<table>
+  <tbody>
+    <tr><td>寄存器</td><td><code>EDGE_CONTROL_HEALTHY</code>（地址待分配）</td></tr>
+    <tr><td>语义</td><td>Edge 系统递增计数器，每秒 +1；仅当整条控制链路健康时才递增</td></tr>
+    <tr><td>PLC 行为</td><td>心跳计数器在「看门狗超时窗口」内无变化 → 判定 edge 控制不可信 → 自动切手动模式</td></tr>
+    <tr><td>超时窗口</td><td><code>看门狗超时 = 心跳周期 × 容忍丢拍数 + 余量</code>，默认 <code>1s × 3 + 1s ≈ 4s</code>（唯一可调量是容忍丢拍数；<strong>不要再单独设一个独立的超时秒数与本式并存</strong>，见 §5）</td></tr>
+    <tr><td>判据</td><td>看门狗监测「计数器值是否<strong>发生变化</strong>」（含溢出回绕 65535→0），<strong>不是</strong>「值是否递增」，否则回绕瞬间会误判超时</td></tr>
+    <tr><td>Fail-closed</td><td>Edge 侧任一依赖异常（MQTT 断、API 挂、签名失败、range guard 失败）→ 心跳停止递增 → PLC 切手动</td></tr>
+  </tbody>
+</table>
+<p><strong>通俗说</strong>：PLC 每隔几秒看 edge 的心跳计数器有没有在变；如果在「超时窗口」内一直没变（连续丢够约定的拍数），就自己接管控制。</p>
+
+<h3 id="sec2-2">2.2 模式寄存器</h3>
+<table>
+  <tbody>
+    <tr><td>寄存器</td><td><code>CONTROL_MODE</code>（地址待分配）</td></tr>
+    <tr><td>取值</td><td>0 = 手动（现场手动控制），1 = 自动（edge 远程控制），2 = 维修锁（维修锁定，仅手动解除）</td></tr>
+    <tr><td>可读性</td><td>Edge 系统可通过 Modbus 读取当前模式</td></tr>
+    <tr><td>切换条件</td><td>见 §2.3 控制模式切换流程</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec2-3">2.3 控制模式切换流程</h3>
+<pre><code>          门控心跳正常                门控心跳超时
+┌──────────┐    ┌──────────┐    ┌──────────┐
+│  自动模式  │ →  │  等待确认  │ →  │  手动模式  │
+│ (MODE=1)  │    │  (防抖)    │    │ (MODE=0)  │
+└──────────┘    └──────────┘    └──────────┘
+      ↑                                │
+      └────────── 心跳恢复 ────────────┘
+
+         维修锁：人为置入 → 强制手动模式(MODE=2) → 仅手动解除可退出
+         （锁定期间忽略 edge 心跳恢复，不自动接管）</code></pre>
+<p><strong>关键规则</strong>：</p>
+<ul>
+  <li>维修锁期间，edge 心跳恢复 <strong>不能</strong> 自动切回自动模式</li>
+  <li>必须维修人员手动解除锁定后，才允许 edge 重新接管</li>
+</ul>
+
+<h3 id="sec2-4">2.4 本地安全 Setpoint</h3>
+<table>
+  <tbody>
+    <tr><td>用途</td><td>edge 挂了之后，PLC 自动切换到这组预设参数继续运行</td></tr>
+    <tr><td>内容</td><td>链速、抽风频率、温度目标等的安全默认值（即 §1.3 定义的安全状态，由工艺部门确定；注意加热/风机停机次序，不默认全部归零）</td></tr>
+    <tr><td>切换方式</td><td>模式从 edge(1) 切到本地(0) 时，自动加载本地 setpoint</td></tr>
+    <tr><td>过渡要求</td><td>bumpless 切换，输出不能跳变，平滑过渡</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec2-5">2.5 Actuator Clamp（输出限幅）</h3>
+<table>
+  <tbody>
+    <tr><td>用途</td><td>不管 edge 给什么指令，PLC 自动把输出限制在安全范围内</td></tr>
+    <tr><td>示例</td><td>温度指令 &gt; 120°C → 强制压到 120°C；链速 &lt; 0.5 → 强制压到 0.5</td></tr>
+    <tr><td>实现层级</td><td>PLC 程序内硬编码或安全功能块，不可被 edge 覆盖</td></tr>
+    <tr><td>告警</td><td>触发 clamp 时，置位告警标志位，edge 可读取</td></tr>
+  </tbody>
+</table>
+<p><strong>通俗说</strong>：就算 edge 发了个“温度 500 度”的指令，PLC 也会自动压到安全范围。</p>
+
+<h3 id="sec2-6">2.6 急停 / 联锁</h3>
+<table>
+  <tbody>
+    <tr><td>急停</td><td>硬件级紧急停止按钮，按下后所有输出归零或安全值，<strong>不经过任何软件</strong></td></tr>
+    <tr><td>联锁</td><td>安全联锁条件（如门打开 → 自动停机、温度超限 → 自动断热）</td></tr>
+    <tr><td>实现方式</td><td>硬接线或安全 PLC 功能块，独立于 edge 系统</td></tr>
+    <tr><td>Edge 不介入</td><td>急停/联锁的判断和执行完全在 PLC 侧，edge 不参与</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec2-7">2.7 上电默认 / 断电恢复</h3>
+<table>
+  <tbody>
+    <tr><td>触发</td><td>覆盖三类：全线上电（冷启动）、PLC 单独复位/重启、动力回路单独断电恢复</td></tr>
+    <tr><td>行为</td><td>任一触发后进入安全默认态：<strong>不自动带载、不沿用断电前的输出指令</strong>；先回读现场实际状态，判定完成前不驱动执行器</td></tr>
+    <tr><td>模式</td><td>默认 <code>CONTROL_MODE=手动</code>，不自动交还 edge、不自动进入运行，需本地/人工显式启动</td></tr>
+    <tr><td>禁止</td><td>不允许 PLC 记忆/延续断电前状态直接恢复（防一通电就按旧指令全速加热）</td></tr>
+    <tr><td>安全默认值</td><td>各输出具体安全默认值由工艺确定（§1.3）；本契约只要求「不带载、不自动运行」，<strong>不规定启停流程</strong></td></tr>
+    <tr><td>上电事件告警</td><td>断电瞬间 PLC 发不出告警，须在<strong>上电初始化时回溯补报</strong>「发生过掉电/重启」（靠掉电保持/冷启动标志判别），走数据链路上报 cloud-ops；告警<strong>锁存</strong>至人工确认并重启，避免一闪而过被漏看。能区分冷启动/掉电恢复/暖复位则分类上报（取决于 PLC 型号，TBD）</td></tr>
+  </tbody>
+</table>
+<blockquote><p>全线启停、有序停机/重启流程不属本节，由产线工艺控制负责。</p></blockquote>
+
+<h3 id="sec2-8">2.8 维修锁</h3>
+<table>
+  <tbody>
+    <tr><td>触发方式</td><td>维修工人在 PLC 侧手动操作（如拨动开关、HMI 按钮）</td></tr>
+    <tr><td>行为</td><td>强制 PLC 进入手动模式(MODE=2)，忽略所有 edge 指令和心跳</td></tr>
+    <tr><td>解除方式</td><td><strong>仅手动解除</strong>，edge 无法远程解除</td></tr>
+    <tr><td>目的</td><td>防止维修时 edge 恢复心跳后抢回控制权，导致设备突然动作伤人</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec2-9">2.9 DO 触点 → DTU 短信告警 <span class="pill part">暂缓</span></h3>
+<blockquote><p><strong>状态：暂缓（2026-06-04 决策）。</strong>依据：本产线<strong>有人值守</strong>，值守人员即作为 edge 失联时的发现与通知途径；本条维护成本（4G SIM 续费、DO 触点氧化、每周自检）在有人值守下性价比不足，暂不实施。<br>
+<strong>暂缓代价（集成商与甲方须共同知悉）</strong>：暂缓后全线告警均依赖 edge + 网络通路；一旦 <strong>edge 与网络同时中断</strong>，将<strong>没有独立于网络的告警兜底</strong>，只能靠现场值守人员当场发现处置。<strong>若产线改为无人 / 少人值守，必须先恢复本条。</strong>下方原方案保留备查。</p></blockquote>
+<table>
+  <tbody>
+    <tr><td>用途</td><td>独立于 edge、独立于网络的最后一道告警通道</td></tr>
+    <tr><td>触发条件</td><td>门控心跳超时（edge 挂了）</td></tr>
+    <tr><td>实现方式</td><td>PLC 的一个数字输出(DO) → 接 4G DTU → 发短信到运维手机</td></tr>
+    <tr><td>独立性</td><td>即使 edge 全挂 + 网络全断，这条通道仍能工作</td></tr>
+    <tr><td>周期性自检</td><td>这条平时不动的链路会静默失效（DO 触点氧化 / DTU 欠费 / SIM 失效）；需周期性自检（如每周自动触发一次测试短信），自检本身失败也要告警</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec2-10">2.10 传感器 / 反馈坏值 fail-safe</h3>
+<table>
+  <tbody>
+    <tr><td>问题</td><td>clamp（§2.5）只限 <strong>输出指令</strong>，挡不住 <strong>输入坏值</strong> 导致的失控。温度探头断线/短路/超量程读成坏值（如恒 0°C）时，PLC 本地 PID 会据此 <strong>全速加热 → 着火</strong></td></tr>
+    <tr><td>检测</td><td>PLC 对关键反馈（温度、链速等 PV）做坏值检测：断线、超量程、长时间冻结不变</td></tr>
+    <tr><td>动作</td><td>检测到坏值 → 该回路进入安全状态（见 §1.3），<strong>禁止拿坏值继续 PID 控制</strong>；置告警标志位，edge 可读</td></tr>
+    <tr><td>范围</td><td>本节针对 <strong>PLC ↔ 现场仪表</strong> 这一段，独立于 edge↔PLC 链路安全</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec3">3. Edge 侧安全要求（我方负责实现）</h2>
+<blockquote><p>本节为 <strong>Edge 侧（我方负责实现）</strong> 的安全要求（双心跳、Range Guard、模式状态机、软件急停、签名指令、授权层级等）。<strong>集成商无需关注，本版略去</strong>；PLC 侧需对接的接口、寄存器与时序见 §2、§4、§5。完整内容以我方内部版为准。</p></blockquote>
+<h2 id="sec4">4. 寄存器规划</h2>
+<blockquote><p><strong>待与集成商共同分配具体地址</strong></p></blockquote>
+<table class="wrap">
+  <thead><tr><th>寄存器名</th><th>方向</th><th>数据类型</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>EDGE_CONTROL_HEALTHY</code></td><td>Edge → PLC</td><td>UINT16 递增计数</td><td>门控心跳，PLC 看门狗监测</td></tr>
+    <tr><td><code>HOST_ALIVE</code></td><td>Edge → PLC</td><td>UINT16 递增计数</td><td>主机存活心跳，诊断用</td></tr>
+    <tr><td><code>CONTROL_MODE</code></td><td>PLC → Edge</td><td>UINT8 (0/1/2)</td><td>当前控制模式：手动/自动/维修锁</td></tr>
+    <tr><td><code>CLAMP_ACTIVE</code></td><td>PLC → Edge</td><td>BOOL</td><td>clamp 限幅触发标志</td></tr>
+    <tr><td><code>ESTOP_REQUEST</code></td><td>Edge → PLC</td><td>BOOL</td><td>软件急停请求</td></tr>
+    <tr><td><code>COMMAND_ACK</code></td><td>PLC → Edge</td><td>UINT8</td><td>命令响应：0=待确认, 1=ACK, 2=NAK</td></tr>
+    <tr><td><code>COMMAND_ID</code></td><td>Edge → PLC</td><td>UINT32</td><td>命令序列号，用于 ACK/NAK 关联</td></tr>
+    <tr><td><code>{TAG}_SP</code></td><td>Edge → PLC</td><td>REAL</td><td>各控制参数设定值（链速、频率等）</td></tr>
+    <tr><td><code>{TAG}_PV</code></td><td>PLC → Edge</td><td>REAL</td><td>各控制参数实际值</td></tr>
+  </tbody>
+</table>
+<p><strong>数据格式</strong>：</p>
+<ul>
+  <li>REAL 类型：IEEE 754 浮点，32 位</li>
+  <li>递增计数器：UINT16 溢出后归零重计（@1Hz 约 18 小时回绕一次）；PLC 看门狗以「值是否变化」为判据，回绕（65535→0）视为正常更新，不得当作超时或异常</li>
+  <li>字节序：Big-Endian（与 Modbus 标准一致）</li>
+</ul>
+
+<hr>
+
+<h2 id="sec5">5. 时序要求</h2>
+<table>
+  <thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>心跳周期</td><td>1 秒</td><td>Edge 每秒递增一次心跳计数器</td></tr>
+    <tr><td>容忍丢拍数</td><td>3 拍</td><td>允许偶发丢包的最大连续丢拍数（<strong>唯一可调量</strong>）</td></tr>
+    <tr><td>看门狗超时</td><td>≈ 4 秒</td><td>派生量：<code>心跳周期 × 容忍丢拍数 + 1s 余量</code>；PLC 在此窗口内计数器无变化即切手动。不要再单独定义一个独立的超时秒数与本式并存</td></tr>
+    <tr><td>模式切换防抖</td><td>2 秒</td><td>心跳恢复后等待 2 秒才允许切回自动模式</td></tr>
+    <tr><td>bumpless 过渡时间</td><td>≤ 5 秒</td><td>模式切换时输出平滑过渡的最大时间</td></tr>
+    <tr><td>命令响应超时</td><td>5 秒</td><td>Edge 发出命令后等待 ACK/NAK 的最大时间</td></tr>
+  </tbody>
+</table>
+<blockquote>
+  <p>以上参数为建议值，需与集成商根据现场工况确认。</p>
+  <p><strong>看门狗超时的硬上界由工艺安全时间（PST）决定</strong>：edge 在异常 setpoint 下挂掉后、到物料/设备受损前的时间窗即 PST，看门狗超时必须 <strong>&lt; PST</strong>。上面 ≈4 秒为占位，须工艺部门给出 PST 后复核（若 PST 很短，需同步缩短心跳周期）。</p>
+</blockquote>
+
+<hr>
+
+<h2 id="sec6">6. 失败注入验收</h2>
+<p>验收不能只覆盖正常路径，至少覆盖以下故障场景：</p>
+<table class="wrap">
+  <thead><tr><th>#</th><th>场景</th><th>预期行为</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Edge 系统关机（<code>docker compose down</code>）</td><td>PLC 自动切手动模式，用安全 setpoint 继续运行</td></tr>
+    <tr><td>2</td><td>Edge 进程崩溃（kill edge-daq）</td><td>门控心跳停止，PLC 防抖后切手动</td></tr>
+    <tr><td>3</td><td>心跳进程单独崩溃</td><td>PLC 防抖后切手动；采集即使还在也不能保持自动模式</td></tr>
+    <tr><td>4</td><td>MQTT 不可用</td><td>门控心跳 fail-closed，PLC 切手动</td></tr>
+    <tr><td>5</td><td>Edge API 不可用</td><td>无新 command 下发，PLC 不依赖 edge-api 维持安全</td></tr>
+    <tr><td>6</td><td>Modbus 写失败</td><td>Command NAK，不重放危险写入，告警可见</td></tr>
+    <tr><td>7</td><td>Edge 发越界指令</td><td>Edge range guard 拒绝 → 不发到 PLC；万一到了 PLC → clamp 兜底</td></tr>
+    <tr><td>8</td><td>维修锁期间 edge 恢复</td><td>PLC 不自动接管，需手动解除锁定</td></tr>
+    <tr><td>9</td><td>模式切换时输出跳变</td><td>bumpless 过渡，输出平滑</td></tr>
+    <tr><td>10</td><td>上电重启</td><td>PLC 进入安全默认状态，不记忆上次状态</td></tr>
+    <tr><td>11</td><td>硬件急停触发</td><td>所有输出安全化，不经过任何软件</td></tr>
+    <tr><td>12</td><td>边缘设备重启</td><td>Tailscale/SSH/watchdog/compose 按序恢复，PLC 期间保持手动</td></tr>
+    <tr><td>13</td><td>温度/反馈传感器坏值（断线/超量程/冻结）</td><td>PLC 检测到坏值 → 该回路进入安全状态，不拿坏值继续 PID（§2.10）</td></tr>
+    <tr><td>14</td><td>心跳计数器溢出回绕（65535→0）</td><td>PLC 视为正常更新，不误判超时切手动（§2.1 判据）</td></tr>
+    <tr><td>15</td><td>DO→DTU 告警链路自检</td><td>周期性测试短信能收到；链路坏（DTU 欠费/SIM 失效）时自检失败并告警（§2.9）</td></tr>
+    <tr><td>16</td><td>掉电后重新上电</td><td>PLC 回溯补报锁存的掉电/上电告警，且产线不自动启动、停在本地安全模式待人工（§2.7）</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec7">7. 验收标准与关闭条件</h2>
+
+<h3 id="sec7-1">7.1 PLC 侧验收清单</h3>
+<table class="wrap">
+  <thead><tr><th>#</th><th>验收项</th><th>验收方式</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td>P1</td><td>门控心跳看门狗</td><td>Edge 停止心跳后，看门狗超时窗口内 PLC 自动切手动</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P2</td><td>模式寄存器可读</td><td>Edge Modbus 读取 CONTROL_MODE 正确</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P3</td><td>手动安全 setpoint</td><td>切手动后设备用安全参数继续运行</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P4</td><td>Actuator clamp</td><td>越界指令被限幅到安全范围</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P5</td><td>急停/联锁</td><td>硬件急停触发后输出安全化</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P6</td><td>上电默认</td><td>上电后进入安全状态</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P7</td><td>维修锁</td><td>锁定后 edge 无法接管，手动解除后可恢复</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P8</td><td>DO → DTU 短信</td><td>心跳超时后运维手机收到短信</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P9</td><td>传感器坏值 fail-safe</td><td>反馈坏值时该回路进入安全状态，不据坏值控制</td><td><span class="pill bad">❌ 未做</span></td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec7-2">7.2 Edge 侧验收清单</h3>
+<blockquote><p>Edge 侧验收（E1–E7）由我方负责，<strong>集成商无需关注，本版略去</strong>；完整清单见我方内部版。</p></blockquote>
+
+<h3 id="sec7-3">7.3 关闭条件</h3>
+<p class="lead">三方全部验收通过后才能关闭 P0-SAFETY：</p>
+<ol>
+  <li>PLC 集成商签收 P1~P8 全部通过</li>
+  <li>Edge 侧 E1~E7 全部通过</li>
+  <li>独立复核确认失败注入验收（§6）全部通过</li>
+</ol>
+
+<hr>
+
+<h2 id="sec8">8. 里程碑与依赖</h2>
+<pre><code>当前状态（2026-06-03）
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ 阶段 1：PLC 侧安全功能实现               │
+│ 集成商完成 P1~P8                        │
+│ 交付物：PLC 程序 + 寄存器表 + 测试报告    │
+└─────────────┬───────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────┐
+│ 阶段 2：Edge 侧安全功能实现               │
+│ 我方完成 E1~E7                          │
+│ 交付物：代码 + 测试 + 联调记录            │
+└─────────────┬───────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────┐
+│ 阶段 3：联调 + 失败注入验收               │
+│ 双方在场，跑完 §6 全部场景                │
+│ 交付物：联调报告 + 验收签字               │
+└─────────────┬───────────────────────────┘
+              │
+              ▼
+        P0-SAFETY 关闭
+              │
+              ▼
+┌─────────────────────────────────────────┐
+│ 阶段 4：autopilot 可选启用               │
+│ 仅在 P0-SAFETY 关闭后允许                │
+└─────────────────────────────────────────┘</code></pre>
+
+<hr>
+
+<h2 id="sec9">9. 风险与免责</h2>
+<ol>
+  <li><strong>PLC 侧未实现本契约要求前，edge 控制写入全部禁用。</strong> 这不是拖延，是安全保障。</li>
+  <li><strong>本契约不覆盖 PLC 程序本身的 bug。</strong> PLC 程序质量由集成商负责。</li>
+  <li><strong>现场工艺参数（温度范围、链速范围等）由工艺部门确定。</strong> 本文档中的示例值仅为说明。</li>
+  <li><strong>急停/联锁的硬件设计不在本契约范围内。</strong> 由设备制造商和安全部门负责。</li>
+</ol>
+
+<hr>
+
+<h2 id="sec10">10. 签收</h2>
+<table>
+  <thead><tr><th>角色</th><th>单位</th><th>签字</th><th>日期</th></tr></thead>
+  <tbody>
+    <tr><td>PLC 集成商</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+    <tr><td>Edge 开发方</td><td>DryController</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+    <tr><td>甲方/业主</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="secA">附录 A：与 P0-SAFETY 审计条目的对应</h2>
+<p>本契约是 <code>architecture-audit-2026-05-06.md</code> 中 <code>P0-SAFETY</code> 条目的详细展开。</p>
+<table class="wrap">
+  <thead><tr><th>审计条目要求</th><th>本契约对应章节</th></tr></thead>
+  <tbody>
+    <tr><td>PLC 侧补 <code>EDGE.HEARTBEAT</code></td><td>§2.1 门控心跳看门狗</td></tr>
+    <tr><td>PLC 侧补 safe-stop</td><td>§2.7 上电默认</td></tr>
+    <tr><td>PLC 侧补 clamp</td><td>§2.5 Actuator Clamp</td></tr>
+    <tr><td>PLC 侧补急停/联锁</td><td>§2.6 急停/联锁</td></tr>
+    <tr><td>PLC 侧补上电默认</td><td>§2.7 上电默认</td></tr>
+    <tr><td>PLC 侧补维修锁</td><td>§2.8 维修锁</td></tr>
+    <tr><td>PLC 侧补 DO/DTU 告警</td><td>§2.9 DO 触点 → DTU 短信</td></tr>
+  </tbody>
+</table>
+<p><strong>审计要求之外的补强</strong>（评审新增，非 P0-SAFETY 原文，但属关闭前应覆盖的安全项）：</p>
+<table class="wrap">
+  <thead><tr><th>补强项</th><th>章节</th></tr></thead>
+  <tbody>
+    <tr><td>「安全状态」工艺定义（≠归零）</td><td>§1.3</td></tr>
+    <tr><td>传感器/反馈坏值 fail-safe</td><td>§2.10</td></tr>
+    <tr><td>看门狗超时与 PST 挂钩</td><td>§5</td></tr>
+    <tr><td>DO/DTU 链路周期性自检</td><td>§2.9</td></tr>
+    <tr><td>心跳回绕判据</td><td>§2.1 / §4</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="secB">附录 B：产线 I/O 点表</h2>
+<p>产线工艺流程图与完整 I/O 点表（48 点 + 建议补充点位）已抽出为独立交互页面，便于现场 / 开发查询：<a href="io-map.html">io-map.html</a>（点击流程图标签即可跳转到点表对应行）。</p>
+<p class="note">其中「急停按钮、拉绳/跑偏开关、电机热继跳闸、轴承/成品超温、变频器故障」等条目正是本契约 §2.6 联锁、§2.10 坏值 fail-safe 关心的安全输入，后续点表冻结时需与本契约对齐。</p>
+
+<script>
+  // 目录 scrollspy：高亮当前章节
+  (function(){
+    var links = Array.prototype.slice.call(document.querySelectorAll('#TOC a'));
+    var map = {};
+    links.forEach(function(a){
+      var id = a.getAttribute('href').slice(1);
+      var el = document.getElementById(id);
+      if(el) map[id] = a;
+    });
+    var targets = Object.keys(map).map(function(id){return document.getElementById(id);});
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          links.forEach(function(a){a.classList.remove('active');});
+          if(map[e.target.id]) map[e.target.id].classList.add('active');
+        }
+      });
+    }, {rootMargin:'0px 0px -75% 0px', threshold:0});
+    targets.forEach(function(t){obs.observe(t);});
+  })();
+</script>
+
+</body>
+</html>

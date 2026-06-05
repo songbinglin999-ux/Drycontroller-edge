@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PLC 控制逻辑 — DryController</title>
+<style>
+  :root{
+    --fg:#1f2733; --muted:#5b6675; --line:#e2e6ec; --bg:#ffffff;
+    --accent:#2f6fb0; --accent-soft:#eef4fb;
+    --code-bg:#f5f7fa; --th-bg:#f0f3f7; --zebra:#fafbfc;
+    --warn:#b34700; --danger:#c0392b; --ok:#1e8a4c;
+    --sidebar:280px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; color:var(--fg); background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",
+                "Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:16px; line-height:1.7;
+    padding:0 48px 120px calc(var(--sidebar) + 40px);
+    -webkit-font-smoothing:antialiased;
+  }
+  header.doc-head{border-bottom:3px solid var(--accent); margin:32px 0 8px; padding-bottom:16px;}
+  header.doc-head .title{font-size:27px; font-weight:700; margin:0 0 10px}
+  header.doc-head .meta{color:var(--muted); font-size:14px; line-height:1.9}
+  header.doc-head .meta b{color:#27344a; font-weight:600}
+  nav#TOC{
+    position:fixed; top:0; left:0; bottom:0; width:var(--sidebar);
+    overflow-y:auto; background:#fbfcfd; border-right:1px solid var(--line);
+    padding:24px 18px; font-size:13px;
+  }
+  nav#TOC .toc-title{font-weight:700; font-size:12px; letter-spacing:.12em; color:var(--muted); margin-bottom:12px}
+  nav#TOC ul{list-style:none; margin:0; padding-left:0}
+  nav#TOC ul ul{padding-left:12px; margin:2px 0}
+  nav#TOC li{margin:2px 0}
+  nav#TOC a{color:var(--muted); text-decoration:none; display:block;
+    padding:3px 7px; border-radius:5px; line-height:1.4; font-size:12.5px}
+  nav#TOC a:hover{background:var(--accent-soft); color:var(--accent)}
+  nav#TOC a.active{background:var(--accent-soft); color:var(--accent); font-weight:600}
+  h2{font-size:21px; line-height:1.3; margin:40px 0 12px; padding-top:12px; border-top:1px solid var(--line)}
+  h3{font-size:17px; margin:24px 0 8px; color:#27344a}
+  h4{font-size:15px; margin:18px 0 6px; color:#354a63}
+  p{margin:8px 0}
+  a{color:var(--accent)}
+  strong{color:#10243d}
+  ul,ol{margin:8px 0; padding-left:22px}
+  li{margin:3px 0}
+  hr{border:none; border-top:1px solid var(--line); margin:28px 0}
+  .note{color:var(--muted); font-size:14px}
+  .lead{font-weight:700; font-size:16px; color:#10243d; margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.88em;
+    background:var(--code-bg); padding:.12em .4em; border-radius:4px; color:#b5365f}
+  pre{background:var(--code-bg); border:1px solid var(--line); border-radius:7px;
+    padding:14px 16px; overflow-x:auto; line-height:1.4; font-size:13px}
+  pre code{background:none; padding:0; color:var(--fg); white-space:pre}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:14px;
+    border:1px solid var(--line); border-radius:7px; overflow:hidden}
+  th,td{border:1px solid var(--line); padding:8px 12px; text-align:left; vertical-align:top}
+  th{background:var(--th-bg); font-weight:600; color:#27344a}
+  tbody tr:nth-child(even){background:var(--zebra)}
+  td:first-child{white-space:nowrap; font-weight:600; color:#27344a}
+  table.wrap td:first-child{white-space:normal; font-weight:400; color:var(--fg)}
+  .tbd{color:var(--warn); font-style:italic}
+  .tag{display:inline-block; font-size:11px; font-weight:600; padding:1px 7px; border-radius:999px; margin-left:4px}
+  .tag.feed{background:#e7f6ee; color:var(--ok)}
+  .tag.host{background:#eef4fb; color:var(--accent)}
+  .tag.boiler{background:#fde8e8; color:var(--danger)}
+  .tag.screen{background:#f3eefa; color:#7c3aed}
+  .tag.out{background:#f0f3f7; color:#475569}
+  blockquote{margin:14px 0; padding:10px 16px; background:var(--accent-soft);
+    border-left:4px solid var(--accent); border-radius:0 7px 7px 0; color:#2a3a52}
+  blockquote p{margin:4px 0}
+  @media (max-width:980px){
+    body{padding:0 18px 80px}
+    nav#TOC{position:static; width:auto; height:auto; border-right:none;
+      border-bottom:1px solid var(--line); margin:0 -18px 8px; padding:16px 18px}
+  }
+</style>
+</head>
+<body>
+
+<nav id="TOC">
+  <div class="toc-title">目录</div>
+  <ul>
+    <li><a href="#sec0">0. 总则</a></li>
+    <li><a href="#sec1">1. 上料电机</a>
+      <ul>
+        <li><a href="#sec1-1">1.1 M1 — 料斗1→料斗2</a></li>
+        <li><a href="#sec1-2">1.2 M2 — 料斗2→料斗3</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec2">2. 变频给料</a>
+      <ul>
+        <li><a href="#sec2-1">2.1 VFM1 — 料斗3→主机1</a></li>
+        <li><a href="#sec2-2">2.2 VFM2 — 料斗4→主机2</a></li>
+        <li><a href="#sec2-3">2.3 VFM3 — 料斗5→主机4</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec3">3. 主机系统</a>
+      <ul>
+        <li><a href="#sec3-1">3.1 主机1（M3 + VF1 + FTT1）</a></li>
+        <li><a href="#sec3-2">3.2 主机2（M5 + VF2 + FTT2）</a></li>
+        <li><a href="#sec3-3">3.3 主机3（M7）</a></li>
+        <li><a href="#sec3-4">3.4 主机4（M9 + VF3 + FTT3）</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec4">4. 输送联锁</a>
+      <ul>
+        <li><a href="#sec4-1">4.1 M4 — 主机1→料斗4</a></li>
+        <li><a href="#sec4-2">4.2 M6/M7 — 主机2→主机3→料斗5</a></li>
+        <li><a href="#sec4-3">4.3 M8 — 主机3→料斗5</a></li>
+        <li><a href="#sec4-4">4.4 M10 — 主机4→料斗6</a></li>
+        <li><a href="#sec4-5">4.5 M11 — 料斗6→滚筛</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec5">5. 滚筛与出料</a>
+      <ul>
+        <li><a href="#sec5-1">5.1 M12 — 滚筛</a></li>
+        <li><a href="#sec5-2">5.2 M13 — 料斗7→出料</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec6">6. 锅炉</a>
+      <ul>
+        <li><a href="#sec6-1">6.1 锅炉1 B1（M14 + TT1）</a></li>
+        <li><a href="#sec6-2">6.2 锅炉2 B2（M15 + TT2）</a></li>
+      </ul>
+    </li>
+    <li><a href="#sec7">7. 主机电流-进料联动</a></li>
+    <li><a href="#sec8">8. 末端湿度闭环</a></li>
+    <li><a href="#sec9">9. 整线启停顺序</a></li>
+    <li><a href="#secA">附录 A：控制参数汇总（占位）</a></li>
+  </ul>
+</nav>
+
+<header class="doc-head">
+  <div class="title">PLC 控制逻辑</div>
+  <div class="meta">
+    <b>版本</b>：v0.1-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-04 &nbsp;·&nbsp; <b>状态</b>：框架搭建中<br>
+    <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-alarm-spec.html">超限报警规范</a> · <a href="plc-safety-contract.html">安全契约</a><br>
+    <b>说明</b>：本文档定义每台设备的控制方法与联锁逻辑。<span class="tbd">橙色斜体</span>为待工艺确认的占位值。
+  </div>
+</header>
+
+<hr>
+
+<h2 id="sec0">0. 总则</h2>
+
+<h3>控制层级</h3>
+<table>
+  <thead><tr><th>层级</th><th>说明</th><th>示例</th></tr></thead>
+  <tbody>
+    <tr><td>安全联锁</td><td>硬接线或安全 PLC，不经过上位机，最高优先级</td><td>急停、拉绳跑偏、热继跳闸</td></tr>
+    <tr><td>设备保护联锁</td><td>PLC 程序内实现，过流/过载/坏值等</td><td>电流超限→停机、反转清堵</td></tr>
+    <tr><td>工艺联锁</td><td>上下游设备启停顺序、料位联动</td><td>逆启顺停、缺料停下游</td></tr>
+    <tr><td>过程控制</td><td>PID / 调节回路，维持工艺参数</td><td>风温→风机调速、湿度→进料量</td></tr>
+    <tr><td>Edge 指令</td><td>远程设定值下发，受安全契约约束</td><td>edge 写温度目标 / 链速</td></tr>
+  </tbody>
+</table>
+<blockquote><p>低层级可覆盖高层级：安全联锁 > 设备保护 > 工艺联锁 > 过程控制 > Edge 指令。</p></blockquote>
+
+<h3>通用电机清堵逻辑（适用于所有带 CT 的定频电机）</h3>
+<pre><code>正常运行中检测到 I_x > I_overflow（过流阈值）
+  │
+  ├─ 第 1 次：停机 → 等待 T_reverse 秒 → 反转 T_clear 秒 → 停 → 正转
+  │
+  ├─ 第 2 次：同上
+  │
+  └─ 第 3 次仍过流：停机 → 置「清堵报警」DO → 等待人工介入
+      （连续 N_fail 次反转清堵失败后不再自动重试）
+
+参数（占位）：
+  T_reverse = <span class="tbd">2s</span>（反转前等待）
+  T_clear   = <span class="tbd">3s</span>（反转持续时间）
+  N_fail    = <span class="tbd">3</span>（最大重试次数）
+  I_overflow = 按各电机额定电流的 <span class="tbd">150%</span>（待确认）</code></pre>
+
+<h3>通用启停条件符号说明</h3>
+<table>
+  <thead><tr><th>符号</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td><code>START_COND</code></td><td>启动条件（全部满足才允许启动）</td></tr>
+    <tr><td><code>STOP_COND</code></td><td>停止条件（任一满足即停止）</td></tr>
+    <tr><td><code>INTERLOCK</code></td><td>联锁条件（触发后强制停机并锁定，需复位）</td></tr>
+    <tr><td><code>RUN_FB</code></td><td>运行反馈（DI，确认电机实际在转）</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec1">1. 上料电机 <span class="tag feed">料斗补料</span></h2>
+
+<h3 id="sec1-1">1.1 M1 — 料斗1→料斗2 <span class="tag feed">LL1 控制</span></h3>
+<table>
+  <tbody>
+    <tr><td>控制对象</td><td>M1 电机（DO 启/停），料斗1→料斗2 输送</td></tr>
+    <tr><td>检测信号</td><td>LL1（料斗2料位 DI）、I-M1（电流 AI）</td></tr>
+    <tr><td>控制目的</td><td>维持料斗2料位在设定范围内，保证下游不断料</td></tr>
+  </tbody>
+</table>
+
+<h4>控制逻辑</h4>
+<pre><code>┌─────────────────────────────────────────────────────┐
+│                   M1 上料控制                         │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│  IDLE（待机）                                         │
+│    │  LL1 = 0（料斗2无料）                            │
+│    ▼                                                │
+│  启动 M1                                            │
+│    │                                                │
+│    ├─ LL1 = 1（料斗2有料）→ 停 M1 → 进入 PAUSE       │
+│    │                                                │
+│    └─ 超时 T_feed_max 秒仍 LL1 = 0                   │
+│        → 停 M1 → 报警「料斗1缺料」（上游无料）         │
+│                                                     │
+│  PAUSE（暂停）                                        │
+│    │  等待 T_pause 秒                                │
+│    ▼                                                │
+│  再次检查 LL1                                        │
+│    ├─ LL1 = 1 → 保持停机，继续 PAUSE 循环             │
+│    └─ LL1 = 0 → 回到 IDLE，重新启动 M1               │
+│                                                     │
+│  任何时刻：I-M1 过流 → 执行通用清堵逻辑（§0）          │
+└─────────────────────────────────────────────────────┘</code></pre>
+
+<table>
+  <thead><tr><th>参数</th><th>符号</th><th>占位值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>补料超时</td><td><code>T_feed_max</code></td><td class="tbd">120s</td><td>启动后此时间内 LL1 未触发→缺料报警</td></tr>
+    <tr><td>暂停间隔</td><td><code>T_pause</code></td><td class="tbd">30s</td><td>料满后暂停时间，避免频繁启停</td></tr>
+    <tr><td>过流阈值</td><td><code>I_M1_overflow</code></td><td class="tbd">额定×150%</td><td>见 §0 通用清堵逻辑</td></tr>
+    <tr><td>缺料报警</td><td>—</td><td>DO 声光 + 上报</td><td>见 <a href="plc-alarm-spec.html">报警规范</a></td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec1-2">1.2 M2 — 料斗2→料斗3 <span class="tag feed">LL2 控制</span></h3>
+<table>
+  <tbody>
+    <tr><td>控制对象</td><td>M2 电机（DO 启/停），料斗2→料斗3 输送</td></tr>
+    <tr><td>检测信号</td><td>LL2（料斗3料位 DI）、I-M2（电流 AI）</td></tr>
+    <tr><td>控制目的</td><td>维持料斗3料位，为 VFM1 供料</td></tr>
+  </tbody>
+</table>
+
+<h4>控制逻辑</h4>
+<pre><code>与 M1 逻辑相同（LL2 触发 → 停 M2 → PAUSE 循环），
+区别：缺料报警对象为「料斗2缺料」。
+
+异常处理：
+  I-M2 过流 → 通用清堵逻辑（§0）
+  T_feed_max 内 LL2 未触发 → 报警「料斗2缺料」</code></pre>
+
+<table>
+  <thead><tr><th>参数</th><th>符号</th><th>占位值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>补料超时</td><td><code>T_feed_max</code></td><td class="tbd">120s</td><td>同 M1</td></tr>
+    <tr><td>暂停间隔</td><td><code>T_pause</code></td><td class="tbd">30s</td><td>同 M1</td></tr>
+    <tr><td>过流阈值</td><td><code>I_M2_overflow</code></td><td class="tbd">额定×150%</td><td></td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec2">2. 变频给料 <span class="tag host">主机进料调节</span></h2>
+
+<h3 id="sec2-1">2.1 VFM1 — 料斗3→主机1 <span class="tag host">主令：I-M3 / MT1</span></h3>
+<table>
+  <tbody>
+    <tr><td>控制对象</td><td>VFM1 变频给料机（AO 频率指令 + DO 启停）</td></tr>
+    <tr><td>检测信号</td><td>I-M3（主机电流 AI）、MT1（末端湿度 AI）、LL3（料斗4料位 DI）</td></tr>
+    <tr><td>控制目的</td><td>根据主机电流和末端湿度调节进料量，平衡干燥效率与电机负载</td></tr>
+  </tbody>
+</table>
+
+<h4>控制逻辑</h4>
+<pre><code>正常运行：
+  进料频率 = f(I-M3, MT1)
+
+  调节策略：
+    1. 主令回路 — 电流调节
+       I-M3 < I_low   → 可增加进料（主机负载低，有余力）
+       I-M3 > I_high（额定×100%）    → 减少进料（同时触发预警）
+       I-M3 > I_overload（额定×120%） → 停 VFM1（停料降负荷）
+       I-M3 > 额定×150%              → 停 M3（联锁停机，见 §3.1）
+
+    2. 辅助回路 — 湿度修正
+       MT1 > H_high   → 降低进料（干燥不足，减少湿料输入）
+       MT1 < H_low    → 可增加进料（干燥充分）
+
+    3. 综合输出
+       freq_out = freq_base × K_current × K_humidity
+       限幅在 [freq_min, freq_max]
+
+联锁：
+  LL3 = 1（料斗4满）→ 停 VFM1（下游溢料保护）
+  M3 未运行 → 停 VFM1（主机停则停进料）
+  M4 未运行 → 停 VFM1（出料堵则停进料）</code></pre>
+
+<table>
+  <thead><tr><th>参数</th><th>符号</th><th>占位值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>电流低限</td><td><code>I_low</code></td><td class="tbd">额定×60%</td><td>低于此值可增加进料</td></tr>
+    <tr><td>电流高限</td><td><code>I_high</code></td><td class="tbd">额定×100%</td><td>高于此值减少进料（= 报警预警点，见<a href="plc-alarm-spec.html">报警规范</a> §2.1）</td></tr>
+    <tr><td>过载停料</td><td><code>I_overload</code></td><td class="tbd">额定×120%</td><td>停 VFM1 + 报警</td></tr>
+    <tr><td>湿度高限</td><td><code>H_high</code></td><td class="tbd">TBD %</td><td>高于此值降频</td></tr>
+    <tr><td>湿度低限</td><td><code>H_low</code></td><td class="tbd">TBD %</td><td>低于此值可增频</td></tr>
+    <tr><td>频率下限</td><td><code>freq_min</code></td><td class="tbd">10 Hz</td><td>变频器最低运行频率</td></tr>
+    <tr><td>频率上限</td><td><code>freq_max</code></td><td class="tbd">50 Hz</td><td>变频器额定频率</td></tr>
+    <tr><td>基础频率</td><td><code>freq_base</code></td><td class="tbd">30 Hz</td><td>稳态运行频率</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec2-2">2.2 VFM2 — 料斗4→主机2 <span class="tag host">主令：I-M5</span></h3>
+<p>逻辑同 VFM1，区别：</p>
+<ul>
+  <li>主令电流改为 <code>I-M5</code>（主机2电流）</li>
+  <li>下游联锁改为 M5 + M6 状态</li>
+  <li>LL3 料位作为 VFM1 的下游溢料保护，VFM2 用 <span class="tbd">料斗4+主机2 相关信号（待确认）</span></li>
+</ul>
+
+<h3 id="sec2-3">2.3 VFM3 — 料斗5→主机4 <span class="tag host">主令：I-M9 / LL4</span></h3>
+<p>逻辑同 VFM1，区别：</p>
+<ul>
+  <li>主令电流改为 <code>I-M9</code>（主机4电流）</li>
+  <li>增加 <code>LL4</code> 缓冲料位逻辑：LL4 = 0（料斗5缺料）→ 降频或停 VFM3 → 请求上游 M8 补料</li>
+  <li>下游联锁改为 M9 + M10 状态</li>
+</ul>
+
+<hr>
+
+<h2 id="sec3">3. 主机系统 <span class="tag host">干燥核心</span></h2>
+
+<h3 id="sec3-1">3.1 主机1（M3 + VF1 + FTT1）</h3>
+<table>
+  <tbody>
+    <tr><td>组成</td><td>M3（主电机 DO）、VF1（变频风机 AO）、FTT1（风温 AI）</td></tr>
+    <tr><td>控制目的</td><td>维持主机1干燥温度在工艺设定范围</td></tr>
+  </tbody>
+</table>
+
+<h4>M3 主电机</h4>
+<pre><code>启动条件（全部满足）：
+  - 上游 VFM1 就绪
+  - 下游 M4 就绪
+  - 无安全联锁触发
+  - 无过载报警
+
+停止条件（任一满足）：
+  - I-M3 > 额定×120% → 停 VFM1（先停进料降负荷，停料级）
+  - I-M3 > 额定×150% → 停 M3（联锁停机级）
+  - 安全联锁触发
+  - 人工停机 / Edge 软急停
+
+联锁：
+  M3 故障 → 停 VFM1（上游断料）+ 停 M4（下游停止出料）</code></pre>
+
+<h4>VF1 风机 + FTT1 温度闭环</h4>
+<pre><code>控制策略：PID 温度控制
+
+  目标：FTT1 维持在 T_target（工艺设定值）
+  输出：VF1 频率
+
+  FTT1 > T_target + T_band  → 增大风速（降温）
+  FTT1 < T_target - T_band  → 减小风速（保温）
+  FTT1 > T_alarm_high       → 高温报警 + 增料 / 强制降温
+  FTT1 < T_alarm_low        → 低温报警（供热异常）
+
+  VF1 输出限幅：[freq_min, freq_max]
+
+联锁：
+  M3 未运行 → VF1 降速到最低或停机（主机停则风机降速保安全）
+  FTT1 坏值（断线/超量程/冻结）→ 切手动 / 安全模式（见安全契约 §2.10）</code></pre>
+
+<table>
+  <thead><tr><th>参数</th><th>符号</th><th>占位值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>温度目标</td><td><code>T_target</code></td><td class="tbd">TBD ℃</td><td>由工艺部门确定，edge 可远程写入</td></tr>
+    <tr><td>调节死区</td><td><code>T_band</code></td><td class="tbd">±5 ℃</td><td>在此范围内不调节</td></tr>
+    <tr><td>高温报警</td><td><code>T_alarm_high</code></td><td class="tbd">TBD ℃</td><td>见报警规范</td></tr>
+    <tr><td>低温报警</td><td><code>T_alarm_low</code></td><td class="tbd">TBD ℃</td><td>见报警规范</td></tr>
+    <tr><td>PID 参数</td><td><code>Kp / Ki / Kd</code></td><td class="tbd">TBD</td><td>现场整定</td></tr>
+    <tr><td>风机频率范围</td><td><code>freq_min–max</code></td><td class="tbd">10–50 Hz</td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec3-2">3.2 主机2（M5 + VF2 + FTT2）</h3>
+<p>逻辑同主机1，区别：</p>
+<ul>
+  <li>热源来自锅炉1（TT1），温度闭环目标由锅炉供热能力决定</li>
+  <li>主机电流用 <code>I-M5</code></li>
+  <li>下游联锁 M6（主机2→主机3 输送）</li>
+</ul>
+
+<h3 id="sec3-3">3.3 主机3（M7）<span class="tag host">无独立风机/热源</span></h3>
+<table>
+  <tbody>
+    <tr><td>组成</td><td>M7（主电机 DO）、I-M7（电流 AI）</td></tr>
+    <tr><td>特殊</td><td>主机3 无独立风机和温度检测，靠主机2余热 + 物料自身热量继续干燥</td></tr>
+  </tbody>
+</table>
+<pre><code>启动条件：
+  - M6 运行（上游主机2在出料）
+  - M8 就绪（下游可出料）
+  - 无过载
+
+停止条件：
+  - I-M7 过载
+  - 上游 M6 停机 → 延时 T_delay 后停 M7（排空残料）
+  - 下游 M8 故障
+
+联锁：
+  M7 故障 → 停 M6（上游断料）+ 停 M8（下游停出料）</code></pre>
+
+<h3 id="sec3-4">3.4 主机4（M9 + VF3 + FTT3）</h3>
+<p>逻辑同主机1，区别：</p>
+<ul>
+  <li>热源来自锅炉2（TT2）</li>
+  <li>主机电流用 <code>I-M9</code></li>
+  <li>进料用 VFM3，下游联锁 M10</li>
+</ul>
+
+<hr>
+
+<h2 id="sec4">4. 输送联锁 <span class="tag out">物料流转</span></h2>
+
+<h3 id="sec4-1">4.1 M4 — 主机1→料斗4</h3>
+<pre><code>启动条件：
+  - M3 运行（上游主机1在工作）
+  - LL3 = 0（料斗4未满）
+
+停止条件：
+  - LL3 = 1（料斗4满）→ 停 M4
+  - M3 停机 → 延时 T_empty 后停 M4（排空管道残料）
+  - I-M4 过流 → 清堵逻辑
+
+联锁：
+  M4 故障 → 停 M3 + 停 VFM1（上游全部停止，防止堵料堆积）</code></pre>
+
+<h3 id="sec4-2">4.2 M6/M7 — 主机2→主机3 的输送链</h3>
+<pre><code>联锁关系（故障级联保护）：
+
+  M5（主机2）
+    ↓ 物料流向
+  M6（主机2→主机3 输送）
+    ↓
+  M7（主机3）
+
+  故障处理：
+    M6 故障 → 停 M5（上游主机2停止出料）+ 停 M7（下游主机3停止）
+    M7 故障 → 停 M6 + 停 M5（上游全部停止）
+
+  启停顺序：
+    启动：M7 先启 → M6 → M5（逆序启动，下游先就绪）
+    停止：M5 先停 → 延时 → M6 → 延时 → M7（顺序停机，排空残料）</code></pre>
+
+<h3 id="sec4-3">4.3 M8 — 主机3→料斗5</h3>
+<pre><code>启动条件：M7 运行 + LL4 = 0（料斗5未满）
+停止条件：LL4 = 1 → 停 M8 / M7 停机 → 延时停 M8
+联锁：M8 故障 → 停 M7 → 停 M6 → 停 M5（整条主机2-3链停止）</code></pre>
+
+<h3 id="sec4-4">4.4 M10 — 主机4→料斗6</h3>
+<pre><code>启动条件：M9 运行
+停止条件：M9 停机 → 延时 T_empty 停 M10 / I-M10 过流清堵
+联锁：M10 故障 → 停 M9 + 停 VFM3</code></pre>
+
+<h3 id="sec4-5">4.5 M11 — 料斗6→滚筛</h3>
+<pre><code>启动条件：M12（滚筛）运行
+停止条件：M12 停机 → 延时停 M11
+联锁：M11 故障 → 停 M10（上游断料）
+
+注：料斗6 有 MT1 湿度检测，湿度数据反馈到 VFM1–VFM3 调节（§8）</code></pre>
+
+<hr>
+
+<h2 id="sec5">5. 滚筛与出料 <span class="tag screen">末端设备</span></h2>
+
+<h3 id="sec5-1">5.1 M12 — 滚筛</h3>
+<pre><code>启动条件：
+  - 下游料斗7 或出料通道就绪
+  - 无安全联锁
+
+停止条件：
+  - I-M12 堵筛（过流）→ 清堵逻辑
+  - 上游 M11 停机 → 延时 T_empty 停 M12（筛完残料）
+
+注：若 M12 为变频，转速可调；当前按定频 DO 设计</code></pre>
+
+<h3 id="sec5-2">5.2 M13 — 料斗7→出料</h3>
+<pre><code>启动条件：
+  - 料斗7有料（<span class="tbd">待加料位检测或靠 M12 运行推断</span>）
+  - 无安全联锁
+
+停止条件：
+  - I-M13 过流清堵
+  - 人工停机
+
+注：M13 为最终出料，无下游联锁；需确保出料通道畅通</code></pre>
+
+<hr>
+
+<h2 id="sec6">6. 锅炉 <span class="tag boiler">供热系统</span></h2>
+
+<h3 id="sec6-1">6.1 锅炉1 B1（M14 + TT1）</h3>
+<table>
+  <tbody>
+    <tr><td>控制对象</td><td>M14（锅炉1上料电机 DO）、TT1（锅炉温度 AI）</td></tr>
+    <tr><td>检测信号</td><td>LL5（燃料料位 DI）、TT1（温度 AI）、I-M14（电流 AI）</td></tr>
+    <tr><td>供热对象</td><td>主机2（干燥热风）</td></tr>
+  </tbody>
+</table>
+
+<h4>M14 上料控制</h4>
+<pre><code>逻辑同 M1（LL5 控制补料）：
+  LL5 = 0（缺燃料）→ 启动 M14
+  LL5 = 1（有燃料）→ 停 M14 → PAUSE 循环
+  T_feed_max 内 LL5 未触发 → 报警「锅炉1缺燃料」
+
+  I-M14 过流 → 清堵逻辑</code></pre>
+
+<h4>TT1 温度监测</h4>
+<pre><code>TT1 持续监测锅炉1温度：
+
+  TT1 < T_boiler_low   → 低温报警（炉子可能熄火/故障）
+  TT1 > T_boiler_high  → 超温报警（危险）
+  TT1 在正常范围 → 正常
+
+  注：当前阶段锅炉燃烧控制由锅炉自身完成（独立控制器），
+      PLC 只做温度监测和报警，不直接控制燃烧。
+      若后续需要 PLC 闭环控制，需增加 AO 控制燃料阀/给料频率。
+
+联锁：
+  TT1 > T_boiler_emergency → 强制停 M14（停止供料）+ 报警
+  LL5 超时无反馈 → 报警「锅炉1缺燃料」</code></pre>
+
+<table>
+  <thead><tr><th>参数</th><th>符号</th><th>占位值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>低温报警</td><td><code>T_boiler_low</code></td><td class="tbd">TBD ℃</td><td>低于此值说明炉子故障</td></tr>
+    <tr><td>超温报警</td><td><code>T_boiler_high</code></td><td class="tbd">TBD ℃</td><td>高于此值危险</td></tr>
+    <tr><td>紧急超温</td><td><code>T_boiler_emergency</code></td><td class="tbd">TBD ℃</td><td>停上料 + 报警</td></tr>
+    <tr><td>缺燃料超时</td><td><code>T_feed_max</code></td><td class="tbd">120s</td><td>同 M1</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec6-2">6.2 锅炉2 B2（M15 + TT2）</h3>
+<p>逻辑同锅炉1，区别：</p>
+<ul>
+  <li>上料电机 M15、料位 LL6、温度 TT2</li>
+  <li>供热对象：主机4</li>
+  <li>TT2 超温报警（与 TT1 独立阈值）</li>
+</ul>
+
+<hr>
+
+<h2 id="sec7">7. 主机电流-进料联动</h2>
+<blockquote><p>本节汇总 §2 变频给料中涉及的电流调节策略，作为统一参考。</p></blockquote>
+
+<table class="wrap">
+  <thead><tr><th>主机</th><th>主机电流</th><th>控制的进料</th><th>低负载（可增料）</th><th>高负载（减料/预警）</th><th>停料（报警）</th><th>停机（联锁）</th></tr></thead>
+  <tbody>
+    <tr><td>主机1</td><td>I-M3</td><td>VFM1</td><td>I-M3 &lt; <span class="tbd">60%</span> 额定</td><td>I-M3 &gt; <span class="tbd">100%</span> 额定</td><td>I-M3 &gt; <span class="tbd">120%</span> 额定</td><td>I-M3 &gt; <span class="tbd">150%</span> 额定</td></tr>
+    <tr><td>主机2</td><td>I-M5</td><td>VFM2</td><td>I-M5 &lt; <span class="tbd">60%</span></td><td>I-M5 &gt; <span class="tbd">100%</span></td><td>I-M5 &gt; <span class="tbd">120%</span></td><td>I-M5 &gt; <span class="tbd">150%</span></td></tr>
+    <tr><td>主机4</td><td>I-M9</td><td>VFM3</td><td>I-M9 &lt; <span class="tbd">60%</span></td><td>I-M9 &gt; <span class="tbd">100%</span></td><td>I-M9 &gt; <span class="tbd">120%</span></td><td>I-M9 &gt; <span class="tbd">150%</span></td></tr>
+  </tbody>
+</table>
+<p>调节方式：见 §2.1 VFM1 的 PID 调节策略，各主机参数独立。</p>
+
+<hr>
+
+<h2 id="sec8">8. 末端湿度闭环</h2>
+<table>
+  <tbody>
+    <tr><td>检测点</td><td>MT1（料斗6，末端湿度 AI）</td></tr>
+    <tr><td>控制目标</td><td>成品湿度在工艺合格范围内</td></tr>
+    <tr><td>调节手段</td><td>VFM1 / VFM2 / VFM3 进料量 + VF1 / VF2 / VF3 风速</td></tr>
+  </tbody>
+</table>
+
+<pre><code>MT1 反馈 → 修正各主机进料基准值：
+
+  MT1 > H_target + H_band  → 湿度偏高
+    → 降低 VFM1/VFM2/VFM3 频率（减少进料量）
+    → 可选：增大 VF1/VF2/VF3 风速（加强干燥）
+
+  MT1 < H_target - H_band  → 湿度偏低（过度干燥）
+    → 可增加进料量（提高产能）
+
+  MT1 > H_alarm             → 湿度超限报警
+
+注：MT1 是整线末端的综合反馈，调节时应渐进，避免大幅波动。
+    建议用低增益慢积分的 PI 控制，响应周期 <span class="tbd">TBD 分钟</span>。</code></pre>
+
+<table>
+  <thead><tr><th>参数</th><th>符号</th><th>占位值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>湿度目标</td><td><code>H_target</code></td><td class="tbd">TBD %</td><td>由工艺确定</td></tr>
+    <tr><td>调节带</td><td><code>H_band</code></td><td class="tbd">±TBD %</td><td>死区</td></tr>
+    <tr><td>报警限</td><td><code>H_alarm</code></td><td class="tbd">TBD %</td><td>见报警规范</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec9">9. 整线启停顺序</h2>
+
+<h3>逆序启动（下游先就绪）</h3>
+<pre><code>启动顺序（箭头方向 = 启动先后）：
+
+  M13(出料) → M12(滚筛) → M11 → M10 → M9(主机4)
+                              ↑
+                           M8 → M7(主机3) → M6 → M5(主机2)
+                                                 ↑
+                                              M4 → M3(主机1)
+
+  锅炉：M14/M15 独立启动（先于主机，确保供热就绪）
+  变频给料：VFM1/VFM2/VFM3 最后启动（主机就绪后再进料）
+
+  每步启动后等待 RUN_FB 确认，确认后再启上游。</code></pre>
+
+<h3>顺序停机（上游先停，排空残料）</h3>
+<pre><code>停止顺序：
+
+  VFM1/VFM2/VFM3（停进料）→ 等待 → M3/M5/M7/M9（停主机）
+    → 延时 → M4/M6/M8/M10（排空输送）→ M11 → M12 → M13
+
+  锅炉：主机全部停后再停 M14/M15（余热利用）
+
+  每步延时 T_empty（<span class="tbd">TBD 秒</span>）排空残料后，再停下游。</code></pre>
+
+<hr>
+
+<h2 id="secA">附录 A：控制参数汇总（占位）</h2>
+<p class="note">以下参数均为占位值，待工艺部门和集成商确认后填入。</p>
+<table class="wrap">
+  <thead><tr><th>参数类别</th><th>参数名</th><th>符号</th><th>值</th><th>适用设备</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="3">上料电机</td><td>补料超时</td><td><code>T_feed_max</code></td><td class="tbd">120s</td><td>M1, M2, M14, M15</td></tr>
+    <tr><td>暂停间隔</td><td><code>T_pause</code></td><td class="tbd">30s</td><td>M1, M2, M14, M15</td></tr>
+    <tr><td>过流阈值</td><td><code>I_overflow</code></td><td class="tbd">额定×150%</td><td>全部定频电机</td></tr>
+    <tr><td rowspan="3">清堵参数</td><td>反转前等待</td><td><code>T_reverse</code></td><td class="tbd">2s</td><td>全部定频电机</td></tr>
+    <tr><td>反转持续</td><td><code>T_clear</code></td><td class="tbd">3s</td><td>全部定频电机</td></tr>
+    <tr><td>最大重试</td><td><code>N_fail</code></td><td class="tbd">3次</td><td>全部定频电机</td></tr>
+    <tr><td rowspan="4">主机温控</td><td>温度目标</td><td><code>T_target</code></td><td class="tbd">TBD ℃</td><td>主机1/2/4</td></tr>
+    <tr><td>调节死区</td><td><code>T_band</code></td><td class="tbd">±5 ℃</td><td>主机1/2/4</td></tr>
+    <tr><td>风机频率范围</td><td><code>freq_min–max</code></td><td class="tbd">10–50 Hz</td><td>VF1, VF2, VF3</td></tr>
+    <tr><td>PID 参数</td><td><code>Kp/Ki/Kd</code></td><td class="tbd">现场整定</td><td>主机1/2/4</td></tr>
+    <tr><td rowspan="4">电流联动</td><td>低负载增料</td><td><code>I_low</code></td><td class="tbd">额定×60%</td><td>M3, M5, M9</td></tr>
+    <tr><td>高负载减料/预警</td><td><code>I_high</code></td><td class="tbd">额定×100%</td><td>M3, M5, M9</td></tr>
+    <tr><td>过载停料</td><td><code>I_overload</code></td><td class="tbd">额定×120%</td><td>M3, M5, M9</td></tr>
+    <tr><td>过载停机</td><td><code>I_stop_motor</code></td><td class="tbd">额定×150%</td><td>M3, M5, M9</td></tr>
+    <tr><td rowspan="3">锅炉</td><td>低温报警</td><td><code>T_boiler_low</code></td><td class="tbd">TBD ℃</td><td>B1, B2</td></tr>
+    <tr><td>超温报警</td><td><code>T_boiler_high</code></td><td class="tbd">TBD ℃</td><td>B1, B2</td></tr>
+    <tr><td>紧急超温</td><td><code>T_boiler_emergency</code></td><td class="tbd">TBD ℃</td><td>B1, B2</td></tr>
+    <tr><td rowspan="2">湿度</td><td>湿度目标</td><td><code>H_target</code></td><td class="tbd">TBD %</td><td>MT1</td></tr>
+    <tr><td>湿度报警</td><td><code>H_alarm</code></td><td class="tbd">TBD %</td><td>MT1</td></tr>
+    <tr><td>输送排空</td><td>排空延时</td><td><code>T_empty</code></td><td class="tbd">TBD s</td><td>M4, M6, M8, M10, M11</td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>
