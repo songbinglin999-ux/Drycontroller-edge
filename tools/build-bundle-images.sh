@@ -25,8 +25,47 @@ COMPOSE_PROJECT="drycontroller-edge"
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
 
+pull_compose_images() {
+  local attempt
+
+  for attempt in 1 2 3; do
+    if COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" COMPOSE_PROFILES="remote-debug" docker compose pull --ignore-buildable 2>&1 | \
+      while IFS= read -r line; do log "  [pull] $line"; done
+    then
+      return 0
+    fi
+
+    if [ "$attempt" -lt 3 ]; then
+      log "  [pull] retrying after transient pull failure (${attempt}/3)..."
+      sleep 10
+    fi
+  done
+
+  return 1
+}
+
+build_compose_images() {
+  local attempt
+
+  for attempt in 1 2 3; do
+    if COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" COMPOSE_PROFILES="ota,remote-debug" docker compose "${BUILD_ARGS[@]}" 2>&1 | \
+      while IFS= read -r line; do log "  [build] $line"; done
+    then
+      return 0
+    fi
+
+    if [ "$attempt" -lt 3 ]; then
+      log "  [build] retrying after transient build failure (${attempt}/3)..."
+      sleep 10
+    fi
+  done
+
+  return 1
+}
+
 BUILD_IMAGES=true
 BUILD_BUNDLE=true
+BUILD_PULL="${DRYCONTROLLER_BUILD_PULL:-true}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -49,12 +88,14 @@ if [ "$BUILD_IMAGES" = true ]; then
   docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > "$BEFORE"
 
   # 构建所有 build-type 服务（含 profile: ota 的 edge-ota-agent）
-  COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" COMPOSE_PROFILES="ota,remote-debug" docker compose build --parallel 2>&1 | \
-    while IFS= read -r line; do log "  [build] $line"; done
+  BUILD_ARGS=(build --parallel)
+  if [ "$BUILD_PULL" = true ]; then
+    BUILD_ARGS=(build --pull --parallel)
+  fi
+  build_compose_images || die "docker compose build failed after retries"
 
   # 拉取 base images（含 profile: remote-debug 的 tailscale）
-  COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" COMPOSE_PROFILES="remote-debug" docker compose pull --ignore-buildable 2>&1 | \
-    while IFS= read -r line; do log "  [pull] $line"; done
+  pull_compose_images || die "docker compose pull failed after retries"
 
   # 构建后 snapshot
   AFTER="${DIST_DIR}/.image-ids-after.txt"
