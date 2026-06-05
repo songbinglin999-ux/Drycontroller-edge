@@ -11,6 +11,7 @@ OUT_DIR="${REPO_ROOT}/dist/autoinstall/drycontroller-apt"
 SUITE=""
 ARCH=""
 MIRROR=""
+EXTRA_DEBS=()
 PACKAGES=(
   ca-certificates
   curl
@@ -25,7 +26,7 @@ PACKAGES=(
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/build-autoinstall-offline-apt-repo.sh [--out DIR] [--suite CODENAME] [--arch ARCH] [--mirror URI]
+  bash scripts/build-autoinstall-offline-apt-repo.sh [--out DIR] [--suite CODENAME] [--arch ARCH] [--mirror URI] [--extra-deb FILE]
 
 Builds a flat apt repository at DIR, suitable for copying to the root of the
 Ubuntu Server OS Installer USB as:
@@ -62,6 +63,12 @@ while [ $# -gt 0 ]; do
     --mirror)
       MIRROR="${2:-}"
       [ -n "$MIRROR" ] || { usage >&2; exit 2; }
+      shift 2
+      ;;
+    --extra-deb)
+      EXTRA_DEB="${2:-}"
+      [ -n "$EXTRA_DEB" ] || { usage >&2; exit 2; }
+      EXTRA_DEBS+=("$EXTRA_DEB")
       shift 2
       ;;
     -h|--help)
@@ -109,7 +116,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+rm -rf "${OUT_DIR}/pool"
 mkdir -p "${OUT_DIR}/pool"
+rm -f "${OUT_DIR}/Packages" "${OUT_DIR}/Packages.gz" "${OUT_DIR}/drycontroller-apt-manifest.txt"
 touch "${TMP_DIR}/status"
 mkdir -p "${TMP_DIR}/apt-cache/archives/partial"
 
@@ -157,6 +166,13 @@ apt-get \
   -y install "${PACKAGES[@]}"
 
 find "${TMP_DIR}/apt-cache/archives" -maxdepth 1 -type f -name '*.deb' -exec cp -f {} "${OUT_DIR}/pool/" \;
+for deb in "${EXTRA_DEBS[@]}"; do
+  [ -f "$deb" ] || {
+    echo "extra deb not found: ${deb}" >&2
+    exit 1
+  }
+  cp -f "$deb" "${OUT_DIR}/pool/"
+done
 DEB_COUNT="$(find "${OUT_DIR}/pool" -maxdepth 1 -type f -name '*.deb' | wc -l | tr -d ' ')"
 [ "$DEB_COUNT" -gt 0 ] || {
   echo "no .deb files were downloaded" >&2
@@ -173,6 +189,13 @@ DEB_COUNT="$(find "${OUT_DIR}/pool" -maxdepth 1 -type f -name '*.deb' | wc -l | 
     printf 'packages='
     printf '%s ' "${PACKAGES[@]}"
     echo
+    if [ "${#EXTRA_DEBS[@]}" -gt 0 ]; then
+      printf 'extra_debs='
+      for deb in "${EXTRA_DEBS[@]}"; do
+        printf '%s ' "$(basename "$deb")"
+      done
+      echo
+    fi
     date -u '+created_at=%Y-%m-%dT%H:%M:%SZ'
   } > drycontroller-apt-manifest.txt
 )

@@ -95,7 +95,7 @@ dist/autoinstall/
   drycontroller-apt/
 ```
 
-`drycontroller-apt/` 是必备项，包含 Docker runtime、Docker Compose v2、NetworkManager 和基础 host package 的离线 apt 包集。安装阶段不覆盖 Subiquity 的 apt 配置，只校验并复制 `drycontroller-apt/`；首次开机 post-install 会从 `/opt/drycontroller-apt` 离线安装 Docker 和现场额外依赖，IPC 运行阶段不应依赖现场能访问 `archive.ubuntu.com` 或 Docker 相关包源。
+`drycontroller-apt/` 是必备项，包含 Docker runtime、Docker Compose v2、NetworkManager 和基础 host package 的离线 apt 包集。安装阶段保留普通 HTTP Ubuntu apt 源，避免 curtin 在 `curthooks` 补装 `grub-pc` 等 bootloader 包时无源可用；不要把 installer 阶段 apt 源改成 `file:/cdrom`。首次开机 post-install 会从 `/opt/drycontroller-apt` 离线安装 Docker 和现场额外依赖，IPC 运行阶段不应依赖现场能访问 `archive.ubuntu.com` 或 Docker 相关包源。
 
 ### 3. 设置 dryops 登录和 SSH 密码
 
@@ -281,7 +281,8 @@ drycontroller-edge-post-install.service
 | 现象 | 判断 |
 |---|---|
 | 安装没有自动开始 | 检查启动参数是否包含 `autoinstall ds=nocloud;s=/cdrom/`，以及 U 盘根目录是否有 `user-data` / `meta-data`。 |
-| `configure_apt` 阶段报 `curtin ... apt-config` 失败 | 不要在 `user-data` 里自定义 `apt.primary` / `apt.sources` 指向 `file:/cdrom`；安装阶段让 Subiquity 使用默认 apt 配置，Docker/runtime 包放到首次开机从 `/opt/drycontroller-apt` 离线安装。 |
+| `configure_apt` 阶段报 `curtin ... apt-config` 失败 | 不要在 `user-data` 里自定义 `apt.primary` / `apt.sources` 指向 `file:/cdrom`；安装阶段保留普通 HTTP Ubuntu apt 源，Docker/runtime 包放到首次开机从 `/opt/drycontroller-apt` 离线安装。 |
+| `stage-curthooks` 阶段补装 `grub-pc` 后失败 | 先查 `/var/log/installer/curtin-install.log`；通常是目标系统没有可用 apt 源。当前可工作的基线是保留 HTTP `apt.primary`，同时确认 ISO 内 `pool/main/g/grub2/grub-pc_*.deb` 仍存在。 |
 | 安装早期提示缺少 `/cdrom/drycontroller-apt/Packages` | 重新运行 `scripts/build-autoinstall-offline-apt-repo.sh`，并把生成的 `drycontroller-apt/` 目录复制到安装盘根目录。 |
 | 安装中途 `install_docker.io` 失败 | 查看 `/var/log/installer/curtin-install.log`，优先确认 `drycontroller-apt/` 与 ISO 版本/架构匹配，且包含 `docker.io` 及依赖。 |
 | 安装完成但没有自动关机 | 查看 `/var/log/installer/`，确认 late-commands 是否执行。 |

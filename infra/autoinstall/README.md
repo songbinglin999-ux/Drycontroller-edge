@@ -87,8 +87,9 @@ bash scripts/build-autoinstall-offline-apt-repo.sh \
   --out dist/autoinstall/drycontroller-apt
 ```
 
-The autoinstall profile does not override Subiquity's apt configuration during
-the installer phase. It only verifies that `drycontroller-apt/` exists, copies it
+The autoinstall profile keeps a normal HTTP Ubuntu apt source for the installer
+phase. Do not replace that source with `file:/cdrom`; curtin may fail before
+late-commands. The profile verifies that `drycontroller-apt/` exists, copies it
 into the target as `/opt/drycontroller-apt`, and points the installed system at
 that offline repo for first-boot Docker/runtime package installation.
 

@@ -32,6 +32,12 @@ autoinstall:
     install-server: true
     allow-pw: true
 
+  apt:
+    preserve_sources_list: false
+    primary:
+      - arches: [default]
+        uri: http://archive.ubuntu.com/ubuntu
+
   early-commands:
     - test -d /cdrom/dists || (echo "missing /cdrom/dists; OS Installer USB must keep the Ubuntu ISO apt repository at the media root" >&2; exit 1)
     - test -f /cdrom/drycontroller-apt/Packages || (echo "missing /cdrom/drycontroller-apt/Packages; build and copy the offline apt repo before booting the OS Installer USB" >&2; exit 1)
