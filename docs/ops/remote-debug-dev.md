@@ -9,7 +9,10 @@
 ## 1) 云端准备（Headscale）
 
 请先按云端文档完成：
-- `Drycontroller-cloudserver/docs/ops/headscale-huawei-cloud.md`
+- `Drycontroller-cloudserver/docs/ops/cloud-ops.md`
+
+历史 Huawei Cloud Headscale 部署说明已归档到
+`Drycontroller-cloudserver/docs/archive/headscale-huawei-cloud.md`。
 
 在云端生成预授权 key（preauth key）：
 - `docker exec -it headscale headscale preauthkeys create --user drycontroller --reusable --expiration 720h`

@@ -334,8 +334,8 @@ MVP 范围（2026-07）与 v2 目标架构分开推进：根审计当前收敛�
 
 v2 被采纳后须持续同步以下文档，避免团队按旧链路继续实现：
 
-- `docs/ops/remote-debug-dev.md`：仍描述容器内 Tailscale。
-- `docs/ops/provisioning-bootstrap.md`：旧 Provisioning USB 路径已退役，当前激活流程以 OS Installer USB + host tailnet / activation service 为准。
+- `docs/ops/remote-debug-dev.md`：已改为宿主机 Tailscale / Headscale 运维说明。
+- `docs/archive/ops/provisioning-bootstrap.md`：旧 Provisioning USB 路径已归档，当前激活流程以 OS Installer USB + host tailnet / activation service 为准。
 - `docs/architecture/data-flow.md`：已同步为 suggestion -> edge-api signed command -> edge-daq。
 - `docs/architecture/control-strategy.md`：已同步为 suggestion / command 双协议。
 - `docs/architecture/system-overview.md`：已同步 edge-daq command 消费与 ai-ctrl-optimizer 不直写 PLC；license-service 合并仍是后续 phase。

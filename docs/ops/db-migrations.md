@@ -38,4 +38,4 @@ config.set_main_option("sqlalchemy.url", settings.database_url)  # ← 小写 pr
 
 ## 对应关系
 
-详见顶层 [`p1-roadmap-2026-05-07.md`](../../../p1-roadmap-2026-05-07.md) **P1-5 / 5.7**。
+详见顶层归档 [`p1-roadmap-2026-05-07.md`](../../../docs/workspace/archive/p1-roadmap-2026-05-07.md) **P1-5 / 5.7**。

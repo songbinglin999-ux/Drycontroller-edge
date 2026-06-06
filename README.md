@@ -183,8 +183,8 @@ claiming a path is verified.
 | Doc | Purpose |
 |---|---|
 | `docs/ops/edge-os-autoinstall.md` | OS Installer USB operator flow |
-| `docs/ops/provisioning-bootstrap.md` | Retired Provisioning USB bootstrap boundary |
 | `docs/ops/db-migrations.md` | Edge Alembic migration flow |
+| `docs/archive/ops/provisioning-bootstrap.md` | Retired Provisioning USB bootstrap boundary |
 | `CONTRIBUTING.md` | Git hooks and contribution rules |
 | `QUICKSTART.md` | Older quick-start notes; verify against current audit before relying on them |
 
