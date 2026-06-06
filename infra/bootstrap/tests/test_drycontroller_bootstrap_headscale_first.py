@@ -210,15 +210,24 @@ def test_os_installer_release_and_write_wrappers_are_fail_closed():
     assert "build-autoinstall-offline-apt-repo.sh" in release
     assert "build-autoinstall-bundle.sh" in release
     assert '"include_images": True' in release
+    assert "INCLUDE_WIFI=false" in release
+    assert "--include-wifi" in release
+    assert "dist/autoinstall/wifi.env exists; pass --include-wifi" in release
+    assert "output ISO must not be the base ISO" in release
     assert "drycontroller.os-installer-release.v1" in release
     assert "final_iso_release_checklist" in release
     assert "bundle-images.tar" in release
     assert "activation-bundle.json" in release
+    assert '"include_wifi": include_wifi' in release
+    assert '"wifi_env"' in release
 
     assert "manifest schema mismatch" in writer
     assert "ISO sha256 mismatch" in writer
     assert "maker.verify_final_iso" in writer
     assert "diskutil list external physical" in writer
+    assert '"diskutil", "list", "-plist", "external", "physical"' in writer
+    assert "refusing to write non-external-physical disk" in writer
+    assert 'payload.get("VirtualOrPhysical") != "Physical"' in writer
     assert "refusing to write internal disk" in writer
     assert "/dev/r${DISK_ID}" in writer
     assert "ERASE ${DISK_ID}" in writer

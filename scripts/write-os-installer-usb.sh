@@ -27,7 +27,8 @@ Required:
   - explicit external disk id, for example --disk disk3
 
 This command is destructive. It validates the release manifest, re-runs the ISO
-checklist, confirms the target is not an internal disk, then writes via /dev/rdiskN.
+checklist, confirms the target is an external physical whole disk, then writes
+via /dev/rdiskN.
 
 To discover the current external USB disk:
   diskutil list external physical
@@ -187,8 +188,22 @@ import subprocess
 import sys
 
 disk = sys.argv[1]
+disk_id = disk.removeprefix("/dev/")
+
+external_raw = subprocess.check_output(["diskutil", "list", "-plist", "external", "physical"])
+external_payload = plistlib.loads(external_raw)
+external_ids = {
+    item.get("DeviceIdentifier")
+    for item in external_payload.get("AllDisksAndPartitions", [])
+    if item.get("DeviceIdentifier")
+}
+if disk_id not in external_ids:
+    raise SystemExit(f"refusing to write non-external-physical disk: {disk}")
+
 raw = subprocess.check_output(["diskutil", "info", "-plist", disk])
 payload = plistlib.loads(raw)
+if payload.get("VirtualOrPhysical") != "Physical":
+    raise SystemExit(f"refusing to write non-physical disk: {disk}")
 if payload.get("Internal"):
     raise SystemExit(f"refusing to write internal disk: {disk}")
 if payload.get("WholeDisk") is False:

@@ -108,6 +108,10 @@ Do not hand-run `xorriso` or write an ISO that does not have a matching
 `.manifest.json`; the USB writer refuses artifacts that did not pass the release
 checklist.
 
+Release builds refuse an implicit `dist/autoinstall/wifi.env`. If a factory
+batch must embed WiFi credentials, pass `--include-wifi`; the generated manifest
+records the `wifi_env` checksum.
+
 ## Installer Login And SSH
 
 The source `user-data` intentionally keeps `identity.password` as

@@ -14,10 +14,12 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHANNEL="release"
 BASE_ISO="dist/drycontroller-os-installer-hybrid.iso"
 OUTPUT_ISO=""
+WIFI_ENV="dist/autoinstall/wifi.env"
 PASSWORD_ENV_FILE=""
 PASSWORD_HASH_FILE=""
 PASSWORD_HASH=""
 APT_MIRROR="${DRYCONTROLLER_AUTOINSTALL_APT_MIRROR:-}"
+INCLUDE_WIFI=false
 FORCE=false
 
 usage() {
@@ -25,7 +27,7 @@ usage() {
 Usage:
   bash scripts/build-os-installer-release.sh [--channel NAME] [--output dist/OSYYYYMMDD-NAME.iso]
                                                 [--password-env-file FILE | --password-hash-file FILE | --password-hash HASH]
-                                                [--apt-mirror URI] [--force]
+                                                [--apt-mirror URI] [--include-wifi] [--force]
 
 Builds a full clean-room OS Installer release:
   1. Require a clean git worktree.
@@ -40,6 +42,9 @@ Default password source:
 
 The resulting ISO is not writeable by scripts/write-os-installer-usb.sh unless
 the manifest exists, matches the ISO checksum, and records a passing checklist.
+
+dist/autoinstall/wifi.env is refused by default. Pass --include-wifi only when
+the release intentionally embeds site WiFi credentials.
 EOF
 }
 
@@ -102,6 +107,10 @@ while [ $# -gt 0 ]; do
       [ -n "$APT_MIRROR" ] || { usage >&2; exit 2; }
       shift 2
       ;;
+    --include-wifi)
+      INCLUDE_WIFI=true
+      shift
+      ;;
     --force)
       FORCE=true
       shift
@@ -142,6 +151,21 @@ if [ -z "$OUTPUT_ISO" ]; then
 fi
 MANIFEST="${OUTPUT_ISO%.iso}.manifest.json"
 
+run python3 - "$BASE_ISO" "$OUTPUT_ISO" "$MANIFEST" <<'PY'
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+base_iso, output_iso, manifest = (Path(arg).resolve() for arg in sys.argv[1:])
+if output_iso == base_iso:
+    raise SystemExit("output ISO must not be the base ISO")
+if manifest == base_iso:
+    raise SystemExit("manifest path must not be the base ISO")
+if output_iso == manifest:
+    raise SystemExit("output ISO and manifest paths must differ")
+PY
+
 require_file "$BASE_ISO"
 
 if [ -n "$PASSWORD_ENV_FILE" ]; then
@@ -158,6 +182,12 @@ if [ -e "$OUTPUT_ISO" ] || [ -e "$MANIFEST" ]; then
   [ "$FORCE" = true ] || die "output exists; pass --force or choose another channel/output"
 fi
 rm -f "$OUTPUT_ISO" "$MANIFEST"
+
+if [ "$INCLUDE_WIFI" = true ]; then
+  require_file "$WIFI_ENV"
+elif [ -f "$WIFI_ENV" ]; then
+  die "dist/autoinstall/wifi.env exists; pass --include-wifi to embed it intentionally, or remove it"
+fi
 
 export DRYCONTROLLER_RELEASE_WRAPPER=1
 
@@ -229,7 +259,7 @@ maker.build_iso(
 )
 PY
 
-run python3 - "$OUTPUT_ISO" "$MANIFEST" "$CHANNEL" "$BASE_ISO" <<'PY'
+run python3 - "$OUTPUT_ISO" "$MANIFEST" "$CHANNEL" "$BASE_ISO" "$INCLUDE_WIFI" <<'PY'
 from __future__ import annotations
 
 import datetime as dt
@@ -244,6 +274,7 @@ iso = Path(sys.argv[1])
 manifest_path = Path(sys.argv[2])
 channel = sys.argv[3]
 base_iso = Path(sys.argv[4])
+include_wifi = sys.argv[5] == "true"
 
 
 def rel(path: Path) -> str:
@@ -305,6 +336,7 @@ def image_entries(path: Path) -> list[dict[str, object]]:
 source_bundle = Path("dist/drycontroller-edge.tar.gz")
 image_bundle = Path("dist/bundle-images.tar")
 activation_bundle = Path("dist/autoinstall/activation-bundle.json")
+wifi_env = Path("dist/autoinstall/wifi.env")
 apt_pool = Path("dist/autoinstall/drycontroller-apt/pool")
 status = git("status", "--porcelain=v1")
 
@@ -315,6 +347,7 @@ manifest = {
         "channel": channel,
         "clean_room": True,
         "include_images": True,
+        "include_wifi": include_wifi,
     },
     "git": {
         "branch": git("branch", "--show-current"),
@@ -350,6 +383,11 @@ manifest = {
             "sha256": sha256(activation_bundle),
             "fingerprint": json_file_fingerprint(activation_bundle),
         },
+        "wifi_env": (
+            {"included": True, "path": rel(wifi_env), "sha256": sha256(wifi_env), "size": wifi_env.stat().st_size}
+            if include_wifi
+            else {"included": False}
+        ),
     },
     "checks": {
         "final_iso_release_checklist": {
@@ -365,6 +403,8 @@ if manifest["artifacts"]["offline_apt"]["deb_count"] <= 0:
     raise SystemExit("offline apt repo contains no deb packages")
 if not manifest["artifacts"]["image_bundle"]["images"]:
     raise SystemExit("image bundle contains no image manifest entries")
+if manifest["artifacts"]["wifi_env"]["included"] != include_wifi:
+    raise SystemExit("wifi manifest state mismatch")
 
 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 print(f"release manifest written: {manifest_path}")

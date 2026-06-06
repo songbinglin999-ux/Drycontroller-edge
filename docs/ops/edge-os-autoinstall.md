@@ -258,6 +258,8 @@ bash scripts/build-os-installer-release.sh --channel stable
 
 该脚本会强制 clean git、重建 Docker 镜像包、重建 offline apt、重建 autoinstall overlay、remaster ISO、运行最终 ISO release checklist，并在 ISO 旁生成 `.manifest.json`。不要手工调用 `xorriso`、不要只跑 `scripts/build-autoinstall-bundle.sh` 就当成发布镜像。
 
+默认发布镜像不允许隐式带入 `dist/autoinstall/wifi.env`。如果某批次确实要把现场 WiFi 凭据嵌进 ISO，命令必须显式追加 `--include-wifi`，manifest 会记录 `wifi_env` 的 sha256；否则发现该文件就直接失败。
+
 写 U 盘也必须走 manifest-aware wrapper：
 
 ```bash
@@ -290,6 +292,7 @@ bash scripts/write-os-installer-usb.sh dist/OSYYYYMMDD-stable.iso --disk diskN
 - `dist/drycontroller-edge.tar.gz` 来自当前 edge worktree；clean-room 装机要同时刷新 `dist/bundle-images.tar`。
 - `dist/autoinstall/activation-bundle.json` 存在，schema 是 `drycontroller.activation-bundle.v1`，内含 `tailnet` 与 `factory_license`。
 - `dist/autoinstall/` 不保留旧 split 材料作为产品路径：没有 `tailnet.env` / `factory-license.json` 参与最终 ISO。
+- `dist/autoinstall/wifi.env` 必须缺省不存在；仅现场明确需要 WiFi 安装时使用 `--include-wifi`，并在 manifest 中留下 `wifi_env` 记录。
 
 ### ISO 内容
 
@@ -314,7 +317,7 @@ hdiutil imageinfo "$ISO" | sed -n '1,130p'
 
 ### 写盘和现场验收
 
-- 写盘只能使用 `scripts/write-os-installer-usb.sh`；写盘前重新 `diskutil list external physical`，只写确认过的 external physical U 盘，使用 `/dev/rdiskN`。
+- 写盘只能使用 `scripts/write-os-installer-usb.sh`；写盘前重新 `diskutil list external physical`，脚本会拒绝不在 external physical 列表里的 disk、虚拟盘和 internal disk，最终写入使用 `/dev/rdiskN`。
 - `dd` 完成后必须 `sync`，再 `diskutil eject /dev/diskN`。
 - 真机安装必须越过 `configure_apt`、`install kernel`、`curtin stage-curthooks` 并自动关机；只完成软件侧 ISO 验证不能关闭验收。
 - 首次从内置盘启动后，必须验证 `activation-bundle.json -> auto-approve -> bind current tailnet node -> production license -> preflight` 全链路。

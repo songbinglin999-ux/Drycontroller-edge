@@ -45,6 +45,9 @@ bash scripts/write-os-installer-usb.sh dist/OSYYYYMMDD-stable.iso --disk diskN
 
 The build wrapper generates a matching `.manifest.json`; the write wrapper
 refuses to touch a disk when the manifest or final ISO checklist is missing.
+The build wrapper also refuses a leftover `dist/autoinstall/wifi.env` unless
+`--include-wifi` is passed, so site WiFi credentials cannot enter a release ISO
+silently.
 
 ## Run
 
