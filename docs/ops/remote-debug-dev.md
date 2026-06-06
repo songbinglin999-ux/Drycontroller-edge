@@ -75,7 +75,10 @@ activation、只想手工调试云端 **自注册/心跳 enroll**，再补这些
 
 ## 4) 云端通过 cloud-ops 批量运维
 
-cloud-ops 通过 headscale 虚拟内网访问边缘机 `edge-api`（需要边缘端配置 `ADMIN_API_KEYS`/`CONTROL_API_KEYS`）。
+cloud-ops 通过 headscale 虚拟内网访问边缘机 `edge-api`（需要边缘端配置
+`ADMIN_API_KEYS`/`CONTROL_API_KEYS`）。新装机主线由 factory activation response
+把 Cloud Ops 环境级 `EDGE_ADMIN_API_KEY` / `EDGE_CONTROL_API_KEY` 同步进 edge
+`.env`；node enroll token 只用于 edge -> cloud 上报。
 
 典型流程：
 - 边缘机上线自注册（自动）：`drycontroller-enroll.service` 会周期性调用云端 `POST /api/v1/enroll`

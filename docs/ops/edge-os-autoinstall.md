@@ -340,7 +340,7 @@ hdiutil imageinfo "$ISO" | sed -n '1,130p'
 2. 首次进入系统后，机器会先自动连接 WiFi（如配置），再完成 Docker / edge host 安装。
 3. host Tailscale 使用 factory bootstrap credential 加入受限 bootstrap tailnet。
 4. activation service 调 Cloud Ops；有效、未过期、签名正确且 fingerprint 匹配的 `activation-bundle.json` 会自动签发。
-5. edge 在同一次 activation 响应中领取 production license、device_id、node_name 和 node enroll token，并把当前 tailnet 节点绑定为正式节点。
+5. edge 在同一次 activation 响应中领取 production license、device_id、node_name、node enroll token 和 edge ops API key，并把当前 tailnet 节点绑定为正式节点。
 6. 在云端 console 查看节点显示 reachable / activated。历史 pending 或异常记录才需要人工兜底处理。
 
 成功标准：
@@ -382,4 +382,6 @@ Provisioning USB 已从正常路径移除。旧
 新路径里 OS Installer USB / factory image 预置 `activation-bundle.json`
 （factory license + bootstrap tailnet credential）。Cloud Ops 在设备首次有效
 factory activation contact 后自动分配设备号、节点名、production license、node
-enroll token 和后续权限；历史 pending 或异常记录才需要人工兜底。
+enroll token 和后续权限；同时把 Cloud Ops 调 edge-api 所需的环境级 ops key
+同步到 edge `.env` 的 `ADMIN_API_KEYS` / `CONTROL_API_KEYS`。node enroll token
+只用于 edge -> cloud 上报，不能用于 Cloud Ops job runner。历史 pending 或异常记录才需要人工兜底。

@@ -339,6 +339,50 @@ PY
   chmod 0600 "$ENV_FILE" || true
 }
 
+save_edge_ops_credentials() {
+  local response_file="$1"
+  [ -n "${EDGE_ENV_FILE:-}" ] || return 0
+  EDGE_ENV_FILE="$EDGE_ENV_FILE" python3 - "$response_file" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+resp = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+admin_key = (resp.get("edge_admin_api_key") or "").strip()
+control_key = (resp.get("edge_control_api_key") or "").strip()
+updates = {}
+if admin_key:
+    updates["ADMIN_API_KEYS"] = json.dumps([admin_key], separators=(",", ":"))
+if control_key:
+    updates["CONTROL_API_KEYS"] = json.dumps([control_key], separators=(",", ":"))
+if not updates:
+    raise SystemExit(0)
+
+path = Path(os.environ["EDGE_ENV_FILE"])
+if not path.exists():
+    raise SystemExit(0)
+lines = path.read_text(encoding="utf-8").splitlines()
+out = []
+seen = set()
+for line in lines:
+    key = line.split("=", 1)[0]
+    if key in updates:
+        if key not in seen:
+            out.append(f"{key}={updates[key]}")
+            seen.add(key)
+        continue
+    out.append(line)
+for key, value in updates.items():
+    if key not in seen:
+        out.append(f"{key}={value}")
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
+  chmod 0600 "$EDGE_ENV_FILE" || true
+}
+
 sync_tailnet_env_after_activation() {
   local hostname="$1"
   ENV_FILE="$ENV_FILE" FORMAL_HOSTNAME="$hostname" python3 - <<'PY'
@@ -608,6 +652,7 @@ fi
 install_license_from_response "$response_file"
 save_device_identity "$response_file"
 save_runtime_credentials "$response_file"
+save_edge_ops_credentials "$response_file"
 write_state "cloud_activated" "production_license_installed"
 
 node_hostname="$(python3 - "$response_file" <<'PY'

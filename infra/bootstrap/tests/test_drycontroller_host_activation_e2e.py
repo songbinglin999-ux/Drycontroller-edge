@@ -67,7 +67,7 @@ def _fake_path(tmp_path: Path) -> Path:
         "fi\n"
         "printf '%s' \"$data\" > \"$DRYCONTROLLER_E2E_CAPTURE_DIR/activation-payload.json\"\n"
         "cat > \"$out\" <<'JSON'\n"
-        "{\"success\":true,\"state\":\"cloud_activated\",\"device_id\":\"EDGE-E2E0001\",\"tenant_id\":\"tenant-e2e\",\"line_id\":\"line-a\",\"node_name\":\"edge-e2e0001\",\"license_payload\":{\"schema\":\"drycontroller.license.v1\",\"signature\":\"signed-production\",\"expires_at\":\"2027-01-01T00:00:00+00:00\"},\"license_public_key\":\"public-key-e2e\",\"license_key_id\":\"test-key\",\"node_enroll_token\":\"node-token-e2e\",\"enroll_token\":\"node-token-e2e\",\"message\":\"activation_auto_approved\"}\n"
+        "{\"success\":true,\"state\":\"cloud_activated\",\"device_id\":\"EDGE-E2E0001\",\"tenant_id\":\"tenant-e2e\",\"line_id\":\"line-a\",\"node_name\":\"edge-e2e0001\",\"license_payload\":{\"schema\":\"drycontroller.license.v1\",\"signature\":\"signed-production\",\"expires_at\":\"2027-01-01T00:00:00+00:00\"},\"license_public_key\":\"public-key-e2e\",\"license_key_id\":\"test-key\",\"node_enroll_token\":\"node-token-e2e\",\"enroll_token\":\"node-token-e2e\",\"edge_admin_api_key\":\"edge-admin-e2e\",\"edge_control_api_key\":\"edge-control-e2e\",\"message\":\"activation_auto_approved\"}\n"
         "JSON\n",
     )
     return bin_dir
@@ -159,6 +159,8 @@ def test_host_activation_bundle_to_formal_license_e2e(tmp_path: Path):
     assert "UNCHANGED=1" in edge_env_lines
     assert "EDGE_API_BIND_ADDR=100.100.0.44" in edge_env_lines
     assert "TS_HOSTNAME=edge-e2e0001" in edge_env_lines
+    assert 'ADMIN_API_KEYS=["edge-admin-e2e"]' in edge_env_lines
+    assert 'CONTROL_API_KEYS=["edge-control-e2e"]' in edge_env_lines
     assert "CLOUD_OPS_BASE_URL=https://ops.example.test" in edge_env_lines
     assert "CLOUD_OPS_ENROLL_TOKEN=node-token-e2e" in edge_env_lines
     assert "CLOUD_OPS_ENROLL_TOKEN_HEADER=X-Enroll-Token" in edge_env_lines

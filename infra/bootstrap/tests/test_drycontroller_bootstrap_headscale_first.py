@@ -68,9 +68,14 @@ def test_host_activation_agent_binds_current_tailnet_node_without_formal_reauth(
     assert "systemctl enable drycontroller-enroll.service" in text
     assert "systemctl restart drycontroller-enroll.service" in text
     assert "save_runtime_credentials" in text
+    assert "save_edge_ops_credentials" in text
     assert 'resp.get("node_enroll_token") or resp.get("enroll_token")' in text
+    assert 'resp.get("edge_admin_api_key")' in text
+    assert 'resp.get("edge_control_api_key")' in text
     assert "import shlex" in text
     assert 'updates["CLOUD_OPS_ENROLL_TOKEN"] = node_token' in text
+    assert 'updates["ADMIN_API_KEYS"] = json.dumps([admin_key]' in text
+    assert 'updates["CONTROL_API_KEYS"] = json.dumps([control_key]' in text
     assert 'updates["TENANT_ID"] = resp["tenant_id"].strip()' in text
     assert 'updates["LINE_ID"] = resp["line_id"].strip()' in text
     assert 'write_state "cloud_activated" "tailnet_node_bind_failed"' in text
