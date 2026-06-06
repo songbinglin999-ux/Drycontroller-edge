@@ -171,8 +171,8 @@ bootstrap tailnet key 或 factory license 轮换时，只替换这个文件；�
 仍需要 remaster 一次把新批次材料映射进 ISO 根目录；这只是重打最终介质，不是重新
 设计或重建 OS 安装内容。
 
-旧 `tailnet.env` + `factory-license.json` 只保留给开发/应急调试，不作为新装机
-产品验收路径。
+旧 `tailnet.env` + `factory-license.json` 不再作为安装介质或 host service 输入。
+host services 会从 `activation-bundle.json` 派生运行时 `tailnet.env`。
 
 如果安装车间只有 WiFi，再额外放：
 
@@ -296,7 +296,7 @@ drycontroller-edge-post-install.service
 - 目前是 Ubuntu Server autoinstall 方案，不覆盖 Debian、Alpine、Yocto。
 - `user-data` 仍需要在制作安装盘时替换密码 hash。
 - production media 必须预置真实 activation bundle、factory public trust anchor、production license public trust anchor。
-- 当前 OS Maker 默认只接受 `dist/autoinstall/activation-bundle.json` 作为真机安装材料；旧两件套必须显式打开开发/应急开关才会映射进 ISO。取消包含 factory activation 材料时，它会移除旧材料，避免误用上一个批次的 token/license。
+- 当前 OS Maker 只接受 `dist/autoinstall/activation-bundle.json` 作为真机安装材料；缺少或格式错误时会阻塞制作流程，并会清理旧 split 材料避免误用上一个批次的 token/license。
 - auto-approve -> edge bind current tailnet node 闭环跑通前，不建议把该安装盘交给现场批量使用。
 
 ## 与 Provisioning USB 的关系

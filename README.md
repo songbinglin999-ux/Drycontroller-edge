@@ -148,8 +148,9 @@ High-level sequence:
 6. Edge preflight accepts `formal_license_active` as the new mainline completion
    signal.
 
-Legacy `tailnet.env` and `factory-license.json` remain accepted only as
-development/emergency debug inputs; they are not the product install path.
+Split `tailnet.env` and `factory-license.json` materials are no longer accepted
+as installer inputs. Runtime `tailnet.env` is derived from `activation-bundle.json`
+by the host services.
 
 If tailnet readiness fails, activation must fail closed rather than silently
 falling back to public Cloud Ops. The old `drycontroller-provisioning/`

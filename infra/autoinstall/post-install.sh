@@ -84,7 +84,7 @@ systemctl disable drycontroller-edge-post-install.service >/dev/null 2>&1 || tru
 
 log "autoinstall host preparation complete"
 log "shutting down. Remove OS Installer USB, then power on with network available."
-log "after boot, host tailnet and factory activation services will run if factory license and tailnet.env are installed"
+log "after boot, host tailnet and factory activation services will run if activation-bundle.json is installed"
 umount -l /cdrom 2>/dev/null || true
 sync
 sleep 1

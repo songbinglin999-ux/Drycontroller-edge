@@ -31,13 +31,18 @@ activation service 会从中生成或同步 `/etc/drycontroller/tailnet.env` 并
 - `drycontroller-tailnet.service`
 - `drycontroller-enroll.service`
 
-手工调试时，可在边缘机上创建 `/etc/drycontroller/tailnet.env`（`0600`，不要提交到仓库）：
+手工调试时，也准备一个调试用 `/etc/drycontroller/activation-bundle.json`
+（`0600`，不要提交到仓库）。host tailnet / activation service 会从 bundle
+派生 `/etc/drycontroller/tailnet.env`：
 
-- `TS_LOGIN_SERVER`：你的 headscale 地址（HTTPS），例如 `https://headscale.example.com`
-- `TS_AUTHKEY`：上一步生成的 preauth key（敏感）
-- `TS_HOSTNAME`（可选）：节点名，例如 `edge-001`（建议与云端节点名一致）
+- `tailnet.ts_login_server`：你的 headscale 地址（HTTPS），例如 `https://headscale.example.com`
+- `tailnet.ts_authkey`：上一步生成的 preauth key（敏感）
+- `tailnet.ts_hostname`：节点名，例如 `edge-001`（建议与云端节点名一致）
+- `tailnet.cloud_ops_base_url`：云端 cloud-ops 的地址，例如 `https://cloud-ops.example.com` 或 `http://<server-ip>:8088`
+- `factory_license`：签名的 `drycontroller.factory-license.v1` 工厂授权对象
 
-同时，为了让云端 **自动识别边缘机上线**（自注册/心跳 enroll），还需要配置：
+正常 activation 成功后会把 node enroll token 写回派生的 `tailnet.env`。若你绕过
+activation、只想手工调试云端 **自注册/心跳 enroll**，再补这些派生 env 字段：
 - `CLOUD_OPS_BASE_URL`：云端 cloud-ops 的地址，例如 `https://cloud-ops.example.com` 或 `http://<server-ip>:8088`
 - `CLOUD_OPS_ENROLL_TOKEN`：对应云端 cloud-ops 的 `ENROLL_TOKEN`（敏感）
 - `EDGE_API_PORT`：边缘 `edge-api` 对外端口（默认 8000）

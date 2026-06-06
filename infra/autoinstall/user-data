@@ -34,9 +34,16 @@ autoinstall:
 
   apt:
     preserve_sources_list: false
-    primary:
-      - arches: [default]
-        uri: http://archive.ubuntu.com/ubuntu
+    mirror-selection:
+      primary:
+        - uri: https://mirrors.aliyun.com/ubuntu
+          arches: [amd64]
+        - uri: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+          arches: [amd64]
+        - uri: http://archive.ubuntu.com/ubuntu
+          arches: [amd64]
+    fallback: offline-install
+    geoip: false
 
   early-commands:
     - test -d /cdrom/dists || (echo "missing /cdrom/dists; OS Installer USB must keep the Ubuntu ISO apt repository at the media root" >&2; exit 1)
@@ -104,8 +111,6 @@ autoinstall:
     - sh -c 'if [ -f /cdrom/bundle-images.tar ]; then mkdir -p /target/opt/drycontroller-images; cp -a /cdrom/bundle-images.tar /target/opt/drycontroller-images/bundle-images.tar; chmod 0600 /target/opt/drycontroller-images/bundle-images.tar; fi'
     - sh -c 'if [ -f /cdrom/wifi.env ]; then cp -a /cdrom/wifi.env /target/opt/drycontroller-wifi.env; chmod 0600 /target/opt/drycontroller-wifi.env; fi'
     - sh -c 'if [ -f /cdrom/activation-bundle.json ]; then mkdir -p /target/etc/drycontroller; cp -a /cdrom/activation-bundle.json /target/etc/drycontroller/activation-bundle.json; chmod 0600 /target/etc/drycontroller/activation-bundle.json; fi'
-    - sh -c 'if [ -f /cdrom/tailnet.env ]; then mkdir -p /target/etc/drycontroller; cp -a /cdrom/tailnet.env /target/etc/drycontroller/tailnet.env; chmod 0600 /target/etc/drycontroller/tailnet.env; fi'
-    - sh -c 'if [ -f /cdrom/factory-license.json ]; then mkdir -p /target/etc/drycontroller/license /target/var/lib/drycontroller; cp -a /cdrom/factory-license.json /target/etc/drycontroller/license/license.json; cp -a /cdrom/factory-license.json /target/var/lib/drycontroller/factory-license.json; chmod 0600 /target/etc/drycontroller/license/license.json /target/var/lib/drycontroller/factory-license.json; fi'
     - cp -a /cdrom/post-install.sh /target/usr/local/sbin/drycontroller-edge-post-install.sh
     - cp -a /cdrom/drycontroller-edge-post-install.service /target/etc/systemd/system/drycontroller-edge-post-install.service
     - curtin in-target --target=/target -- chmod 0755 /usr/local/sbin/drycontroller-edge-post-install.sh

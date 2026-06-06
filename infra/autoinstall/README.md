@@ -42,11 +42,6 @@ Terminology:
 - `activation-bundle.json`: required factory activation batch material for the
   product install path, copied
   into `/etc/drycontroller/activation-bundle.json` by late commands.
-- `tailnet.env`: development/emergency debug factory activation material copied into
-  `/etc/drycontroller/tailnet.env` by late commands.
-- `factory-license.json`: development/emergency debug signed factory license copied into
-  `/etc/drycontroller/license/license.json` and archived under
-  `/var/lib/drycontroller/factory-license.json` by late commands.
 
 ## Required USB Root Files
 
@@ -62,8 +57,6 @@ drycontroller-edge.tar.gz
 drycontroller-apt/
 bundle-images.tar       # optional but recommended for clean-room first boot
 activation-bundle.json  # required for factory activation media
-tailnet.env             # debug/emergency fallback
-factory-license.json    # debug/emergency fallback
 ```
 
 `drycontroller-edge.tar.gz` must contain the edge repository. The tar can contain
@@ -134,9 +127,8 @@ sha512-crypt hash with `openssl passwd -6 -stdin`, and writes only the hash into
 by this directory. Place it at the installer media root, or put it under
 `dist/autoinstall/` before remastering with OS Installer USB Maker. Token or
 factory license rotation should replace this file without rebuilding the edge
-source bundle or offline apt repository. Older `tailnet.env` +
-`factory-license.json` materials remain supported only for development or
-emergency debugging.
+source bundle or offline apt repository. Split `tailnet.env` +
+`factory-license.json` materials are no longer accepted as installer inputs.
 
 If you already generated a sha512-crypt hash, you can still inject it directly:
 

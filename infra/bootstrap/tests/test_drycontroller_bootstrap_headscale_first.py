@@ -15,6 +15,8 @@ def test_host_tailnet_allows_existing_formal_state_without_bootstrap_authkey():
     assert 'BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"' in text
     assert "materialize_activation_bundle" in text
     assert '[ -f "$ENV_FILE" ] && return 0' not in text
+    assert 'if [ ! -f "$BUNDLE_FILE" ]; then' in text
+    assert "no activation bundle; skipping tailnet join" in text
     assert 'existing_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"' in text
     assert '[ -n "${TS_AUTHKEY:-}" ] || die "TS_AUTHKEY is required when no existing tailnet IPv4 is available"' in text
     assert text.index('existing_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"') < text.index(
@@ -27,7 +29,10 @@ def test_host_activation_agent_binds_current_tailnet_node_without_formal_reauth(
 
     assert 'BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"' in text
     assert "drycontroller.activation-bundle.v1" in text
-    assert "if not env_path.exists():" not in text
+    assert "if not env_path.exists():" in text
+    assert 'if [ ! -f "$BUNDLE_FILE" ]; then' in text
+    assert "no activation bundle; skipping activation" in text
+    assert "activation bundle must materialize it" in text
     assert "/api/v1/factory-activation" in text
     assert '"factory_license": json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))' in text
     assert "factory_license_fingerprint" in text
@@ -145,12 +150,17 @@ def test_autoinstall_media_accepts_single_activation_bundle():
 
     assert "/cdrom/activation-bundle.json" in user_data
     assert "/target/etc/drycontroller/activation-bundle.json" in user_data
+    assert "/cdrom/tailnet.env" not in user_data
+    assert "/cdrom/factory-license.json" not in user_data
     assert "DEFAULT_ACTIVATION_BUNDLE" in maker
     assert "validate_activation_bundle" in maker
+    assert "Factory activation materials are not included" not in maker
+    assert 'warnings.append("未包含 Factory 材料")' not in maker
     assert 'maps.append(("dist/autoinstall/activation-bundle.json", "/activation-bundle.json"))' in maker
+    assert 'maps.append(("dist/autoinstall/tailnet.env", "/tailnet.env"))' not in maker
+    assert 'maps.append(("dist/autoinstall/factory-license.json", "/factory-license.json"))' not in maker
     assert "Removed stale split factory material" in maker
-    assert "allow_legacy_split_materials_var = tk.BooleanVar(value=False)" in maker
-    assert "legacy split factory materials are disabled for product installs" in maker
+    assert "allow_legacy_split_materials" not in maker
     assert "ConditionPathExists=/etc/drycontroller/tailnet.env" not in tailnet_service
     assert "ConditionPathExists=/etc/drycontroller/tailnet.env" not in activation_service
 

@@ -208,9 +208,9 @@ Before production use:
   2. If the install area uses WiFi, copy wifi.env.example to wifi.env and fill it.
   3. Include drycontroller-apt/ so Docker does not depend on public
      Ubuntu/Docker mirror reachability.
-  4. For factory activation media, add batch materials tailnet.env and
-     factory-license.json at the installer media root, or place them under
-     ${OUT_DIR} before remastering with OS Installer USB Maker.
+  4. For factory activation media, add activation-bundle.json at the installer
+     media root, or place it under ${OUT_DIR} before remastering with OS
+     Installer USB Maker.
 EOF
 
 if grep -q 'REPLACE_WITH_SHA512_CRYPT_HASH' "${OUT_DIR}/user-data"; then

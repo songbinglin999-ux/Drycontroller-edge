@@ -21,8 +21,6 @@ die() {
 }
 
 materialize_activation_bundle() {
-  [ -f "$BUNDLE_FILE" ] || return 0
-
   BUNDLE_FILE="$BUNDLE_FILE" ENV_FILE="$ENV_FILE" python3 - <<'PY'
 import json
 import os
@@ -54,17 +52,18 @@ if missing:
     raise SystemExit(f"activation bundle tailnet missing: {', '.join(missing)}")
 
 path = Path(os.environ["ENV_FILE"])
-path.parent.mkdir(parents=True, exist_ok=True)
-lines = [f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())]
-path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+if not path.exists():
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
   chmod 0600 "$ENV_FILE" || true
   log "materialized tailnet env from activation bundle"
 }
 
 [ "$(id -u)" -eq 0 ] || die "run as root"
-if [ ! -f "$ENV_FILE" ] && [ ! -f "$BUNDLE_FILE" ]; then
-  log "no tailnet env or activation bundle; skipping tailnet join"
+if [ ! -f "$BUNDLE_FILE" ]; then
+  log "no activation bundle; skipping tailnet join"
   exit 0
 fi
 

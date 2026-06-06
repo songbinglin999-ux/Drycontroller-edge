@@ -231,7 +231,7 @@ def _preflight_bootstrap_completion(checks: list[dict[str, Any]]) -> None:
         "bootstrap.sentinel",
         "fail",
         "missing_bootstrap_completion",
-        hint="complete factory activation or legacy bootstrap before shipping",
+        hint="complete factory activation before shipping",
         detail={
             "path": str(sentinel_path),
             "activation_state_path": str(activation_state_path),

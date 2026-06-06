@@ -29,8 +29,8 @@ die() {
 }
 
 [ "$(id -u)" -eq 0 ] || die "run as root"
-if [ ! -f "$ENV_FILE" ] && [ ! -f "$BUNDLE_FILE" ]; then
-  log "no tailnet env or activation bundle; skipping activation"
+if [ ! -f "$BUNDLE_FILE" ]; then
+  log "no activation bundle; skipping activation"
   exit 0
 fi
 
@@ -73,11 +73,12 @@ if missing:
     raise SystemExit(f"activation bundle tailnet missing: {', '.join(missing)}")
 
 env_path = Path(os.environ["ENV_FILE"])
-env_path.parent.mkdir(parents=True, exist_ok=True)
-env_path.write_text(
-    "\n".join(f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())) + "\n",
-    encoding="utf-8",
-)
+if not env_path.exists():
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(
+        "\n".join(f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())) + "\n",
+        encoding="utf-8",
+    )
 
 factory_license = bundle.get("factory_license")
 if not isinstance(factory_license, dict):
@@ -92,15 +93,8 @@ if not archive_path.exists():
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     archive_path.write_text(json.dumps(factory_license, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-license_path = Path(os.environ["LICENSE_FILE_PATH"])
-if not license_path.exists():
-    license_path.parent.mkdir(parents=True, exist_ok=True)
-    license_path.write_text(json.dumps(factory_license, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
   chmod 0600 "$ENV_FILE" "$FACTORY_LICENSE_ARCHIVE_PATH" 2>/dev/null || true
-  if [ -f "$LICENSE_FILE_PATH" ]; then
-    chmod 0600 "$LICENSE_FILE_PATH" || true
-  fi
   log "materialized activation files from activation bundle"
 }
 
@@ -198,26 +192,7 @@ ensure_factory_license_archive() {
   if [ -f "$FACTORY_LICENSE_ARCHIVE_PATH" ]; then
     return 0
   fi
-  [ -f "$LICENSE_FILE_PATH" ] || die "missing factory license: $LICENSE_FILE_PATH"
-  FACTORY_LICENSE_ARCHIVE_PATH="$FACTORY_LICENSE_ARCHIVE_PATH" python3 - "$LICENSE_FILE_PATH" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-src = Path(sys.argv[1])
-dst = Path(os.environ["FACTORY_LICENSE_ARCHIVE_PATH"])
-payload = json.loads(src.read_text(encoding="utf-8"))
-if not isinstance(payload, dict) or not payload.get("signature"):
-    raise SystemExit("factory license is not a signed license JSON")
-if payload.get("schema") != "drycontroller.factory-license.v1":
-    raise SystemExit("license JSON is not a factory license")
-dst.parent.mkdir(parents=True, exist_ok=True)
-tmp = dst.with_suffix(dst.suffix + ".tmp")
-tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-tmp.replace(dst)
-PY
-  chmod 0600 "$FACTORY_LICENSE_ARCHIVE_PATH" || true
+  die "missing factory license archive: $FACTORY_LICENSE_ARCHIVE_PATH; activation bundle must materialize it"
 }
 
 machine_id() {
