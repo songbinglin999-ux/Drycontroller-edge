@@ -240,6 +240,8 @@ copy_edge_project() {
 }
 
 install_host_services() {
+  retire_legacy_bootstrap_service
+
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-tailnet.sh" /usr/local/sbin/drycontroller-host-tailnet.sh
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-enroll.sh" /usr/local/sbin/drycontroller-host-enroll.sh
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-activation.sh" /usr/local/sbin/drycontroller-host-activation.sh
@@ -255,6 +257,14 @@ install_host_services() {
   systemctl daemon-reload
   systemctl enable drycontroller-tailnet.service drycontroller-activation.service
   log "enabled drycontroller-tailnet.service and drycontroller-activation.service"
+}
+
+retire_legacy_bootstrap_service() {
+  systemctl disable --now drycontroller-bootstrap.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/drycontroller-bootstrap.service
+  rm -f /usr/local/sbin/drycontroller-bootstrap.sh
+  rm -rf /etc/systemd/system/drycontroller-bootstrap.service.d
+  log "removed retired drycontroller-bootstrap.service if present"
 }
 
 write_host_manifest() {

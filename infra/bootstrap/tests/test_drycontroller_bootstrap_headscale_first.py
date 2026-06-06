@@ -240,4 +240,8 @@ def test_install_edge_host_installs_activation_agent_service():
     assert "drycontroller-activation.service" in text
     assert '"activation_service": "drycontroller-activation.service"' in text
     assert "systemctl enable drycontroller-tailnet.service drycontroller-activation.service" in text
+    assert "retire_legacy_bootstrap_service" in text
+    assert "systemctl disable --now drycontroller-bootstrap.service" in text
+    assert "rm -f /etc/systemd/system/drycontroller-bootstrap.service" in text
+    assert "rm -f /usr/local/sbin/drycontroller-bootstrap.sh" in text
     assert '"bootstrap_service"' not in text
