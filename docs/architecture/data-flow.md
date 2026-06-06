@@ -87,13 +87,13 @@ InfluxDB / MQTT → ai-ctrl-optimizer
    ↓ 计算最优 setpoint
 MQTT（topic: control/suggestion/#）
    ↓
-edge-api / 大屏 / PLC（未来闭环）
+edge-api / ops-console / 大屏展示
 ```
 
 说明：
 
-- 当前阶段主要输出 **控制建议**（链速、抽风频率等），由人工确认后下发  
-- 未来可扩展为 **全自动闭环控制**：`ai-ctrl-optimizer → MQTT → edge-daq → PLC`
+- 当前阶段主要输出 **控制建议**（链速、抽风频率等），进入 edge-api 的 suggestion / command 协议。
+- AI 不直接写 PLC；未来 autopilot 也必须由 edge-api 把 suggestion 转成 signed command，再由 `edge-daq` 消费 command 写 PLC。`P0-SAFETY` 关闭前控制写入默认 disabled。
 
 ---
 
@@ -119,12 +119,15 @@ ai-ctrl-optimizer → MQTT（control/suggestion/#）
    ↓ 订阅
 edge-api → WebSocket / REST → 大屏
    ↓ 人工确认
-（未来）→ MQTT（control/apply/#）→ edge-daq → PLC
+edge-api 签发 signed command
+   ↓
+MQTT（control/apply/#）→ edge-daq → PLC
 ```
 
 当前阶段建议：
 
-- 所有控制信号经过 **人工确认** 后再下发至 PLC  
+- 默认 manual：所有 suggestion 经过 **人工确认** 后由 edge-api 签发 command，再下发至 PLC。
+- autopilot 只在 `P0-SAFETY` 关闭后允许启用，且仍由 edge-api 签发 command，AI 不旁路。
 - 所有控制操作必须记录在 PostgreSQL 的“控制操作日志”表中
 
 ---
@@ -244,5 +247,4 @@ websocat ws://edge-api:8000/api/ws/system
 - 所有新模块均应 **通过 MQTT 与 REST API 接入**，避免点对点耦合  
 - 统一使用命名规范良好的 MQTT Topic 与 Measurement 名称  
 - 避免在 AI 服务中直接访问 PLC / 数据库，统一走消息总线与 API
-
 

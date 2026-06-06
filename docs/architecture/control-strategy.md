@@ -75,7 +75,8 @@ edge-api / 大屏展示建议值
 ### 3.3 全自动模式（Auto，预留）
 
 - 未来可选模式：  
-  - AI 建议通过 `edge-daq` 直接写入 PLC setpoint  
+  - edge-api 在人工授权的 autopilot 层级下，把 suggestion 转成 signed command
+  - `edge-daq` 只消费 signed command 写 PLC，AI 不直接写 PLC
   - 仍需 PLC 侧设定安全上下限与联锁  
 - 启用前必须：
   - 在现场充分测试  
@@ -186,6 +187,7 @@ AI 输出的建议 setpoint 必须先经过上述限幅与安全规则过滤，�
   - 校验 Tag 与 Value 的合法性（范围、步长、当前模式）  
   - 记录操作日志（操作者、理由、前后值）  
   - 将合规命令转换为 MQTT 消息，交给 `edge-daq` 写入 PLC
+  - autopilot 也不绕过 edge-api 的 range guard / 签名 / 审计
 
 ### 6.3 AI 控制建议如何平滑下发
 
@@ -216,5 +218,3 @@ AI 输出的建议 setpoint 必须先经过上述限幅与安全规则过滤，�
 - 在策略成熟后：
   - 可在部分时段/部分工况下试点半自动控制  
   - 针对每种物料类型和工况建立相应的策略参数配置
-
-

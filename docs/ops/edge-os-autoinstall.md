@@ -10,7 +10,7 @@
 |---|---|---|
 | **OS Installer USB（系统安装 U 盘）** | 把空白 IPC 安装成标准 DryController Edge Host，并预置 factory license / bootstrap tailnet 配置。 | 否 |
 
-正常路径不再使用 Provisioning USB。设备号、节点名、production license、node enroll token 和后续权限由 Cloud Ops 在首次上线并经运维确认后签发；当前已在线的 tailnet 节点会被绑定为正式节点。旧 Provisioning USB active code 已删除，不能作为新流程验收标准。
+正常路径不再使用 Provisioning USB。设备号、节点名、production license、node enroll token 和后续权限由 Cloud Ops 在首次有效 factory activation contact 后自动签发；当前已在线的 tailnet 节点会被绑定为正式节点。历史 pending 或异常记录才需要人工兜底。旧 Provisioning USB active code 已删除，不能作为新流程验收标准。
 
 > 注意：OS Installer USB 是整机重装介质。安装器会选择最大的非安装介质磁盘，清除旧 Windows / Linux 分区和文件系统元数据，并重建 DryController Edge Host 分区。
 
@@ -265,10 +265,9 @@ drycontroller-edge-post-install.service
 1. 开机，确保有到 Headscale login endpoint 的出站网络。
 2. 首次进入系统后，机器会先自动连接 WiFi（如配置），再完成 Docker / edge host 安装。
 3. host Tailscale 使用 factory bootstrap credential 加入受限 bootstrap tailnet。
-4. activation service 调 Cloud Ops，云端记录为 `pending_ops_approval`。
-5. 运维在 cloud-console 确认真实设备后点击「签发正式授权」。
-6. edge 下一次 activation 重试领取 production license、device_id、node_name 和 node enroll token，并把当前 tailnet 节点绑定为正式节点。
-7. 在云端 console 查看节点显示 reachable / activated。
+4. activation service 调 Cloud Ops；有效、未过期、签名正确且 fingerprint 匹配的 `activation-bundle.json` 会自动签发。
+5. edge 在同一次 activation 响应中领取 production license、device_id、node_name 和 node enroll token，并把当前 tailnet 节点绑定为正式节点。
+6. 在云端 console 查看节点显示 reachable / activated。历史 pending 或异常记录才需要人工兜底处理。
 
 成功标准：
 
@@ -289,7 +288,7 @@ drycontroller-edge-post-install.service
 | 安装完成但没有自动关机 | 查看 `/var/log/installer/`，确认 late-commands 是否执行。 |
 | 首次开机后没有继续 host install | 查看 `/var/log/drycontroller-autoinstall.log` 和 `systemctl status drycontroller-edge-post-install.service`。 |
 | WiFi 连不上 | 检查安装盘根目录是否有 `wifi.env`，SSID/密码是否正确；必要时设置 `WIFI_INTERFACE`。 |
-| 激活阶段一直停在待确认 | 在 cloud-console Factory Activations 页面确认真实设备后点击「签发正式授权」。 |
+| 激活阶段一直停在待确认 | 新装机主线不应卡在人工待确认；检查 `activation-bundle.json` 是否过期、签名/fingerprint 是否匹配、请求来源是否符合 Cloud Ops 策略。历史 pending 或异常记录才在 cloud-console Factory Activations 页面人工兜底处理。 |
 | 激活失败 | 查看 `/var/log/drycontroller-host-tailnet.log`、`/var/log/drycontroller-host-activation.log` 和 `systemctl status drycontroller-tailnet.service drycontroller-activation.service`，同时在 Cloud Ops 查看 factory activation、license 和 Headscale 配置。 |
 
 ## 当前限制
@@ -306,6 +305,7 @@ Provisioning USB 已从正常路径移除。旧
 `drycontroller-provisioning/provisioning.json` bootstrap 脚本、systemd unit 和
 `install-edge-host.sh` 启用入口已经删除。
 
-新路径里 OS Installer USB / factory image 预置 factory license 和 bootstrap
-tailnet credential。Cloud Ops 在设备首次上线并经运维确认后分配设备号、
-节点名、production license、node enroll token 和后续权限。
+新路径里 OS Installer USB / factory image 预置 `activation-bundle.json`
+（factory license + bootstrap tailnet credential）。Cloud Ops 在设备首次有效
+factory activation contact 后自动分配设备号、节点名、production license、node
+enroll token 和后续权限；历史 pending 或异常记录才需要人工兜底。

@@ -29,9 +29,9 @@
 边缘侧采用容器化组合部署（见 `docker-compose.yml`）：
 
 - **`edge-api`**：统一 REST/WebSocket API，聚合实时/历史/系统状态；对控制与运维接口提供 API Key 鉴权能力。
-- **`edge-daq`**：PLC（Modbus TCP）采集与数据发布；写入 InfluxDB；订阅控制指令并回执 ACK（闭环）。
+- **`edge-daq`**：PLC（Modbus TCP）采集与数据发布；写入 InfluxDB；只消费 edge-api 签发的 signed control command 并回执 ACK/NAK。
 - **`ai-softsensor`**：订阅 MQTT 实时点位进行 ONNX 推理（软测量），发布结果到 MQTT/Influx。
-- **`ai-ctrl-optimizer`**：订阅数据并输出控制建议（策略/优化），通过 API 对外提供建议。
+- **`ai-ctrl-optimizer`**：订阅数据并输出 suggestion（策略/优化）；不直写 PLC，suggestion 只能进入 edge-api / ops-console 展示与签发链路。
 - **`license-service`**：授权校验（云端激活后本地签名 license 验签）。
 - **`edge-monitor`**：系统指标采集、服务探活、自动自愈（容器重启/熔断）、告警聚合（Alertmanager）。
 - **`mosquitto`**：本地 MQTT Broker（默认禁匿名，口令文件）。

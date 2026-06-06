@@ -119,7 +119,7 @@ DryController uses one mainline installation artifact:
 
 | Artifact | Maintained by | Purpose |
 |---|---|---|
-| OS Installer USB | This repo | Install Ubuntu, Docker, edge repo, host activation services, `tailnet.env`, and `factory-license.json` |
+| OS Installer USB | This repo | Install Ubuntu, Docker, edge repo, host activation services, and product-path `activation-bundle.json` |
 
 OS Installer USB documentation:
 
@@ -134,19 +134,22 @@ macOS imaging note: use the raw device, for example `/dev/rdisk2`, not
 
 ## Bootstrap And Tailnet
 
-The production bootstrap path is factory-license first:
+The production bootstrap path is activation-bundle first:
 
 High-level sequence:
 
-1. OS Installer copies `tailnet.env` and `factory-license.json`.
+1. OS Installer copies `activation-bundle.json`.
 2. Host Tailscale joins the bootstrap tailnet.
 3. `drycontroller-activation.service` calls Cloud Ops factory activation.
-4. Cloud Ops approval signs the production license and returns `device_id`,
-   `node_name`, and the node enroll token.
+4. Cloud Ops auto-approves valid signed factory material and returns the
+   production license, `device_id`, `node_name`, and the node enroll token.
 5. Host activation binds the current tailnet node, syncs `.env`, starts host
    enroll, and starts the edge stack.
 6. Edge preflight accepts `formal_license_active` as the new mainline completion
    signal.
+
+Legacy `tailnet.env` and `factory-license.json` remain accepted only as
+development/emergency debug inputs; they are not the product install path.
 
 If tailnet readiness fails, activation must fail closed rather than silently
 falling back to public Cloud Ops. The old `drycontroller-provisioning/`
