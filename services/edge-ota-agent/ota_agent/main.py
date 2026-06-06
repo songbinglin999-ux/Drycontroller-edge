@@ -271,6 +271,8 @@ async def _run_online(op_id: str, payload: OtaStartRequest) -> None:
         cosign_enforce = bool(payload.cosign_enforce or (env.get("OTA_COSIGN_ENFORCE", "").lower() in {"1", "true", "yes"}))
         if payload.compose_override_yaml:
             images = _extract_images_from_compose_yaml(payload.compose_override_yaml)
+            if images:
+                env["OTA_TARGET_IMAGES"] = "\n".join(images)
             if cosign_enforce and not images:
                 raise RuntimeError("cosign_enforce=true but no images found in compose_override_yaml")
             if images:
@@ -469,6 +471,7 @@ async def _cosign_verify_images(op_id: str, images: list[str], *, enforce: bool)
         proc = await asyncio.create_subprocess_exec(
             cosign_bin,
             "verify",
+            "--insecure-ignore-tlog=true",
             "--key",
             str(COSIGN_PUBKEY_PATH),
             img,

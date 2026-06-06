@@ -569,6 +569,7 @@ services:
       - OTA_SKIP_PULL=${OTA_SKIP_PULL:-false}
       # cosign 公钥（运维资产，只读挂载到容器）
       - OTA_COSIGN_PUBKEY_PATH=${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}
+      - OTA_TRUSTED_REGISTRY=${OTA_TRUSTED_REGISTRY:-}
       - DOCKER_CONFIG=${DOCKER_CONFIG:-/etc/drycontroller/registry}
       - REGISTRY_CREDENTIAL_STATUS_PATH=${REGISTRY_CREDENTIAL_STATUS_PATH:-/etc/drycontroller/registry/status.json}
       - REGISTRY_CREDENTIAL_MAX_AGE_HOURS=${REGISTRY_CREDENTIAL_MAX_AGE_HOURS:-0}

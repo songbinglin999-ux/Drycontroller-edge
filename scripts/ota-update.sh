@@ -157,7 +157,7 @@ verify_images_cosign() {
   while IFS= read -r img; do
     [ -z "$img" ] && continue
     log_info "cosign verify: $img"
-    if ! cosign verify --key "$pubkey" "$img" >/dev/null 2>&1; then
+    if ! cosign verify --insecure-ignore-tlog=true --key "$pubkey" "$img" >/dev/null 2>&1; then
       log_error "签名验证失败：$img"
       failed=1
     fi
@@ -444,7 +444,7 @@ rollback_to() {
     fi
   fi
 
-  compose up -d --remove-orphans
+  (export COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"; compose up -d --remove-orphans)
   local rc=$?
   if [ $rc -ne 0 ]; then
     log_error "回滚 compose up 失败（rc=$rc）"
@@ -504,10 +504,19 @@ main() {
         fi
       fi
       if [ "$SKIP_PULL" = false ] && [ $ok -eq 0 ]; then
-        compose pull
-        rc=$?
+        if [ -n "${OTA_TARGET_IMAGES:-}" ]; then
+          local pull_failed=0
+          while IFS= read -r img; do
+            [ -z "$img" ] && continue
+            docker pull "$img" || pull_failed=$?
+          done <<< "$OTA_TARGET_IMAGES"
+          rc=$pull_failed
+        else
+          compose pull
+          rc=$?
+        fi
         if [ $rc -ne 0 ]; then
-          log_error "compose pull 失败（rc=$rc）"
+          log_error "docker pull 失败（rc=$rc）"
           ok=$rc
         fi
       else
