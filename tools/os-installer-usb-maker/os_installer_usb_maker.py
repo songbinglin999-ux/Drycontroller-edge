@@ -25,13 +25,15 @@ DIST_DIR = REPO_ROOT / "dist"
 AUTOINSTALL_DIR = DIST_DIR / "autoinstall"
 DEFAULT_BASE_ISO = DIST_DIR / "drycontroller-os-installer-hybrid.iso"
 DEFAULT_PASSWORD_ENV = REPO_ROOT / "infra" / "autoinstall" / "password.env"
+DEFAULT_ACTIVATION_BUNDLE = AUTOINSTALL_DIR / "activation-bundle.json"
 DEFAULT_TAILNET_ENV = AUTOINSTALL_DIR / "tailnet.env"
 DEFAULT_FACTORY_LICENSE = AUTOINSTALL_DIR / "factory-license.json"
 FIXED_OPERATOR_USER = "dryops"
 AIRPORT_BIN = Path("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport")
 FACTORY_MATERIALS_HELP = (
     "批次材料由云端运维或工厂管理员准备，现场人员不要自己生成。\n\n"
-    "需要拿到两个文件：\n"
+    "推荐拿到一个文件：activation-bundle.json。\n\n"
+    "兼容旧材料时，也可以使用两个文件：\n"
     "1. tailnet.env：首次入网配置\n"
     "2. factory-license.json：工厂授权文件\n\n"
     f"拿到后放到这个目录：\n{AUTOINSTALL_DIR}\n\n"
@@ -164,6 +166,7 @@ class UsbMakerApp(tk.Tk):
         self.rebuild_apt_var = tk.BooleanVar(value=False)
         self.include_images_var = tk.BooleanVar(value=True)
         self.include_factory_materials_var = tk.BooleanVar(value=True)
+        self.activation_bundle_var = tk.StringVar(value=str(DEFAULT_ACTIVATION_BUNDLE))
         self.tailnet_env_var = tk.StringVar(value=str(DEFAULT_TAILNET_ENV))
         self.factory_license_var = tk.StringVar(value=str(DEFAULT_FACTORY_LICENSE))
         self.write_after_build_var = tk.BooleanVar(value=True)
@@ -339,7 +342,7 @@ class UsbMakerApp(tk.Tk):
 
         steps = [
             ("1", "确认准备状态", "缺失项会显示在下方，先补齐再开始。"),
-            ("2", "选择批次材料", "真机安装必须包含 tailnet.env 和 factory-license.json。"),
+            ("2", "选择批次材料", "真机安装优先使用 activation-bundle.json。"),
             ("3", "确认目标 U 盘", "只会列出外接磁盘，但仍要核对容量和盘名。"),
             ("4", "开始制作", "写入会清空 U 盘，完成后按日志提示拔出。"),
         ]
@@ -434,7 +437,7 @@ class UsbMakerApp(tk.Tk):
                                              sticky="w", pady=(6, 0))
 
     def _card_factory_materials(self, parent: tk.Frame) -> None:
-        card = self._make_card(parent, "批次材料", "这两个文件决定机器第一次入网和工厂授权。")
+        card = self._make_card(parent, "批次材料", "单个 activation-bundle.json 决定机器第一次入网和工厂授权。")
 
         source = tk.Frame(card, bg=C["card_alt"], highlightthickness=1,
                           highlightbackground=C["border"])
@@ -450,7 +453,7 @@ class UsbMakerApp(tk.Tk):
         ).pack(anchor="w")
         tk.Label(
             source,
-            text="现场只需要把 tailnet.env 和 factory-license.json 放进默认目录，再点击重新检查。",
+            text="现场只需要把 activation-bundle.json 放进默认目录，再点击重新检查。旧材料仍兼容 tailnet.env + factory-license.json。",
             bg=C["card_alt"],
             fg=C["text_soft"],
             font=("Helvetica Neue", 11),
@@ -474,11 +477,12 @@ class UsbMakerApp(tk.Tk):
             style="Card.TCheckbutton",
             command=self._refresh_readiness,
         ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        self._path_row(inner, "入网配置", self.tailnet_env_var, 1, self._choose_tailnet_env)
-        self._path_row(inner, "工厂授权", self.factory_license_var, 2, self._choose_factory_license)
+        self._path_row(inner, "激活包", self.activation_bundle_var, 1, self._choose_activation_bundle)
+        self._path_row(inner, "入网配置", self.tailnet_env_var, 2, self._choose_tailnet_env)
+        self._path_row(inner, "工厂授权", self.factory_license_var, 3, self._choose_factory_license)
         ttk.Label(
             card,
-            text="换 bootstrap key 或 factory license 时，只替换批次文件，不需要重做基础 OS bundle。",
+            text="换 bootstrap key 或 factory license 时，只替换 activation-bundle.json，不需要重做基础 OS bundle。",
             style="Card2.TLabel",
         ).pack(anchor="w", pady=(8, 0))
 
@@ -491,6 +495,15 @@ class UsbMakerApp(tk.Tk):
 
     def _show_factory_materials_help(self) -> None:
         messagebox.showinfo("批次材料从哪里来", FACTORY_MATERIALS_HELP)
+
+    def _choose_activation_bundle(self) -> None:
+        path = filedialog.askopenfilename(
+            title="选择 activation-bundle.json",
+            filetypes=[("Activation bundle", "*.json"), ("All files", "*.*")],
+        )
+        if path:
+            self.activation_bundle_var.set(path)
+            self._refresh_readiness()
 
     def _card_iso(self, parent: tk.Frame) -> None:
         card = self._make_card(parent, "镜像设置", "默认只需要确认输出文件名，高级选项不要随手改。")
@@ -743,14 +756,20 @@ class UsbMakerApp(tk.Tk):
         self._set_ready_status("password_env", password_ok, "已就绪" if password_ok else "缺失")
 
         if self.include_factory_materials_var.get():
+            activation_bundle = Path(self.activation_bundle_var.get()).expanduser()
             tailnet = Path(self.tailnet_env_var.get()).expanduser()
             factory_license = Path(self.factory_license_var.get()).expanduser()
-            materials_ok = tailnet.is_file() and factory_license.is_file()
-            detail = "已就绪" if materials_ok else "缺失"
+            bundle_ok = activation_bundle.is_file()
+            split_ok = tailnet.is_file() and factory_license.is_file()
+            materials_ok = bundle_ok or split_ok
+            detail = "bundle" if bundle_ok else ("旧两件套" if split_ok else "缺失")
             if materials_ok:
                 try:
-                    validate_tailnet_env(tailnet)
-                    validate_factory_license(factory_license)
+                    if bundle_ok:
+                        validate_activation_bundle(activation_bundle)
+                    else:
+                        validate_tailnet_env(tailnet)
+                        validate_factory_license(factory_license)
                 except ValueError:
                     materials_ok = False
                     detail = "格式错误"
@@ -870,32 +889,43 @@ class UsbMakerApp(tk.Tk):
         if self.include_images_var.get() and not (DIST_DIR / "bundle-images.tar").is_file():
             raise ValueError("已勾选包含业务镜像，但 dist/bundle-images.tar 不存在。请先构建镜像包或取消勾选。")
         include_factory_materials = self.include_factory_materials_var.get()
+        activation_bundle = Path(self.activation_bundle_var.get()).expanduser()
         tailnet_env = Path(self.tailnet_env_var.get()).expanduser()
         factory_license = Path(self.factory_license_var.get()).expanduser()
         if include_factory_materials:
-            if not tailnet_env.is_file():
+            if activation_bundle.is_file():
+                try:
+                    validate_activation_bundle(activation_bundle)
+                except ValueError as exc:
+                    raise ValueError(
+                        "批次材料格式不正确。\n\n"
+                        "请确认 activation-bundle.json 来自云端运维或工厂管理员，并重新下发。\n\n"
+                        f"检查结果：{exc}"
+                    ) from exc
+            elif not tailnet_env.is_file():
                 raise ValueError(
-                    "缺少 tailnet.env。\n\n"
-                    "这个文件由云端运维或工厂管理员下发，现场人员不要自己生成。\n"
-                    f"请把 tailnet.env 放到：\n{AUTOINSTALL_DIR}\n\n"
+                    "缺少 activation-bundle.json 或 tailnet.env。\n\n"
+                    "activation-bundle.json 由云端运维或工厂管理员下发，现场人员不要自己生成。\n"
+                    f"请把 activation-bundle.json 放到：\n{AUTOINSTALL_DIR}\n\n"
                     "放好后点击“重新检查”。"
                 )
-            if not factory_license.is_file():
+            elif not factory_license.is_file():
                 raise ValueError(
                     "缺少 factory-license.json。\n\n"
-                    "这个文件由云端运维或工厂管理员下发，现场人员不要自己生成。\n"
+                    "如果不用 activation-bundle.json，旧两件套必须同时包含 tailnet.env 和 factory-license.json。\n"
                     f"请把 factory-license.json 放到：\n{AUTOINSTALL_DIR}\n\n"
                     "放好后点击“重新检查”。"
                 )
-            try:
-                validate_tailnet_env(tailnet_env)
-                validate_factory_license(factory_license)
-            except ValueError as exc:
-                raise ValueError(
-                    "批次材料格式不正确。\n\n"
-                    "请确认这两个文件来自云端运维或工厂管理员，并重新下发一套批次材料。\n\n"
-                    f"检查结果：{exc}"
-                ) from exc
+            else:
+                try:
+                    validate_tailnet_env(tailnet_env)
+                    validate_factory_license(factory_license)
+                except ValueError as exc:
+                    raise ValueError(
+                        "批次材料格式不正确。\n\n"
+                        "请确认这两个文件来自云端运维或工厂管理员，并重新下发一套批次材料。\n\n"
+                        f"检查结果：{exc}"
+                    ) from exc
         disk = None
         if self.write_after_build_var.get():
             selected = self.disk_var.get()
@@ -911,6 +941,7 @@ class UsbMakerApp(tk.Tk):
             "rebuild_apt": self.rebuild_apt_var.get(),
             "include_images": self.include_images_var.get(),
             "include_factory_materials": include_factory_materials,
+            "activation_bundle": activation_bundle,
             "tailnet_env": tailnet_env,
             "factory_license": factory_license,
             "write_usb": self.write_after_build_var.get(),
@@ -1061,8 +1092,44 @@ def validate_factory_license(path: Path) -> None:
         raise ValueError("factory-license.json 缺少 expires_at")
 
 
+def validate_activation_bundle(path: Path) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"activation-bundle.json 不是有效 JSON：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("activation-bundle.json 必须是 JSON object")
+    if payload.get("schema") != "drycontroller.activation-bundle.v1":
+        raise ValueError("activation-bundle.json 不是 drycontroller.activation-bundle.v1")
+
+    tailnet = payload.get("tailnet")
+    if not isinstance(tailnet, dict):
+        raise ValueError("activation-bundle.json 缺少 tailnet object")
+    aliases = {
+        "ts_login_server": "TS_LOGIN_SERVER",
+        "ts_hostname": "TS_HOSTNAME",
+        "ts_authkey": "TS_AUTHKEY",
+        "cloud_ops_base_url": "CLOUD_OPS_BASE_URL",
+    }
+    keys = {aliases.get(str(key), str(key)).upper() for key, value in tailnet.items() if value}
+    required = {"TS_LOGIN_SERVER", "TS_HOSTNAME", "TS_AUTHKEY", "CLOUD_OPS_BASE_URL"}
+    missing = sorted(required - keys)
+    if missing:
+        raise ValueError(f"activation-bundle.json tailnet 缺少必要字段：{', '.join(missing)}")
+
+    factory_license = payload.get("factory_license")
+    if not isinstance(factory_license, dict):
+        raise ValueError("activation-bundle.json 缺少 factory_license object")
+    if factory_license.get("schema") != "drycontroller.factory-license.v1":
+        raise ValueError("activation-bundle.json 内 factory_license 不是 drycontroller.factory-license.v1")
+    if not factory_license.get("signature"):
+        raise ValueError("activation-bundle.json 内 factory_license 缺少 signature")
+    if not factory_license.get("expires_at"):
+        raise ValueError("activation-bundle.json 内 factory_license 缺少 expires_at")
+
+
 def copy_factory_materials(app: UsbMakerApp, plan: dict[str, object]) -> None:
-    destinations = [DEFAULT_TAILNET_ENV, DEFAULT_FACTORY_LICENSE]
+    destinations = [DEFAULT_ACTIVATION_BUNDLE, DEFAULT_TAILNET_ENV, DEFAULT_FACTORY_LICENSE]
     if not plan["include_factory_materials"]:
         for dest in destinations:
             if dest.exists():
@@ -1070,6 +1137,22 @@ def copy_factory_materials(app: UsbMakerApp, plan: dict[str, object]) -> None:
                 app._append_log(f"Removed stale factory material: {dest.relative_to(REPO_ROOT)}", "warn")
         app._append_log("Factory activation materials are not included in this ISO.", "warn")
         return
+
+    bundle_src = Path(plan["activation_bundle"])
+    if bundle_src.is_file():
+        if bundle_src.resolve() != DEFAULT_ACTIVATION_BUNDLE.resolve():
+            shutil.copy2(bundle_src, DEFAULT_ACTIVATION_BUNDLE)
+        DEFAULT_ACTIVATION_BUNDLE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        for stale in (DEFAULT_TAILNET_ENV, DEFAULT_FACTORY_LICENSE):
+            if stale.exists():
+                stale.unlink()
+                app._append_log(f"Removed stale split factory material: {stale.relative_to(REPO_ROOT)}", "warn")
+        app._append_log("Including factory material: activation-bundle.json")
+        return
+
+    if DEFAULT_ACTIVATION_BUNDLE.exists():
+        DEFAULT_ACTIVATION_BUNDLE.unlink()
+        app._append_log(f"Removed stale factory material: {DEFAULT_ACTIVATION_BUNDLE.relative_to(REPO_ROOT)}", "warn")
 
     pairs = [
         (Path(plan["tailnet_env"]), DEFAULT_TAILNET_ENV, "tailnet.env"),
@@ -1103,6 +1186,8 @@ def build_iso(app: UsbMakerApp, plan: dict[str, object]) -> None:
     ]
     if (AUTOINSTALL_DIR / "wifi.env").is_file():
         maps.append(("dist/autoinstall/wifi.env", "/wifi.env"))
+    if (AUTOINSTALL_DIR / "activation-bundle.json").is_file():
+        maps.append(("dist/autoinstall/activation-bundle.json", "/activation-bundle.json"))
     if (AUTOINSTALL_DIR / "tailnet.env").is_file():
         maps.append(("dist/autoinstall/tailnet.env", "/tailnet.env"))
     if (AUTOINSTALL_DIR / "factory-license.json").is_file():

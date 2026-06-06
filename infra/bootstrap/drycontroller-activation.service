@@ -3,7 +3,6 @@ Description=Drycontroller host factory activation
 Documentation=file:/opt/Drycontroller-edge/docs/ops/provisioning-bootstrap.md
 Wants=network-online.target drycontroller-tailnet.service
 After=network-online.target drycontroller-tailnet.service
-ConditionPathExists=/etc/drycontroller/tailnet.env
 StartLimitIntervalSec=0
 
 [Service]

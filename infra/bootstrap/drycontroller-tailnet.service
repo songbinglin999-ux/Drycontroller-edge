@@ -3,7 +3,6 @@ Description=Drycontroller host tailnet join
 Documentation=file:/opt/Drycontroller-edge/docs/ops/remote-debug-dev.md
 Wants=network-online.target tailscaled.service
 After=network-online.target tailscaled.service
-ConditionPathExists=/etc/drycontroller/tailnet.env
 
 [Service]
 Type=oneshot

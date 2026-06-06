@@ -95,7 +95,7 @@ dist/autoinstall/
   drycontroller-apt/
 ```
 
-`drycontroller-apt/` 是必备项，包含 Docker runtime、Docker Compose v2、NetworkManager 和基础 host package 的离线 apt 包集。安装阶段保留普通 HTTP Ubuntu apt 源，避免 curtin 在 `curthooks` 补装 `grub-pc` 等 bootloader 包时无源可用；不要把 installer 阶段 apt 源改成 `file:/cdrom`。首次开机 post-install 会从 `/opt/drycontroller-apt` 离线安装 Docker 和现场额外依赖，IPC 运行阶段不应依赖现场能访问 `archive.ubuntu.com` 或 Docker 相关包源。
+`drycontroller-apt/` 是必备项，包含 Docker runtime、Docker Compose v2、NetworkManager 和基础 host package 的离线 apt 包集。安装阶段使用 Subiquity `mirror-selection` 候选镜像并保留 `fallback: offline-install`，避免 curtin 在 `curthooks` 补装 `grub-pc` 等 bootloader 包时被单一 `archive.ubuntu.com` 路径拖死；不要把 installer 阶段 apt 源改成 `file:/cdrom`。首次开机 post-install 会从 `/opt/drycontroller-apt` 离线安装 Docker 和现场额外依赖，IPC 运行阶段不应依赖现场能访问 `archive.ubuntu.com` 或 Docker 相关包源。
 
 ### 3. 设置 dryops 登录和 SSH 密码
 
@@ -162,15 +162,17 @@ bundle-images.tar   # optional, first-boot Docker images for clean-room install
 真机 / 生产安装还需要放入同一介质根目录：
 
 ```text
-tailnet.env
-factory-license.json
+activation-bundle.json
 ```
 
-这两个文件是 factory activation 的**批次材料**，不是基础 OS bundle 的一部分。
-bootstrap tailnet key 或 factory license 轮换时，只替换这两个文件；不需要重新
+这个文件是 factory activation 的**批次材料**，不是基础 OS bundle 的一部分。
+bootstrap tailnet key 或 factory license 轮换时，只替换这个文件；不需要重新
 生成 edge source bundle、离线 apt repo 或业务镜像包。如果最终交付的是只读 ISO，
 仍需要 remaster 一次把新批次材料映射进 ISO 根目录；这只是重打最终介质，不是重新
 设计或重建 OS 安装内容。
+
+兼容旧材料时，介质根目录也可以继续使用 `tailnet.env` +
+`factory-license.json`。
 
 如果安装车间只有 WiFi，再额外放：
 
@@ -281,8 +283,8 @@ drycontroller-edge-post-install.service
 | 现象 | 判断 |
 |---|---|
 | 安装没有自动开始 | 检查启动参数是否包含 `autoinstall ds=nocloud;s=/cdrom/`，以及 U 盘根目录是否有 `user-data` / `meta-data`。 |
-| `configure_apt` 阶段报 `curtin ... apt-config` 失败 | 不要在 `user-data` 里自定义 `apt.primary` / `apt.sources` 指向 `file:/cdrom`；安装阶段保留普通 HTTP Ubuntu apt 源，Docker/runtime 包放到首次开机从 `/opt/drycontroller-apt` 离线安装。 |
-| `stage-curthooks` 阶段补装 `grub-pc` 后失败 | 先查 `/var/log/installer/curtin-install.log`；通常是目标系统没有可用 apt 源。当前可工作的基线是保留 HTTP `apt.primary`，同时确认 ISO 内 `pool/main/g/grub2/grub-pc_*.deb` 仍存在。 |
+| `configure_apt` 阶段报 `curtin ... apt-config` 失败 | 不要在 `user-data` 里自定义 `apt.primary` / `apt.sources` 指向 `file:/cdrom`；安装阶段应使用 `mirror-selection` 候选镜像和 `fallback: offline-install`，Docker/runtime 包放到首次开机从 `/opt/drycontroller-apt` 离线安装。 |
+| `stage-curthooks` 阶段补装 `grub-pc` 后失败或长时间卡住 | 先查 `/var/log/installer/curtin-install.log`；通常是目标系统没有可用 apt 源或单一外网 mirror 极慢。确认 `user-data` 使用 `mirror-selection` + `fallback: offline-install`，同时确认 ISO 内 `pool/main/g/grub2/grub-pc_*.deb` 仍存在。 |
 | 安装早期提示缺少 `/cdrom/drycontroller-apt/Packages` | 重新运行 `scripts/build-autoinstall-offline-apt-repo.sh`，并把生成的 `drycontroller-apt/` 目录复制到安装盘根目录。 |
 | 安装中途 `install_docker.io` 失败 | 查看 `/var/log/installer/curtin-install.log`，优先确认 `drycontroller-apt/` 与 ISO 版本/架构匹配，且包含 `docker.io` 及依赖。 |
 | 安装完成但没有自动关机 | 查看 `/var/log/installer/`，确认 late-commands 是否执行。 |
@@ -295,8 +297,8 @@ drycontroller-edge-post-install.service
 
 - 目前是 Ubuntu Server autoinstall 方案，不覆盖 Debian、Alpine、Yocto。
 - `user-data` 仍需要在制作安装盘时替换密码 hash。
-- production media 必须预置真实 factory license、factory public trust anchor、production license public trust anchor 和 `/etc/drycontroller/tailnet.env`。
-- 当前 OS Maker 会把 `dist/autoinstall/tailnet.env` 与 `dist/autoinstall/factory-license.json` 映射到 ISO 根目录；如果取消包含 factory activation 材料，它会移除旧材料，避免误用上一个批次的 token/license。
+- production media 必须预置真实 activation bundle、factory public trust anchor、production license public trust anchor。
+- 当前 OS Maker 会优先把 `dist/autoinstall/activation-bundle.json` 映射到 ISO 根目录；如果只提供旧材料，则继续映射 `tailnet.env` 与 `factory-license.json`。取消包含 factory activation 材料时，它会移除旧材料，避免误用上一个批次的 token/license。
 - staging UI approve -> edge retry -> bind current tailnet node 闭环跑通前，不建议把该安装盘交给现场批量使用。
 
 ## 与 Provisioning USB 的关系

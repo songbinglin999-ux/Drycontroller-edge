@@ -113,6 +113,8 @@ def test_legacy_bootstrap_syncs_current_tailnet_without_formal_reauth():
 def test_host_tailnet_allows_existing_formal_state_without_bootstrap_authkey():
     text = TAILNET_SCRIPT.read_text(encoding="utf-8")
 
+    assert 'BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"' in text
+    assert "materialize_activation_bundle" in text
     assert 'existing_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"' in text
     assert '[ -n "${TS_AUTHKEY:-}" ] || die "TS_AUTHKEY is required when no existing tailnet IPv4 is available"' in text
     assert text.index('existing_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"') < text.index(
@@ -123,6 +125,8 @@ def test_host_tailnet_allows_existing_formal_state_without_bootstrap_authkey():
 def test_host_activation_agent_binds_current_tailnet_node_without_formal_reauth():
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
 
+    assert 'BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"' in text
+    assert "drycontroller.activation-bundle.v1" in text
     assert "/api/v1/factory-activation" in text
     assert '"factory_license": json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))' in text
     assert "factory_license_fingerprint" in text
@@ -230,6 +234,22 @@ def test_autoinstall_media_carries_and_loads_first_boot_image_bundle():
     assert 'rm -f "$IMAGE_BUNDLE"' in post_install
     assert "self.include_images_var = tk.BooleanVar(value=True)" in maker
     assert 'maps.append(("dist/bundle-images.tar", "/bundle-images.tar"))' in maker
+
+
+def test_autoinstall_media_accepts_single_activation_bundle():
+    user_data = (AUTOINSTALL_DIR / "user-data").read_text(encoding="utf-8")
+    maker = USB_MAKER.read_text(encoding="utf-8")
+    tailnet_service = (Path(__file__).resolve().parents[1] / "drycontroller-tailnet.service").read_text(encoding="utf-8")
+    activation_service = (Path(__file__).resolve().parents[1] / "drycontroller-activation.service").read_text(encoding="utf-8")
+
+    assert "/cdrom/activation-bundle.json" in user_data
+    assert "/target/etc/drycontroller/activation-bundle.json" in user_data
+    assert "DEFAULT_ACTIVATION_BUNDLE" in maker
+    assert "validate_activation_bundle" in maker
+    assert 'maps.append(("dist/autoinstall/activation-bundle.json", "/activation-bundle.json"))' in maker
+    assert "Removed stale split factory material" in maker
+    assert "ConditionPathExists=/etc/drycontroller/tailnet.env" not in tailnet_service
+    assert "ConditionPathExists=/etc/drycontroller/tailnet.env" not in activation_service
 
 
 def test_host_activation_requires_local_license_when_cloud_omits_payload():

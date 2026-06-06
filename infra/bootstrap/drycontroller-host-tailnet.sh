@@ -8,6 +8,7 @@
 set -euo pipefail
 
 ENV_FILE="${DRYCONTROLLER_TAILNET_ENV:-/etc/drycontroller/tailnet.env}"
+BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"
 LOG_PREFIX="[drycontroller-tailnet]"
 
 log() {
@@ -19,7 +20,57 @@ die() {
   exit 1
 }
 
+materialize_activation_bundle() {
+  [ -f "$ENV_FILE" ] && return 0
+  [ -f "$BUNDLE_FILE" ] || return 0
+
+  BUNDLE_FILE="$BUNDLE_FILE" ENV_FILE="$ENV_FILE" python3 - <<'PY'
+import json
+import os
+import shlex
+from pathlib import Path
+
+bundle = json.loads(Path(os.environ["BUNDLE_FILE"]).read_text(encoding="utf-8"))
+if bundle.get("schema") != "drycontroller.activation-bundle.v1":
+    raise SystemExit("activation bundle is not drycontroller.activation-bundle.v1")
+tailnet = bundle.get("tailnet")
+if not isinstance(tailnet, dict):
+    raise SystemExit("activation bundle missing tailnet object")
+
+aliases = {
+    "ts_login_server": "TS_LOGIN_SERVER",
+    "ts_hostname": "TS_HOSTNAME",
+    "ts_authkey": "TS_AUTHKEY",
+    "cloud_ops_base_url": "CLOUD_OPS_BASE_URL",
+}
+values = {}
+for raw_key, raw_value in tailnet.items():
+    key = aliases.get(str(raw_key), str(raw_key)).upper()
+    if raw_value is not None:
+        values[key] = str(raw_value)
+
+required = {"TS_LOGIN_SERVER", "TS_HOSTNAME", "TS_AUTHKEY", "CLOUD_OPS_BASE_URL"}
+missing = sorted(key for key in required if not values.get(key))
+if missing:
+    raise SystemExit(f"activation bundle tailnet missing: {', '.join(missing)}")
+
+path = Path(os.environ["ENV_FILE"])
+path.parent.mkdir(parents=True, exist_ok=True)
+lines = [f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())]
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+  chmod 0600 "$ENV_FILE" || true
+  log "materialized tailnet env from activation bundle"
+}
+
 [ "$(id -u)" -eq 0 ] || die "run as root"
+if [ ! -f "$ENV_FILE" ] && [ ! -f "$BUNDLE_FILE" ]; then
+  log "no tailnet env or activation bundle; skipping tailnet join"
+  exit 0
+fi
+
+command -v python3 >/dev/null 2>&1 || die "python3 is not installed"
+materialize_activation_bundle
 [ -f "$ENV_FILE" ] || die "missing tailnet env: $ENV_FILE"
 
 # shellcheck disable=SC1090
