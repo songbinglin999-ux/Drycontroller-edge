@@ -16,7 +16,7 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
         sys.path.append(entry)
 
 from app.api.v1.ai import router as ai_router, get_ai_softsensor_service
-from app.api.v1.system import router as system_router, get_system_status_service
+from app.api.v1.system import _bootstrap_summary, router as system_router, get_system_status_service
 from app.api.v1.control import router as control_router, get_control_recommendation_service
 from app.api.v1.alarms import router as alarm_router
 from app.core.config import settings
@@ -117,6 +117,33 @@ def test_system_metric_trend_endpoint():
     resp = client.get("/api/v1/system/metrics/trend?field=cpu_percent")
     assert resp.status_code == 200
     assert resp.json()["count"] == 1
+
+
+def test_bootstrap_summary_accepts_legacy_sentinel(tmp_path):
+    sentinel = tmp_path / ".bootstrapped"
+    sentinel.write_text("ok", encoding="utf-8")
+
+    item = _bootstrap_summary(sentinel_path=sentinel, activation_state_path=tmp_path / "missing.json")
+
+    assert item["status"] == "ok"
+    assert item["message"] == "已完成"
+
+
+def test_bootstrap_summary_accepts_formal_activation_state(tmp_path):
+    activation_state = tmp_path / "activation-state.json"
+    activation_state.write_text('{"state":"formal_license_active"}', encoding="utf-8")
+
+    item = _bootstrap_summary(sentinel_path=tmp_path / "missing", activation_state_path=activation_state)
+
+    assert item["status"] == "ok"
+    assert item["message"] == "正式授权已激活"
+
+
+def test_bootstrap_summary_degraded_without_completion(tmp_path):
+    item = _bootstrap_summary(sentinel_path=tmp_path / "missing", activation_state_path=tmp_path / "missing.json")
+
+    assert item["status"] == "degraded"
+    assert item["message"] == "未检测到完成标记"
 
 
 def test_control_recommend_endpoint():

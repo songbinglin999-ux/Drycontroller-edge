@@ -4,6 +4,7 @@
 
 # pyright: reportMissingImports=false
 
+import json
 import time
 from typing import Optional
 from pathlib import Path
@@ -41,6 +42,46 @@ def _overall_level(items: list[dict]) -> str:
     if "degraded" in levels:
         return "degraded"
     return "ok"
+
+
+def _read_activation_state(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return str(data.get("state") or "").strip()
+
+
+def _bootstrap_summary(
+    sentinel_path: Path | None = None,
+    activation_state_path: Path | None = None,
+) -> dict:
+    sentinel_path = sentinel_path or Path("/var/lib/drycontroller/.bootstrapped")
+    activation_state_path = activation_state_path or Path("/var/lib/drycontroller/activation-state.json")
+    if sentinel_path.is_file():
+        return {
+            "key": "bootstrap",
+            "label": "装机",
+            "status": "ok",
+            "message": "已完成",
+        }
+
+    if _read_activation_state(activation_state_path) == "formal_license_active":
+        return {
+            "key": "bootstrap",
+            "label": "装机",
+            "status": "ok",
+            "message": "正式授权已激活",
+        }
+
+    return {
+        "key": "bootstrap",
+        "label": "装机",
+        "status": "degraded",
+        "message": "未检测到完成标记",
+    }
 
 
 async def _license_summary() -> dict:
@@ -200,12 +241,7 @@ async def get_local_status_summary(
                 "ts_hostname": (settings.TS_HOSTNAME or "").strip() or None,
             },
         },
-        {
-            "key": "bootstrap",
-            "label": "装机",
-            "status": "ok" if Path("/var/lib/drycontroller/.bootstrapped").is_file() else "degraded",
-            "message": "已完成" if Path("/var/lib/drycontroller/.bootstrapped").is_file() else "未检测到完成标记",
-        },
+        _bootstrap_summary(),
     ]
     level = _overall_level(items)
     title = {
