@@ -32,8 +32,8 @@ FIXED_OPERATOR_USER = "dryops"
 AIRPORT_BIN = Path("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport")
 FACTORY_MATERIALS_HELP = (
     "批次材料由云端运维或工厂管理员准备，现场人员不要自己生成。\n\n"
-    "推荐拿到一个文件：activation-bundle.json。\n\n"
-    "兼容旧材料时，也可以使用两个文件：\n"
+    "产品主线只接受一个文件：activation-bundle.json。\n\n"
+    "旧两件套只保留给开发调试或恢复场景，不能作为新装机验收路径：\n"
     "1. tailnet.env：首次入网配置\n"
     "2. factory-license.json：工厂授权文件\n\n"
     f"拿到后放到这个目录：\n{AUTOINSTALL_DIR}\n\n"
@@ -166,6 +166,7 @@ class UsbMakerApp(tk.Tk):
         self.rebuild_apt_var = tk.BooleanVar(value=False)
         self.include_images_var = tk.BooleanVar(value=True)
         self.include_factory_materials_var = tk.BooleanVar(value=True)
+        self.allow_legacy_split_materials_var = tk.BooleanVar(value=False)
         self.activation_bundle_var = tk.StringVar(value=str(DEFAULT_ACTIVATION_BUNDLE))
         self.tailnet_env_var = tk.StringVar(value=str(DEFAULT_TAILNET_ENV))
         self.factory_license_var = tk.StringVar(value=str(DEFAULT_FACTORY_LICENSE))
@@ -453,7 +454,7 @@ class UsbMakerApp(tk.Tk):
         ).pack(anchor="w")
         tk.Label(
             source,
-            text="现场只需要把 activation-bundle.json 放进默认目录，再点击重新检查。旧材料仍兼容 tailnet.env + factory-license.json。",
+            text="现场只需要把 activation-bundle.json 放进默认目录，再点击重新检查。旧两件套仅作为开发调试兜底。",
             bg=C["card_alt"],
             fg=C["text_soft"],
             font=("Helvetica Neue", 11),
@@ -477,9 +478,16 @@ class UsbMakerApp(tk.Tk):
             style="Card.TCheckbutton",
             command=self._refresh_readiness,
         ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        self._path_row(inner, "激活包", self.activation_bundle_var, 1, self._choose_activation_bundle)
-        self._path_row(inner, "入网配置", self.tailnet_env_var, 2, self._choose_tailnet_env)
-        self._path_row(inner, "工厂授权", self.factory_license_var, 3, self._choose_factory_license)
+        ttk.Checkbutton(
+            inner,
+            text="开发/应急：允许旧 tailnet.env + factory-license.json",
+            variable=self.allow_legacy_split_materials_var,
+            style="Card.TCheckbutton",
+            command=self._refresh_readiness,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self._path_row(inner, "激活包", self.activation_bundle_var, 2, self._choose_activation_bundle)
+        self._path_row(inner, "入网配置", self.tailnet_env_var, 3, self._choose_tailnet_env)
+        self._path_row(inner, "工厂授权", self.factory_license_var, 4, self._choose_factory_license)
         ttk.Label(
             card,
             text="换 bootstrap key 或 factory license 时，只替换 activation-bundle.json，不需要重做基础 OS bundle。",
@@ -759,10 +767,11 @@ class UsbMakerApp(tk.Tk):
             activation_bundle = Path(self.activation_bundle_var.get()).expanduser()
             tailnet = Path(self.tailnet_env_var.get()).expanduser()
             factory_license = Path(self.factory_license_var.get()).expanduser()
+            allow_legacy_split = self.allow_legacy_split_materials_var.get()
             bundle_ok = activation_bundle.is_file()
-            split_ok = tailnet.is_file() and factory_license.is_file()
+            split_ok = allow_legacy_split and tailnet.is_file() and factory_license.is_file()
             materials_ok = bundle_ok or split_ok
-            detail = "bundle" if bundle_ok else ("旧两件套" if split_ok else "缺失")
+            detail = "bundle" if bundle_ok else ("legacy/debug" if split_ok else "缺失")
             if materials_ok:
                 try:
                     if bundle_ok:
@@ -892,6 +901,7 @@ class UsbMakerApp(tk.Tk):
         activation_bundle = Path(self.activation_bundle_var.get()).expanduser()
         tailnet_env = Path(self.tailnet_env_var.get()).expanduser()
         factory_license = Path(self.factory_license_var.get()).expanduser()
+        allow_legacy_split = self.allow_legacy_split_materials_var.get()
         if include_factory_materials:
             if activation_bundle.is_file():
                 try:
@@ -902,17 +912,24 @@ class UsbMakerApp(tk.Tk):
                         "请确认 activation-bundle.json 来自云端运维或工厂管理员，并重新下发。\n\n"
                         f"检查结果：{exc}"
                     ) from exc
+            elif not allow_legacy_split:
+                raise ValueError(
+                    "缺少 activation-bundle.json。\n\n"
+                    "新装机产品主线只接受 activation-bundle.json；旧 tailnet.env + factory-license.json 只用于开发/应急调试。\n"
+                    f"请把 activation-bundle.json 放到：\n{AUTOINSTALL_DIR}\n\n"
+                    "确需旧材料时，先显式勾选“开发/应急：允许旧 tailnet.env + factory-license.json”。"
+                )
             elif not tailnet_env.is_file():
                 raise ValueError(
-                    "缺少 activation-bundle.json 或 tailnet.env。\n\n"
-                    "activation-bundle.json 由云端运维或工厂管理员下发，现场人员不要自己生成。\n"
-                    f"请把 activation-bundle.json 放到：\n{AUTOINSTALL_DIR}\n\n"
+                    "缺少 tailnet.env。\n\n"
+                    "旧两件套只用于开发/应急调试，必须同时包含 tailnet.env 和 factory-license.json。\n"
+                    f"请把 tailnet.env 放到：\n{AUTOINSTALL_DIR}\n\n"
                     "放好后点击“重新检查”。"
                 )
             elif not factory_license.is_file():
                 raise ValueError(
                     "缺少 factory-license.json。\n\n"
-                    "如果不用 activation-bundle.json，旧两件套必须同时包含 tailnet.env 和 factory-license.json。\n"
+                    "旧两件套只用于开发/应急调试，必须同时包含 tailnet.env 和 factory-license.json。\n"
                     f"请把 factory-license.json 放到：\n{AUTOINSTALL_DIR}\n\n"
                     "放好后点击“重新检查”。"
                 )
@@ -941,6 +958,7 @@ class UsbMakerApp(tk.Tk):
             "rebuild_apt": self.rebuild_apt_var.get(),
             "include_images": self.include_images_var.get(),
             "include_factory_materials": include_factory_materials,
+            "allow_legacy_split_materials": allow_legacy_split,
             "activation_bundle": activation_bundle,
             "tailnet_env": tailnet_env,
             "factory_license": factory_license,
@@ -1153,6 +1171,9 @@ def copy_factory_materials(app: UsbMakerApp, plan: dict[str, object]) -> None:
     if DEFAULT_ACTIVATION_BUNDLE.exists():
         DEFAULT_ACTIVATION_BUNDLE.unlink()
         app._append_log(f"Removed stale factory material: {DEFAULT_ACTIVATION_BUNDLE.relative_to(REPO_ROOT)}", "warn")
+
+    if not plan.get("allow_legacy_split_materials"):
+        raise ValueError("legacy split factory materials are disabled for product installs")
 
     pairs = [
         (Path(plan["tailnet_env"]), DEFAULT_TAILNET_ENV, "tailnet.env"),

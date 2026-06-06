@@ -22,7 +22,8 @@
 
 Tailscale 运行在宿主机 systemd 上，不再由 `docker compose` 管理。这样即使业务 compose 被 `down` 或 compose 文件损坏，远程通道仍可用于排障。
 
-一次性装机会由 `drycontroller-bootstrap.sh` 写入 `/etc/drycontroller/tailnet.env` 并启动：
+一次性装机会由 OS Installer USB 复制 `activation-bundle.json`，host tailnet /
+activation service 会从中生成或同步 `/etc/drycontroller/tailnet.env` 并启动：
 
 - `drycontroller-tailnet.service`
 - `drycontroller-enroll.service`
@@ -49,7 +50,7 @@ Tailscale 运行在宿主机 systemd 上，不再由 `docker compose` 管理。�
 - `systemctl status drycontroller-enroll.service`
 - `journalctl -u drycontroller-enroll.service -f`
 
-> 该方案依赖 Linux + systemd + 宿主机 Tailscale。`install-edge-host.sh` 会安装宿主机脚本和 systemd unit；Tailscale CLI 必须在 provisioning 前可用。
+> 该方案依赖 Linux + systemd + 宿主机 Tailscale。`install-edge-host.sh` 会安装宿主机脚本和 systemd unit；Tailscale CLI 必须在 factory activation 前可用。
 
 ---
 
@@ -75,4 +76,3 @@ cloud-ops 通过 headscale 虚拟内网访问边缘机 `edge-api`（需要边缘
 
 详见：
 - `Drycontroller-cloudserver/docs/ops/cloud-ops.md`
-

@@ -335,7 +335,7 @@ MVP 范围（2026-07）与 v2 目标架构分开推进：根审计当前收敛�
 v2 被采纳后须同步以下文档，否则团队会按旧链路继续实现：
 
 - `docs/ops/remote-debug-dev.md`：仍描述容器内 Tailscale。
-- `docs/ops/provisioning-bootstrap.md`：激活流程仍启动 compose profile 里的 `tailscale edge-enroll`。
+- `docs/ops/provisioning-bootstrap.md`：旧 Provisioning USB 路径已退役，当前激活流程以 OS Installer USB + host tailnet / activation service 为准。
 - `docs/architecture/data-flow.md`：仍保留 `ai-ctrl-optimizer → MQTT → edge-daq → PLC` 闭环描述。
 - `docs/architecture/control-strategy.md`：需改为 suggestion / command 双协议。
 - `docs/architecture/system-overview.md`：仍含 license-service 独立存在与 edge-daq 闭环 ACK。

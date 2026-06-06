@@ -10,7 +10,7 @@
 |---|---|---|
 | **OS Installer USB（系统安装 U 盘）** | 把空白 IPC 安装成标准 DryController Edge Host，并预置 factory license / bootstrap tailnet 配置。 | 否 |
 
-正常路径不再使用 Provisioning USB。设备号、节点名、production license、node enroll token 和后续权限由 Cloud Ops 在首次上线并经运维确认后签发；当前已在线的 tailnet 节点会被绑定为正式节点。旧 Provisioning USB 仅保留为 legacy/emergency 路径，不能作为新流程验收标准。
+正常路径不再使用 Provisioning USB。设备号、节点名、production license、node enroll token 和后续权限由 Cloud Ops 在首次上线并经运维确认后签发；当前已在线的 tailnet 节点会被绑定为正式节点。旧 Provisioning USB active code 已删除，不能作为新流程验收标准。
 
 > 注意：OS Installer USB 是整机重装介质。安装器会选择最大的非安装介质磁盘，清除旧 Windows / Linux 分区和文件系统元数据，并重建 DryController Edge Host 分区。
 
@@ -171,8 +171,8 @@ bootstrap tailnet key 或 factory license 轮换时，只替换这个文件；�
 仍需要 remaster 一次把新批次材料映射进 ISO 根目录；这只是重打最终介质，不是重新
 设计或重建 OS 安装内容。
 
-兼容旧材料时，介质根目录也可以继续使用 `tailnet.env` +
-`factory-license.json`。
+旧 `tailnet.env` + `factory-license.json` 只保留给开发/应急调试，不作为新装机
+产品验收路径。
 
 如果安装车间只有 WiFi，再额外放：
 
@@ -231,7 +231,6 @@ drycontroller-edge-post-install.service
 - 创建 `/opt/Drycontroller-edge/.env`
 - 安装并启用 `drycontroller-tailnet.service`
 - 安装并启用 `drycontroller-activation.service`
-- 默认不启用旧 `drycontroller-bootstrap.service`
 - 写入 `/var/lib/drycontroller/host-install.json`
 - host install 成功后禁用自身，避免后续重复执行
 
@@ -298,14 +297,14 @@ drycontroller-edge-post-install.service
 - 目前是 Ubuntu Server autoinstall 方案，不覆盖 Debian、Alpine、Yocto。
 - `user-data` 仍需要在制作安装盘时替换密码 hash。
 - production media 必须预置真实 activation bundle、factory public trust anchor、production license public trust anchor。
-- 当前 OS Maker 会优先把 `dist/autoinstall/activation-bundle.json` 映射到 ISO 根目录；如果只提供旧材料，则继续映射 `tailnet.env` 与 `factory-license.json`。取消包含 factory activation 材料时，它会移除旧材料，避免误用上一个批次的 token/license。
-- staging UI approve -> edge retry -> bind current tailnet node 闭环跑通前，不建议把该安装盘交给现场批量使用。
+- 当前 OS Maker 默认只接受 `dist/autoinstall/activation-bundle.json` 作为真机安装材料；旧两件套必须显式打开开发/应急开关才会映射进 ISO。取消包含 factory activation 材料时，它会移除旧材料，避免误用上一个批次的 token/license。
+- auto-approve -> edge bind current tailnet node 闭环跑通前，不建议把该安装盘交给现场批量使用。
 
 ## 与 Provisioning USB 的关系
 
-Provisioning USB 已从正常路径移除。旧 `drycontroller-provisioning/provisioning.json`
-流程只作为 legacy/emergency bootstrap 保留，需要显式启用
-`--enable-legacy-bootstrap` 或手动启动 `drycontroller-bootstrap.service`。
+Provisioning USB 已从正常路径移除。旧
+`drycontroller-provisioning/provisioning.json` bootstrap 脚本、systemd unit 和
+`install-edge-host.sh` 启用入口已经删除。
 
 新路径里 OS Installer USB / factory image 预置 factory license 和 bootstrap
 tailnet credential。Cloud Ops 在设备首次上线并经运维确认后分配设备号、

@@ -2,7 +2,6 @@ import subprocess
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-bootstrap.sh"
 TAILNET_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-tailnet.sh"
 ACTIVATION_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-activation.sh"
 INSTALL_SCRIPT = Path(__file__).resolve().parents[1] / "install-edge-host.sh"
@@ -10,111 +9,12 @@ AUTOINSTALL_DIR = Path(__file__).resolve().parents[2] / "autoinstall"
 USB_MAKER = Path(__file__).resolve().parents[3] / "tools" / "os-installer-usb-maker" / "os_installer_usb_maker.py"
 
 
-def _script_text() -> str:
-    return SCRIPT.read_text(encoding="utf-8")
-
-
-def test_bootstrap_uses_tailnet_runtime_cloud_url_for_post_join_calls():
-    text = _script_text()
-
-    assert 'CLOUD_OPS_TAILNET_BASE_URL="$(pyget cloud_ops_tailnet_base_url || true)"' in text
-    assert 'CLOUD_OPS_RUNTIME_BASE_URL="${CLOUD_OPS_TAILNET_BASE_URL:-$CLOUD_OPS_BASE_URL}"' in text
-    assert 'set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_RUNTIME_BASE_URL}"' in text
-    assert 'curl -fsS "${CLOUD_OPS_RUNTIME_BASE_URL%/}/api/v1/provisioning/license/bind"' in text
-
-
-def test_bootstrap_starts_tailnet_before_enroll_license_and_core_stack():
-    text = _script_text()
-
-    tailnet_start = text.index('log "starting host tailnet before cloud allocation..."')
-    allocation = text.index('log "allocating device identity from cloud-ops batch ${BATCH_ID}..."')
-    registry_degrade = text.index("registry login to ${HARBOR_HOST} failed; continuing with offline-loaded images")
-    host_tailnet = text.index('log "starting host tailnet..."')
-    core_start = text.index('log "starting edge core stack..."')
-    enroll_start = text.index('log "starting host enroll service..."')
-    license_bind = text.index('log "binding license on cloud-ops..."')
-
-    # tailnet URL 模式必须先让宿主机入网，再通过 tailnet allocate。
-    # Registry login 在 core stack 前尝试，但离线镜像已加载时不能挡死首次激活。
-    assert tailnet_start < allocation < registry_degrade < host_tailnet < core_start < enroll_start < license_bind
-
-
-def test_bootstrap_uses_host_tailnet_instead_of_compose_tailscale():
-    text = _script_text()
-
-    assert "start_host_tailnet" in text
-    assert "start_host_enroll" in text
-    assert "docker exec edge-tailscale" not in text
-    assert "compose --profile remote-debug" not in text
-
-
-def test_registry_login_failure_degrades_for_offline_activation():
-    text = _script_text()
-
-    assert "registry_login || exit 3" not in text
-    assert "registry credentials not provided; continuing with offline-loaded images" in text
-    assert "registry login to ${HARBOR_HOST} failed; continuing with offline-loaded images" in text
-
-
-def test_tailnet_mode_rebinds_license_instead_of_using_public_allocation_license():
-    text = _script_text()
-
-    assert 'if [ -n "${ALLOCATION_RESP_FILE:-}" ] && [ -z "${CLOUD_OPS_TAILNET_BASE_URL:-}" ]; then' in text
-    assert 'log "using signed license from cloud allocation response"' in text
-    assert 'log_err "host tailnet did not become ready; bootstrap will not fall back to public cloud url"' in text
-
-
-def test_tailnet_readiness_probes_cloud_ops_health_not_just_local_ip():
-    # tailscale ip -4 拿到 IP 不代表 cloud-ops 经 tailnet 可达（路由收敛 / ECS 端口放行）。
-    # 必须在宿主机对 ${CLOUD_OPS_RUNTIME_BASE_URL}/health 做真可达探测。
-    text = _script_text()
-
-    assert 'TAILNET_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"' in text
-    assert 'curl -fsS --max-time 5 "${health_url%/}/health"' in text
-
-
-def test_tailnet_mode_binds_edge_api_to_tailnet_ip_not_all_interfaces():
-    text = _script_text()
-
-    assert 'set_kv "EDGE_API_BIND_ADDR" "127.0.0.1"' in text
-    assert 'set_kv "EDGE_API_BIND_ADDR" "0.0.0.0"' not in text
-    assert 'TAILNET_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"' in text
-    assert 'set_kv "EDGE_API_BIND_ADDR" "$TAILNET_IP"' in text
-
-
-def test_background_enroll_uses_node_token_not_license_bind_token():
-    text = _script_text()
-
-    assert '"NODE_ENROLL_TOKEN": resp.get("node_enroll_token")' in text
-    assert 'NODE_ENROLL_TOKEN="${NODE_ENROLL_TOKEN:-${ENROLL_TOKEN:-}}"' in text
-    assert 'set_kv "CLOUD_OPS_ENROLL_TOKEN" "${NODE_ENROLL_TOKEN}"' in text
-    assert 'printf \'CLOUD_OPS_ENROLL_TOKEN=%q\\n\' "${NODE_ENROLL_TOKEN:-${ENROLL_TOKEN:-}}"' in text
-    assert '-H "X-Enroll-Token: ${ENROLL_TOKEN}"' in text
-    assert 'if [ -n "${NODE_ENROLL_TOKEN:-}" ]; then\n  log "starting host enroll service..."' in text
-
-
-def test_allocation_response_is_cached_for_bootstrap_retry():
-    text = _script_text()
-
-    assert 'ALLOCATION_CACHE_FILE="${STATE_DIR}/allocation-response.json"' in text
-    assert 'using cached cloud allocation response' in text
-    assert 'install -m 0600 "$ALLOCATION_RESP_FILE" "$ALLOCATION_CACHE_FILE"' in text
-
-
-def test_legacy_bootstrap_syncs_current_tailnet_without_formal_reauth():
-    text = _script_text()
-
-    assert "attempt_formal_tailnet_reauth" not in text
-    assert 'tailscale up --reset --authkey="${formal_authkey}"' not in text
-    assert "sync_current_tailnet_binding" in text
-    assert "remove_bootstrap_tailnet_authkey" in text
-
-
 def test_host_tailnet_allows_existing_formal_state_without_bootstrap_authkey():
     text = TAILNET_SCRIPT.read_text(encoding="utf-8")
 
     assert 'BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"' in text
     assert "materialize_activation_bundle" in text
+    assert '[ -f "$ENV_FILE" ] && return 0' not in text
     assert 'existing_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"' in text
     assert '[ -n "${TS_AUTHKEY:-}" ] || die "TS_AUTHKEY is required when no existing tailnet IPv4 is available"' in text
     assert text.index('existing_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"') < text.index(
@@ -127,6 +27,7 @@ def test_host_activation_agent_binds_current_tailnet_node_without_formal_reauth(
 
     assert 'BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"' in text
     assert "drycontroller.activation-bundle.v1" in text
+    assert "if not env_path.exists():" not in text
     assert "/api/v1/factory-activation" in text
     assert '"factory_license": json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))' in text
     assert "factory_license_fingerprint" in text
@@ -248,6 +149,8 @@ def test_autoinstall_media_accepts_single_activation_bundle():
     assert "validate_activation_bundle" in maker
     assert 'maps.append(("dist/autoinstall/activation-bundle.json", "/activation-bundle.json"))' in maker
     assert "Removed stale split factory material" in maker
+    assert "allow_legacy_split_materials_var = tk.BooleanVar(value=False)" in maker
+    assert "legacy split factory materials are disabled for product installs" in maker
     assert "ConditionPathExists=/etc/drycontroller/tailnet.env" not in tailnet_service
     assert "ConditionPathExists=/etc/drycontroller/tailnet.env" not in activation_service
 
@@ -330,62 +233,6 @@ def test_host_activation_is_idempotent_after_formal_license_active():
     assert active < sync < start_enroll < exit_ok < call_activation
 
 
-def test_bootstrap_invokes_host_activation_before_legacy_license_bind_when_enabled():
-    text = _script_text()
-
-    assert 'FACTORY_ACTIVATION_ENABLED="$(pyget factory_activation_enabled || true)"' in text
-    assert "should_run_host_activation()" in text
-    assert "start_host_activation()" in text
-    assert text.index('log "starting host activation service..."') < text.index('log "binding license on cloud-ops..."')
-    assert 'if [ "$HOST_ACTIVATION_DONE" != "1" ]; then' in text
-
-
-def test_bootstrap_reapplies_edge_binding_after_factory_activation():
-    text = _script_text()
-
-    assert "sync_current_tailnet_binding()" in text
-    assert "reload_tailnet_env()" in text
-    assert "unset TS_AUTHKEY" in text
-    assert 'if [ -n "${TS_AUTHKEY:-}" ]; then' in text
-    assert 'printf \'EDGE_ENV_FILE=%q\\n\' "${ENV_FILE:-}"' in text
-    assert 'printf \'EDGE_ROOT=%q\\n\' "${EDGE_ROOT:-}"' in text
-    assert 'set_kv "EDGE_API_BIND_ADDR" "$current_ip"' in text
-    assert 'set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_BASE_URL}"' in text
-    assert 'set_kv "CLOUD_OPS_ENROLL_TOKEN" "${CLOUD_OPS_ENROLL_TOKEN}"' in text
-    assert "tailscale up --reset --authkey" not in text
-    assert "remove_bootstrap_tailnet_authkey" in text
-    assert 'log "re-applying edge core stack after activation tailnet sync..."' in text
-    assert text.index("reload_tailnet_env") < text.index("sync_current_tailnet_binding")
-    assert text.index("sync_current_tailnet_binding") < text.index('log "re-applying edge core stack after activation tailnet sync..."')
-
-
-def test_factory_activation_mode_does_not_require_legacy_identity_or_enroll_token():
-    text = _script_text()
-
-    assert 'elif [ -z "${ENROLL_TOKEN:-}" ]; then' in text
-    assert 'if ! should_run_host_activation && { [ -z "${DEVICE_ID:-}" ] || [ -z "${NODE_NAME:-}" ]; }; then' in text
-    assert text.index('log "factory activation mode enabled; device identity and production license will come from cloud activation"') < text.index(
-        'log "missing enroll_token in provisioning.json or cloud allocation response"'
-    )
-
-
-def test_factory_activation_preserves_device_json_written_by_activation_agent():
-    text = _script_text()
-
-    assert 'if [ -f "${STATE_DIR}/device.json" ]; then' in text
-    assert 'python3 - "${STATE_DIR}/device.json"' in text
-    assert 'if [ "$HOST_ACTIVATION_DONE" != "1" ]; then\n  DEVICE_JSON="${STATE_DIR}/device.json"' in text
-
-
-def test_factory_activation_starts_host_enroll_if_activation_installs_node_token():
-    text = _script_text()
-
-    assert '. "$TAILNET_ENV_FILE"' in text
-    assert 'NODE_ENROLL_TOKEN="${CLOUD_OPS_ENROLL_TOKEN:-${NODE_ENROLL_TOKEN:-}}"' in text
-    assert 'log "starting host enroll service after activation..."' in text
-    assert 'log_warn "node enroll token still missing after activation; host enroll service remains stopped"' in text
-
-
 def test_install_edge_host_installs_activation_agent_service():
     text = INSTALL_SCRIPT.read_text(encoding="utf-8")
 
@@ -393,5 +240,4 @@ def test_install_edge_host_installs_activation_agent_service():
     assert "drycontroller-activation.service" in text
     assert '"activation_service": "drycontroller-activation.service"' in text
     assert "systemctl enable drycontroller-tailnet.service drycontroller-activation.service" in text
-    assert "ENABLE_LEGACY_BOOTSTRAP=false" in text
-    assert "legacy drycontroller-bootstrap.service" in text
+    assert '"bootstrap_service"' not in text

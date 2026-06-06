@@ -1,6 +1,6 @@
 [Unit]
 Description=Drycontroller host factory activation
-Documentation=file:/opt/Drycontroller-edge/docs/ops/provisioning-bootstrap.md
+Documentation=file:/opt/Drycontroller-edge/docs/ops/edge-os-autoinstall.md
 Wants=network-online.target drycontroller-tailnet.service
 After=network-online.target drycontroller-tailnet.service
 StartLimitIntervalSec=0

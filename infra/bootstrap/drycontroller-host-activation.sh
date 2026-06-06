@@ -73,12 +73,11 @@ if missing:
     raise SystemExit(f"activation bundle tailnet missing: {', '.join(missing)}")
 
 env_path = Path(os.environ["ENV_FILE"])
-if not env_path.exists():
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    env_path.write_text(
-        "\n".join(f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())) + "\n",
-        encoding="utf-8",
-    )
+env_path.parent.mkdir(parents=True, exist_ok=True)
+env_path.write_text(
+    "\n".join(f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())) + "\n",
+    encoding="utf-8",
+)
 
 factory_license = bundle.get("factory_license")
 if not isinstance(factory_license, dict):

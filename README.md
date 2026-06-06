@@ -10,7 +10,7 @@ This repository is one of three independent DryController repos:
 | Repo | Role | Branch |
 |---|---|---|
 | `Drycontroller-edge` | Edge IPC runtime and OS Installer USB assets | `master` |
-| `Drycontroller-cloudserver` | Cloud Ops, Cloud Console, Headscale/provisioning tooling | `main` |
+| `Drycontroller-cloudserver` | Cloud Ops, Cloud Console, Headscale, activation tooling | `main` |
 | `Drycontroller-frontend` | Large-screen dashboard frontend | `main` |
 
 The top-level workspace audit is the source of truth for cross-repo status:
@@ -51,8 +51,8 @@ boundaries:
 
 Use this only for local development or staging simulation. Factory installation
 should use the OS Installer USB with factory activation materials
-(`tailnet.env` and `factory-license.json`). Provisioning USB is legacy/emergency
-only and is not generated for new factory media.
+(`activation-bundle.json`). Provisioning USB is retired and is not generated
+for new factory media.
 
 ```bash
 cp env.example .env
@@ -80,7 +80,7 @@ Important runtime files and generated state:
 
 | Path | Purpose |
 |---|---|
-| `.env` | Edge runtime environment, generated/updated by activation/bootstrap in production |
+| `.env` | Edge runtime environment, generated/updated by activation in production |
 | `configs/tags.yaml` | PLC tag map |
 | `configs/ai-config.yaml` | AI model configuration |
 | `configs/monitor.yaml` | Health and self-heal policy |
@@ -126,9 +126,8 @@ OS Installer USB documentation:
 - `docs/ops/edge-os-autoinstall.md`
 - `infra/autoinstall/README.md`
 
-Provisioning USB documentation is kept only for archived legacy/emergency
-bootstrap. Do not use it as the normal factory path or as an acceptance
-condition for new installs.
+Provisioning USB documentation is kept only to mark the retired path. Do not use
+it as the normal factory path or as an acceptance condition for new installs.
 
 macOS imaging note: use the raw device, for example `/dev/rdisk2`, not
 `/dev/disk2`, when writing installer media with `dd`.
@@ -150,8 +149,8 @@ High-level sequence:
    signal.
 
 If tailnet readiness fails, activation must fail closed rather than silently
-falling back to public Cloud Ops. Legacy `drycontroller-provisioning/` bootstrap
-is retained only for emergency compatibility.
+falling back to public Cloud Ops. The old `drycontroller-provisioning/`
+bootstrap path has been removed from active installs.
 
 ## Verification
 
@@ -160,7 +159,9 @@ staging/security work include:
 
 ```bash
 services/edge-api/.venv/bin/python -m pytest services/edge-api/tests -q
-bash -n infra/bootstrap/drycontroller-bootstrap.sh
+bash -n infra/bootstrap/install-edge-host.sh
+bash -n infra/bootstrap/drycontroller-host-tailnet.sh
+bash -n infra/bootstrap/drycontroller-host-activation.sh
 ```
 
 Mainline bootstrap/preflight tests are run from the top-level `DryController`
@@ -171,9 +172,6 @@ Drycontroller-edge/.venv-test/bin/python -m pytest \
   Drycontroller-edge/infra/bootstrap/tests/test_drycontroller_bootstrap_headscale_first.py -q
 ```
 
-Run the legacy Provisioning USB generator tests only when touching the archived
-compatibility path.
-
 Run only the relevant subset for a scoped change, but use actual commands before
 claiming a path is verified.
 
@@ -182,7 +180,7 @@ claiming a path is verified.
 | Doc | Purpose |
 |---|---|
 | `docs/ops/edge-os-autoinstall.md` | OS Installer USB operator flow |
-| `docs/ops/provisioning-bootstrap.md` | Legacy Provisioning USB bootstrap details |
+| `docs/ops/provisioning-bootstrap.md` | Retired Provisioning USB bootstrap boundary |
 | `docs/ops/db-migrations.md` | Edge Alembic migration flow |
 | `CONTRIBUTING.md` | Git hooks and contribution rules |
 | `QUICKSTART.md` | Older quick-start notes; verify against current audit before relying on them |

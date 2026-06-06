@@ -21,7 +21,6 @@ die() {
 }
 
 materialize_activation_bundle() {
-  [ -f "$ENV_FILE" ] && return 0
   [ -f "$BUNDLE_FILE" ] || return 0
 
   BUNDLE_FILE="$BUNDLE_FILE" ENV_FILE="$ENV_FILE" python3 - <<'PY'

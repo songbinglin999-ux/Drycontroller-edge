@@ -20,14 +20,15 @@ factory networks.
 - Fixed operator account: `dryops`.
 - Fixed default password source: `infra/autoinstall/password.env`.
 - Optional WiFi inputs: SSID, password, and interface.
-- Factory activation material inputs: `tailnet.env` and `factory-license.json`.
+- Factory activation material inputs: `activation-bundle.json`, with
+  `tailnet.env` and `factory-license.json` accepted only as compatibility
+  fallback material.
 - Device identity, production license, node enroll token, OTA permission, and later credentials are issued by Cloud Ops after first contact and operator approval; the current tailnet node is bound after approval.
 - The primary action is disabled until required local materials and the target
   disk are present.
 
 This tool no longer creates a Provisioning USB. The old batch / installer-token
-flow is legacy/emergency only and must not be used as the normal factory install
-path.
+flow is retired and must not be used as the normal factory install path.
 
 The UI does not show or ask for the operator password. It passes the local, ignored password env file to `scripts/build-autoinstall-bundle.sh`, which injects only a sha512-crypt hash into `dist/autoinstall/user-data`.
 

@@ -13,8 +13,6 @@ EDGE_ROOT="/opt/Drycontroller-edge"
 INSTALL_PACKAGES=true
 INSTALL_DOCKER=true
 INSTALL_TAILSCALE=true
-ENABLE_LEGACY_BOOTSTRAP=false
-START_LEGACY_BOOTSTRAP=false
 REPO_SOURCE=""
 
 usage() {
@@ -28,15 +26,11 @@ Options:
   --skip-packages        Do not run apt-get; only verify prerequisites
   --skip-docker          Do not install Docker; only verify it exists
   --skip-tailscale       Do not install Tailscale; only verify it exists
-  --enable-legacy-bootstrap
-                         Enable drycontroller-bootstrap.service for the old Provisioning USB path
-  --start-legacy-bootstrap
-                         Start drycontroller-bootstrap.service after installing it
   -h, --help             Show this help
 
 Expected follow-up:
-  Install factory license + /etc/drycontroller/tailnet.env in the OS image,
-  then boot with network access to Headscale/Cloud Ops tailnet activation.
+  Install activation-bundle.json in the OS image, then boot with network access
+  to Headscale/Cloud Ops tailnet activation.
 EOF
 }
 
@@ -75,19 +69,6 @@ while [ $# -gt 0 ]; do
       INSTALL_TAILSCALE=false
       shift
       ;;
-    --no-enable-service)
-      ENABLE_LEGACY_BOOTSTRAP=false
-      shift
-      ;;
-    --enable-legacy-bootstrap)
-      ENABLE_LEGACY_BOOTSTRAP=true
-      shift
-      ;;
-    --start-bootstrap|--start-legacy-bootstrap)
-      ENABLE_LEGACY_BOOTSTRAP=true
-      START_LEGACY_BOOTSTRAP=true
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -112,8 +93,6 @@ fi
 
 [ -f "${REPO_SOURCE}/docker-compose.yml" ] || die "docker-compose.yml not found in source: ${REPO_SOURCE}"
 [ -f "${REPO_SOURCE}/env.example" ] || die "env.example not found in source: ${REPO_SOURCE}"
-[ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-bootstrap.sh" ] || die "bootstrap script missing in source"
-[ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-bootstrap.service" ] || die "bootstrap service missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-tailnet.sh" ] || die "host tailnet script missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-enroll.sh" ] || die "host enroll script missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-activation.sh" ] || die "host activation script missing in source"
@@ -226,15 +205,6 @@ EOF
   systemctl restart docker.service
 }
 
-install_bootstrap_timeout_override() {
-  mkdir -p /etc/systemd/system/drycontroller-bootstrap.service.d
-  cat > /etc/systemd/system/drycontroller-bootstrap.service.d/override.conf <<'EOF'
-[Service]
-TimeoutStartSec=1800
-EOF
-  log "installed bootstrap timeout override: TimeoutStartSec=1800"
-}
-
 copy_edge_project() {
   log "installing edge project: ${REPO_SOURCE} -> ${EDGE_ROOT}"
   mkdir -p "$(dirname "$EDGE_ROOT")"
@@ -269,12 +239,10 @@ copy_edge_project() {
   fi
 }
 
-install_bootstrap_service() {
-  install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-bootstrap.sh" /usr/local/sbin/drycontroller-bootstrap.sh
+install_host_services() {
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-tailnet.sh" /usr/local/sbin/drycontroller-host-tailnet.sh
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-enroll.sh" /usr/local/sbin/drycontroller-host-enroll.sh
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-activation.sh" /usr/local/sbin/drycontroller-host-activation.sh
-  install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-bootstrap.service" /etc/systemd/system/drycontroller-bootstrap.service
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-tailnet.service" /etc/systemd/system/drycontroller-tailnet.service
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-enroll.service" /etc/systemd/system/drycontroller-enroll.service
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-activation.service" /etc/systemd/system/drycontroller-activation.service
@@ -287,18 +255,6 @@ install_bootstrap_service() {
   systemctl daemon-reload
   systemctl enable drycontroller-tailnet.service drycontroller-activation.service
   log "enabled drycontroller-tailnet.service and drycontroller-activation.service"
-
-  if [ "$ENABLE_LEGACY_BOOTSTRAP" = true ]; then
-    systemctl enable drycontroller-bootstrap.service
-    log "enabled legacy drycontroller-bootstrap.service"
-  else
-    log "legacy bootstrap service installed but not enabled"
-  fi
-
-  if [ "$START_LEGACY_BOOTSTRAP" = true ]; then
-    log "starting legacy drycontroller-bootstrap.service"
-    systemctl start drycontroller-bootstrap.service
-  fi
 }
 
 write_host_manifest() {
@@ -306,16 +262,15 @@ write_host_manifest() {
   cat > /var/lib/drycontroller/host-install.json <<EOF
 {
   "installed_at": "$(date -Is)",
-    "edge_root": "${EDGE_ROOT}",
-    "source": "${REPO_SOURCE}",
-    "bootstrap_service": "drycontroller-bootstrap.service",
-    "tailnet_service": "drycontroller-tailnet.service",
-    "activation_service": "drycontroller-activation.service",
-    "enroll_service": "drycontroller-enroll.service",
-    "docker": "$(docker --version 2>/dev/null || true)",
-    "compose": "$(docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || true)",
-    "tailscale": "$(tailscale version 2>/dev/null | head -n 1 || true)"
-  }
+  "edge_root": "${EDGE_ROOT}",
+  "source": "${REPO_SOURCE}",
+  "tailnet_service": "drycontroller-tailnet.service",
+  "activation_service": "drycontroller-activation.service",
+  "enroll_service": "drycontroller-enroll.service",
+  "docker": "$(docker --version 2>/dev/null || true)",
+  "compose": "$(docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || true)",
+  "tailscale": "$(tailscale version 2>/dev/null | head -n 1 || true)"
+}
 EOF
   chmod 0600 /var/lib/drycontroller/host-install.json
 }
@@ -325,10 +280,8 @@ install_host_packages
 verify_prerequisites
 configure_docker
 copy_edge_project
-install_bootstrap_service
-install_bootstrap_timeout_override
+install_host_services
 write_host_manifest
 
 log "host preparation complete"
-log "next: boot with factory license and /etc/drycontroller/tailnet.env installed"
-log "legacy Provisioning USB path remains available via: systemctl start drycontroller-bootstrap.service"
+log "next: boot with /etc/drycontroller/activation-bundle.json installed"
