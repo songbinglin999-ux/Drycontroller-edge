@@ -248,9 +248,28 @@ drycontroller-edge-post-install.service
 
 如果 IPC 有多块内部磁盘，量产前必须确认“最大磁盘”就是系统盘；否则需要把 `infra/autoinstall/user-data` 里的 `match` 改成具体 `serial` / `model` / `path` 匹配。
 
+## 唯一发布入口
+
+发布级 OS Installer ISO 必须走 release wrapper：
+
+```bash
+bash scripts/build-os-installer-release.sh --channel stable
+```
+
+该脚本会强制 clean git、重建 Docker 镜像包、重建 offline apt、重建 autoinstall overlay、remaster ISO、运行最终 ISO release checklist，并在 ISO 旁生成 `.manifest.json`。不要手工调用 `xorriso`、不要只跑 `scripts/build-autoinstall-bundle.sh` 就当成发布镜像。
+
+写 U 盘也必须走 manifest-aware wrapper：
+
+```bash
+diskutil list external physical
+bash scripts/write-os-installer-usb.sh dist/OSYYYYMMDD-stable.iso --disk diskN
+```
+
+写盘脚本会重新校验 manifest、ISO sha256、最终 ISO checklist 和外接盘属性；没有匹配 manifest 的 ISO 不能写盘。
+
 ## 制盘发布清单
 
-每次发布 `OSYYYYMMDD-<channel>.iso` 前按这张清单逐项打勾；缺一项就不要写 U 盘。
+每次发布 `OSYYYYMMDD-<channel>.iso` 前，release wrapper 会自动覆盖这张清单；缺一项就不会产出可写盘 manifest。
 
 ### 已踩坑记录
 
@@ -295,7 +314,7 @@ hdiutil imageinfo "$ISO" | sed -n '1,130p'
 
 ### 写盘和现场验收
 
-- 写盘前重新 `diskutil list`，只写确认过的 external physical U 盘，使用 `/dev/rdiskN`。
+- 写盘只能使用 `scripts/write-os-installer-usb.sh`；写盘前重新 `diskutil list external physical`，只写确认过的 external physical U 盘，使用 `/dev/rdiskN`。
 - `dd` 完成后必须 `sync`，再 `diskutil eject /dev/diskN`。
 - 真机安装必须越过 `configure_apt`、`install kernel`、`curtin stage-curthooks` 并自动关机；只完成软件侧 ISO 验证不能关闭验收。
 - 首次从内置盘启动后，必须验证 `activation-bundle.json -> auto-approve -> bind current tailnet node -> production license -> preflight` 全链路。

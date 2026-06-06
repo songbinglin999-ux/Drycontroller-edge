@@ -34,6 +34,18 @@ Usable release images are named `OSYYYYMMDD-alpha.iso` or
 `OSYYYYMMDD-beta.iso`. The UI defaults to the current date plus `alpha`;
 change the suffix in the output ISO field when promoting a later build.
 
+For agent-driven or CLI release builds, use the fail-closed wrappers instead of
+manual `xorriso` / `dd` commands:
+
+```bash
+bash scripts/build-os-installer-release.sh --channel stable
+diskutil list external physical
+bash scripts/write-os-installer-usb.sh dist/OSYYYYMMDD-stable.iso --disk diskN
+```
+
+The build wrapper generates a matching `.manifest.json`; the write wrapper
+refuses to touch a disk when the manifest or final ISO checklist is missing.
+
 ## Run
 
 ```bash

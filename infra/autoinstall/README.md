@@ -96,6 +96,18 @@ If `/bundle-images.tar` exists on the installer media, it is copied to
 `/opt/drycontroller-images/bundle-images.tar`. First boot loads it with
 `docker load` after Docker is installed, then removes the tar to save disk.
 
+Release-grade ISO builds and USB writes must use the wrappers:
+
+```bash
+bash scripts/build-os-installer-release.sh --channel stable
+diskutil list external physical
+bash scripts/write-os-installer-usb.sh dist/OSYYYYMMDD-stable.iso --disk diskN
+```
+
+Do not hand-run `xorriso` or write an ISO that does not have a matching
+`.manifest.json`; the USB writer refuses artifacts that did not pass the release
+checklist.
+
 ## Installer Login And SSH
 
 The source `user-data` intentionally keeps `identity.password` as

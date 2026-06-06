@@ -8,6 +8,8 @@ INSTALL_SCRIPT = Path(__file__).resolve().parents[1] / "install-edge-host.sh"
 AUTOINSTALL_DIR = Path(__file__).resolve().parents[2] / "autoinstall"
 USB_MAKER = Path(__file__).resolve().parents[3] / "tools" / "os-installer-usb-maker" / "os_installer_usb_maker.py"
 PREFLIGHT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "preflight.sh"
+RELEASE_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "build-os-installer-release.sh"
+USB_WRITE_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "write-os-installer-usb.sh"
 EDGE_API_ACTIVATION_API = (
     Path(__file__).resolve().parents[3] / "services" / "edge-api" / "app" / "api" / "v1" / "activation.py"
 )
@@ -196,6 +198,30 @@ def test_os_installer_usb_maker_verifies_final_iso_release_checklist():
     assert "autoinstall ds=nocloud" in maker
     assert '"linux-generic", "linux-image-generic", "grub-pc", "grub-efi-amd64"' in maker
     assert "Final ISO release checklist passed." in maker
+
+
+def test_os_installer_release_and_write_wrappers_are_fail_closed():
+    release = RELEASE_SCRIPT.read_text(encoding="utf-8")
+    writer = USB_WRITE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "git status --porcelain=v1" in release
+    assert "git worktree must be clean before building a release ISO" in release
+    assert "tools/build-bundle-images.sh" in release
+    assert "build-autoinstall-offline-apt-repo.sh" in release
+    assert "build-autoinstall-bundle.sh" in release
+    assert '"include_images": True' in release
+    assert "drycontroller.os-installer-release.v1" in release
+    assert "final_iso_release_checklist" in release
+    assert "bundle-images.tar" in release
+    assert "activation-bundle.json" in release
+
+    assert "manifest schema mismatch" in writer
+    assert "ISO sha256 mismatch" in writer
+    assert "maker.verify_final_iso" in writer
+    assert "diskutil list external physical" in writer
+    assert "refusing to write internal disk" in writer
+    assert "/dev/r${DISK_ID}" in writer
+    assert "ERASE ${DISK_ID}" in writer
 
 
 def test_host_activation_requires_local_license_when_cloud_omits_payload():
