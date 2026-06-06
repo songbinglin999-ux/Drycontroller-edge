@@ -7,6 +7,13 @@ ACTIVATION_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-ac
 INSTALL_SCRIPT = Path(__file__).resolve().parents[1] / "install-edge-host.sh"
 AUTOINSTALL_DIR = Path(__file__).resolve().parents[2] / "autoinstall"
 USB_MAKER = Path(__file__).resolve().parents[3] / "tools" / "os-installer-usb-maker" / "os_installer_usb_maker.py"
+PREFLIGHT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "preflight.sh"
+EDGE_API_ACTIVATION_API = (
+    Path(__file__).resolve().parents[3] / "services" / "edge-api" / "app" / "api" / "v1" / "activation.py"
+)
+EDGE_API_ACTIVATION_CLI = (
+    Path(__file__).resolve().parents[3] / "services" / "edge-api" / "app" / "services" / "activation_cli.py"
+)
 
 
 def test_host_tailnet_allows_existing_formal_state_without_bootstrap_authkey():
@@ -52,6 +59,8 @@ def test_host_activation_agent_binds_current_tailnet_node_without_formal_reauth(
     assert "reapply_edge_compose_binding" in text
     assert "confirm_current_tailnet_binding" in text
     assert "/bind-tailnet-node" in text
+    assert 'BOOTSTRAP_SENTINEL="${DRYCONTROLLER_BOOTSTRAP_SENTINEL:-/var/lib/drycontroller/.bootstrapped}"' in text
+    assert "mark_bootstrap_complete" in text
     assert "start_host_enroll_service_if_configured" in text
     assert 'grep -q \'^CLOUD_OPS_ENROLL_TOKEN=\' "$ENV_FILE"' in text
     assert "systemctl enable drycontroller-enroll.service" in text
@@ -165,6 +174,30 @@ def test_autoinstall_media_accepts_single_activation_bundle():
     assert "ConditionPathExists=/etc/drycontroller/tailnet.env" not in activation_service
 
 
+def test_os_installer_usb_maker_verifies_final_iso_release_checklist():
+    user_data = (AUTOINSTALL_DIR / "user-data").read_text(encoding="utf-8")
+    maker = USB_MAKER.read_text(encoding="utf-8")
+
+    assert "http://127.0.0.1:18080" in user_data
+    assert "python3 -m http.server 18080" in user_data
+    assert "sources_list:" in user_data
+    assert "disable_suites:" in user_data
+    assert "mirrors.aliyun.com" not in user_data
+    assert "security.ubuntu.com" not in user_data
+    assert "verify_final_iso(app, output_iso" in maker
+    assert "def verify_final_iso" in maker
+    assert "ISO-local HTTP repo" in maker
+    assert "external_mirrors" in maker
+    assert '"activation-bundle.json"' in maker
+    assert '"bundle-images.tar"' in maker
+    assert '"tailnet.env", "factory-license.json"' in maker
+    assert "validate_activation_bundle_payload(bundle)" in maker
+    assert "DryController Edge Autoinstall" in maker
+    assert "autoinstall ds=nocloud" in maker
+    assert '"linux-generic", "linux-image-generic", "grub-pc", "grub-efi-amd64"' in maker
+    assert "Final ISO release checklist passed." in maker
+
+
 def test_host_activation_requires_local_license_when_cloud_omits_payload():
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
 
@@ -236,11 +269,32 @@ def test_host_activation_is_idempotent_after_formal_license_active():
 
     active = text.index('if [ "$current_state" = "formal_license_active" ]; then')
     sync = text.index('sync_edge_env_after_activation "$(tailnet_ip)" "${TS_HOSTNAME:-}"', active)
-    start_enroll = text.index("start_host_enroll_service_if_configured", sync)
+    mark_complete = text.index("mark_bootstrap_complete", sync)
+    start_enroll = text.index("start_host_enroll_service_if_configured", mark_complete)
     exit_ok = text.index("exit 0", start_enroll)
     call_activation = text.index('write_state "bootstrap_tailnet_joined" "calling_cloud_activation"')
 
-    assert active < sync < start_enroll < exit_ok < call_activation
+    assert active < sync < mark_complete < start_enroll < exit_ok < call_activation
+
+
+def test_shell_preflight_uses_activated_edge_api_bind_address():
+    text = PREFLIGHT_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'EDGE_API_READY_HOST="${PREFLIGHT_EDGE_API_HOST:-${EDGE_API_BIND_ADDR:-127.0.0.1}}"' in text
+    assert 'http://${EDGE_API_READY_HOST}:${EDGE_API_PORT}/ready' in text
+    assert 'http://127.0.0.1:${EDGE_API_PORT}/ready' not in text
+    assert 'allowed_health={"unhealthy","starting"}' in text
+
+
+def test_edge_api_no_longer_exposes_factory_activation_write_path():
+    api_text = EDGE_API_ACTIVATION_API.read_text(encoding="utf-8")
+    cli_text = EDGE_API_ACTIVATION_CLI.read_text(encoding="utf-8")
+
+    assert "run_activation" not in api_text
+    assert "@router.post" not in api_text
+    assert "ActivationTriggerRequest" not in api_text
+    assert "drycontroller-host-activation.sh" in cli_text
+    assert "deprecated: use /usr/local/sbin/drycontroller-host-activation.sh" in cli_text
 
 
 def test_install_edge_host_installs_activation_agent_service():

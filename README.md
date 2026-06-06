@@ -88,7 +88,7 @@ Important runtime files and generated state:
 | `/etc/drycontroller/keys/cosign.pub` | OTA image signature trust root |
 | `/etc/drycontroller/keys/license.pub` | License verification public key |
 | `/etc/drycontroller/license/license.json` | Signed local license |
-| `/var/lib/drycontroller/.bootstrapped` | Legacy bootstrap sentinel; new factory activation can complete with `formal_license_active` |
+| `/var/lib/drycontroller/.bootstrapped` | Host activation completion sentinel written after `formal_license_active` |
 
 `configs-runtime/plc.yaml` takes precedence over PLC fields in `.env`. This is
 intentional: Cloud Ops can update Modbus host/port/slave settings without

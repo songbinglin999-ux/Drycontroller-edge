@@ -34,20 +34,24 @@ autoinstall:
 
   apt:
     preserve_sources_list: false
-    mirror-selection:
-      primary:
-        - uri: https://mirrors.aliyun.com/ubuntu
-          arches: [amd64]
-        - uri: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
-          arches: [amd64]
-        - uri: http://archive.ubuntu.com/ubuntu
-          arches: [amd64]
-    fallback: offline-install
-    geoip: false
+    primary:
+      - uri: http://127.0.0.1:18080
+        arches: [amd64]
+    security:
+      - uri: http://127.0.0.1:18080
+        arches: [amd64]
+    disable_suites:
+      - updates
+      - security
+      - backports
+    sources_list: |
+      deb [trusted=yes] http://127.0.0.1:18080 $RELEASE main restricted
 
   early-commands:
     - test -d /cdrom/dists || (echo "missing /cdrom/dists; OS Installer USB must keep the Ubuntu ISO apt repository at the media root" >&2; exit 1)
     - test -f /cdrom/drycontroller-apt/Packages || (echo "missing /cdrom/drycontroller-apt/Packages; build and copy the offline apt repo before booting the OS Installer USB" >&2; exit 1)
+    - sh -c 'python3 -m http.server 18080 --bind 127.0.0.1 --directory /cdrom >/run/drycontroller-cdrom-http.log 2>&1 &'
+    - sh -c 'for i in $(seq 1 20); do wget -q -O /dev/null http://127.0.0.1:18080/dists/noble/Release && exit 0; sleep 1; done; cat /run/drycontroller-cdrom-http.log >&2; exit 1'
 
   storage:
     swap:

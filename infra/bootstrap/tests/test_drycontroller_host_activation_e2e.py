@@ -114,6 +114,7 @@ def test_host_activation_bundle_to_formal_license_e2e(tmp_path: Path):
         "DRYCONTROLLER_TAILNET_ENV": str(etc_dir / "tailnet.env"),
         "DRYCONTROLLER_ACTIVATION_STATE": str(var_dir / "activation-state.json"),
         "DRYCONTROLLER_DEVICE_JSON": str(var_dir / "device.json"),
+        "DRYCONTROLLER_BOOTSTRAP_SENTINEL": str(var_dir / ".bootstrapped"),
         "LICENSE_FILE_PATH": str(etc_dir / "license" / "license.json"),
         "FACTORY_LICENSE_ARCHIVE_PATH": str(var_dir / "factory-license.json"),
         "LICENSE_PUBLIC_KEY_PATH": str(etc_dir / "keys" / "license.pub"),
@@ -134,6 +135,7 @@ def test_host_activation_bundle_to_formal_license_e2e(tmp_path: Path):
     state = json.loads((var_dir / "activation-state.json").read_text(encoding="utf-8"))
     assert state["state"] == "formal_license_active"
     assert state["message"] == "activation_complete"
+    assert (var_dir / ".bootstrapped").is_file()
 
     factory_archive = json.loads((var_dir / "factory-license.json").read_text(encoding="utf-8"))
     assert factory_archive["schema"] == "drycontroller.factory-license.v1"
@@ -186,6 +188,7 @@ def test_host_activation_bundle_to_formal_license_e2e(tmp_path: Path):
         check=True,
     )
     assert "activation already complete" in activation_rerun.stdout
+    assert (var_dir / ".bootstrapped").is_file()
     tailnet_env_after_rerun = (etc_dir / "tailnet.env").read_text(encoding="utf-8")
     assert "TS_AUTHKEY=" not in tailnet_env_after_rerun
     assert "CLOUD_OPS_ENROLL_TOKEN=node-token-e2e" in tailnet_env_after_rerun

@@ -157,16 +157,46 @@ import sys
 from pathlib import Path
 
 path = Path(__import__("os").environ["USER_DATA_PATH"])
+text = path.read_text(encoding="utf-8")
+effective_lines = [
+    line.strip()
+    for line in text.splitlines()
+    if line.strip() and not line.strip().startswith("#")
+]
+effective = "\n".join(effective_lines)
+required = [
+    "http://127.0.0.1:18080",
+    "python3 -m http.server 18080",
+    "sources_list:",
+    "disable_suites:",
+]
+missing = [item for item in required if item not in text]
+if missing:
+    print(
+        "user-data must route installer apt through the ISO-local HTTP repository: "
+        + ", ".join(missing),
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+for forbidden in (
+    "mirrors.aliyun.com",
+    "mirrors.tuna.tsinghua.edu.cn",
+    "archive.ubuntu.com",
+    "security.ubuntu.com",
+):
+    if forbidden in effective:
+        print(f"user-data installer apt must not depend on external mirror: {forbidden}", file=sys.stderr)
+        raise SystemExit(2)
 bad = []
-for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+for lineno, line in enumerate(text.splitlines(), start=1):
     stripped = line.strip()
     if stripped.startswith("#"):
         continue
-    if stripped.startswith(("uri:", "source:")) and "file:/cdrom" in stripped:
+    if stripped.startswith(("uri:", "source:")) and ("file:/cdrom" in stripped or "file://cdrom" in stripped):
         bad.append(f"line {lineno}: {stripped}")
 if bad:
     print(
-        "user-data must not point installer apt sources at file:/cdrom: "
+        "user-data must not point installer apt sources directly at file:/cdrom: "
         + ", ".join(bad),
         file=sys.stderr,
     )

@@ -72,6 +72,12 @@ if [ ! -f "$COSIGN_PUBKEY" ]; then
 fi
 
 EDGE_API_PORT="${EDGE_API_PORT:-8000}"
+EDGE_API_READY_HOST="${PREFLIGHT_EDGE_API_HOST:-${EDGE_API_BIND_ADDR:-127.0.0.1}}"
+case "$EDGE_API_READY_HOST" in
+  ""|"0.0.0.0"|"::")
+    EDGE_API_READY_HOST="127.0.0.1"
+    ;;
+esac
 EDGE_DAQ_HEALTH_PORT="${EDGE_DAQ_HEALTH_PORT:-8082}"
 LICENSE_SERVICE_PORT="${LICENSE_SERVICE_PORT:-8004}"
 EDGE_MONITOR_PORT="${EDGE_MONITOR_PORT:-8080}"
@@ -379,7 +385,7 @@ PY
 )"
   if python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$result"; then
     add_check "docker.containers" pass ok "" "$result"
-  elif [ "$ALLOW_DEGRADED" = true ] && python3 -c 'import json,sys; data=json.loads(sys.argv[1]); allowed={"edge-daq","ai-softsensor"}; bad=data.get("bad") or []; raise SystemExit(0 if bad and all(item.get("service") in allowed and item.get("state") == "running" and item.get("health") == "unhealthy" for item in bad) else 1)' "$result"; then
+  elif [ "$ALLOW_DEGRADED" = true ] && python3 -c 'import json,sys; data=json.loads(sys.argv[1]); allowed={"edge-daq","ai-softsensor"}; allowed_health={"unhealthy","starting"}; bad=data.get("bad") or []; raise SystemExit(0 if bad and all(item.get("service") in allowed and item.get("state") == "running" and item.get("health") in allowed_health for item in bad) else 1)' "$result"; then
     add_check "docker.containers" degraded factory_degraded "edge-daq/ai-softsensor may be unhealthy without PLC/data source; run --strict for final acceptance" "$result"
   else
     add_check "docker.containers" fail container_not_ready "all core services must be running and healthy when health exists" "$result"
@@ -431,7 +437,7 @@ check_file_exists "license.public_key" "$LICENSE_PUBLIC_KEY" "license public key
 check_license_verify
 check_file_exists "cosign.pubkey" "$COSIGN_PUBKEY" "cosign public key must be installed for OTA image verification"
 check_compose
-http_check "edge_api.ready" "http://127.0.0.1:${EDGE_API_PORT}/ready" true
+http_check "edge_api.ready" "http://${EDGE_API_READY_HOST}:${EDGE_API_PORT}/ready" true
 http_check "edge_daq.ready" "http://127.0.0.1:${EDGE_DAQ_HEALTH_PORT}/ready" true
 http_check "edge_monitor.ready" "http://127.0.0.1:${EDGE_MONITOR_PORT}/ready" false
 if [ "$(should_check_ota)" = true ]; then

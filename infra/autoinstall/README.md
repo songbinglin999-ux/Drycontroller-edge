@@ -84,12 +84,13 @@ bash scripts/build-autoinstall-offline-apt-repo.sh \
   --out dist/autoinstall/drycontroller-apt
 ```
 
-The autoinstall profile uses Subiquity mirror selection for the installer phase
-with multiple Ubuntu mirrors and `fallback: offline-install`. Do not replace
-that source with `file:/cdrom`; curtin may fail before late-commands. The profile
-verifies that `drycontroller-apt/` exists, copies it into the target as
-`/opt/drycontroller-apt`, and points the installed system at that offline repo
-for first-boot Docker/runtime package installation.
+The autoinstall profile does not depend on public Ubuntu mirrors during the
+installer phase. `early-commands` serves the ISO's `/cdrom` repository on
+`http://127.0.0.1:18080`, and target apt uses that local HTTP repository while
+curtin installs `linux-generic` and grub packages. The profile verifies that
+`drycontroller-apt/` exists, copies it into the target as `/opt/drycontroller-apt`,
+and points the installed system at that offline repo for first-boot
+Docker/runtime package installation.
 
 If `/bundle-images.tar` exists on the installer media, it is copied to
 `/opt/drycontroller-images/bundle-images.tar`. First boot loads it with

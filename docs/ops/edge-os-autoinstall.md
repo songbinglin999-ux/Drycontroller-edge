@@ -95,7 +95,7 @@ dist/autoinstall/
   drycontroller-apt/
 ```
 
-`drycontroller-apt/` 是必备项，包含 Docker runtime、Docker Compose v2、NetworkManager 和基础 host package 的离线 apt 包集。安装阶段使用 Subiquity `mirror-selection` 候选镜像并保留 `fallback: offline-install`，避免 curtin 在 `curthooks` 补装 `grub-pc` 等 bootloader 包时被单一 `archive.ubuntu.com` 路径拖死；不要把 installer 阶段 apt 源改成 `file:/cdrom`。首次开机 post-install 会从 `/opt/drycontroller-apt` 离线安装 Docker 和现场额外依赖，IPC 运行阶段不应依赖现场能访问 `archive.ubuntu.com` 或 Docker 相关包源。
+`drycontroller-apt/` 是必备项，包含 Docker runtime、Docker Compose v2、NetworkManager 和基础 host package 的离线 apt 包集。安装阶段不依赖公网 Ubuntu mirror：`early-commands` 会从 `/cdrom` 启动 `127.0.0.1:18080` 只读 HTTP repo，target apt 通过该本地 repo 补装 `linux-generic` / grub 等 installer 包，避免现场 DNS 或外网 mirror 在 `install-kernel` / `curthooks` 阶段拖死。首次开机 post-install 会从 `/opt/drycontroller-apt` 离线安装 Docker 和现场额外依赖，IPC 运行阶段不应依赖现场能访问 `archive.ubuntu.com` 或 Docker 相关包源。
 
 ### 3. 设置 dryops 登录和 SSH 密码
 
@@ -248,6 +248,58 @@ drycontroller-edge-post-install.service
 
 如果 IPC 有多块内部磁盘，量产前必须确认“最大磁盘”就是系统盘；否则需要把 `infra/autoinstall/user-data` 里的 `match` 改成具体 `serial` / `model` / `path` 匹配。
 
+## 制盘发布清单
+
+每次发布 `OSYYYYMMDD-<channel>.iso` 前按这张清单逐项打勾；缺一项就不要写 U 盘。
+
+### 已踩坑记录
+
+- `install-kernel` / `curtin stage-curthooks` 卡住不一定是内核包坏了；本次根因是 target apt 仍指向 `mirrors.aliyun.com` / `security.ubuntu.com`，现场 DNS 失败后 `apt-get --download-only install linux-generic` 退出 100。最终策略是 installer 阶段只走 ISO-local HTTP repo：`http://127.0.0.1:18080`。
+- 只刷新 `drycontroller-edge.tar.gz` 不够。clean-room 装机还会加载 `bundle-images.tar`，如果没重建 Docker 镜像，启动后的容器代码仍可能是旧版本。
+- `activation-bundle.json` 是唯一产品激活材料。不要让旧的 split `tailnet.env` / `factory-license.json` 混进最终 ISO，否则后续很难判断现场到底跑的是哪条激活路径。
+- 首次激活只保留宿主 systemd 路径：`drycontroller-tailnet.service` -> `drycontroller-activation.service`。`edge-api` 只读状态，不再触发 factory activation 或写入 license/device 状态。
+- `preflight` 不能假设 edge-api 一定监听 `127.0.0.1`；首次激活后 `.env` 会同步 tailnet 绑定地址，检查 `/ready` 要使用当前 `EDGE_API_BIND_ADDR` 或显式 `PREFLIGHT_EDGE_API_HOST`。
+- 现场没有 PLC 或输入数据时，`edge-daq` / `ai-softsensor` 可以因为依赖缺失进入 degraded；制盘验收要区分“系统/激活路径失败”和“现场外设未接入”。
+- 任何 USB 写入前都重新 `diskutil list external physical`，不要沿用上一次的 `/dev/diskN`；写入完成必须 `sync` 后 eject。
+
+### 构建输入
+
+- `dist/drycontroller-os-installer-hybrid.iso` 是当前已知可启动 base ISO。
+- `dist/autoinstall/user-data` 能被 YAML 解析，`dryops` 密码是真实 `$6$...` hash，且不含 `REPLACE_WITH_SHA512_CRYPT_HASH`。
+- `dist/autoinstall/user-data` 的 installer apt 源只指向 `http://127.0.0.1:18080`，包含 `python3 -m http.server 18080` early-command，且不含 `mirrors.aliyun.com` / `security.ubuntu.com` / `archive.ubuntu.com` 等现场外网源。
+- `dist/autoinstall/drycontroller-apt/Packages` 和 `Packages.gz` 存在，`pool/` 内有 Docker、Docker Compose、Tailscale、NetworkManager 及基础依赖包。
+- `dist/drycontroller-edge.tar.gz` 来自当前 edge worktree；clean-room 装机要同时刷新 `dist/bundle-images.tar`。
+- `dist/autoinstall/activation-bundle.json` 存在，schema 是 `drycontroller.activation-bundle.v1`，内含 `tailnet` 与 `factory_license`。
+- `dist/autoinstall/` 不保留旧 split 材料作为产品路径：没有 `tailnet.env` / `factory-license.json` 参与最终 ISO。
+
+### ISO 内容
+
+生成最终 ISO 后，至少确认：
+
+```bash
+ISO=dist/OSYYYYMMDD-<channel>.iso
+shasum -a 256 "$ISO"
+bsdtar -xOf "$ISO" user-data > /tmp/drycontroller-user-data.verify
+ruby -ryaml -e 'YAML.load_file(ARGV[0]); puts "yaml ok"' /tmp/drycontroller-user-data.verify
+rg -n 'password:|REPLACE_WITH_SHA512_CRYPT_HASH|127\\.0\\.0\\.1:18080|http.server 18080|sources_list|disable_suites|network:|dhcp4|optional:' /tmp/drycontroller-user-data.verify
+! rg -n 'REPLACE_WITH_SHA512_CRYPT_HASH' /tmp/drycontroller-user-data.verify
+! rg -n 'mirrors\\.aliyun\\.com|mirrors\\.tuna\\.tsinghua\\.edu\\.cn|archive\\.ubuntu\\.com|security\\.ubuntu\\.com' /tmp/drycontroller-user-data.verify
+bsdtar -tf "$ISO" | rg '^(user-data|meta-data|post-install.sh|drycontroller-edge-post-install.service|drycontroller-edge.tar.gz|drycontroller-apt/Packages|drycontroller-apt/Packages.gz|activation-bundle.json|bundle-images.tar)$'
+bsdtar -tf "$ISO" | rg '^(tailnet.env|factory-license.json)$' && exit 1 || true
+bsdtar -xOf "$ISO" dists/noble/main/binary-amd64/Packages.gz | gzip -dc | rg '^Package: (linux-generic|linux-image-generic|grub-pc|grub-efi-amd64)'
+bsdtar -xOf "$ISO" boot/grub/grub.cfg | rg 'DryController Edge Autoinstall|autoinstall ds=nocloud\\;s=/cdrom/'
+hdiutil imageinfo "$ISO" | sed -n '1,130p'
+```
+
+`bundle-images.tar` 可按本次目标决定是否必需；用于 clean-room 首次启动时必须存在。`hdiutil imageinfo` 在 macOS 上偶尔会返回内部错误码但打印分区信息，仍需看到 GPT/ISO9660/ESP 结构；否则用另一种工具复核 hybrid 启动结构。
+
+### 写盘和现场验收
+
+- 写盘前重新 `diskutil list`，只写确认过的 external physical U 盘，使用 `/dev/rdiskN`。
+- `dd` 完成后必须 `sync`，再 `diskutil eject /dev/diskN`。
+- 真机安装必须越过 `configure_apt`、`install kernel`、`curtin stage-curthooks` 并自动关机；只完成软件侧 ISO 验证不能关闭验收。
+- 首次从内置盘启动后，必须验证 `activation-bundle.json -> auto-approve -> bind current tailnet node -> production license -> preflight` 全链路。
+
 ## 现场人员流程
 
 ### 阶段 1：安装系统
@@ -281,8 +333,8 @@ drycontroller-edge-post-install.service
 | 现象 | 判断 |
 |---|---|
 | 安装没有自动开始 | 检查启动参数是否包含 `autoinstall ds=nocloud;s=/cdrom/`，以及 U 盘根目录是否有 `user-data` / `meta-data`。 |
-| `configure_apt` 阶段报 `curtin ... apt-config` 失败 | 不要在 `user-data` 里自定义 `apt.primary` / `apt.sources` 指向 `file:/cdrom`；安装阶段应使用 `mirror-selection` 候选镜像和 `fallback: offline-install`，Docker/runtime 包放到首次开机从 `/opt/drycontroller-apt` 离线安装。 |
-| `stage-curthooks` 阶段补装 `grub-pc` 后失败或长时间卡住 | 先查 `/var/log/installer/curtin-install.log`；通常是目标系统没有可用 apt 源或单一外网 mirror 极慢。确认 `user-data` 使用 `mirror-selection` + `fallback: offline-install`，同时确认 ISO 内 `pool/main/g/grub2/grub-pc_*.deb` 仍存在。 |
+| `configure_apt` 阶段报 `curtin ... apt-config` 失败 | 确认 `/var/log/installer/curtin-install.log` 中 target apt source 是 `http://127.0.0.1:18080`，且 early-command 已启动 `/cdrom` HTTP repo。不要让 installer 阶段回退到公网 mirror 或直接写错成 `file://cdrom`。 |
+| `install-kernel` / `stage-curthooks` 阶段补装 `linux-generic` / `grub-pc` 后失败或长时间卡住 | 先查 `/var/log/installer/curtin-install.log`；如果出现 `Temporary failure resolving mirrors.*` / `security.ubuntu.com`，说明镜像仍依赖外网源，必须重打。确认 `user-data` 只使用 `127.0.0.1:18080` ISO-local repo，同时确认 ISO 内 `dists/noble/*/Packages.gz` 和 `pool/main/g/grub2/` / `pool/main/l/linux*` 仍存在。 |
 | 安装早期提示缺少 `/cdrom/drycontroller-apt/Packages` | 重新运行 `scripts/build-autoinstall-offline-apt-repo.sh`，并把生成的 `drycontroller-apt/` 目录复制到安装盘根目录。 |
 | 安装中途 `install_docker.io` 失败 | 查看 `/var/log/installer/curtin-install.log`，优先确认 `drycontroller-apt/` 与 ISO 版本/架构匹配，且包含 `docker.io` 及依赖。 |
 | 安装完成但没有自动关机 | 查看 `/var/log/installer/`，确认 late-commands 是否执行。 |

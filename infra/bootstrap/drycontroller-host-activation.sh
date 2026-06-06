@@ -13,6 +13,7 @@ ENV_FILE="${DRYCONTROLLER_TAILNET_ENV:-/etc/drycontroller/tailnet.env}"
 BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"
 STATE_FILE="${DRYCONTROLLER_ACTIVATION_STATE:-/var/lib/drycontroller/activation-state.json}"
 DEVICE_JSON="${DRYCONTROLLER_DEVICE_JSON:-/var/lib/drycontroller/device.json}"
+BOOTSTRAP_SENTINEL="${DRYCONTROLLER_BOOTSTRAP_SENTINEL:-/var/lib/drycontroller/.bootstrapped}"
 LICENSE_FILE_PATH="${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}"
 FACTORY_LICENSE_ARCHIVE_PATH="${FACTORY_LICENSE_ARCHIVE_PATH:-/var/lib/drycontroller/factory-license.json}"
 LICENSE_PUBLIC_KEY_PATH="${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}"
@@ -143,6 +144,12 @@ tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encodin
 tmp.replace(path)
 PY
   chmod 0600 "$STATE_FILE" || true
+}
+
+mark_bootstrap_complete() {
+  mkdir -p "$(dirname "$BOOTSTRAP_SENTINEL")"
+  : > "$BOOTSTRAP_SENTINEL"
+  chmod 0600 "$BOOTSTRAP_SENTINEL" || true
 }
 
 tailnet_ip() {
@@ -556,6 +563,7 @@ PY
 )"
 if [ "$current_state" = "formal_license_active" ]; then
   sync_edge_env_after_activation "$(tailnet_ip)" "${TS_HOSTNAME:-}"
+  mark_bootstrap_complete
   start_host_enroll_service_if_configured
   log "activation already complete"
   exit 0
@@ -565,6 +573,7 @@ if [ "$current_state" = "formal_tailnet_joined" ]; then
   if confirm_current_tailnet_binding "$current_tailnet_ip" "${TS_HOSTNAME:-}"; then
     sync_edge_env_after_activation "$current_tailnet_ip" "${TS_HOSTNAME:-}"
     write_state "formal_license_active" "activation_complete"
+    mark_bootstrap_complete
     start_host_enroll_service_if_configured
     log "activation complete"
     exit 0
@@ -614,6 +623,7 @@ bind_status=$?
 set -e
 if [ "$bind_status" -eq 0 ]; then
   write_state "formal_license_active" "activation_complete"
+  mark_bootstrap_complete
   start_host_enroll_service_if_configured
   log "activation complete"
 elif [ "$bind_status" -eq 75 ]; then

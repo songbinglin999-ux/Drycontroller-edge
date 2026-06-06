@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import gzip
 import json
 import os
 import plistlib
@@ -1005,6 +1006,10 @@ def validate_activation_bundle(path: Path) -> None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"activation-bundle.json 不是有效 JSON：{exc}") from exc
+    validate_activation_bundle_payload(payload)
+
+
+def validate_activation_bundle_payload(payload: object) -> None:
     if not isinstance(payload, dict):
         raise ValueError("activation-bundle.json 必须是 JSON object")
     if payload.get("schema") != "drycontroller.activation-bundle.v1":
@@ -1037,7 +1042,6 @@ def validate_activation_bundle(path: Path) -> None:
 
 
 def copy_factory_materials(app: UsbMakerApp, plan: dict[str, object]) -> None:
-    destinations = [DEFAULT_ACTIVATION_BUNDLE, *STALE_SPLIT_MATERIALS]
     bundle_src = Path(plan["activation_bundle"])
     if bundle_src.is_file():
         if bundle_src.resolve() != DEFAULT_ACTIVATION_BUNDLE.resolve():
@@ -1134,6 +1138,102 @@ def build_iso(app: UsbMakerApp, plan: dict[str, object]) -> None:
             "rg -n 'password:|REPLACE_WITH_SHA512_CRYPT_HASH|drycontroller-apt'",
         ],
     )
+    verify_final_iso(app, output_iso, include_images=bool(plan["include_images"]))
+
+
+def extract_iso_file(iso: Path, path: str) -> bytes:
+    try:
+        return subprocess.check_output(["bsdtar", "-xOf", str(iso), path], cwd=str(REPO_ROOT))
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"ISO 缺少必需文件：{path}") from exc
+
+
+def verify_final_iso(app: UsbMakerApp, iso: Path, *, include_images: bool) -> None:
+    app._append_log("Verifying final ISO release checklist...", "info")
+    try:
+        raw_list = subprocess.check_output(["bsdtar", "-tf", str(iso)], cwd=str(REPO_ROOT), text=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"无法读取 ISO 目录：{iso}") from exc
+
+    entries = {line.strip().removeprefix("./") for line in raw_list.splitlines() if line.strip()}
+    required = {
+        "user-data",
+        "meta-data",
+        "post-install.sh",
+        "drycontroller-edge-post-install.service",
+        "drycontroller-edge.tar.gz",
+        "drycontroller-apt/Packages",
+        "drycontroller-apt/Packages.gz",
+        "activation-bundle.json",
+    }
+    if include_images:
+        required.add("bundle-images.tar")
+    missing = sorted(required - entries)
+    if missing:
+        raise RuntimeError("ISO 缺少必需根目录文件：" + ", ".join(missing))
+
+    stale = sorted({"tailnet.env", "factory-license.json"} & entries)
+    if stale:
+        raise RuntimeError("ISO 不能包含旧 split factory material：" + ", ".join(stale))
+
+    user_data = extract_iso_file(iso, "user-data").decode("utf-8")
+    if "REPLACE_WITH_SHA512_CRYPT_HASH" in user_data:
+        raise RuntimeError("ISO user-data 仍包含 dryops 密码占位符")
+    if not re.search(r'password:\s*"\$6\$[^"]+"', user_data):
+        raise RuntimeError("ISO user-data 缺少真实 sha512-crypt dryops 密码 hash")
+    effective_user_data = "\n".join(
+        line.strip()
+        for line in user_data.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+    required_apt_markers = (
+        "http://127.0.0.1:18080",
+        "python3 -m http.server 18080",
+        "sources_list:",
+        "disable_suites:",
+    )
+    missing_apt_markers = [marker for marker in required_apt_markers if marker not in user_data]
+    if missing_apt_markers:
+        raise RuntimeError("ISO user-data 未强制 installer apt 使用 ISO-local HTTP repo：" + ", ".join(missing_apt_markers))
+    external_mirrors = (
+        "mirrors.aliyun.com",
+        "mirrors.tuna.tsinghua.edu.cn",
+        "archive.ubuntu.com",
+        "security.ubuntu.com",
+    )
+    for mirror in external_mirrors:
+        if mirror in effective_user_data:
+            raise RuntimeError(f"ISO user-data installer apt 不能依赖外网 mirror：{mirror}")
+    for lineno, line in enumerate(user_data.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith(("uri:", "source:")) and ("file:/cdrom" in stripped or "file://cdrom" in stripped):
+            raise RuntimeError(f"ISO user-data installer apt 源不能直接指向 file:/cdrom：line {lineno}")
+
+    bundle = json.loads(extract_iso_file(iso, "activation-bundle.json").decode("utf-8"))
+    validate_activation_bundle_payload(bundle)
+
+    grub_cfg = extract_iso_file(iso, "boot/grub/grub.cfg").decode("utf-8", errors="replace")
+    if "DryController Edge Autoinstall" not in grub_cfg:
+        raise RuntimeError("ISO GRUB 缺少 DryController Edge Autoinstall 菜单项")
+    if "autoinstall ds=nocloud\\;s=/cdrom/" not in grub_cfg:
+        raise RuntimeError("ISO GRUB 缺少 autoinstall ds=nocloud;s=/cdrom/ 启动参数")
+
+    package_index = next(
+        (entry for entry in sorted(entries) if re.fullmatch(r"dists/[^/]+/main/binary-amd64/Packages\.gz", entry)),
+        None,
+    )
+    if package_index is None:
+        raise RuntimeError("ISO 缺少 Ubuntu main amd64 Packages.gz 索引")
+    packages = gzip.decompress(extract_iso_file(iso, package_index)).decode("utf-8", errors="replace")
+    package_text = "\n" + packages
+    required_packages = ("linux-generic", "linux-image-generic", "grub-pc", "grub-efi-amd64")
+    missing_packages = [pkg for pkg in required_packages if f"\nPackage: {pkg}\n" not in package_text]
+    if missing_packages:
+        raise RuntimeError("ISO Ubuntu package index 缺少 kernel/grub 包：" + ", ".join(missing_packages))
+
+    app._append_log("Final ISO release checklist passed.", "info")
 
 
 def list_external_disks() -> list[dict[str, str]]:
