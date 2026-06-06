@@ -101,13 +101,13 @@ def test_allocation_response_is_cached_for_bootstrap_retry():
     assert 'install -m 0600 "$ALLOCATION_RESP_FILE" "$ALLOCATION_CACHE_FILE"' in text
 
 
-def test_formal_tailnet_reauth_failure_preserves_bootstrap_tailnet():
+def test_legacy_bootstrap_syncs_current_tailnet_without_formal_reauth():
     text = _script_text()
 
-    assert "attempt_formal_tailnet_reauth \"$LICENSE_RESP_FILE\"" in text
-    assert "formal tailnet re-auth failed; preserving bootstrap tailnet for retry" in text
-    assert "systemctl restart drycontroller-tailnet.service || true" in text
-    assert "exit 5" not in text[text.index("attempt_formal_tailnet_reauth()"):text.index("REGISTRY_LOGIN_DONE=0")]
+    assert "attempt_formal_tailnet_reauth" not in text
+    assert 'tailscale up --reset --authkey="${formal_authkey}"' not in text
+    assert "sync_current_tailnet_binding" in text
+    assert "remove_bootstrap_tailnet_authkey" in text
 
 
 def test_host_tailnet_allows_existing_formal_state_without_bootstrap_authkey():
@@ -120,28 +120,28 @@ def test_host_tailnet_allows_existing_formal_state_without_bootstrap_authkey():
     )
 
 
-def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet_on_formal_reauth_failure():
+def test_host_activation_agent_binds_current_tailnet_node_without_formal_reauth():
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
 
     assert "/api/v1/factory-activation" in text
     assert '"factory_license": json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))' in text
     assert "factory_license_fingerprint" in text
-    assert "formal_ts_authkey" in text
+    assert "formal_ts_authkey" not in text
     assert '"pending_ops_approval"' in text
     assert "factory activation is pending ops approval; bootstrap tailnet preserved" in text
     assert 'exit 75' in text
-    assert 'tailscale up --reset --authkey="${authkey}"' in text
-    assert "formal tailnet re-auth failed; preserving bootstrap tailnet for retry" in text
-    assert "systemctl restart drycontroller-tailnet.service || true" in text
-    assert "sync_tailnet_env_after_formal_reauth" in text
-    assert "sync_edge_env_after_formal_reauth" in text
+    assert "tailscale up --reset --authkey" not in text
+    assert "bind_current_tailnet_node" in text
+    assert 'tailscale set --hostname="${hostname}"' in text
+    assert "sync_tailnet_env_after_activation" in text
+    assert "sync_edge_env_after_activation" in text
     assert '"EDGE_API_BIND_ADDR"] = ip' in text
     assert 'for key in ("TS_LOGIN_SERVER", "CLOUD_OPS_BASE_URL", "CLOUD_OPS_ENROLL_TOKEN", "CLOUD_OPS_ENROLL_TOKEN_HEADER")' in text
     assert "updates[key] = value" in text
     assert 'EDGE_ENV_FILE="${EDGE_ENV_FILE:-${EDGE_ROOT}/.env}"' in text
     assert "reapply_edge_compose_binding" in text
-    assert "confirm_formal_tailnet_joined" in text
-    assert "/confirm-formal-tailnet" in text
+    assert "confirm_current_tailnet_binding" in text
+    assert "/bind-tailnet-node" in text
     assert "start_host_enroll_service_if_configured" in text
     assert 'grep -q \'^CLOUD_OPS_ENROLL_TOKEN=\' "$ENV_FILE"' in text
     assert "systemctl enable drycontroller-enroll.service" in text
@@ -152,13 +152,13 @@ def test_host_activation_agent_calls_factory_activation_and_never_breaks_tailnet
     assert 'updates["CLOUD_OPS_ENROLL_TOKEN"] = node_token' in text
     assert 'updates["TENANT_ID"] = resp["tenant_id"].strip()' in text
     assert 'updates["LINE_ID"] = resp["line_id"].strip()' in text
-    assert 'write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"' in text
-    assert 'log "production license installed; formal tailnet re-auth failed, bootstrap tailnet preserved"' in text
+    assert 'write_state "cloud_activated" "tailnet_node_bind_failed"' in text
+    assert 'log "production license installed; current tailnet node bind failed, activation will retry"' in text
 
 
 def test_host_activation_syncs_cloud_runtime_env_into_edge_env(tmp_path):
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
-    start = text.index("sync_edge_env_after_formal_reauth() {")
+    start = text.index("sync_edge_env_after_activation() {")
     end = text.index("\nreapply_edge_compose_binding() {", start)
     function_text = text[start:end]
 
@@ -197,7 +197,7 @@ def test_host_activation_syncs_cloud_runtime_env_into_edge_env(tmp_path):
                 function_text,
                 f"ENV_FILE={tailnet_env}",
                 f"EDGE_ENV_FILE={edge_env}",
-                'sync_edge_env_after_formal_reauth "100.100.0.4" "edge-formal"',
+                'sync_edge_env_after_activation "100.100.0.4" "edge-formal"',
                 "",
             ]
         ),
@@ -270,22 +270,39 @@ def test_host_activation_persists_server_compatible_factory_fingerprint_before_p
     )
 
 
-def test_host_activation_only_logs_complete_after_formal_tailnet_success():
+def test_host_activation_only_logs_complete_after_tailnet_node_bind():
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
 
-    success = text.index('write_state "formal_license_active" "activation_complete"')
-    complete = text.index('log "activation complete"')
-    failed = text.index('write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"')
-    pending = text.index('write_state "cloud_activated" "production_license_installed_formal_tailnet_pending"')
+    bind = text.index('bind_current_tailnet_node "$node_hostname"')
+    success = text.index('write_state "formal_license_active" "activation_complete"', bind)
+    complete = text.index('log "activation complete"', success)
+    failed = text.index('write_state "cloud_activated" "tailnet_node_bind_failed"', complete)
 
-    assert success < complete < failed < pending
+    assert bind < success < complete < failed
+
+
+def test_host_activation_removes_bootstrap_key_only_after_tailnet_bind_confirmed():
+    text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
+
+    sync_start = text.index("sync_tailnet_env_after_activation() {")
+    sync_end = text.index("\nremove_bootstrap_tailnet_authkey() {", sync_start)
+    assert 'line.startswith("TS_AUTHKEY=")' not in text[sync_start:sync_end]
+
+    bind_start = text.index("bind_current_tailnet_node() {")
+    bind_end = text.index('\nresponse_file="$(mktemp)"', bind_start)
+    bind_text = text[bind_start:bind_end]
+    confirm = bind_text.index('if ! confirm_current_tailnet_binding "$current_ip" "$hostname"; then')
+    remove = bind_text.index("remove_bootstrap_tailnet_authkey", confirm)
+    done_log = bind_text.index("current tailnet node bound as", remove)
+
+    assert confirm < remove < done_log
 
 
 def test_host_activation_is_idempotent_after_formal_license_active():
     text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
 
     active = text.index('if [ "$current_state" = "formal_license_active" ]; then')
-    sync = text.index('sync_edge_env_after_formal_reauth "$(tailnet_ip)" "${TS_HOSTNAME:-}"', active)
+    sync = text.index('sync_edge_env_after_activation "$(tailnet_ip)" "${TS_HOSTNAME:-}"', active)
     start_enroll = text.index("start_host_enroll_service_if_configured", sync)
     exit_ok = text.index("exit 0", start_enroll)
     call_activation = text.index('write_state "bootstrap_tailnet_joined" "calling_cloud_activation"')
@@ -306,7 +323,7 @@ def test_bootstrap_invokes_host_activation_before_legacy_license_bind_when_enabl
 def test_bootstrap_reapplies_edge_binding_after_factory_activation():
     text = _script_text()
 
-    assert "sync_formal_tailnet_binding()" in text
+    assert "sync_current_tailnet_binding()" in text
     assert "reload_tailnet_env()" in text
     assert "unset TS_AUTHKEY" in text
     assert 'if [ -n "${TS_AUTHKEY:-}" ]; then' in text
@@ -315,10 +332,11 @@ def test_bootstrap_reapplies_edge_binding_after_factory_activation():
     assert 'set_kv "EDGE_API_BIND_ADDR" "$current_ip"' in text
     assert 'set_kv "CLOUD_OPS_BASE_URL" "${CLOUD_OPS_BASE_URL}"' in text
     assert 'set_kv "CLOUD_OPS_ENROLL_TOKEN" "${CLOUD_OPS_ENROLL_TOKEN}"' in text
-    assert 'tailscale up --reset --authkey="${formal_authkey}"' in text
+    assert "tailscale up --reset --authkey" not in text
+    assert "remove_bootstrap_tailnet_authkey" in text
     assert 'log "re-applying edge core stack after activation tailnet sync..."' in text
-    assert text.index("reload_tailnet_env") < text.index("sync_formal_tailnet_binding")
-    assert text.index("sync_formal_tailnet_binding") < text.index('log "re-applying edge core stack after activation tailnet sync..."')
+    assert text.index("reload_tailnet_env") < text.index("sync_current_tailnet_binding")
+    assert text.index("sync_current_tailnet_binding") < text.index('log "re-applying edge core stack after activation tailnet sync..."')
 
 
 def test_factory_activation_mode_does_not_require_legacy_identity_or_enroll_token():

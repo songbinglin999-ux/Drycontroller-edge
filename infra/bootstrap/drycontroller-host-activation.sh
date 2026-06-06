@@ -2,10 +2,10 @@
 #
 # Host-side activation helper.
 #
-# This runs outside Docker so formal Tailscale re-auth and license activation do
-# not depend on the compose stack staying up. Formal re-auth is deliberately
-# best-effort: if the one-time formal auth key fails, the bootstrap tailnet must
-# remain online for retry/debug.
+# This runs outside Docker so license activation and tailnet binding do not
+# depend on the compose stack staying up. Tailscale auth keys are bootstrap-only:
+# once Cloud Ops approves the license, the current tailnet node is bound to the
+# Cloud Ops identity without a second auth key.
 #
 set -euo pipefail
 
@@ -221,7 +221,7 @@ payload = {
     "line_id": resp.get("line_id"),
     "node_name": resp.get("node_name"),
     "machine_id": os.environ.get("MACHINE_ID", ""),
-    "ts_hostname": resp.get("formal_ts_hostname") or resp.get("node_name"),
+    "ts_hostname": resp.get("node_name"),
     "cloud_ops_base_url": os.environ.get("CLOUD_OPS_BASE_URL", ""),
     "activated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
 }
@@ -281,7 +281,7 @@ PY
   chmod 0600 "$ENV_FILE" || true
 }
 
-sync_tailnet_env_after_formal_reauth() {
+sync_tailnet_env_after_activation() {
   local hostname="$1"
   ENV_FILE="$ENV_FILE" FORMAL_HOSTNAME="$hostname" python3 - <<'PY'
 import os
@@ -298,8 +298,6 @@ if hostname:
 out = []
 seen = set()
 for line in lines:
-    if line.startswith("TS_AUTHKEY="):
-        continue
     key = line.split("=", 1)[0]
     if key in updates:
         if key not in seen:
@@ -317,7 +315,24 @@ PY
   chmod 0600 "$ENV_FILE" || true
 }
 
-sync_edge_env_after_formal_reauth() {
+remove_bootstrap_tailnet_authkey() {
+  ENV_FILE="$ENV_FILE" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["ENV_FILE"])
+if not path.exists():
+    raise SystemExit(0)
+lines = path.read_text(encoding="utf-8").splitlines()
+kept = [line for line in lines if not line.startswith("TS_AUTHKEY=")]
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
+  chmod 0600 "$ENV_FILE" || true
+}
+
+sync_edge_env_after_activation() {
   local ip="$1"
   local hostname="$2"
   [ -n "${EDGE_ENV_FILE:-}" ] || {
@@ -385,7 +400,7 @@ reapply_edge_compose_binding() {
   [ -n "${EDGE_ROOT:-}" ] || return 0
   [ -f "${EDGE_ROOT}/docker-compose.yml" ] || return 0
   command -v docker >/dev/null 2>&1 || return 0
-  log "re-applying edge compose binding after formal tailnet re-auth"
+  log "re-applying edge compose binding after activation tailnet sync"
   if ! (cd "$EDGE_ROOT" && docker compose up -d); then
     log "edge compose re-apply failed; bootstrap or operator must run docker compose up -d"
   fi
@@ -405,11 +420,12 @@ start_host_enroll_service_if_configured() {
   fi
 }
 
-confirm_formal_tailnet_joined() {
+confirm_current_tailnet_binding() {
   local ip="$1"
-  local confirm_url="${CLOUD_OPS_BASE_URL%/}/api/v1/factory-activation/${FACTORY_LICENSE_FINGERPRINT}/confirm-formal-tailnet"
+  local hostname="$2"
+  local confirm_url="${CLOUD_OPS_BASE_URL%/}/api/v1/factory-activation/${FACTORY_LICENSE_FINGERPRINT}/bind-tailnet-node"
   local confirm_payload
-  confirm_payload="$(FACTORY_LICENSE_PATH="$FACTORY_LICENSE_ARCHIVE_PATH" MACHINE_ID="$(machine_id)" FORMAL_TAILNET_IP="$ip" python3 - <<'PY'
+  confirm_payload="$(FACTORY_LICENSE_PATH="$FACTORY_LICENSE_ARCHIVE_PATH" MACHINE_ID="$(machine_id)" TAILNET_IP="$ip" TAILNET_HOSTNAME="$hostname" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -417,57 +433,54 @@ from pathlib import Path
 payload = {
     "factory_license": json.loads(Path(os.environ["FACTORY_LICENSE_PATH"]).read_text(encoding="utf-8")),
     "machine_id": os.environ.get("MACHINE_ID", "").strip(),
-    "formal_ts_ip": os.environ.get("FORMAL_TAILNET_IP", "").strip() or None,
+    "tailnet_ip": os.environ.get("TAILNET_IP", "").strip() or None,
+    "tailnet_hostname": os.environ.get("TAILNET_HOSTNAME", "").strip() or None,
 }
 print(json.dumps(payload, ensure_ascii=False))
 PY
 )"
   if curl -fsS -H "Content-Type: application/json" -d "$confirm_payload" -o /dev/null "$confirm_url"; then
-    log "formal tailnet join confirmed with Cloud Ops"
+    log "current tailnet node bound with Cloud Ops"
     return 0
   else
-    log "formal tailnet join confirm failed; keeping local activation state"
+    log "tailnet node bind confirm failed; keeping local activation state"
     return 1
   fi
 }
 
-# Factory-activation re-auth path. The legacy path has a parallel implementation in
-# drycontroller-bootstrap.sh:attempt_formal_tailnet_reauth. Keep the failure semantics
-# (preserve bootstrap tailnet, never break the survival path) in sync between the two.
-attempt_formal_tailnet_reauth() {
-  local authkey="$1"
-  local hostname="$2"
-
-  [ -n "$authkey" ] || return 0
+rename_current_tailnet_node() {
+  local hostname="$1"
   [ -n "$hostname" ] || hostname="$TS_HOSTNAME"
+  [ -n "$hostname" ] || return 0
 
-  local before_ip after_ip
-  before_ip="$(tailnet_ip)"
-  log "attempting formal tailnet re-auth hostname=${hostname}"
-  if tailscale up --reset --authkey="${authkey}" --login-server="${TS_LOGIN_SERVER}" --hostname="${hostname}"; then
-    after_ip="$(tailnet_ip)"
-    [ -n "$after_ip" ] || {
-      log "formal re-auth returned success but no tailnet IPv4 is available; keeping bootstrap auth material"
-      return 1
-    }
-    sync_tailnet_env_after_formal_reauth "$hostname"
-    sync_edge_env_after_formal_reauth "$after_ip" "$hostname"
-    reapply_edge_compose_binding
-    if ! confirm_formal_tailnet_joined "$after_ip"; then
-      write_state "formal_tailnet_joined" "formal_tailnet_confirm_failed"
-      return 75
-    fi
-    log "formal tailnet re-auth ok ip=${after_ip}; bootstrap TS_AUTHKEY removed from ${ENV_FILE}"
-    return 0
+  if tailscale set --hostname="${hostname}"; then
+    log "tailnet hostname set to ${hostname}"
+  else
+    log "tailnet hostname rename failed; continuing with Cloud Ops license-bound node identity"
   fi
+}
 
-  log "formal tailnet re-auth failed; preserving bootstrap tailnet for retry"
-  after_ip="$(tailnet_ip)"
-  if [ -z "$after_ip" ] && [ -n "$before_ip" ] && command -v systemctl >/dev/null 2>&1; then
-    log "tailnet IP disappeared after failed re-auth; restarting drycontroller-tailnet.service"
-    systemctl restart drycontroller-tailnet.service || true
+bind_current_tailnet_node() {
+  local hostname="$1"
+  [ -n "$hostname" ] || hostname="${TS_HOSTNAME:-$(hostname)}"
+
+  rename_current_tailnet_node "$hostname"
+  sync_tailnet_env_after_activation "$hostname"
+
+  local current_ip
+  current_ip="$(tailnet_ip)"
+  [ -n "$current_ip" ] || {
+    log "current tailnet node has no IPv4; cannot bind license identity yet"
+    return 1
+  }
+  sync_edge_env_after_activation "$current_ip" "$hostname"
+  reapply_edge_compose_binding
+  if ! confirm_current_tailnet_binding "$current_ip" "$hostname"; then
+    return 75
   fi
-  return 1
+  remove_bootstrap_tailnet_authkey
+  log "current tailnet node bound as ${hostname} ip=${current_ip}; bootstrap TS_AUTHKEY removed from ${ENV_FILE}"
+  return 0
 }
 
 response_file="$(mktemp)"
@@ -491,21 +504,21 @@ except Exception:
 PY
 )"
 if [ "$current_state" = "formal_license_active" ]; then
-  sync_edge_env_after_formal_reauth "$(tailnet_ip)" "${TS_HOSTNAME:-}"
+  sync_edge_env_after_activation "$(tailnet_ip)" "${TS_HOSTNAME:-}"
   start_host_enroll_service_if_configured
   log "activation already complete"
   exit 0
 fi
 if [ "$current_state" = "formal_tailnet_joined" ]; then
   current_tailnet_ip="$(tailnet_ip)"
-  if confirm_formal_tailnet_joined "$current_tailnet_ip"; then
-    sync_edge_env_after_formal_reauth "$current_tailnet_ip" "${TS_HOSTNAME:-}"
+  if confirm_current_tailnet_binding "$current_tailnet_ip" "${TS_HOSTNAME:-}"; then
+    sync_edge_env_after_activation "$current_tailnet_ip" "${TS_HOSTNAME:-}"
     write_state "formal_license_active" "activation_complete"
     start_host_enroll_service_if_configured
     log "activation complete"
     exit 0
   fi
-  write_state "formal_tailnet_joined" "formal_tailnet_confirm_failed"
+  write_state "formal_tailnet_joined" "tailnet_node_bind_confirm_failed"
   exit 75
 fi
 
@@ -537,36 +550,26 @@ save_device_identity "$response_file"
 save_runtime_credentials "$response_file"
 write_state "cloud_activated" "production_license_installed"
 
-formal_authkey="$(python3 - "$response_file" <<'PY'
-import json, sys
-print((json.load(open(sys.argv[1], encoding="utf-8")).get("formal_ts_authkey") or "").strip())
-PY
-)"
-formal_hostname="$(python3 - "$response_file" <<'PY'
+node_hostname="$(python3 - "$response_file" <<'PY'
 import json, sys
 resp = json.load(open(sys.argv[1], encoding="utf-8"))
-print((resp.get("formal_ts_hostname") or resp.get("node_name") or "").strip())
+print((resp.get("node_name") or "").strip())
 PY
 )"
 
-if [ -n "$formal_authkey" ]; then
-  set +e
-  attempt_formal_tailnet_reauth "$formal_authkey" "$formal_hostname"
-  formal_status=$?
-  set -e
-  if [ "$formal_status" -eq 0 ]; then
-    write_state "formal_tailnet_joined" "formal_tailnet_reauth_ok"
-    write_state "formal_license_active" "activation_complete"
-    start_host_enroll_service_if_configured
-    log "activation complete"
-  elif [ "$formal_status" -eq 75 ]; then
-    exit 75
-  else
-    write_state "cloud_activated" "formal_tailnet_reauth_failed_bootstrap_tailnet_preserved"
-    log "production license installed; formal tailnet re-auth failed, bootstrap tailnet preserved"
-  fi
+set +e
+bind_current_tailnet_node "$node_hostname"
+bind_status=$?
+set -e
+if [ "$bind_status" -eq 0 ]; then
+  write_state "formal_license_active" "activation_complete"
+  start_host_enroll_service_if_configured
+  log "activation complete"
+elif [ "$bind_status" -eq 75 ]; then
+  write_state "cloud_activated" "tailnet_node_bind_confirm_failed"
+  exit 75
 else
-  log "cloud activation response did not include formal_ts_authkey; bootstrap tailnet stays active"
-  write_state "cloud_activated" "production_license_installed_formal_tailnet_pending"
-  log "production license installed; formal tailnet re-auth pending"
+  write_state "cloud_activated" "tailnet_node_bind_failed"
+  log "production license installed; current tailnet node bind failed, activation will retry"
+  exit 75
 fi

@@ -21,7 +21,7 @@ factory networks.
 - Fixed default password source: `infra/autoinstall/password.env`.
 - Optional WiFi inputs: SSID, password, and interface.
 - Factory activation material inputs: `tailnet.env` and `factory-license.json`.
-- Device identity, production license, formal tailnet key, OTA permission, and later credentials are issued by Cloud Ops after first contact and operator approval.
+- Device identity, production license, node enroll token, OTA permission, and later credentials are issued by Cloud Ops after first contact and operator approval; the current tailnet node is bound after approval.
 - The primary action is disabled until required local materials and the target
   disk are present.
 

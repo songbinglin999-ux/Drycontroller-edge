@@ -142,8 +142,9 @@ High-level sequence:
 1. OS Installer copies `tailnet.env` and `factory-license.json`.
 2. Host Tailscale joins the bootstrap tailnet.
 3. `drycontroller-activation.service` calls Cloud Ops factory activation.
-4. Cloud Ops approval signs the production license and formal tailnet key.
-5. Host activation reauths into the formal tailnet, syncs `.env`, starts host
+4. Cloud Ops approval signs the production license and returns `device_id`,
+   `node_name`, and the node enroll token.
+5. Host activation binds the current tailnet node, syncs `.env`, starts host
    enroll, and starts the edge stack.
 6. Edge preflight accepts `formal_license_active` as the new mainline completion
    signal.

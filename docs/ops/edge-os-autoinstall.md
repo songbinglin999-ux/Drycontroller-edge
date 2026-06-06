@@ -10,7 +10,7 @@
 |---|---|---|
 | **OS Installer USB（系统安装 U 盘）** | 把空白 IPC 安装成标准 DryController Edge Host，并预置 factory license / bootstrap tailnet 配置。 | 否 |
 
-正常路径不再使用 Provisioning USB。设备号、节点名、production license、formal tailnet key 和后续权限由 Cloud Ops 在首次上线并经运维确认后签发。旧 Provisioning USB 仅保留为 legacy/emergency 路径，不能作为新流程验收标准。
+正常路径不再使用 Provisioning USB。设备号、节点名、production license、node enroll token 和后续权限由 Cloud Ops 在首次上线并经运维确认后签发；当前已在线的 tailnet 节点会被绑定为正式节点。旧 Provisioning USB 仅保留为 legacy/emergency 路径，不能作为新流程验收标准。
 
 > 注意：OS Installer USB 是整机重装介质。安装器会选择最大的非安装介质磁盘，清除旧 Windows / Linux 分区和文件系统元数据，并重建 DryController Edge Host 分区。
 
@@ -266,7 +266,7 @@ drycontroller-edge-post-install.service
 3. host Tailscale 使用 factory bootstrap credential 加入受限 bootstrap tailnet。
 4. activation service 调 Cloud Ops，云端记录为 `pending_ops_approval`。
 5. 运维在 cloud-console 确认真实设备后点击「签发正式授权」。
-6. edge 下一次 activation 重试领取 production license 和 formal tailnet key，完成 formal re-auth。
+6. edge 下一次 activation 重试领取 production license、device_id、node_name 和 node enroll token，并把当前 tailnet 节点绑定为正式节点。
 7. 在云端 console 查看节点显示 reachable / activated。
 
 成功标准：
@@ -297,7 +297,7 @@ drycontroller-edge-post-install.service
 - `user-data` 仍需要在制作安装盘时替换密码 hash。
 - production media 必须预置真实 factory license、factory public trust anchor、production license public trust anchor 和 `/etc/drycontroller/tailnet.env`。
 - 当前 OS Maker 会把 `dist/autoinstall/tailnet.env` 与 `dist/autoinstall/factory-license.json` 映射到 ISO 根目录；如果取消包含 factory activation 材料，它会移除旧材料，避免误用上一个批次的 token/license。
-- staging UI approve -> edge retry -> formal tailnet confirm 闭环跑通前，不建议把该安装盘交给现场批量使用。
+- staging UI approve -> edge retry -> bind current tailnet node 闭环跑通前，不建议把该安装盘交给现场批量使用。
 
 ## 与 Provisioning USB 的关系
 
@@ -307,4 +307,4 @@ Provisioning USB 已从正常路径移除。旧 `drycontroller-provisioning/prov
 
 新路径里 OS Installer USB / factory image 预置 factory license 和 bootstrap
 tailnet credential。Cloud Ops 在设备首次上线并经运维确认后分配设备号、
-节点名、production license、formal tailnet key 和后续权限。
+节点名、production license、node enroll token 和后续权限。

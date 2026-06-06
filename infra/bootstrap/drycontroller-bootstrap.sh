@@ -525,7 +525,7 @@ start_host_activation() {
   systemctl start drycontroller-activation.service
 }
 
-sync_formal_tailnet_binding() {
+sync_current_tailnet_binding() {
   local current_ip current_hostname
   current_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
   current_hostname="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("Self", {}).get("HostName", ""))' 2>/dev/null || true)"
@@ -557,61 +557,6 @@ tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
 tmp.replace(path)
 PY
   chmod 0600 "$TAILNET_ENV_FILE" || true
-}
-
-# Legacy (non-factory-activation) re-auth path. The factory-activation path has a
-# parallel implementation in drycontroller-host-activation.sh:attempt_formal_tailnet_reauth.
-# Keep the failure semantics (preserve bootstrap tailnet, never break the survival path)
-# in sync between the two.
-attempt_formal_tailnet_reauth() {
-  local license_resp_file="$1"
-  local formal_authkey formal_hostname before_ip after_ip
-
-  formal_authkey="$(python3 - "$license_resp_file" <<'PY'
-import json
-import sys
-
-print((json.load(open(sys.argv[1], encoding="utf-8")).get("formal_ts_authkey") or "").strip())
-PY
-)"
-  [ -n "$formal_authkey" ] || {
-    log "license response did not include formal_ts_authkey; keeping bootstrap tailnet"
-    return 0
-  }
-  formal_hostname="$(python3 - "$license_resp_file" <<'PY'
-import json
-import sys
-
-resp = json.load(open(sys.argv[1], encoding="utf-8"))
-print((resp.get("formal_ts_hostname") or resp.get("node_name") or "").strip())
-PY
-)"
-  formal_hostname="${formal_hostname:-${TS_HOSTNAME:-${NODE_NAME:-$(hostname)}}}"
-
-  before_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
-  log "attempting formal tailnet re-auth hostname=${formal_hostname}"
-  if tailscale up --reset --authkey="${formal_authkey}" --login-server="${TS_LOGIN_SERVER}" --hostname="${formal_hostname}" >> "$LOG_FILE" 2>&1; then
-    after_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
-    if [ -n "$after_ip" ]; then
-      TS_HOSTNAME="$formal_hostname"
-      set_kv "TS_HOSTNAME" "$formal_hostname"
-      set_kv "EDGE_API_BIND_ADDR" "$after_ip"
-      remove_bootstrap_tailnet_authkey
-      log_ok "formal tailnet re-auth ok; tailnet ip=${after_ip}; bootstrap TS_AUTHKEY removed"
-      return 0
-    fi
-    log_warn "formal tailnet re-auth returned success but no tailnet IPv4 is available"
-  else
-    log_warn "formal tailnet re-auth failed; preserving bootstrap tailnet for retry"
-  fi
-
-  after_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
-  if [ -z "$after_ip" ] && [ -n "$before_ip" ]; then
-    log_warn "tailnet IP disappeared after failed formal re-auth; restarting bootstrap tailnet service"
-    systemctl restart drycontroller-tailnet.service || true
-    wait_host_tailnet "$CLOUD_OPS_RUNTIME_BASE_URL" || true
-  fi
-  return 0
 }
 
 REGISTRY_LOGIN_DONE=0
@@ -906,7 +851,7 @@ PY
         [ -n "${DEVICE_ID:-}" ] && set_kv "DEVICE_ID" "${DEVICE_ID}"
         [ -n "${LINE_ID:-}" ] && set_kv "LINE_ID" "${LINE_ID}"
       fi
-      sync_formal_tailnet_binding
+      sync_current_tailnet_binding
       log "re-applying edge core stack after activation tailnet sync..."
       compose up -d
       if [ -n "${NODE_ENROLL_TOKEN:-}" ]; then
@@ -977,7 +922,8 @@ Path(sys.argv[2]).write_text(json.dumps(license_payload, ensure_ascii=False, ind
 Path(sys.argv[3]).write_text(public_key + "\n", encoding="utf-8")
 PY
 
-attempt_formal_tailnet_reauth "$LICENSE_RESP_FILE"
+sync_current_tailnet_binding
+remove_bootstrap_tailnet_authkey
 rm -f "$LICENSE_RESP_FILE"
 fi
 chmod 0640 "${LICENSE_DIR}/license.json" || true

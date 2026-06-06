@@ -1,11 +1,11 @@
 """
 Factory activation agent.
 
-Handles the bootstrap tailnet -> Cloud Ops -> formal license/key flow.
+Handles the bootstrap tailnet -> Cloud Ops -> production license flow.
 Runs as a background service on first boot, or can be triggered manually.
 
 State machine:
-  factory_installed -> bootstrap_tailnet_joined -> pending_ops_approval -> cloud_activated -> formal_tailnet_joined -> formal_license_active
+  factory_installed -> bootstrap_tailnet_joined -> pending_ops_approval -> cloud_activated -> formal_license_active
 """
 
 from __future__ import annotations
@@ -204,45 +204,33 @@ async def _call_cloud_activation(
         return resp.json()
 
 
-async def _reissue_ts_key(
-    fingerprint: str, factory_license: dict[str, Any], machine_id: str
-) -> Optional[dict[str, Any]]:
-    """Request a new TS auth key from Cloud Ops (when previous one was consumed)."""
-    cloud_url = settings.CLOUD_OPS_BASE_URL.rstrip("/")
-    url = f"{cloud_url}/api/v1/factory-activation/{fingerprint}/reissue-ts-key"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json={"factory_license": factory_license, "machine_id": machine_id})
-            if resp.status_code == 200:
-                return resp.json()
-            logger.warning("reissue_ts_key_failed", status=resp.status_code, body=resp.text[:200])
-            return None
-    except Exception as exc:
-        logger.warning("reissue_ts_key_error", error=str(exc))
-        return None
-
-
-async def _confirm_formal_tailnet(
+async def _bind_current_tailnet_node(
     fingerprint: str,
     factory_license: dict[str, Any],
     machine_id: str,
+    node_name: Optional[str],
 ) -> bool:
     cloud_url = settings.CLOUD_OPS_BASE_URL.rstrip("/")
-    url = f"{cloud_url}/api/v1/factory-activation/{fingerprint}/confirm-formal-tailnet"
+    url = f"{cloud_url}/api/v1/factory-activation/{fingerprint}/bind-tailnet-node"
     ts_ip = _run_cmd(["tailscale", "ip", "-4"], timeout=5).stdout.splitlines()
+    tailnet_ip = ts_ip[0].strip() if ts_ip else ""
+    if not tailnet_ip:
+        logger.warning("tailnet_node_bind_no_ip", fingerprint=fingerprint[:16])
+        return False
     payload = {
         "factory_license": factory_license,
         "machine_id": machine_id,
-        "formal_ts_ip": ts_ip[0].strip() if ts_ip else None,
+        "tailnet_ip": tailnet_ip,
+        "tailnet_hostname": node_name,
     }
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
-            logger.info("formal_tailnet_confirmed_with_cloud", fingerprint=fingerprint[:16])
+            logger.info("tailnet_node_bound_with_cloud", fingerprint=fingerprint[:16], node_name=node_name)
             return True
     except Exception as exc:
-        logger.warning("formal_tailnet_confirm_failed", error=str(exc))
+        logger.warning("tailnet_node_bind_failed", error=str(exc))
         return False
 
 
@@ -302,29 +290,24 @@ def _install_license(license_payload: dict[str, Any], public_key: str) -> None:
     logger.info("license_installed", path=str(_PRODUCTION_LICENSE_PATH), pinned=anchor is not None)
 
 
-def _run_formal_tailscale_auth(authkey: str, hostname: str) -> bool:
-    """Run tailscale up --reset with the formal auth key."""
-    login_server = settings.TS_LOGIN_SERVER
-    argv = [
-        "tailscale", "up",
-        "--reset",
-        f"--authkey={authkey}",
-        f"--hostname={hostname}",
-    ]
-    if login_server:
-        argv.append(f"--login-server={login_server}")
-    result = _run_cmd(argv, timeout=60)
+def _set_tailnet_hostname(hostname: Optional[str]) -> None:
+    if not hostname:
+        return
+    try:
+        result = _run_cmd(["tailscale", "set", f"--hostname={hostname}"], timeout=15)
+    except OSError as exc:
+        logger.warning("tailnet_hostname_rename_unavailable", hostname=hostname, error=str(exc))
+        return
     if result.returncode == 0:
-        logger.info("formal_tailscale_auth_success", hostname=hostname)
-        return True
-    logger.error(
-        "formal_tailscale_auth_failed",
-        hostname=hostname,
-        returncode=result.returncode,
-        stdout=result.stdout[:500],
-        stderr=result.stderr[:500],
-    )
-    return False
+        logger.info("tailnet_hostname_set", hostname=hostname)
+    else:
+        logger.warning(
+            "tailnet_hostname_rename_failed",
+            hostname=hostname,
+            returncode=result.returncode,
+            stdout=result.stdout[:500],
+            stderr=result.stderr[:500],
+        )
 
 
 def _save_device_identity(data: dict[str, Any]) -> None:
@@ -449,7 +432,7 @@ async def run_activation(
             return {"success": False, "state": ActivationState.FACTORY_INSTALLED.value, "error": "tailnet_timeout"}
 
     if current_state == ActivationState.FORMAL_TAILNET_JOINED.value:
-        if await _confirm_formal_tailnet(factory_fingerprint, factory_license_content, machine_id):
+        if await _bind_current_tailnet_node(factory_fingerprint, factory_license_content, machine_id, state_data.get("node_name")):
             state_data["state"] = ActivationState.FORMAL_LICENSE_ACTIVE.value
             state_data["message"] = "activation_complete"
             state_data["activated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -458,9 +441,9 @@ async def run_activation(
             _BOOTSTRAP_SENTINEL.touch()
             return {"success": True, "state": ActivationState.FORMAL_LICENSE_ACTIVE.value, "message": "activation_complete"}
         state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
-        state_data["message"] = "formal_tailnet_confirm_failed"
+        state_data["message"] = "tailnet_node_bind_failed"
         _write_state(state_data)
-        return {"success": False, "state": ActivationState.FORMAL_TAILNET_JOINED.value, "error": "formal_tailnet_confirm_failed"}
+        return {"success": False, "state": ActivationState.FORMAL_TAILNET_JOINED.value, "error": "tailnet_node_bind_failed"}
 
     state_data["state"] = ActivationState.BOOTSTRAP_TAILNET_JOINED.value
     _write_state(state_data)
@@ -539,44 +522,21 @@ async def run_activation(
         "activated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     })
 
-    # Step 6: Formal Tailscale auth
-    formal_ts_authkey = activation_result.get("formal_ts_authkey")
-    formal_ts_hostname = activation_result.get("formal_ts_hostname")
-    formal_join_ok = False
-    if formal_ts_authkey and formal_ts_hostname:
-        formal_join_ok = _run_formal_tailscale_auth(formal_ts_authkey, formal_ts_hostname)
-        if formal_join_ok:
-            state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
-            _write_state(state_data)
-            formal_join_ok = await _confirm_formal_tailnet(factory_fingerprint, factory_license_content, machine_id)
-        else:
-            # Key may have been consumed by tailscale up even though join failed.
-            # Request a fresh key from Cloud Ops and retry once.
-            logger.warning("formal_join_failed_requesting_new_key")
-            reissue = await _reissue_ts_key(factory_fingerprint, factory_license_content, machine_id)
-            if reissue and reissue.get("formal_ts_authkey"):
-                formal_join_ok = _run_formal_tailscale_auth(
-                    reissue["formal_ts_authkey"],
-                    reissue.get("formal_ts_hostname") or formal_ts_hostname,
-                )
-                if formal_join_ok:
-                    state_data["state"] = ActivationState.FORMAL_TAILNET_JOINED.value
-                    _write_state(state_data)
-                    formal_join_ok = await _confirm_formal_tailnet(factory_fingerprint, factory_license_content, machine_id)
-                else:
-                    logger.error("formal_join_failed_again_after_reissue")
-            else:
-                logger.warning("reissue_ts_key_unavailable")
-    else:
-        logger.info("no_formal_ts_authkey_provided")
+    # Step 6: Bind current tailnet node to the Cloud Ops identity.
+    _set_tailnet_hostname(activation_result.get("node_name"))
+    tailnet_bind_ok = await _bind_current_tailnet_node(
+        factory_fingerprint,
+        factory_license_content,
+        machine_id,
+        activation_result.get("node_name"),
+    )
 
-    # Step 7: Cleanup auth keys
+    # Step 7: Cleanup bootstrap auth keys
     _cleanup_auth_keys()
 
-    # Step 8: Mark as fully activated only if formal join succeeded
-    if formal_join_ok:
+    # Step 8: Mark as fully activated only if the current tailnet node is bound
+    if tailnet_bind_ok:
         state_data["state"] = ActivationState.FORMAL_LICENSE_ACTIVE.value
-    # else: stay at CLOUD_ACTIVATED / BOOTSTRAP_TAILNET_JOINED, retry formal join later
     state_data["activated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     _write_state(state_data)
 
@@ -586,7 +546,7 @@ async def run_activation(
             "state": state_data["state"],
             "device_id": activation_result.get("device_id"),
             "tenant_id": activation_result.get("tenant_id"),
-            "error": "formal_tailnet_confirm_failed" if state_data["state"] == ActivationState.FORMAL_TAILNET_JOINED.value else "formal_tailnet_pending",
+            "error": "tailnet_node_bind_failed",
         }
 
     # Create bootstrap sentinel
