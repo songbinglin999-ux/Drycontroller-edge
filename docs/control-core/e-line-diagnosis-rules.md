@@ -4,6 +4,7 @@
 > 范围：pre-AI 可解释诊断 / 建议，不做自动控制
 > 点位来源：`docs/plc/io-map.html` + `configs/tags.yaml` 当前 48 个只读 I/O 点
 > 关联边界：`docs/plc/io-and-control-contract.md`、根 `architecture-audit-2026-05-06.md` E 线
+> 自适应治理：`docs/algorithm-governance/self-evolution-design.md`
 
 ---
 
@@ -74,6 +75,7 @@
 - v0.1 先用“相对基线 + 持续时间 + 上下游佐证”，不写死安培/温度/湿度绝对值。
 - 现场数据回来后再把每台电机的额定电流、空载电流、正常工况区间写进配置。
 - 没有上下游佐证时，诊断降置信度，只输出“观察/检查”级建议。
+- 自适应只能生成候选诊断参数，必须按 `docs/algorithm-governance/self-evolution-design.md` 走 shadow 对比、人工确认和版本化回滚。
 
 ---
 

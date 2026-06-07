@@ -4,6 +4,7 @@
 > 范围：工艺健康 / 制造辅助 / 质量追溯，不参与实时控制
 > 点位来源：`docs/plc/io-map.html` + `configs/tags.yaml` 当前 48 个只读 I/O 点
 > 相邻文档：`docs/control-core/e-line-diagnosis-rules.md`
+> 自适应治理：`docs/algorithm-governance/self-evolution-design.md`
 
 ---
 
@@ -150,7 +151,7 @@ drift_score = 当前长窗口 baseline 相对历史健康 baseline 的偏移幅�
 
 ## 5. 自适应策略
 
-长期偏移允许自适应，但必须受控。
+长期偏移允许自适应，但必须受控。跨 E 线诊断阈值、G 线长期基线和 softsensor 候选模型的共同治理，见 `docs/algorithm-governance/self-evolution-design.md`；本节只保留 G 线偏移监控的局部原则。
 
 允许自动更新：
 - 正常运行基线的候选版本。
