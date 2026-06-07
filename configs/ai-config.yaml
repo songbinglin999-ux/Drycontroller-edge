@@ -6,18 +6,56 @@ softsensor:
   model_version: "v1.0.0"
   model_path: "/app/models/softsensor.onnx"
   
-  # 输入特征
+  # 输入特征：48 I/O 位号来自 configs/tags.yaml；MT1 是弱参考特征，非锚定 label。
   input_features:
-    - DRYER1.IN.TEMP
-    - DRYER1.OUT.TEMP
-    - DRYER1.CHAIN.SPEED
-    - DRYER1.FAN.SPEED
-    - DRYER1.TORQUE
-    - DRYER2.IN.TEMP
-    - DRYER2.OUT.TEMP
-    - DRYER2.CHAIN.SPEED
-    - DRYER2.FAN.SPEED
-    - DRYER2.TORQUE
+    - FTT1
+    - FTT2
+    - FTT3
+    - TT1
+    - TT2
+    - I_M1
+    - I_M2
+    - I_M3
+    - I_M4
+    - I_M5
+    - I_M6
+    - I_M7
+    - I_M8
+    - I_M9
+    - I_M10
+    - I_M11
+    - I_M12
+    - I_M13
+    - I_M14
+    - I_M15
+    - VFM1
+    - VFM2
+    - VFM3
+    - VF1
+    - VF2
+    - VF3
+    - LL1
+    - LL2
+    - LL3
+    - LL4
+    - LL5
+    - LL6
+    - M1
+    - M2
+    - M3
+    - M4
+    - M5
+    - M6
+    - M7
+    - M8
+    - M9
+    - M10
+    - M11
+    - M12
+    - M13
+    - M14
+    - M15
+    - MT1
     
   # 输出
   output:
@@ -58,45 +96,43 @@ optimizer:
       minimize: true
       weight: 0.3
       
-  # 控制变量
-  control_variables:
-    - name: "DRYER1.CHAIN.SPEED"
-      min: 0.5
-      max: 8.0
-      step: 0.1
-      
-    - name: "DRYER1.FAN.SPEED"
-      min: 20
-      max: 50
-      step: 1.0
-      
-    - name: "DRYER2.CHAIN.SPEED"
-      min: 0.5
-      max: 8.0
-      step: 0.1
-      
-    - name: "DRYER2.FAN.SPEED"
-      min: 20
-      max: 50
-      step: 1.0
+  # 控制变量：控制软点由 operator-touch / EDGE-V2-P3 定义后再填。
+  control_variables: []
+  control_variable_notes:
+    - "TBD: chain speed setpoint soft point"
+    - "TBD: fan setpoint soft point"
+    - "TBD: feeder setpoint soft point"
       
   # 约束条件
   constraints:
     - type: "temperature"
-      tag: "DRYER1.OUT.TEMP"
-      max: 150
+      tag: "FTT1"
+      max: null
       
     - type: "temperature"
-      tag: "DRYER2.OUT.TEMP"
-      max: 100
+      tag: "FTT2"
+      max: null
       
-    - type: "torque"
-      tag: "DRYER1.TORQUE"
-      max: 450
+    - type: "temperature"
+      tag: "FTT3"
+      max: null
       
-    - type: "speed_ratio"
-      description: "第二段链速必须 >= 第一段"
-      expression: "DRYER2.CHAIN.SPEED >= DRYER1.CHAIN.SPEED"
+    - type: "temperature"
+      tag: "TT1"
+      max: null
+
+    - type: "temperature"
+      tag: "TT2"
+      max: null
+
+    - type: "motor_current"
+      tag_prefix: "I_M"
+      tags: [I_M1, I_M2, I_M3, I_M4, I_M5, I_M6, I_M7, I_M8, I_M9, I_M10, I_M11, I_M12, I_M13, I_M14, I_M15]
+      max: null
+
+    - type: "drive_feedback"
+      tags: [VFM1, VFM2, VFM3, VF1, VF2, VF3]
+      max: null
       
   # 优化配置
   optimization:
@@ -139,4 +175,3 @@ metrics:
     - objective_value
     - constraint_violations
     - convergence_time
-

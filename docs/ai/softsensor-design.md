@@ -17,7 +17,7 @@
 ## 1.5 建模目标与数据契约（48 位号对齐 — 2026-06-07）
 
 > 本节定义建模本身（目标变量 / 特征 / 标签 / MT1 角色），原 v1.0 缺此节。
-> ⚠️ 现状：本文档、`dataset-spec.md`、`configs/ai-config.yaml`、`Drycontroller-training/softsensor/train.py` 的特征命名仍是**旧自造位号**（`DRYER1.OUT.TEMP` / `dryer_temp_stage1` 等），与已定 48 位号脱节，需全栈对齐（task 见根 audit）。
+> 2026-06-07 D 线骨架已将 `dataset-spec.md`、`configs/ai-config.yaml` 与 `ai-softsensor` fallback 对齐到 48 位号；`Drycontroller-training/softsensor/train.py` 只有本地 ignored 目录改动，待 training 仓归属确认后才能提交闭环。真实训练仍待 `BLOCKER-PLC-TAGS` 和化验打标流程。
 
 ### 目标变量
 - softsensor 软测量**成品含水率**（工艺目标区间，基线 12%）。

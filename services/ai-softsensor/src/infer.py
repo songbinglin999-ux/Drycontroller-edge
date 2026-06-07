@@ -9,7 +9,7 @@ AI 软测量推理模块
 模型说明：
 - 当前使用基于工艺经验的公式模拟预测
 - 未来将替换为训练好的 ONNX 模型
-- 输入特征包括：烘干机温度、链速、风量、扭矩等
+- 输入特征包括：48 位号温度、电流、变频反馈、料位、运行状态与 MT1 弱参考
 
 预测输出：
 - predicted_moisture: 预测含水率（%）
@@ -177,10 +177,11 @@ class SoftSensorModel:
         这是一个简化的经验公式，用于在没有训练模型时提供基准预测。
         
         关键影响因素：
-        - 出口温度：温度越高，含水率越低
-        - 链速：速度越慢，干燥越充分
-        - 风量：风量越大，水分蒸发越快
-        - 扭矩：反映物料负载和含水状态
+        - 风温 / 锅炉温度：温度越高，含水率越低
+        - 变频给料反馈：给料越高，含水率基线越高
+        - 变频风机反馈：风量越大，水分蒸发越快
+        - 电机电流：反映物料负载和含水状态
+        - MT1：末端湿度弱参考，非锚定 label
         
         Args:
             data: 实时采集数据字典
@@ -188,21 +189,25 @@ class SoftSensorModel:
         Returns:
             估算的含水率（%）
         """
-        # 提取关键工艺参数（带默认值）
-        dryer2_out = float(data.get("DRYER2.OUT.TEMP", 70.0))      # 二段出口温度
-        dryer2_in = float(data.get("DRYER2.IN.TEMP", dryer2_out))  # 二段入口温度
-        dryer2_chain = float(data.get("DRYER2.CHAIN.SPEED", 4.5))  # 链速
-        dryer2_fan = float(data.get("DRYER2.FAN.SPEED", 30.0))     # 风量
-        dryer2_torque = float(data.get("DRYER2.TORQUE", 220.0))    # 扭矩
-        dryer1_out = float(data.get("DRYER1.OUT.TEMP", 95.0))      # 一段出口温度
+        def mean_value(names: List[str], default: float) -> float:
+            values = [float(data[name]) for name in names if data.get(name) is not None]
+            return sum(values) / len(values) if values else default
+
+        wind_temp = mean_value(["FTT1", "FTT2", "FTT3"], 90.0)
+        boiler_temp = mean_value(["TT1", "TT2"], 120.0)
+        feed_feedback = mean_value(["VFM1", "VFM2", "VFM3"], 35.0)
+        fan_feedback = mean_value(["VF1", "VF2", "VF3"], 35.0)
+        main_current = mean_value(["I_M3", "I_M5", "I_M7", "I_M9"], 20.0)
+        mt1 = float(data.get("MT1", self.target_moisture))
         
         # 经验公式计算
-        base = 35.0 - (dryer2_out - 70.0) * 0.2        # 温度影响（负相关）
-        base -= (dryer1_out - dryer2_out) * 0.05       # 温度梯度影响
-        base += (4.5 - dryer2_chain) * 1.4            # 链速影响（速度越慢含水率越低）
-        base -= (dryer2_fan - 30.0) * 0.04            # 风量影响（负相关）
-        base += (dryer2_torque - 220.0) * 0.003       # 扭矩影响（正相关）
-        base += (dryer2_in - dryer2_out) * 0.04       # 温差影响
+        base = self.target_moisture
+        base += (mt1 - self.target_moisture) * 0.35
+        base -= (wind_temp - 90.0) * 0.04
+        base -= (boiler_temp - 120.0) * 0.01
+        base += (feed_feedback - 35.0) * 0.04
+        base -= (fan_feedback - 35.0) * 0.03
+        base += (main_current - 20.0) * 0.02
         
         # 限制在有效范围内
         low, high = self.output_range
@@ -227,4 +232,3 @@ class SoftSensorModel:
         # 偏差 25% 对应 0.6 的置信度下降
         confidence = 1.0 - min(deviation / 25.0, 0.6)
         return max(0.5, min(0.99, confidence))
-
