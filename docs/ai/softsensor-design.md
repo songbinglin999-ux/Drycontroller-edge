@@ -14,6 +14,32 @@
 
 ---
 
+## 1.5 建模目标与数据契约（48 位号对齐 — 2026-06-07）
+
+> 本节定义建模本身（目标变量 / 特征 / 标签 / MT1 角色），原 v1.0 缺此节。
+> ⚠️ 现状：本文档、`dataset-spec.md`、`configs/ai-config.yaml`、`Drycontroller-training/softsensor/train.py` 的特征命名仍是**旧自造位号**（`DRYER1.OUT.TEMP` / `dryer_temp_stage1` 等），与已定 48 位号脱节，需全栈对齐（task 见根 audit）。
+
+### 目标变量
+- softsensor 软测量**成品含水率**（工艺目标区间，基线 12%）。
+- **MT1「末端湿度」是带噪的弱参考，不是 ground-truth label、不作唯一锚定。** MT1 作输入特征之一（湿度参考）；模型追求输出稳定性**优于** MT1。
+- 真实标签来源 **TBD（关键待定，你的现场决策，决定监督方式）**，候选：(a) 离线化验成品水分打标（金标准，需采样+化验回填机制）— 建议主用；(b) 物理/质量平衡软约束半监督正则；(c) MT1 仅作弱信号一致性参考，不单独作标签。
+
+### 输入特征（48 位号，取代旧抽象特征）
+干燥温度 `FTT1-3`、锅炉温度 `TT1-2`、电机电流 `I_M*`（物料量/负载代理）、变频反馈 `VFM1-3`（给料）/`VF1-3`（风量）、料位 `LL*`、电机运行 `M*`、`MT1`（弱参考）。最终特征子集待数据上来后按相关性/工艺机理筛。
+
+### 数据采集需求（解 `BLOCKER-PLC-TAGS` 后启动）
+- 现状真实数据为零（PLC offline）。地址回填后按 48 位号采时序，并与化验标签**时间对齐**（干燥滞后大 → 标签↔特征时延对齐是建模关键）。`ai-config.yaml training.lookback_days=90` / `data_source=influxdb` 延续。
+
+### 算法与验证
+- 延续 `GradientBoostingRegressor`（sklearn → ONNX）为稳健起点；视数据再上时序模型。优先稳定性、可解释、抗 MT1 噪声。
+- 离线验证：时序交叉验证 + 与 MT1 的稳定性对比（残差/方差）+ 留出期外推。现有 `softsensor.pkl` 是合成随机数据占位模型，真实数据到位后作废重训。
+
+### ctrl-optimizer（本期一并规划）
+- 目标：优化设定值（链速/变频给料/风机/温度 SP）达成含水率目标 + 能耗/稳定性约束，消费 softsensor 输出 + 48 位号状态。
+- 角色：autopilot，替代 operator-touch 人工输入，**永不直写 PLC**，经 edge-api 签名/限幅/审计；先 advisory（人工确认）→ 闭环 gated by `P0-SAFETY`。PSO/约束/控制变量见 `ai-config.yaml optimizer`，同样需从旧位号对齐到控制软点（待 operator-touch 软点清单定义）。详见 `docs/architecture/control-strategy.md`。
+
+---
+
 ## 2. 服务架构
 
 ### 2.1 组件分解
