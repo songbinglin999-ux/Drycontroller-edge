@@ -1,186 +1,268 @@
-# PLC 标签配置 - 用于数据采集和MQTT发布
+# PLC I/O tag skeleton. Canonical tag names come from docs/plc/io-map.html.
+# Address, scale, and byte order are externalized to configs/modbus-address-map.yaml.
 naming:
-  format: "{EQUIPMENT}.{SECTION}.{METRIC}"
-  separator: "."
+  format: "{IO_MAP_TAG}"
+  allowed_pattern: "^[A-Z0-9_]+$"
   notes:
-    - EQUIPMENT 固定为以下枚举：DRYER1、DRYER2、FERM、EXHAUST
-    - SECTION 表示工艺位置或部件：IN / OUT / CHAMBER / CHAIN / FAN / RECOVERY 等
-    - METRIC 使用全大写英文缩写，例如 TEMP、SPEED、HUMIDITY、TORQUE
-  equipment:
-    DRYER1: "第一段烘干机"
-    DRYER2: "第二段烘干机"
-    FERM: "发酵仓"
-    EXHAUST: "尾气系统"
-  section_alias:
-    IN: "入口/进料"
-    OUT: "出口/出料"
-    CHAMBER: "仓体"
-    CHAIN: "链条/链速"
-    FAN: "风机"
-    HUMIDITY: "湿度"
-    TORQUE: "扭矩"
-    RECOVERY: "余热回收"
-  examples:
-    - "DRYER1.IN.TEMP"
-    - "DRYER2.CHAIN.SPEED"
-    - "FERM.HUMIDITY"
-    - "EXHAUST.RECOVERY.VALVE"
+    - "Use io-map V2 tag names directly as the full-stack canonical IDs."
+    - "I-M* names from io-map are normalized to I_M* for identifier safety."
+    - "All 48 I/O points are read-only from edge; control soft points are separate."
 
 tags:
-  # ==================== 第一段烘干机 ====================
-  dryer1:
-    temperature:
-      - name: DRYER1.IN.TEMP
-        address: 40001
+  detection:
+    DI:
+      - name: LL1
+        signal_type: DI
+        type: bool
+        unit: ""
+        description: "料斗2料位（单点）"
+      - name: LL2
+        signal_type: DI
+        type: bool
+        unit: ""
+        description: "料斗3料位（单点）"
+      - name: LL3
+        signal_type: DI
+        type: bool
+        unit: ""
+        description: "料斗4料位（单点）"
+      - name: LL4
+        signal_type: DI
+        type: bool
+        unit: ""
+        description: "料斗5料位（单点）"
+      - name: LL5
+        signal_type: DI
+        type: bool
+        unit: ""
+        description: "锅炉1燃料料位"
+      - name: LL6
+        signal_type: DI
+        type: bool
+        unit: ""
+        description: "锅炉2燃料料位"
+    AI:
+      - name: FTT1
+        signal_type: AI
         type: float
-        unit: "°C"
-        description: "第一段进料温度"
-        range: [0, 200]
-        alarm_high: 180
-        alarm_low: 20
-        
-      - name: DRYER1.OUT.TEMP
-        address: 40002
+        unit: "℃"
+        description: "主机1风温"
+      - name: FTT2
+        signal_type: AI
         type: float
-        unit: "°C"
-        description: "第一段出料温度"
-        range: [0, 200]
-        alarm_high: 150
-        alarm_low: 40
-        
-      - name: DRYER1.CHAMBER.TEMP
-        address: 40003
+        unit: "℃"
+        description: "主机2风温"
+      - name: FTT3
+        signal_type: AI
         type: float
-        unit: "°C"
-        description: "第一段仓体温度"
-        range: [0, 200]
-        
-    speed:
-      - name: DRYER1.CHAIN.SPEED
-        address: 40010
+        unit: "℃"
+        description: "主机4风温"
+      - name: TT1
+        signal_type: AI
         type: float
-        unit: "m/min"
-        description: "第一段链速"
-        range: [0.5, 10]
-        control_enabled: true
-        
-    fan:
-      - name: DRYER1.FAN.SPEED
-        address: 40011
+        unit: "℃"
+        description: "锅炉1温度"
+      - name: TT2
+        signal_type: AI
         type: float
-        unit: "Hz"
-        description: "第一段抽风频率"
-        range: [0, 50]
-        control_enabled: true
-        
-    torque:
-      - name: DRYER1.TORQUE
-        address: 40012
-        type: float
-        unit: "Nm"
-        description: "第一段扭矩"
-        range: [0, 500]
-        
-  # ==================== 第二段烘干机 ====================
-  dryer2:
-    temperature:
-      - name: DRYER2.IN.TEMP
-        address: 40021
-        type: float
-        unit: "°C"
-        description: "第二段进料温度"
-        range: [0, 200]
-        
-      - name: DRYER2.OUT.TEMP
-        address: 40022
-        type: float
-        unit: "°C"
-        description: "第二段出料温度"
-        range: [0, 200]
-        alarm_high: 100
-        alarm_low: 30
-        
-      - name: DRYER2.CHAMBER.TEMP
-        address: 40023
-        type: float
-        unit: "°C"
-        description: "第二段仓体温度"
-        range: [0, 200]
-        
-    speed:
-      - name: DRYER2.CHAIN.SPEED
-        address: 40030
-        type: float
-        unit: "m/min"
-        description: "第二段链速"
-        range: [0.5, 10]
-        control_enabled: true
-        
-    fan:
-      - name: DRYER2.FAN.SPEED
-        address: 40031
-        type: float
-        unit: "Hz"
-        description: "第二段抽风频率"
-        range: [0, 50]
-        control_enabled: true
-        
-    torque:
-      - name: DRYER2.TORQUE
-        address: 40032
-        type: float
-        unit: "Nm"
-        description: "第二段扭矩"
-        range: [0, 500]
-        
-  # ==================== 发酵仓 ====================
-  fermentation:
-    temperature:
-      - name: FERM.CHAMBER.TEMP
-        address: 40041
-        type: float
-        unit: "°C"
-        description: "发酵仓温度"
-        range: [20, 80]
-        alarm_high: 75
-        
-    humidity:
-      - name: FERM.HUMIDITY
-        address: 40042
+        unit: "℃"
+        description: "锅炉2温度"
+      - name: MT1
+        signal_type: AI
         type: float
         unit: "%"
-        description: "发酵仓湿度"
-        range: [0, 100]
-        
-  # ==================== 尾气余热 ====================
-  exhaust:
-    temperature:
-      - name: EXHAUST.TEMP
-        address: 40051
+        description: "末端湿度"
+      - name: I_M1
+        signal_type: AI
         type: float
-        unit: "°C"
-        description: "尾气温度"
-        range: [0, 300]
-        
-    recovery:
-      - name: EXHAUST.RECOVERY.VALVE
-        address: 40052
+        unit: "A"
+        description: "M1 电流"
+      - name: I_M2
+        signal_type: AI
         type: float
-        unit: "%"
-        description: "余热回收阀门开度"
-        range: [0, 100]
-        control_enabled: true
-        
-# MQTT 发布配置
+        unit: "A"
+        description: "M2 电流"
+      - name: I_M3
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "主机1 电流"
+      - name: I_M4
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M4 电流"
+      - name: I_M5
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "主机2 电流"
+      - name: I_M6
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M6 电流"
+      - name: I_M7
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "主机3 电流"
+      - name: I_M8
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M8 电流"
+      - name: I_M9
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "主机4 电流"
+      - name: I_M10
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M10 电流"
+      - name: I_M11
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M11 电流"
+      - name: I_M12
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "滚筛 电流"
+      - name: I_M13
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M13 电流"
+      - name: I_M14
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M14 电流"
+      - name: I_M15
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M15 电流"
+  drive_feedback:
+    DO:
+      - name: M1
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "料斗1→料斗2 输送电机运行状态"
+      - name: M2
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "料斗2→料斗3 输送电机运行状态"
+      - name: M3
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "主机1 主电机运行状态"
+      - name: M4
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "主机1→料斗4 输送电机运行状态"
+      - name: M5
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "主机2 主电机运行状态"
+      - name: M6
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "主机2→主机3 输送电机运行状态"
+      - name: M7
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "主机3 主电机运行状态"
+      - name: M8
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "主机3→料斗5 输送电机运行状态"
+      - name: M9
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "主机4 主电机运行状态"
+      - name: M10
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "主机4→料斗6 出料电机运行状态"
+      - name: M11
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "料斗6→滚筛 输送电机运行状态"
+      - name: M12
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "滚筛 电机运行状态"
+      - name: M13
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "料斗7→出料 输送电机运行状态"
+      - name: M14
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "锅炉1 上料电机运行状态"
+      - name: M15
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "锅炉2 上料电机运行状态"
+    AO:
+      - name: VFM1
+        signal_type: AO
+        type: float
+        unit: "%/Hz"
+        description: "料斗3→主机1 变频给料反馈"
+      - name: VFM2
+        signal_type: AO
+        type: float
+        unit: "%/Hz"
+        description: "料斗4→主机2 变频给料反馈"
+      - name: VFM3
+        signal_type: AO
+        type: float
+        unit: "%/Hz"
+        description: "料斗5→主机4 变频给料反馈"
+      - name: VF1
+        signal_type: AO
+        type: float
+        unit: "%/Hz"
+        description: "主机1 变频风机反馈"
+      - name: VF2
+        signal_type: AO
+        type: float
+        unit: "%/Hz"
+        description: "主机2 变频风机反馈"
+      - name: VF3
+        signal_type: AO
+        type: float
+        unit: "%/Hz"
+        description: "主机4 变频风机反馈"
+
 mqtt:
   base_topic: "realtime"
-  publish_interval: 1.0  # 秒
+  publish_interval: 1.0
   qos: 1
   retain: false
-  
-# 采集配置
+
 acquisition:
-  scan_interval: 1.0  # 秒
+  scan_interval: 1.0
   batch_size: 100
   timeout: 5.0
-

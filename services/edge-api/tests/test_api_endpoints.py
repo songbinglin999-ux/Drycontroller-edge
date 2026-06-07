@@ -25,8 +25,6 @@ from app.services.control_command import get_control_command_service
 
 settings.CONTROL_API_KEYS = ["test-control"]
 settings.ADMIN_API_KEYS = ["test-admin"]
-# 让 tag_loader 能读到真实 tags.yaml（否则控制服务会拒绝所有 tag）
-settings.TAGS_CONFIG = str(ROOT / "configs" / "tags.yaml")
 
 
 class DummyAISvc:
@@ -53,7 +51,7 @@ class DummyControlSvc:
             "success": True,
             "data": {
                 "line": "L1",
-                "recommendations": {"DRYER1.FAN.SPEED": 35.5},
+                "recommendations": {"CTRL_TEST_SPEED": 35.5},
             },
         }
 
@@ -175,7 +173,7 @@ class DummyControlCommandSvc:
 def test_control_set_endpoint():
     resp = client.post(
         "/api/v1/control/set",
-        json={"tag": "DRYER1.FAN.SPEED", "value": 10, "wait_ack": True, "timeout_sec": 1.0},
+        json={"tag": "CTRL_TEST_SPEED", "value": 10, "wait_ack": True, "timeout_sec": 1.0},
         headers={settings.API_KEY_HEADER: "test-control"},
     )
     assert resp.status_code == 200

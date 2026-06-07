@@ -2,7 +2,7 @@
 scripts/validate-daq-config.py 单测
 
 目标：
-- validate() 对典型错误（duplicate/missing/bad range/type）能报错
+- validate() 对典型错误（missing/bad signal_type/range/type）能报错
 - main() 对错误/成功返回正确退出码
 """
 
@@ -32,23 +32,36 @@ def test_validate_reports_errors(tmp_path: Path):
         "  s:\n"
         "    c:\n"
         "      - name: A\n"
-        "        address: 1\n"
         "        type: int\n"
+        "        signal_type: BAD\n"
         "      - name: B\n"
-        "        address: 1\n"
-        "        type: int\n"
-        "      - name: C\n"
-        "        address: 2\n"
         "        type: badtype\n"
+        "        signal_type: AI\n"
         "        range: [1]\n",
         encoding="utf-8",
     )
     errors = vdc.validate(path)
     assert errors, "应当返回错误列表"
     assert any("scan_interval" in e for e in errors)
-    assert any("duplicate address" in e for e in errors)
+    assert any("invalid signal_type" in e for e in errors)
     assert any("range must be" in e for e in errors)
     assert any("invalid type" in e for e in errors)
+
+
+def test_validate_accepts_tags_without_addresses(tmp_path: Path):
+    path = tmp_path / "tags.yaml"
+    path.write_text(
+        "tags:\n"
+        "  detection:\n"
+        "    AI:\n"
+        "      - name: FTT1\n"
+        "        signal_type: AI\n"
+        "        type: float\n"
+        "        unit: ℃\n",
+        encoding="utf-8",
+    )
+
+    assert vdc.validate(path) == []
 
 
 def test_main_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
@@ -57,11 +70,11 @@ def test_main_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
         "acquisition:\n"
         "  scan_interval: 0.5\n"
         "tags:\n"
-        "  s:\n"
-        "    c:\n"
+        "  detection:\n"
+        "    AI:\n"
         "      - name: A\n"
-        "        address: 1\n"
-        "        type: int\n",
+        "        type: int\n"
+        "        signal_type: DI\n",
         encoding="utf-8",
     )
     # 成功场景：脚本会打印并正常返回（不 sys.exit(0)）
@@ -71,12 +84,10 @@ def test_main_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     assert "校验通过" in (out.out or out.err)
 
     bad = tmp_path / "bad.yaml"
-    bad.write_text("tags: { s: { c: [ { name: A, address: 1, type: bad } ] } }\n", encoding="utf-8")
+    bad.write_text("tags: { detection: { AI: [ { name: A, type: bad, signal_type: AI } ] } }\n", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["validate-daq-config.py", "--file", str(bad)])
     with pytest.raises(SystemExit) as ex2:
         vdc.main()
     assert ex2.value.code == 1
     out = capsys.readouterr()
     assert "配置校验失败" in (out.err or out.out)
-
-

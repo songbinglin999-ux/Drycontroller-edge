@@ -1,7 +1,7 @@
 import importlib
 
 
-def test_config_validation_duplicate_and_missing(tmp_path, monkeypatch):
+def test_config_validation_semantic_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("LOG_ROOT", str(tmp_path))
     daq_main = importlib.import_module("daq.main")
     svc = daq_main.DAQService()
@@ -10,10 +10,9 @@ def test_config_validation_duplicate_and_missing(tmp_path, monkeypatch):
         "tags": {
             "s": {
                 "c": [
-                    {"name": "A", "address": 1, "type": "int"},
-                    {"name": "B", "address": 1, "type": "int"},  # duplicate
-                    {"name": "", "address": None, "type": ""},   # missing
-                    {"name": "C", "address": 2, "type": "int", "range": [1]},  # bad range
+                    {"name": "A", "type": "int", "signal_type": "BAD"},
+                    {"name": "", "type": ""},  # missing
+                    {"name": "C", "type": "int", "range": [1]},  # bad range
                 ]
             }
         }
@@ -21,6 +20,16 @@ def test_config_validation_duplicate_and_missing(tmp_path, monkeypatch):
 
     errors = svc._validate_config(bad_config)
     assert len(errors) >= 3
-    assert any("duplicate_address" in e for e in errors)
+    assert any("invalid_signal_type" in e for e in errors)
     assert any("missing_field" in e for e in errors)
 
+    good_config = {
+        "tags": {
+            "detection": {
+                "AI": [
+                    {"name": "FTT1", "type": "float", "signal_type": "AI"},
+                ]
+            }
+        }
+    }
+    assert svc._validate_config(good_config) == []
