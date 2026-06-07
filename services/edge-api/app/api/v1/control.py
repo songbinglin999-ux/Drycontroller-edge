@@ -2,12 +2,11 @@
 控制指令 API（只读推荐）
 """
 
-from typing import Optional
+from typing import Any, List, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from typing import Any, List
 
 from app.core.security import require_control_api_key
 from app.services.control_recommendation import (
@@ -27,7 +26,7 @@ async def get_control_recommendation(
     service: ControlRecommendationService = Depends(get_control_recommendation_service),
 ):
     """
-    获取链速/风机建议（只读），不会直接写 PLC。
+    获取规则诊断与只读建议，不会直接写 PLC。
     """
     try:
         return await service.get_recommendations(line=line, lookback=lookback)
@@ -127,7 +126,10 @@ async def get_control_status():
             "mode": "manual",
             "auto_control_enabled": False,
             "emergency_stop_active": False,
-            "controllable_tags": ControlRecommendationService.CONTROL_TAGS,
+            "controllable_tags": ControlRecommendationService.CONTROL_SOFTPOINTS,
+            "control_softpoints_status": "tbd",
+            "suggestion_schema": ControlRecommendationService.SCHEMA_VERSION,
+            "actionability": "not_actionable",
+            "blocked_by": ControlRecommendationService.BLOCKED_BY,
         },
     }
-

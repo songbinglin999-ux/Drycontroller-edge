@@ -50,8 +50,13 @@ class DummyControlSvc:
         return {
             "success": True,
             "data": {
+                "schema_version": "drycontroller.diagnosis_suggestion.v1",
                 "line": "L1",
-                "recommendations": {"CTRL_TEST_SPEED": 35.5},
+                "actionable": False,
+                "actionability": "not_actionable",
+                "diagnosis": [],
+                "suggestions": [],
+                "blocked_by": ["P0-SAFETY"],
             },
         }
 
@@ -150,7 +155,10 @@ def test_control_recommend_endpoint():
         headers={settings.API_KEY_HEADER: "test-control"},
     )
     assert resp.status_code == 200
-    assert "recommendations" in resp.json()["data"]
+    body = resp.json()["data"]
+    assert body["schema_version"] == "drycontroller.diagnosis_suggestion.v1"
+    assert body["actionable"] is False
+    assert "recommendations" not in body
 
 
 class DummyControlCommandSvc:

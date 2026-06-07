@@ -326,24 +326,83 @@ class DummyRealtimeControl:
             "success": True,
             "data": [
                 {"tag": "MOISTURE.PREDICTED", "value": 13.5},
-                {"tag": "DRYER1.CHAIN.SPEED", "value": 4.0},
-                {"tag": "DRYER1.FAN.SPEED", "value": 35.0},
-                {"tag": "DRYER2.CHAIN.SPEED", "value": 4.5},
-                {"tag": "DRYER2.FAN.SPEED", "value": 30.0},
+                {"tag": "MT1", "value": 14.2},
+                {"tag": "I_M3", "value": 42.0},
+                {"tag": "M3", "value": 1},
+                {"tag": "I_M5", "value": 15.0},
+                {"tag": "M5", "value": 1},
+                {"tag": "VF1", "value": 35.0},
+                {"tag": "VFM1", "value": 30.0},
             ],
+            "missing": [],
+        }
+
+    async def get_history_payload(self, tag, period, window, aggregation):
+        values = [12.0, 16.0, 42.0] if tag == "I_M3" else [14.0, 15.0, 15.0]
+        points = [
+            {"time": "2026-06-08T00:00:00Z", "value": values[0]},
+            {"time": "2026-06-08T00:02:30Z", "value": values[1]},
+            {"time": "2026-06-08T00:05:00Z", "value": values[2]},
+        ]
+        return {
+            "success": True,
+            "data": {"tag": tag, "points": points},
+            "count": len(points),
+            "timestamp": 1,
+        }
+
+
+class DummyRealtimeControlNoData:
+    async def get_latest_payload(self, requested_tags, lookback):
+        return {
+            "success": True,
+            "data": [],
+            "missing": list(requested_tags),
+        }
+
+    async def get_history_payload(self, tag, period, window, aggregation):
+        return {
+            "success": True,
+            "data": {"tag": tag, "points": []},
+            "count": 0,
+            "timestamp": 1,
         }
 
 
 @pytest.mark.asyncio
-async def test_control_recommendations():
+async def test_control_recommendations_use_new_diagnosis_schema():
     realtime_stub = cast(RealtimeDataService, DummyRealtimeControl())
     service = ControlRecommendationService(realtime_service=realtime_stub)
 
     payload = await service.get_recommendations(line="L1", lookback="5m")
 
     assert payload["success"] is True
-    recs = payload["data"]["recommendations"]
-    assert recs["DRYER1.FAN.SPEED"] > 35.0
+    data = payload["data"]
+    assert data["schema_version"] == ControlRecommendationService.SCHEMA_VERSION
+    assert data["actionable"] is False
+    assert "recommendations" not in data
+    assert "DRYER1" not in str(data)
+
+    diagnosis = data["diagnosis"][0]
+    assert diagnosis["severity"] == "warning"
+    assert diagnosis["probable_cause"] == "load_rising_or_possible_downstream_blockage"
+    assert diagnosis["evidence"][0]["tag"] == "I_M3"
+    assert data["suggestions"][0]["actionable"] is False
+    assert "P0-SAFETY" in data["suggestions"][0]["blocked_by"]
+
+
+@pytest.mark.asyncio
+async def test_control_recommendations_mark_missing_when_no_data():
+    realtime_stub = cast(RealtimeDataService, DummyRealtimeControlNoData())
+    service = ControlRecommendationService(realtime_service=realtime_stub)
+
+    payload = await service.get_recommendations(line="L1", lookback="5m")
+
+    data = payload["data"]
+    assert data["freshness"] == "missing"
+    assert data["diagnosis"][0]["freshness"] == "missing"
+    assert data["diagnosis"][0]["evidence"] == []
+    assert data["suggestions"][0]["freshness"] == "missing"
 
 
 @pytest.mark.asyncio
