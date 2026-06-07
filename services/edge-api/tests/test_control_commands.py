@@ -66,10 +66,10 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
     monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
 
     svc = ControlCommandService()
-    # 避免依赖 tags.yaml：直接注入可控 tag
-    svc._tag_index = {"DRYER1.FAN.SPEED": {"control_enabled": True, "range": [0, 50]}}
+    # 避免依赖真实 tags.yaml：直接注入测试专用可控 tag
+    svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
 
-    resp = await svc.send_set(line="L1", tag="DRYER1.FAN.SPEED", value=10, wait_ack=True, timeout_sec=1.0)
+    resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=1.0)
     assert resp["success"] is True
     assert resp["status"] == "acked"
 
@@ -77,7 +77,7 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
     assert published["topic"] == "control/L1/tags"
 
     payload = published["payload"]
-    assert payload["tag"] == "DRYER1.FAN.SPEED"
+    assert payload["tag"] == "CTRL_TEST_SPEED"
     assert payload["value"] == 10
     assert "id" in payload and "ts" in payload and "sig" in payload
     assert payload["sig"] == _hmac_sig("secret-1", payload["id"], payload["ts"], payload["tag"], payload["value"])
@@ -108,10 +108,9 @@ async def test_control_send_set_timeout(monkeypatch):
     monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
 
     svc = ControlCommandService()
-    svc._tag_index = {"DRYER1.FAN.SPEED": {"control_enabled": True, "range": [0, 50]}}
+    svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
 
-    resp = await svc.send_set(line="L1", tag="DRYER1.FAN.SPEED", value=10, wait_ack=True, timeout_sec=0.2)
+    resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=0.2)
     assert resp["success"] is False
     assert resp["error"] == "ack_timeout"
-
 

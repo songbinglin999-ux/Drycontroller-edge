@@ -2,7 +2,7 @@
 scripts/validate-tags.py 单测
 
 目标：
-- validate_tags 返回的错误信息覆盖核心规则（正则、equipment/section 白名单）
+- validate_tags 返回的错误信息覆盖 io-map 位号正则
 - main() 对错误/成功的退出码
 """
 
@@ -25,15 +25,11 @@ spec.loader.exec_module(vt)
 
 def test_validate_tags_ok():
     cfg = {
-        "naming": {
-            "equipment": {"DRYER1": {}, "DRYER2": {}},
-            "section_alias": {"IN": {}, "OUT": {}},
-        },
         "tags": {
-            "sec": {
-                "cat": [
-                    {"name": "DRYER1.IN.TEMP", "address": 1, "type": "float"},
-                    {"name": "DRYER2.OUT.TEMP", "address": 2, "type": "float"},
+            "detection": {
+                "AI": [
+                    {"name": "FTT1", "type": "float"},
+                    {"name": "I_M15", "type": "float"},
                 ]
             }
         },
@@ -41,42 +37,30 @@ def test_validate_tags_ok():
     assert vt.validate_tags(cfg) == []
 
 
-def test_validate_tags_reports_multiple_errors():
+def test_validate_tags_reports_format_errors():
     cfg = {
-        "naming": {
-            "equipment": {"DRYER1": {}},
-            "section_alias": {"IN": {}},
-        },
         "tags": {
-            "sec": {
-                "cat": [
-                    {"name": "dryer1.in.temp"},          # regex fail
-                    {"name": "UNKNOWN.IN.TEMP"},         # equipment not allowed
-                    {"name": "DRYER1.BADSECTION.TEMP"},  # section not allowed
+            "detection": {
+                "AI": [
+                    {"name": "I-M1"},
+                    {"name": "dryer1"},
+                    {"name": "FTT.1"},
                 ]
             }
         },
     }
     errors = vt.validate_tags(cfg)
-    assert len(errors) >= 3
-    assert any("不符合格式" in e for e in errors)
-    assert any("EQUIPMENT" in e for e in errors)
-    assert any("SECTION" in e for e in errors)
+    assert len(errors) == 3
+    assert all("不符合格式" in e for e in errors)
 
 
 def test_main_exit_codes(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
     good = tmp_path / "tags.yaml"
     good.write_text(
-        "naming:\n"
-        "  equipment:\n"
-        "    DRYER1: {}\n"
-        "  section_alias:\n"
-        "    IN: {}\n"
         "tags:\n"
-        "  s:\n"
-        "    c:\n"
-        "      - name: DRYER1.IN.TEMP\n"
-        "        address: 1\n"
+        "  detection:\n"
+        "    AI:\n"
+        "      - name: FTT1\n"
         "        type: float\n",
         encoding="utf-8",
     )
@@ -88,12 +72,11 @@ def test_main_exit_codes(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
     assert "符合约定" in (out.out or out.err)
 
     bad = tmp_path / "bad.yaml"
-    bad.write_text("tags: { s: { c: [ { name: bad.tag } ] } }\n", encoding="utf-8")
+    bad.write_text("tags: { detection: { AI: [ { name: I-M1 } ] } }\n", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["validate-tags.py", "--file", str(bad)])
     with pytest.raises(SystemExit) as ex2:
         vt.main()
     assert ex2.value.code == 1
     out = capsys.readouterr()
     assert "校验失败" in (out.err or out.out)
-
 

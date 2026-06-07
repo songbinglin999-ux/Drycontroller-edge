@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 校验 configs/tags.yaml 中的 Tag 命名是否符合约定：
-- EQUIPMENT 必须在 allowed_equipment 列表中
-- 至少包含 2 个段（EQUIPMENT + METRIC），最多 4 个段
-- SECTION（若存在）需落在 section_alias 列表中
+- 直接使用 io-map V2 位号
+- 仅允许大写字母、数字、下划线
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - 环境缺失提示
     print("需要 PyYAML 才能解析 configs/tags.yaml，请先运行 `pip install pyyaml`。", file=sys.stderr)
     raise SystemExit(1) from exc
 
-RE_TAG = re.compile(r"^[A-Z0-9]+(?:\.[A-Z0-9]+){1,3}$")
+RE_TAG = re.compile(r"^[A-Z0-9_]+$")
 
 
 def iter_tags(node: Any) -> Iterable[str]:
@@ -37,28 +36,10 @@ def iter_tags(node: Any) -> Iterable[str]:
 
 def validate_tags(config: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
-    naming = config.get("naming", {})
-    allowed_equipment = set(naming.get("equipment", {}).keys())
-    allowed_sections = set(naming.get("section_alias", {}).keys())
-
     tags_root = config.get("tags", {})
     for tag in iter_tags(tags_root):
         if not RE_TAG.match(tag):
             errors.append(f"{tag}: 不符合格式 {RE_TAG.pattern}")
-            continue
-        parts = tag.split(".")
-        equipment = parts[0]
-        if allowed_equipment and equipment not in allowed_equipment:
-            errors.append(f"{tag}: EQUIPMENT '{equipment}' 不在 allowed 列表中")
-        if len(parts) < 2:
-            errors.append(f"{tag}: 至少需要 EQUIPMENT + METRIC 两段")
-            continue
-        if len(parts) > 4:
-            errors.append(f"{tag}: 不应超过 4 段")
-        sections = parts[1:-1]
-        for section in sections:
-            if allowed_sections and section not in allowed_sections:
-                errors.append(f"{tag}: SECTION '{section}' 不在 section_alias 列表中")
     return errors
 
 
@@ -88,4 +69,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

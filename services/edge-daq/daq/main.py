@@ -438,7 +438,7 @@ class DAQService:
 
     def _validate_config(self, config: dict) -> list:
         """
-        基础配置校验：必填字段、重复地址、range 结构。
+        基础配置校验：必填字段、signal_type/type、range 结构。
         返回错误列表，不抛异常，便于健康检查上报。
         """
         errors = []
@@ -462,7 +462,7 @@ class DAQService:
                         int(heartbeat_cfg.get(field))
                     except Exception:
                         errors.append(f"invalid_heartbeat_{field}")
-        seen = {}
+        allowed_signal_types = {"DI", "AI", "DO", "AO"}
         for section, categories in tags_cfg.items():
             if not isinstance(categories, dict):
                 continue
@@ -471,22 +471,13 @@ class DAQService:
                     continue
                 for tag in tags:
                     name = tag.get("name")
-                    addr = tag.get("address")
                     t = tag.get("type")
-                    if not name or addr is None or not t:
+                    signal_type = tag.get("signal_type")
+                    if not name or not t or not signal_type:
                         errors.append(f"missing_field:{section}.{category}")
                         continue
-                    function_code = int(tag.get("function_code", 3) or 3)
-                    if function_code not in (3, 4, 16):
-                        errors.append(f"invalid_function_code:{name}:{function_code}")
-                    byte_order = tag.get("byte_order", "big")
-                    if byte_order not in ("big", "little"):
-                        errors.append(f"invalid_byte_order:{name}:{byte_order}")
-                    key = (addr, function_code)
-                    if key in seen:
-                        errors.append(f"duplicate_address:{addr}")
-                    else:
-                        seen[key] = name
+                    if signal_type not in allowed_signal_types:
+                        errors.append(f"invalid_signal_type:{name}:{signal_type}")
                     rng = tag.get("range")
                     if rng and (not isinstance(rng, (list, tuple)) or len(rng) != 2):
                         errors.append(f"invalid_range:{name}")
@@ -569,4 +560,3 @@ async def main():
 if __name__ == "__main__":
     # 运行异步主函数
     asyncio.run(main())
-

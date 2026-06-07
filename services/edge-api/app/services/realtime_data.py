@@ -9,7 +9,7 @@ from functools import lru_cache
 from typing import List, Optional
 
 from app.services.influx import InfluxQueryService, get_influx_service
-from app.utils.tag_loader import get_all_tag_names
+from app.utils.tag_loader import get_all_tag_metadata, get_all_tag_names
 
 
 class RealtimeDataService:
@@ -71,7 +71,7 @@ class RealtimeDataService:
         }
 
     def get_tags_payload(self) -> dict:
-        tags = sorted(set(get_all_tag_names()))
+        tags = get_all_tag_metadata()
         return {
             "success": True,
             "data": {"tags": tags, "count": len(tags)},
@@ -92,4 +92,3 @@ class RealtimeDataService:
 @lru_cache(maxsize=1)
 def get_realtime_data_service() -> RealtimeDataService:
     return RealtimeDataService()
-

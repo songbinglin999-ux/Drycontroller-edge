@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 对 edge-daq 关键配置做静态校验，在 CI/提交前发现问题：
-- configs/tags.yaml：必填字段、功能码、类型、范围、重复地址、报警阈值
+- configs/tags.yaml：必填字段、信号类型、类型、范围、报警阈值
 - acquisition/heartbeat 节点的基础约束
 
 用法：
@@ -60,8 +60,8 @@ def _validate_heartbeat(cfg: Dict[str, Any], errors: List[str]) -> None:
 
 def _validate_tags(cfg: Dict[str, Any], errors: List[str]) -> None:
     tags_cfg = (cfg or {}).get("tags", {})
-    seen = {}
     allowed_types = {"float", "int", "int32", "uint32", "bool"}
+    allowed_signal_types = {"DI", "AI", "DO", "AO"}
 
     def iter_tags(node: Any):
         if isinstance(node, dict):
@@ -74,22 +74,13 @@ def _validate_tags(cfg: Dict[str, Any], errors: List[str]) -> None:
 
     for tag in iter_tags(tags_cfg):
         name = tag.get("name")
-        addr = tag.get("address")
         t = tag.get("type")
-        if not name or addr is None or not t:
-            errors.append(f"{name or '<unknown>'}: missing name/address/type")
+        signal_type = tag.get("signal_type")
+        if not name or not t or not signal_type:
+            errors.append(f"{name or '<unknown>'}: missing name/type/signal_type")
             continue
-        function_code = int(tag.get("function_code", 3) or 3)
-        if function_code not in (3, 4, 16):
-            errors.append(f"{name}: invalid function_code {function_code}")
-        byte_order = tag.get("byte_order", "big")
-        if byte_order not in ("big", "little"):
-            errors.append(f"{name}: invalid byte_order {byte_order}")
-        key = (addr, function_code)
-        if key in seen:
-            errors.append(f"{name}: duplicate address {addr} for fc {function_code}, already used by {seen[key]}")
-        else:
-            seen[key] = name
+        if signal_type not in allowed_signal_types:
+            errors.append(f"{name}: invalid signal_type {signal_type}")
         rng = tag.get("range")
         if rng and (not isinstance(rng, (list, tuple)) or len(rng) != 2):
             errors.append(f"{name}: range must be [min,max]")
@@ -111,7 +102,7 @@ def validate(config_path: Path) -> List[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="校验 edge-daq 采集配置（tags.yaml）")
+    parser = argparse.ArgumentParser(description="校验 edge-daq 点表配置（tags.yaml）")
     parser.add_argument("--file", default="configs/tags.yaml", help="配置文件，默认 configs/tags.yaml")
     args = parser.parse_args()
 
@@ -131,4 +122,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

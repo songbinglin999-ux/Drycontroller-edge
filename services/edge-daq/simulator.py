@@ -11,6 +11,7 @@ from importlib import import_module, util
 import logging
 import math
 import os
+from pathlib import Path
 import random
 import signal
 import time
@@ -29,6 +30,11 @@ else:  # pragma: no cover
     structlog = _StructLogShim()
 
 from daq.publisher import DataPublisher  # noqa: E402
+
+try:
+    import yaml
+except ModuleNotFoundError:  # pragma: no cover
+    yaml = None
 
 logger: Any = structlog.get_logger(__name__)
 
@@ -191,13 +197,88 @@ DEFAULT_TAG_PROFILES: List[Dict] = [
 ]
 
 
+def _iter_tag_items(node: Any):
+    if isinstance(node, dict):
+        if isinstance(node.get("name"), str):
+            yield node
+        for value in node.values():
+            yield from _iter_tag_items(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_tag_items(item)
+
+
+def _candidate_tag_config_paths() -> List[Path]:
+    paths: List[Path] = []
+    for raw in (os.getenv("SIMULATOR_TAGS_CONFIG"), os.getenv("TAGS_CONFIG"), "/app/configs/tags.yaml"):
+        if raw:
+            paths.append(Path(raw))
+    paths.append(Path(__file__).resolve().parents[2] / "configs" / "tags.yaml")
+    return paths
+
+
+def _profile_for_tag(tag: Dict[str, Any], index: int) -> Dict[str, Any]:
+    signal_type = str(tag.get("signal_type", "")).upper()
+    tag_type = str(tag.get("type", "")).lower()
+    unit = tag.get("unit", "")
+
+    if tag_type == "bool" or signal_type in {"DI", "DO"}:
+        return {
+            "name": tag["name"],
+            "unit": unit,
+            "base": 1.0,
+            "amplitude": 0.0,
+            "noise": 0.0,
+            "min": 0.0,
+            "max": 1.0,
+            "precision": 0,
+        }
+
+    if unit == "℃":
+        base, amplitude, min_value, max_value = 70.0, 5.0, 0.0, 200.0
+    elif unit == "%":
+        base, amplitude, min_value, max_value = 50.0, 8.0, 0.0, 100.0
+    elif unit == "A":
+        base, amplitude, min_value, max_value = 8.0 + (index % 5) * 3.0, 2.0, 0.0, 100.0
+    elif unit == "%/Hz":
+        base, amplitude, min_value, max_value = 45.0, 10.0, 0.0, 100.0
+    else:
+        base, amplitude, min_value, max_value = 1.0, 0.2, 0.0, None
+
+    return {
+        "name": tag["name"],
+        "unit": unit,
+        "base": base,
+        "amplitude": amplitude,
+        "noise": amplitude * 0.2,
+        "period": 120.0 + index * 7.0,
+        "min": min_value,
+        "max": max_value,
+        "precision": 2,
+    }
+
+
+def _load_tag_profiles() -> List[Dict]:
+    if yaml is None:
+        return []
+
+    for path in _candidate_tag_config_paths():
+        if not path.exists():
+            continue
+        config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        tags = [tag for tag in _iter_tag_items(config.get("tags", {})) if tag.get("name")]
+        if tags:
+            return [_profile_for_tag(tag, index) for index, tag in enumerate(tags)]
+    return []
+
+
 class RealtimeSimulator:
     """驱动 MQTT + InfluxDB 的实时数据流"""
 
     def __init__(self):
         self.publisher = DataPublisher()
         self.interval = float(os.getenv("SIMULATOR_INTERVAL", "1.0"))
-        self.tag_profiles = DEFAULT_TAG_PROFILES
+        self.tag_profiles = _load_tag_profiles() or DEFAULT_TAG_PROFILES
         self.start_time = time.time()
         self._running = False
 
@@ -286,4 +367,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-
