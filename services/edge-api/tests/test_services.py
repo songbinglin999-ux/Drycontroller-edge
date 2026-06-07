@@ -103,6 +103,32 @@ async def test_realtime_data_service_latest_payload(monkeypatch):
     assert "C.TAG" in result["missing"]
 
 
+def test_realtime_data_service_tags_payload(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.realtime_data.get_all_tag_metadata",
+        lambda: [
+            {
+                "name": "FTT1",
+                "signal_type": "AI",
+                "type": "float",
+                "unit": "℃",
+                "description": "主机1风温",
+            }
+        ],
+    )
+    service = RealtimeDataService(
+        influx_service=cast(InfluxQueryService, DummyInflux()),
+    )
+
+    result = service.get_tags_payload()
+
+    assert result["success"] is True
+    assert result["data"]["count"] == 1
+    assert result["data"]["tags"][0]["name"] == "FTT1"
+    assert result["data"]["tags"][0]["unit"] == "℃"
+    assert result["data"]["tags"][0]["description"] == "主机1风温"
+
+
 @pytest.mark.asyncio
 async def test_realtime_data_service_history_payload(monkeypatch):
     monkeypatch.setattr(
@@ -375,4 +401,3 @@ async def test_event_bus_mqtt_dispatch():
     assert event["topic"] == "ai/L1/predict"
     assert event["data"]["line"] == "L1"
     await bus.stop()
-
