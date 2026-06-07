@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import time
 from typing import Callable, List, Optional, Set
@@ -86,6 +87,40 @@ async def _require_ws_control_auth(websocket: WebSocket) -> bool:
 
     await websocket.send_json({"type": "auth_ok"})
     return True
+
+
+def _is_readonly_ws_source_allowed(host: str) -> bool:
+    clean_host = (host or "").strip()
+    if not clean_host:
+        return False
+
+    try:
+        client_ip = ipaddress.ip_address(clean_host)
+    except ValueError:
+        client_ip = None
+
+    for item in settings.READONLY_WS_ALLOWLIST:
+        entry = str(item).strip()
+        if not entry:
+            continue
+        if clean_host == entry:
+            return True
+        if client_ip is None:
+            continue
+        try:
+            if client_ip in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+async def _require_ws_readonly_auth(websocket: WebSocket) -> bool:
+    host = websocket.client.host if websocket.client else ""
+    if _is_readonly_ws_source_allowed(host):
+        return True
+    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    return False
 
 
 @router.get("/realtime/latest")
@@ -198,9 +233,20 @@ def _build_line_predicate(line: Optional[str]) -> Optional[Callable[[dict], bool
     return predicate
 
 
-async def _stream_websocket(websocket: WebSocket, stream_name: str, predicate: Optional[Callable[[dict], bool]] = None):
+async def _stream_websocket(
+    websocket: WebSocket,
+    stream_name: str,
+    predicate: Optional[Callable[[dict], bool]] = None,
+    *,
+    readonly: bool = False,
+):
     await websocket.accept()
-    if not await _require_ws_control_auth(websocket):
+    is_allowed = (
+        await _require_ws_readonly_auth(websocket)
+        if readonly
+        else await _require_ws_control_auth(websocket)
+    )
+    if not is_allowed:
         return
     queue = ws_stream.register_subscriber(stream_name, predicate)
     logger.info("ws_client_connected", stream=stream_name)
@@ -228,7 +274,7 @@ async def websocket_realtime(
     else:
         tag_set = None
     predicate = _build_realtime_predicate(line, tag_set)
-    await _stream_websocket(websocket, "realtime", predicate)
+    await _stream_websocket(websocket, "realtime", predicate, readonly=True)
 
 
 @router.websocket("/ws/ai")
@@ -237,7 +283,7 @@ async def websocket_ai(
     line: Optional[str] = Query(None, description="按产线过滤，例如 L1"),
 ):
     predicate = _build_line_predicate(line)
-    await _stream_websocket(websocket, "ai", predicate)
+    await _stream_websocket(websocket, "ai", predicate, readonly=True)
 
 
 @router.websocket("/ws/system")
@@ -246,7 +292,7 @@ async def websocket_system(
     line: Optional[str] = Query(None, description="按产线过滤，例如 L1"),
 ):
     predicate = _build_line_predicate(line)
-    await _stream_websocket(websocket, "system", predicate)
+    await _stream_websocket(websocket, "system", predicate, readonly=True)
 
 
 @router.get("/system/health")

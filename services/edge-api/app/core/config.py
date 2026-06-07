@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     API_KEY_HEADER: str = "X-API-Key"
     CONTROL_API_KEYS: List[str] = []
     ADMIN_API_KEYS: List[str] = []
+    READONLY_WS_ALLOWLIST: List[str] = [
+        "127.0.0.1/32",
+        "::1/128",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+    ]
     
     # 配置文件路径
     CONFIG_DIR: str = "/app/configs"
@@ -147,7 +155,7 @@ class Settings(BaseSettings):
             return [item.strip() for item in raw.split(",") if item.strip()]
         return []
 
-    @field_validator("CONTROL_API_KEYS", "ADMIN_API_KEYS", mode="before")
+    @field_validator("CONTROL_API_KEYS", "ADMIN_API_KEYS", "READONLY_WS_ALLOWLIST", mode="before")
     @classmethod
     def _split_api_keys(cls, value):
         """
