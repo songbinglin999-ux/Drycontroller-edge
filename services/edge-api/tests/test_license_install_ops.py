@@ -55,28 +55,37 @@ def _signed_payload() -> dict:
     }
 
 
-def test_license_install_success_writes_files(tmp_path: Path, monkeypatch):
+def test_license_install_success_writes_license_only(tmp_path: Path, monkeypatch):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
-    settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
+    license_path = tmp_path / "license.json"
+    public_key_dir = tmp_path / "keys"
+    public_key_dir.mkdir()
+    public_key_path = public_key_dir / "license.pub"
+    settings.LICENSE_FILE_PATH = str(license_path)
+    settings.LICENSE_PUBLIC_KEY_PATH = str(public_key_path)
     settings.LICENSE_TRUSTED_PUBLIC_KEY = _signed_payload()["license_public_key"]
+    public_key_path.write_text("old-key\n", encoding="utf-8")
+    public_key_dir.chmod(0o500)
 
     async def fake_verify():
         return {"url": "mock", "status_code": 200, "body": {"valid": True}}
 
     monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
 
-    resp = _client().post(
-        "/api/v1/ops/license/install",
-        json=_signed_payload(),
-        headers={"X-API-Key": "admin-1"},
-    )
+    try:
+        resp = _client().post(
+            "/api/v1/ops/license/install",
+            json=_signed_payload(),
+            headers={"X-API-Key": "admin-1"},
+        )
+    finally:
+        public_key_dir.chmod(0o700)
 
     assert resp.status_code == 200
     assert resp.json()["success"] is True
-    assert "lic-1" in Path(settings.LICENSE_FILE_PATH).read_text(encoding="utf-8")
-    assert Path(settings.LICENSE_PUBLIC_KEY_PATH).read_text(encoding="utf-8").strip() == _signed_payload()["license_public_key"]
+    assert "lic-1" in license_path.read_text(encoding="utf-8")
+    assert public_key_path.read_text(encoding="utf-8") == "old-key\n"
 
 
 def test_license_install_rolls_back_when_verify_fails(tmp_path: Path, monkeypatch):
@@ -111,6 +120,33 @@ def test_license_install_rolls_back_when_verify_fails(tmp_path: Path, monkeypatc
     assert resp.json()["detail"]["error"] == "license_verify_failed_after_install"
     assert license_path.read_text(encoding="utf-8") == '{"old": true}\n'
     assert public_key_path.read_text(encoding="utf-8") == "old-key\n"
+
+
+def test_license_install_uses_existing_public_key_as_trust_anchor(tmp_path: Path, monkeypatch):
+    payload = _signed_payload()
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    license_path = tmp_path / "license.json"
+    public_key_path = tmp_path / "license.pub"
+    settings.LICENSE_FILE_PATH = str(license_path)
+    settings.LICENSE_PUBLIC_KEY_PATH = str(public_key_path)
+    settings.LICENSE_TRUSTED_PUBLIC_KEY = ""
+    public_key_path.write_text(payload["license_public_key"] + "\n", encoding="utf-8")
+
+    async def fake_verify():
+        return {"url": "mock", "status_code": 200, "body": {"valid": True}}
+
+    monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
+
+    resp = _client().post(
+        "/api/v1/ops/license/install",
+        json=payload,
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert resp.status_code == 200
+    assert "lic-1" in license_path.read_text(encoding="utf-8")
+    assert public_key_path.read_text(encoding="utf-8") == payload["license_public_key"] + "\n"
 
 
 def test_license_install_rejects_malformed_public_key(tmp_path: Path):

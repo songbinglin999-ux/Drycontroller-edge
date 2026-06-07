@@ -503,7 +503,7 @@ async def install_license(req: LicenseInstallRequest, api_key: str = Depends(req
     安装云端签发的 License。
 
     关键保证：
-    - 只写固定 license 文件与公钥文件，不触碰控制/采集服务；
+    - 只写固定 license 文件，不触碰控制/采集服务和只读信任锚；
     - 文件替换使用 os.replace，避免半写入；
     - 新 License 验签失败时恢复旧文件，现场运行不因失败安装而丢失旧授权。
     """
@@ -513,13 +513,10 @@ async def install_license(req: LicenseInstallRequest, api_key: str = Depends(req
     public_key_path = Path(settings.LICENSE_PUBLIC_KEY_PATH)
     _verify_license_install_request(req, public_key_path=public_key_path)
     old_license = license_path.read_bytes() if license_path.exists() else None
-    old_public_key = public_key_path.read_bytes() if public_key_path.exists() else None
 
     license_bytes = json.dumps(req.license, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
-    public_key_bytes = req.license_public_key.strip().encode("utf-8") + b"\n"
 
     _write_bytes_atomic(license_path, license_bytes, mode=0o640)
-    _write_bytes_atomic(public_key_path, public_key_bytes, mode=0o640)
 
     verify_result = await _call_license_verify()
     actor = api_key_actor(api_key, role="admin")
@@ -546,7 +543,6 @@ async def install_license(req: LicenseInstallRequest, api_key: str = Depends(req
         }
 
     _restore_or_remove(license_path, old_license, mode=0o640)
-    _restore_or_remove(public_key_path, old_public_key, mode=0o640)
     rollback_verify = await _call_license_verify()
     await write_audit(
         actor=actor,

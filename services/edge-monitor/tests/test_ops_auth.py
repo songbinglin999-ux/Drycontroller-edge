@@ -72,3 +72,11 @@ def test_ops_auth_accepts_admin_keys_fallback(monkeypatch: pytest.MonkeyPatch):
     assert resp.status_code == 200
 
 
+def test_ops_auth_accepts_admin_keys_with_monitor_keys_configured(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MONITOR_OPS_API_KEYS", "monitor-1")
+    monkeypatch.setenv("ADMIN_API_KEYS", "admin-1")
+    c = _client()
+
+    assert c.get("/ops/ping", headers={"X-API-Key": "monitor-1"}).status_code == 200
+    assert c.get("/ops/ping", headers={"X-API-Key": "admin-1"}).status_code == 200
+

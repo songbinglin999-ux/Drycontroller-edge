@@ -104,10 +104,9 @@ def _split_api_keys(value: str | None) -> list[str]:
 
 
 def _get_ops_api_keys() -> set[str]:
-    # 优先使用专用变量；其次复用 ADMIN_API_KEYS（便于与 edge-api 统一）
+    # 专用 key 和 admin key 都允许；edge-api 代理 /system/container/logs 时会转发 admin key。
     keys = _split_api_keys(os.getenv("MONITOR_OPS_API_KEYS"))
-    if not keys:
-        keys = _split_api_keys(os.getenv("ADMIN_API_KEYS"))
+    keys.extend(_split_api_keys(os.getenv("ADMIN_API_KEYS")))
     return set(keys)
 
 
