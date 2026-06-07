@@ -369,6 +369,73 @@ class DummyRealtimeControlNoData:
         }
 
 
+class DummyRealtimeConveyorBlockage:
+    async def get_latest_payload(self, requested_tags, lookback):
+        return {
+            "success": True,
+            "data": [
+                {"tag": "I_M11", "value": 32.0},
+                {"tag": "M11", "value": 1},
+                {"tag": "I_M12", "value": 38.0},
+                {"tag": "M12", "value": 1},
+                {"tag": "I_M13", "value": 17.0},
+                {"tag": "M13", "value": 1},
+            ],
+            "missing": [],
+        }
+
+    async def get_history_payload(self, tag, period, window, aggregation):
+        values_by_tag = {
+            "I_M11": [12.0, 13.0, 32.0],
+            "I_M12": [18.0, 20.0, 38.0],
+            "I_M13": [16.0, 17.0, 17.0],
+        }
+        values = values_by_tag.get(tag, [10.0, 10.0, 10.0])
+        points = [
+            {"time": "2026-06-08T00:00:00Z", "value": values[0]},
+            {"time": "2026-06-08T00:02:30Z", "value": values[1]},
+            {"time": "2026-06-08T00:05:00Z", "value": values[2]},
+        ]
+        return {
+            "success": True,
+            "data": {"tag": tag, "points": points},
+            "count": len(points),
+            "timestamp": 1,
+        }
+
+
+class DummyRealtimeConveyorEmptyRun:
+    async def get_latest_payload(self, requested_tags, lookback):
+        return {
+            "success": True,
+            "data": [
+                {"tag": "I_M1", "value": 4.0},
+                {"tag": "M1", "value": 1},
+                {"tag": "I_M2", "value": 5.0},
+                {"tag": "M2", "value": 1},
+            ],
+            "missing": [],
+        }
+
+    async def get_history_payload(self, tag, period, window, aggregation):
+        values_by_tag = {
+            "I_M1": [20.0, 21.0, 4.0],
+            "I_M2": [18.0, 17.0, 5.0],
+        }
+        values = values_by_tag.get(tag, [10.0, 10.0, 10.0])
+        points = [
+            {"time": "2026-06-08T00:00:00Z", "value": values[0]},
+            {"time": "2026-06-08T00:02:30Z", "value": values[1]},
+            {"time": "2026-06-08T00:05:00Z", "value": values[2]},
+        ]
+        return {
+            "success": True,
+            "data": {"tag": tag, "points": points},
+            "count": len(points),
+            "timestamp": 1,
+        }
+
+
 @pytest.mark.asyncio
 async def test_control_recommendations_use_new_diagnosis_schema():
     realtime_stub = cast(RealtimeDataService, DummyRealtimeControl())
@@ -389,6 +456,42 @@ async def test_control_recommendations_use_new_diagnosis_schema():
     assert diagnosis["evidence"][0]["tag"] == "I_M3"
     assert data["suggestions"][0]["actionable"] is False
     assert "P0-SAFETY" in data["suggestions"][0]["blocked_by"]
+
+
+@pytest.mark.asyncio
+async def test_control_recommendations_detect_downstream_blockage():
+    realtime_stub = cast(RealtimeDataService, DummyRealtimeConveyorBlockage())
+    service = ControlRecommendationService(realtime_service=realtime_stub)
+
+    payload = await service.get_recommendations(line="L1", lookback="5m")
+
+    diagnosis = payload["data"]["diagnosis"][0]
+    assert diagnosis["id"] == "material_flow_M11"
+    assert diagnosis["probable_cause"] == "downstream_blockage_suspected"
+    assert diagnosis["severity"] == "warning"
+    assert diagnosis["actionable"] is False
+    assert [item["tag"] for item in diagnosis["evidence"]] == ["I_M11", "I_M12"]
+    assert diagnosis["evidence"][0]["signal"] == "conveyor_current_high"
+    assert diagnosis["evidence"][1]["signal"] == "downstream_load_high"
+    assert "automatic control" in diagnosis["recommended_action"][1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_control_recommendations_detect_empty_run():
+    realtime_stub = cast(RealtimeDataService, DummyRealtimeConveyorEmptyRun())
+    service = ControlRecommendationService(realtime_service=realtime_stub)
+
+    payload = await service.get_recommendations(line="L1", lookback="5m")
+
+    diagnosis = payload["data"]["diagnosis"][0]
+    assert diagnosis["id"] == "material_flow_M1"
+    assert diagnosis["probable_cause"] == "empty_run_or_underfeed_suspected"
+    assert diagnosis["severity"] == "warning"
+    assert diagnosis["actionable"] is False
+    assert [item["signal"] for item in diagnosis["evidence"]] == [
+        "running_low_load",
+        "downstream_low_load",
+    ]
 
 
 @pytest.mark.asyncio

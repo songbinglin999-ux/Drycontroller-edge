@@ -50,6 +50,16 @@ class ControlRecommendationService:
         "CONTROL_SOFTPOINTS_TBD",
     ]
     HISTORY_WINDOW = "30s"
+    CONVEYOR_SEGMENTS = [
+        {"motor": "M1", "current": "I_M1", "downstream_current": "I_M2", "target": "hopper_2"},
+        {"motor": "M2", "current": "I_M2", "downstream_current": "I_M3", "target": "hopper_3"},
+        {"motor": "M4", "current": "I_M4", "downstream_current": "I_M5", "target": "hopper_4"},
+        {"motor": "M6", "current": "I_M6", "downstream_current": "I_M7", "target": "host_3"},
+        {"motor": "M8", "current": "I_M8", "downstream_current": "I_M9", "target": "hopper_5"},
+        {"motor": "M10", "current": "I_M10", "downstream_current": "I_M11", "target": "hopper_6"},
+        {"motor": "M11", "current": "I_M11", "downstream_current": "I_M12", "target": "screen"},
+        {"motor": "M13", "current": "I_M13", "downstream_current": None, "target": "outfeed"},
+    ]
 
     def __init__(self, realtime_service: Optional[RealtimeDataService] = None) -> None:
         self._realtime = realtime_service or get_realtime_data_service()
@@ -152,6 +162,9 @@ class ControlRecommendationService:
             if previous_value is not None and baseline is not None and last_value - previous_value >= max(1.0, abs(baseline) * 0.15):
                 state = "sudden_rise"
                 score += 3
+            if motor_running is True and baseline is not None and baseline > 0 and last_value <= baseline * 0.55:
+                state = "low_load"
+                score += 2
             if motor_running is False and baseline is not None and last_value >= max(1.0, abs(baseline) * 0.5):
                 state = "current_with_motor_feedback_off"
                 score += 3
@@ -165,6 +178,9 @@ class ControlRecommendationService:
             "delta": self._round(delta),
             "slope_per_min": self._round(slope_per_min),
             "motor_running": motor_running,
+            "high_load": state in {"sustained_high_load", "rising_load", "sudden_rise"},
+            "rising_load": state in {"rising_load", "sudden_rise"},
+            "low_load": state == "low_load",
         }
 
     def _build_diagnosis(
@@ -173,6 +189,11 @@ class ControlRecommendationService:
         latest: Dict[str, float],
         lookback: str,
     ) -> List[Dict[str, Any]]:
+        analyses_by_tag = {item["tag"]: item for item in analyses}
+        material_flow = self._build_material_flow_diagnosis(analyses_by_tag, lookback)
+        if material_flow:
+            return material_flow
+
         abnormal = [item for item in analyses if item["score"] > 0]
         observed = [
             item
@@ -182,11 +203,12 @@ class ControlRecommendationService:
         evidence = sorted(abnormal or observed, key=lambda item: item["score"], reverse=True)[:5]
         warning_score = sum(item["score"] for item in abnormal)
         severity = "warning" if warning_score >= 3 else "info"
-        probable_cause = (
-            "load_rising_or_possible_downstream_blockage"
-            if abnormal
-            else "no_abnormal_load_trend_detected"
-        )
+        if any(item.get("low_load") for item in abnormal):
+            probable_cause = "low_load_or_empty_run_suspected"
+        elif abnormal:
+            probable_cause = "load_rising_or_possible_downstream_blockage"
+        else:
+            probable_cause = "no_abnormal_load_trend_detected"
         confidence = min(0.9, 0.55 + warning_score * 0.05) if abnormal else 0.55
 
         actions = [
@@ -231,6 +253,111 @@ class ControlRecommendationService:
                 },
             }
         ]
+
+    def _build_material_flow_diagnosis(
+        self,
+        analyses_by_tag: Dict[str, Dict[str, Any]],
+        lookback: str,
+    ) -> List[Dict[str, Any]]:
+        diagnosis: List[Dict[str, Any]] = []
+        for segment in self.CONVEYOR_SEGMENTS:
+            current_tag = segment["current"]
+            current = analyses_by_tag.get(current_tag)
+            if not current or current.get("motor_running") is not True:
+                continue
+
+            downstream_tag = segment.get("downstream_current")
+            downstream = analyses_by_tag.get(downstream_tag) if downstream_tag else None
+            downstream_high = bool(downstream and downstream.get("high_load"))
+            downstream_low = bool(downstream and downstream.get("low_load"))
+
+            if current.get("high_load"):
+                evidence = [self._evidence_item(current, "conveyor_current_high")]
+                if downstream_high:
+                    evidence.append(self._evidence_item(downstream, "downstream_load_high"))
+                confidence = min(0.9, 0.62 + 0.08 * len(evidence) + (0.05 if downstream_high else 0.0))
+                diagnosis.append(
+                    self._material_flow_item(
+                        segment=segment,
+                        probable_cause=(
+                            "downstream_blockage_suspected"
+                            if downstream_high
+                            else "conveyor_load_rising_possible_blockage"
+                        ),
+                        severity="warning" if confidence >= 0.7 else "info",
+                        confidence=confidence,
+                        evidence=evidence,
+                        lookback=lookback,
+                        action_text=(
+                            f"Check {segment['target']} and downstream material path before changing any setpoint."
+                        ),
+                    )
+                )
+                continue
+
+            if current.get("low_load"):
+                evidence = [self._evidence_item(current, "running_low_load")]
+                if downstream_low:
+                    evidence.append(self._evidence_item(downstream, "downstream_low_load"))
+                confidence = min(0.86, 0.6 + 0.08 * len(evidence) + (0.04 if downstream_low else 0.0))
+                diagnosis.append(
+                    self._material_flow_item(
+                        segment=segment,
+                        probable_cause="empty_run_or_underfeed_suspected",
+                        severity="warning" if confidence >= 0.7 else "info",
+                        confidence=confidence,
+                        evidence=evidence,
+                        lookback=lookback,
+                        action_text=(
+                            f"Check upstream material supply and whether {segment['motor']} is running without load."
+                        ),
+                    )
+                )
+
+        return sorted(diagnosis, key=lambda item: item["confidence"], reverse=True)[:3]
+
+    def _material_flow_item(
+        self,
+        segment: Dict[str, Any],
+        probable_cause: str,
+        severity: str,
+        confidence: float,
+        evidence: List[Dict[str, Any]],
+        lookback: str,
+        action_text: str,
+    ) -> Dict[str, Any]:
+        return {
+            "id": f"material_flow_{segment['motor']}",
+            "severity": severity,
+            "probable_cause": probable_cause,
+            "confidence": self._round(confidence),
+            "freshness": "fresh",
+            "evidence_window": {
+                "lookback": lookback,
+                "aggregation_window": self.HISTORY_WINDOW,
+            },
+            "evidence": evidence,
+            "recommended_action": [
+                {
+                    "type": "inspect",
+                    "target": segment["target"],
+                    "text": action_text,
+                },
+                {
+                    "type": "observe",
+                    "target": "adjacent_current_trend",
+                    "text": "Use adjacent I_M current trends as evidence; do not issue automatic control.",
+                },
+            ],
+            "actionable": False,
+            "blocked_by": list(self.BLOCKED_BY),
+        }
+
+    @staticmethod
+    def _evidence_item(item: Dict[str, Any], signal: str) -> Dict[str, Any]:
+        result = dict(item)
+        result["signal"] = signal
+        return result
 
     def _build_suggestions(self, diagnosis: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [
