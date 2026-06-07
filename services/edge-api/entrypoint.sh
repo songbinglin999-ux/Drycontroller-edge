@@ -1,10 +1,10 @@
 #!/bin/sh
 # P2-N8: 迁移前自动 pg_dump + 失败 fail-closed (edge-api 版)
 # 用法: ENTRYPOINT ["/app/entrypoint.sh"]
-# 依赖: DATABASE_URL；postgresql-client（pg_dump，Dockerfile 已装）；SQLAlchemy
+# 依赖: DATABASE_URL 或 POSTGRES_*；postgresql-client（pg_dump，Dockerfile 已装）；SQLAlchemy
 #
 # 流程:
-#   1. 解析 DATABASE_URL（SQLAlchemy make_url，兼容 postgresql+asyncpg 与特殊字符密码）
+#   1. 解析 DATABASE_URL；未显式提供时复用 edge-api Settings 的 POSTGRES_* 连接串
 #   2. 检测 pending migration
 #   3. postgresql 后端且有 pending → pg_dump 备份；备份失败即中止（fail-closed）
 #   4. alembic upgrade head；失败保留备份并退出非零
@@ -18,14 +18,20 @@ set -e
 BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/logs/edge-api}"
 DB_URL="${DATABASE_URL:-}"
 
-# 用 SQLAlchemy 解析 DATABASE_URL，导出 pg_dump 所需的 PG* 环境变量。
+# 用 SQLAlchemy 解析 edge-api 实际数据库 URL，导出 pg_dump 所需的 PG* 环境变量。
 # 仅 postgresql 后端输出内容；其它后端（sqlite 等）输出空 → 跳过备份。
 parse_pg_env() {
   python - "$DB_URL" <<'PY'
 import sys
 try:
+    raw_url = sys.argv[1].strip()
+    if raw_url:
+        db_url = raw_url
+    else:
+        from app.core.config import settings
+        db_url = settings.database_url
     from sqlalchemy.engine import make_url
-    u = make_url(sys.argv[1])
+    u = make_url(db_url)
 except Exception:
     sys.exit(0)
 if not u.get_backend_name().startswith("postgresql"):
@@ -41,9 +47,9 @@ PY
 IS_PG=0
 
 load_pg_env() {
-  [ -z "$DB_URL" ] && { echo "DATABASE_URL not set, skip pre-migration backup"; return 0; }
+  [ -z "$DB_URL" ] && echo "DATABASE_URL not set, using POSTGRES_* settings for pre-migration backup"
   pg_env=$(parse_pg_env)
-  [ -z "$pg_env" ] && { echo "DATABASE_URL is not a postgresql backend, skip pg_dump backup"; return 0; }
+  [ -z "$pg_env" ] && { echo "database URL is not a postgresql backend, skip pg_dump backup"; return 0; }
   while IFS= read -r line; do
     [ -n "$line" ] && export "$line"
   done <<EOF
@@ -99,7 +105,7 @@ run_migration() {
   if [ -f "$BACKUP_DIR/last-pre-migration-backup" ]; then
     backup_file=$(cat "$BACKUP_DIR/last-pre-migration-backup")
     echo "Pre-migration backup available at: $backup_file"
-    echo "To restore: zcat $backup_file | psql \$DATABASE_URL"
+    echo "To restore: zcat $backup_file | psql with matching PG* env"
   fi
   exit 1
 }
