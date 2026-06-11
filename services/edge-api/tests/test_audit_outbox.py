@@ -145,7 +145,8 @@ async def test_outbox_drain_success_marks_synced(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_outbox_drain_failure_retries_then_dead(monkeypatch):
+async def test_outbox_drain_permanent_client_error_retries_then_dead(monkeypatch):
+    """ 永久失败（payload 被云端 4xx 明确拒绝）到达 max_attempts 应标 dead（毒丸防护）。"""
     from app.services.outbox_drain import CloudSyncOutboxDrainer
     from app.services import outbox_drain as drain_module
 
@@ -156,7 +157,7 @@ async def test_outbox_drain_failure_retries_then_dead(monkeypatch):
     drainer = CloudSyncOutboxDrainer()
 
     async def fake_push(kind, rows):
-        return False, "http_500"
+        return False, "http_422:invalid payload"
 
     monkeypatch.setattr(drainer, "_push", fake_push)
 
@@ -166,7 +167,38 @@ async def test_outbox_drain_failure_retries_then_dead(monkeypatch):
     assert row.attempts == 2
     assert row.status == "dead"
     assert row.synced_at is None
-    assert row.last_error == "http_500"
+    assert row.last_error == "http_422:invalid payload"
+
+
+@pytest.mark.asyncio
+async def test_outbox_drain_transient_failure_never_goes_dead(monkeypatch):
+    """ EDGE-OUTBOX-DEAD：瞬态失败（网络异常/5xx/云端未配置）超过 max_attempts
+    也不允许标 dead——现场长断网恢复后必须能补传积压数据。"""
+    from app.services.outbox_drain import CloudSyncOutboxDrainer
+    from app.services import outbox_drain as drain_module
+
+    drainer = CloudSyncOutboxDrainer()
+
+    for error in ("http_503:service unavailable", "missing_cloud_ops_config", "All connection attempts failed"):
+        row = _make_outbox_row(attempts=50, max_attempts=10)
+        session = _FakeSession(rows=[row])
+        monkeypatch.setattr(drain_module, "AsyncSessionLocal", lambda: session)
+
+        async def fake_push(kind, rows, _error=error):
+            return False, _error
+
+        monkeypatch.setattr(drainer, "_push", fake_push)
+
+        before = dt.datetime.now(dt.timezone.utc)
+        pushed = await drainer.drain_once()
+
+        assert pushed == 0
+        assert row.status == "pending", error
+        assert row.attempts == 51
+        assert row.next_retry_at is not None
+        assert row.next_retry_at > before
+        # 大 attempts 下退避必须仍封顶（不溢出、不超过 300s + 余量）
+        assert row.next_retry_at <= before + dt.timedelta(seconds=301)
 
 
 @pytest.mark.asyncio

@@ -26,11 +26,16 @@ def _utcnow() -> dt.datetime:
 
 
 def _retry_at(attempts: int) -> dt.datetime:
-    delay = min(300, 2 ** max(0, attempts - 1))
+    delay = min(300, 2 ** min(16, max(0, attempts - 1)))
     return _utcnow() + dt.timedelta(seconds=delay)
 
 
-def _should_split_batch_error(error: str) -> bool:
+def _is_permanent_client_error(error: str) -> bool:
+    """
+    永久失败 = payload 被云端明确拒绝（重试无效）。
+    网络异常 / 5xx / 配置缺失等瞬态失败不算：outbox 的意义就是断连后最终一致，
+    现场长断网恢复后必须能把积压数据补传上去。
+    """
     if not error.startswith("http_"):
         return False
     try:
@@ -38,6 +43,11 @@ def _should_split_batch_error(error: str) -> bool:
     except ValueError:
         return False
     return status_code in {400, 409, 413, 422}
+
+
+def _should_split_batch_error(error: str) -> bool:
+    # 可拆批隔离的错误 = 同一集合的永久业务拒绝（隔离批内毒丸行）
+    return _is_permanent_client_error(error)
 
 
 class CloudSyncOutboxDrainer:
@@ -155,12 +165,15 @@ class CloudSyncOutboxDrainer:
         row.last_attempt_at = attempt_at
         row.attempts = int(row.attempts or 0) + 1
         row.last_error = error[:4000]
-        max_attempts = row.max_attempts if row.max_attempts is not None else settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS
-        if max_attempts is not None and row.attempts >= int(max_attempts):
-            row.status = "dead"
-            row.next_retry_at = None
-        else:
-            row.next_retry_at = _retry_at(row.attempts)
+        # 只有永久失败（payload 被云端 4xx 明确拒绝）才计入 dead（毒丸防护）；
+        # 瞬态失败（网络/5xx/云端未配置）无限退避重试，断网恢复后补传积压数据
+        if _is_permanent_client_error(error):
+            max_attempts = row.max_attempts if row.max_attempts is not None else settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS
+            if max_attempts is not None and row.attempts >= int(max_attempts):
+                row.status = "dead"
+                row.next_retry_at = None
+                return
+        row.next_retry_at = _retry_at(row.attempts)
 
     async def _try_acquire_drain_lock(self, session: AsyncSession) -> bool:
         if session.get_bind().dialect.name != "postgresql":
