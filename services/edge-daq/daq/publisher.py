@@ -545,7 +545,7 @@ class DataPublisher:
         同时将数据发送到 MQTT（实时推送）和 InfluxDB（历史存储）
         
         Args:
-            tag_name: 标签名称（如 DRYER1.TEMP）
+            tag_name: 标签名称（如 FTT1）
             value: 采集到的数值
             unit: 工程单位（如 ℃、%）
             timestamp: 时间戳（默认当前时间）
@@ -1034,4 +1034,3 @@ class DataPublisher:
             value=value,
             threshold=threshold,
         )
-

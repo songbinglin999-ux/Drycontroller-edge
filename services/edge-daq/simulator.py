@@ -1,7 +1,7 @@
 """
 独立运行的 PLC 数据模拟器。
 
-- 每秒生成一批典型点位（温度、湿度、链速、风机频率等）
+- 每秒生成一批典型点位（温度、电流、变频反馈、状态量等）
 - 通过现有 DataPublisher 同时发布 MQTT 与写入 InfluxDB
 - 大屏/后端无需真实 PLC 即可联调
 """
@@ -39,162 +39,16 @@ except ModuleNotFoundError:  # pragma: no cover
 logger: Any = structlog.get_logger(__name__)
 
 
-DEFAULT_TAG_PROFILES: List[Dict] = [
-    {
-        "name": "DRYER1.IN.TEMP",
-        "unit": "°C",
-        "base": 85.0,
-        "amplitude": 4.0,
-        "noise": 0.8,
-        "period": 180.0,
-        "min": 60.0,
-        "max": 120.0,
-        "precision": 2,
-    },
-    {
-        "name": "DRYER1.OUT.TEMP",
-        "unit": "°C",
-        "base": 78.0,
-        "amplitude": 3.0,
-        "noise": 0.7,
-        "period": 200.0,
-        "min": 55.0,
-        "max": 110.0,
-        "precision": 2,
-    },
-    {
-        "name": "DRYER1.CHAIN.SPEED",
-        "unit": "m/min",
-        "base": 4.2,
-        "amplitude": 0.25,
-        "noise": 0.05,
-        "period": 240.0,
-        "min": 3.5,
-        "max": 5.5,
-        "precision": 3,
-    },
-    {
-        "name": "DRYER1.FAN.SPEED",
-        "unit": "Hz",
-        "base": 35.0,
-        "amplitude": 4.0,
-        "noise": 0.8,
-        "period": 150.0,
-        "min": 20.0,
-        "max": 45.0,
-        "precision": 2,
-    },
-    {
-        "name": "DRYER1.TORQUE",
-        "unit": "Nm",
-        "base": 240.0,
-        "amplitude": 25.0,
-        "noise": 5.0,
-        "period": 260.0,
-        "min": 120.0,
-        "max": 420.0,
-        "precision": 1,
-    },
-    {
-        "name": "DRYER2.IN.TEMP",
-        "unit": "°C",
-        "base": 65.0,
-        "amplitude": 4.5,
-        "noise": 0.9,
-        "period": 210.0,
-        "min": 45.0,
-        "max": 110.0,
-        "precision": 2,
-    },
-    {
-        "name": "DRYER2.OUT.TEMP",
-        "unit": "°C",
-        "base": 55.0,
-        "amplitude": 3.5,
-        "noise": 0.7,
-        "period": 190.0,
-        "min": 35.0,
-        "max": 90.0,
-        "precision": 2,
-    },
-    {
-        "name": "DRYER2.CHAIN.SPEED",
-        "unit": "m/min",
-        "base": 4.6,
-        "amplitude": 0.3,
-        "noise": 0.05,
-        "period": 200.0,
-        "min": 3.8,
-        "max": 5.8,
-        "precision": 3,
-    },
-    {
-        "name": "DRYER2.FAN.SPEED",
-        "unit": "Hz",
-        "base": 31.0,
-        "amplitude": 3.0,
-        "noise": 0.7,
-        "period": 140.0,
-        "min": 18.0,
-        "max": 42.0,
-        "precision": 2,
-    },
-    {
-        "name": "DRYER2.TORQUE",
-        "unit": "Nm",
-        "base": 210.0,
-        "amplitude": 20.0,
-        "noise": 4.0,
-        "period": 230.0,
-        "min": 100.0,
-        "max": 380.0,
-        "precision": 1,
-    },
-    {
-        "name": "FERM.CHAMBER.TEMP",
-        "unit": "°C",
-        "base": 42.0,
-        "amplitude": 2.0,
-        "noise": 0.4,
-        "period": 300.0,
-        "min": 30.0,
-        "max": 60.0,
-        "precision": 2,
-    },
-    {
-        "name": "FERM.HUMIDITY",
-        "unit": "%",
-        "base": 65.0,
-        "amplitude": 6.0,
-        "noise": 1.5,
-        "period": 320.0,
-        "min": 40.0,
-        "max": 95.0,
-        "precision": 2,
-    },
-    {
-        "name": "EXHAUST.TEMP",
-        "unit": "°C",
-        "base": 185.0,
-        "amplitude": 8.0,
-        "noise": 1.2,
-        "period": 260.0,
-        "min": 120.0,
-        "max": 260.0,
-        "precision": 2,
-    },
-    {
-        "name": "EXHAUST.RECOVERY.VALVE",
-        "unit": "%",
-        "base": 45.0,
-        "amplitude": 20.0,
-        "noise": 4.0,
-        "period": 400.0,
-        "min": 0.0,
-        "max": 100.0,
-        "precision": 1,
-    },
-]
+DEFAULT_TAGS: List[Dict[str, Any]] = (
+    [{"name": f"LL{i}", "signal_type": "DI", "type": "bool", "unit": ""} for i in range(1, 7)]
+    + [{"name": f"FTT{i}", "signal_type": "AI", "type": "float", "unit": "℃"} for i in range(1, 4)]
+    + [{"name": f"TT{i}", "signal_type": "AI", "type": "float", "unit": "℃"} for i in range(1, 3)]
+    + [{"name": "MT1", "signal_type": "AI", "type": "float", "unit": "%"}]
+    + [{"name": f"I_M{i}", "signal_type": "AI", "type": "float", "unit": "A"} for i in range(1, 16)]
+    + [{"name": f"M{i}", "signal_type": "DI", "type": "bool", "unit": ""} for i in range(1, 16)]
+    + [{"name": f"VFM{i}", "signal_type": "AI", "type": "float", "unit": "%/Hz"} for i in range(1, 4)]
+    + [{"name": f"VF{i}", "signal_type": "DO", "type": "bool", "unit": ""} for i in range(1, 4)]
+)
 
 
 def _iter_tag_items(node: Any):
@@ -272,13 +126,17 @@ def _load_tag_profiles() -> List[Dict]:
     return []
 
 
+def _default_tag_profiles() -> List[Dict]:
+    return [_profile_for_tag(tag, index) for index, tag in enumerate(DEFAULT_TAGS)]
+
+
 class RealtimeSimulator:
     """驱动 MQTT + InfluxDB 的实时数据流"""
 
     def __init__(self):
         self.publisher = DataPublisher()
         self.interval = float(os.getenv("SIMULATOR_INTERVAL", "1.0"))
-        self.tag_profiles = _load_tag_profiles() or DEFAULT_TAG_PROFILES
+        self.tag_profiles = _load_tag_profiles() or _default_tag_profiles()
         self.start_time = time.time()
         self._running = False
 

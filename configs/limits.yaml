@@ -1,118 +1,131 @@
 # 工艺限制和报警配置
+#
+# 与 configs/tags.yaml 和 docs/plc/io-map.html 的当前位号保持一致。
+# 本文件只描述 edge 可用于告警/展示的建议阈值；PLC 安全联锁和
+# operator-touch 软设定值不在这里定义。
 
-# ==================== 温度限制 ====================
-temperature_limits:
-  dryer1:
-    in_temp:
+line_id: L1
+contract_source:
+  tags: configs/tags.yaml
+  io_map: docs/plc/io-map.html
+
+# ==================== 模拟量建议阈值 ====================
+advisory_limits:
+  drying_temperature:
+    FTT1:
+      unit: "℃"
       min: 20
       max: 180
       alarm_high: 170
       alarm_low: 30
-      
-    out_temp:
-      min: 40
-      max: 150
-      alarm_high: 145
-      alarm_low: 45
-      
-    chamber_temp:
-      min: 30
-      max: 160
-      alarm_high: 155
-      
-  dryer2:
-    in_temp:
+    FTT2:
+      unit: "℃"
       min: 20
-      max: 150
-      
-    out_temp:
-      min: 30
-      max: 100
-      alarm_high: 95
-      alarm_low: 35
-      
-    chamber_temp:
-      min: 30
-      max: 120
-      
-  fermentation:
-    chamber_temp:
+      max: 180
+      alarm_high: 170
+      alarm_low: 30
+    FTT3:
+      unit: "℃"
       min: 20
-      max: 75
-      alarm_high: 70
-      optimal_range: [35, 45]
-      
-  exhaust:
-    temp:
+      max: 180
+      alarm_high: 170
+      alarm_low: 30
+
+  boiler_temperature:
+    TT1:
+      unit: "℃"
       min: 50
       max: 300
       alarm_high: 280
-      
-# ==================== 速度限制 ====================
-speed_limits:
-  dryer1:
-    chain_speed:
-      min: 0.5
-      max: 8.0
-      recommended: [2.0, 6.0]
-      emergency_stop: 10.0
-      
-  dryer2:
-    chain_speed:
-      min: 0.5
-      max: 8.0
-      recommended: [2.0, 6.0]
-      
-  # 速度约束
-  constraints:
-    - name: "speed_ratio"
-      description: "第二段链速 >= 第一段链速"
-      rule: "dryer2.chain_speed >= dryer1.chain_speed"
-      
-# ==================== 扭矩限制 ====================
-torque_limits:
-  dryer1:
-    normal_range: [50, 300]
-    warning: 400
-    critical: 450
-    max_allowed: 500
-    
-  dryer2:
-    normal_range: [40, 250]
-    warning: 350
-    critical: 400
-    max_allowed: 500
-    
-# ==================== 风机限制 ====================
-fan_limits:
-  dryer1:
-    frequency:
+    TT2:
+      unit: "℃"
+      min: 50
+      max: 300
+      alarm_high: 280
+
+  moisture:
+    MT1:
+      unit: "%"
+      target: 12.0
+      tolerance: 2.0
+      min_acceptable: 8.0
+      max_acceptable: 16.0
+      alarm_high: 18.0
+      alarm_low: 6.0
+
+  motor_current:
+    defaults:
+      unit: "A"
+      normal_range: [0, 60]
+      warning: 75
+      critical: 90
+      max_allowed: 100
+    tags:
+      - I_M1
+      - I_M2
+      - I_M3
+      - I_M4
+      - I_M5
+      - I_M6
+      - I_M7
+      - I_M8
+      - I_M9
+      - I_M10
+      - I_M11
+      - I_M12
+      - I_M13
+      - I_M14
+      - I_M15
+
+  variable_frequency_feedback:
+    defaults:
+      unit: "%/Hz"
       min: 0
-      max: 50
-      recommended: [20, 45]
-      
-  dryer2:
-    frequency:
-      min: 0
-      max: 50
-      recommended: [15, 40]
-      
-# ==================== 含水率限制 ====================
-moisture_limits:
-  target: 12.0  # %
-  tolerance: 2.0  # ±2%
-  min_acceptable: 8.0
-  max_acceptable: 16.0
-  alarm_high: 18.0
-  alarm_low: 6.0
-  
-# ==================== 湿度限制 ====================
-humidity_limits:
-  fermentation:
-    min: 30
-    max: 85
-    optimal: [50, 70]
-    
+      max: 100
+      warning_high: 95
+    tags:
+      - VFM1
+      - VFM2
+      - VFM3
+
+# ==================== 开关量期望 ====================
+digital_states:
+  level_switches:
+    tags:
+      - LL1
+      - LL2
+      - LL3
+      - LL4
+      - LL5
+      - LL6
+    expected_type: bool
+
+  motor_status:
+    tags:
+      - M1
+      - M2
+      - M3
+      - M4
+      - M5
+      - M6
+      - M7
+      - M8
+      - M9
+      - M10
+      - M11
+      - M12
+      - M13
+      - M14
+      - M15
+    expected_type: bool
+
+  variable_frequency_outputs:
+    tags:
+      - VF1
+      - VF2
+      - VF3
+    expected_type: bool
+
 # ==================== 报警配置 ====================
 alarms:
   priorities:
@@ -120,111 +133,92 @@ alarms:
       level: 0
       color: "blue"
       action: "log"
-      
+
     warning:
       level: 1
       color: "yellow"
       action: "notify"
       auto_clear: true
-      
+
     error:
       level: 2
       color: "orange"
       action: "notify+log"
       requires_acknowledgment: true
-      
+
     critical:
       level: 3
       color: "red"
-      action: "notify+log+emergency_stop"
+      action: "notify+log"
       requires_acknowledgment: true
-      escalation_time: 300  # 秒
-      
-  # 报警规则
+      escalation_time: 300
+
   rules:
-    - name: "高温报警"
-      condition: "temperature > alarm_high"
+    - name: "干燥温度高限"
+      tags: [FTT1, FTT2, FTT3]
+      condition: "value > alarm_high"
       priority: "error"
-      cooldown: 60  # 秒，防止重复报警
-      
-    - name: "低温报警"
-      condition: "temperature < alarm_low"
+      cooldown: 60
+
+    - name: "干燥温度低限"
+      tags: [FTT1, FTT2, FTT3]
+      condition: "value < alarm_low"
       priority: "warning"
       cooldown: 60
-      
-    - name: "扭矩过载"
-      condition: "torque > critical"
+
+    - name: "锅炉温度高限"
+      tags: [TT1, TT2]
+      condition: "value > alarm_high"
+      priority: "error"
+      cooldown: 60
+
+    - name: "电机电流过载"
+      tags:
+        - I_M1
+        - I_M2
+        - I_M3
+        - I_M4
+        - I_M5
+        - I_M6
+        - I_M7
+        - I_M8
+        - I_M9
+        - I_M10
+        - I_M11
+        - I_M12
+        - I_M13
+        - I_M14
+        - I_M15
+      condition: "value > critical"
       priority: "critical"
-      action: "emergency_stop"
-      
-    - name: "含水率异常"
-      condition: "moisture > alarm_high OR moisture < alarm_low"
+
+    - name: "变频反馈高限"
+      tags: [VFM1, VFM2, VFM3]
+      condition: "value >= warning_high"
       priority: "warning"
-      
-    - name: "通信故障"
+      cooldown: 60
+
+    - name: "含水率异常"
+      tags: [MT1]
+      condition: "value > alarm_high OR value < alarm_low"
+      priority: "warning"
+
+    - name: "PLC 通信故障"
       condition: "plc_connection_lost"
       priority: "critical"
-      
-# ==================== 安全联锁 ====================
-interlocks:
-  - name: "紧急停机"
-    conditions:
-      - "torque_overload"
-      - "temperature_critical"
-      - "fire_alarm"
-    actions:
-      - "stop_all_chains"
-      - "stop_all_fans"
-      - "close_fuel_valve"
-      - "activate_alarm"
-      
-  - name: "过载保护"
-    conditions:
-      - "torque > critical_limit"
-    actions:
-      - "reduce_chain_speed_50%"
-      - "send_warning"
-      
-# ==================== 控制约束 ====================
-control_constraints:
-  # 变化率限制
-  rate_limits:
-    chain_speed:
-      max_increase_rate: 0.5  # m/min per second
-      max_decrease_rate: 1.0
-      
-    fan_speed:
-      max_increase_rate: 2.0  # Hz per second
-      max_decrease_rate: 3.0
-      
-    temperature_setpoint:
-      max_change_rate: 5.0  # °C per minute
-      
-  # 同时变化限制
-  simultaneous_changes:
-    max_variables: 2
-    min_interval: 30  # 秒
-    
-# ==================== 工艺参数推荐值 ====================
-recommended_parameters:
-  standard_operation:
-    dryer1:
-      chain_speed: 4.0
-      fan_speed: 35
-      target_out_temp: 110
-      
-    dryer2:
-      chain_speed: 4.5
-      fan_speed: 30
-      target_out_temp: 70
-      
-  high_moisture_material:
-    dryer1:
-      chain_speed: 3.0
-      fan_speed: 40
-      
-  low_moisture_material:
-    dryer1:
-      chain_speed: 5.0
-      fan_speed: 30
 
+# ==================== 联锁与控制边界 ====================
+interlocks:
+  responsibility: "PLC-side"
+  edge_actions:
+    - "publish_alarm"
+    - "surface_operator_ack"
+  note: "edge 只暴露告警和确认状态，不在此文件定义安全动作。"
+
+control_constraints:
+  status: "deferred_to_operator_touch_softpoints"
+  note: "控制设定值待 operator-touch 软点位定稿后单独建模。"
+
+recommended_parameters:
+  status: "not_configured"
+  reason: "当前位号契约只覆盖采集和状态量，工艺推荐参数尚未形成可执行配置。"
