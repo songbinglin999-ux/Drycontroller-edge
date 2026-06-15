@@ -394,6 +394,23 @@ def test_control_rejects_nan_value_with_nak(monkeypatch):
     assert ack["reason"] == "value_not_numeric"
 
 
+@pytest.mark.parametrize("bad_value", [True, float("inf"), float("-inf")])
+def test_control_rejects_bool_and_infinite_values_with_nak(monkeypatch, bad_value):
+    # bool 是 int 子类、±inf 非有限数；即便 tag 无 range，也必须在写入前 NAK，把行为钉死。
+    config = {
+        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "float", "control_enabled": True}]}},
+    }
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": bad_value, "id": "bad"}).encode()))
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "bad"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "value_not_numeric"
+
+
 def test_control_rejects_acl_with_nak(monkeypatch):
     monkeypatch.setenv("CONTROL_ALLOWED_TAGS", "OTHER")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
