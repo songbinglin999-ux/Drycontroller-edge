@@ -7,6 +7,7 @@
 - ACK 等待与超时
 """
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -114,3 +115,87 @@ async def test_control_send_set_timeout(monkeypatch):
     assert resp["success"] is False
     assert resp["error"] == "ack_timeout"
 
+
+@pytest.mark.asyncio
+async def test_control_send_set_ignores_duplicate_ack(monkeypatch):
+    from app.services.control_command import ControlCommandService
+
+    monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret-1")
+    monkeypatch.setattr(
+        "app.services.control_command.write_control_history",
+        _noop_write_control_history,
+    )
+
+    callbacks = {}
+
+    class DummyMQTT:
+        connected = True
+
+        def subscribe(self, topic: str, qos: int = 1):
+            return None
+
+        def register_callback(self, pattern: str, cb):
+            callbacks[pattern] = cb
+            return cb
+
+        def publish(self, topic: str, payload: dict, qos: int = 1):
+            ack_payload = json.dumps(
+                {"id": payload["id"], "tag": payload["tag"], "status": "success", "value": payload["value"], "ts": 1}
+            )
+            cb = callbacks["control/+/acks"]
+            cb("control/L1/acks", ack_payload)
+            cb("control/L1/acks", ack_payload)
+
+    monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
+
+    loop = asyncio.get_running_loop()
+    errors = []
+    old_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+
+    try:
+        svc = ControlCommandService()
+        svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
+
+        resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=1.0)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(old_handler)
+
+    assert resp["success"] is True
+    assert errors == []
+    assert svc._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_control_send_set_publish_failure_clears_pending(monkeypatch):
+    from app.services.control_command import ControlCommandService
+
+    monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret-1")
+    monkeypatch.setattr(
+        "app.services.control_command.write_control_history",
+        _noop_write_control_history,
+    )
+
+    class DummyMQTT:
+        connected = True
+
+        def subscribe(self, topic: str, qos: int = 1):
+            return None
+
+        def register_callback(self, pattern: str, cb):
+            return cb
+
+        def publish(self, topic: str, payload: dict, qos: int = 1):
+            raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
+
+    svc = ControlCommandService()
+    svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
+
+    resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=1.0)
+
+    assert resp["success"] is False
+    assert resp["error"] == "control_publish_failed"
+    assert svc._pending == {}

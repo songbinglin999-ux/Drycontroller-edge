@@ -130,7 +130,7 @@ class ControlCommandService:
         if not msg_id:
             return
 
-        fut = self._pending.get(msg_id)
+        fut = self._pending.pop(msg_id, None)
         if not fut:
             return
 
@@ -143,8 +143,12 @@ class ControlCommandService:
         )
 
         loop = self._loop
-        if loop and not fut.done():
-            loop.call_soon_threadsafe(fut.set_result, ack)
+        if loop:
+            def _set_ack_result() -> None:
+                if not fut.done():
+                    fut.set_result(ack)
+
+            loop.call_soon_threadsafe(_set_ack_result)
 
     def _validate_tag(self, tag: str, value: Any) -> Tuple[bool, str]:
         """
@@ -230,7 +234,21 @@ class ControlCommandService:
                 self._pending[final_msg_id] = fut
 
             # QoS1 发布
-            mqtt_manager.publish(topic, payload, qos=1)
+            try:
+                mqtt_manager.publish(topic, payload, qos=1)
+            except Exception as exc:
+                if final_msg_id:
+                    self._pending.pop(final_msg_id, None)
+                history_error = "control_publish_failed"
+                logger.error("control_publish_failed", topic=topic, error=str(exc))
+                return {
+                    "success": False,
+                    "status": "error",
+                    "error": history_error,
+                    "detail": str(exc),
+                    "data": {"id": final_msg_id, "line": line, "topic": topic},
+                    "timestamp": int(time.time()),
+                }
 
             if not wait_ack:
                 ack_status = "pending"
@@ -396,5 +414,4 @@ class ControlCommandService:
 @lru_cache(maxsize=1)
 def get_control_command_service() -> ControlCommandService:
     return ControlCommandService()
-
 
