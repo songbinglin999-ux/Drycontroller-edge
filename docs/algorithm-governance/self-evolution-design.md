@@ -40,7 +40,7 @@
 - edge-api 控制写入 range guard、HMAC 签名、ACK/NAK、mode gate。
 - `P0-SAFETY`、`P0-CTRL-NAK`、`P0-CTRL-MODE` 的阻断状态。
 - `actionable=false` / `control_actionable=false`。
-- 48 位号身份、`configs/tags.yaml` 点位语义、`modbus-address-map.yaml` 地址映射。
+- 52 位号身份、`configs/tags.yaml` 点位语义、`modbus-address-map.yaml` 地址映射。
 - operator-touch 控制软点清单和设定值上下限。
 - 已确认异常、停机、维护、传感器 stale 期间的数据，不得自动吸收到健康基线。
 

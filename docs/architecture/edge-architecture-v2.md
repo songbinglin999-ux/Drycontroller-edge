@@ -148,7 +148,7 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 
 ## 6. 控制层 — PLC 交互
 
-**目标**：数据采集、签名 command 下发、双心跳维持、PLC 兜底控制。
+**目标**：数据采集、签名 command 下发、双心跳维持、PLC 本地控制兜底，以及 HMI/edge 互斥控制权管理。
 
 ### 6.1 edge-daq
 
@@ -157,7 +157,7 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 | 数据采集 | Modbus TCP 读取 PLC 寄存器，发布到 MQTT + InfluxDB |
 | command 写入 | 只消费 edge-api 下发的**签名 command**，Modbus 写入 PLC，回 **ACK/NAK**；拒绝或写失败 NAK 且**不重放**危险写入 |
 | 双心跳写入 | 见下方语义拆分，**独立进程**，采集挂了心跳进程也要继续 |
-| 模式回读 | 读取 PLC 模式状态寄存器（edge / 本地 / 维护锁定），上报到 MQTT |
+| 模式/控制权回读 | 读取 PLC 模式、`AUTHORITY_OWNER`、`AUTHORITY_TOKEN`、`HMI_DIRECT_ENABLE` 和拒绝原因，上报到 MQTT |
 
 **心跳语义拆分**（v1 的单一 `EDGE.HEARTBEAT` 不够，PLC 用它决定是否允许 edge 模式，若控制链路已失效却仍递增会更危险）：
 
@@ -169,31 +169,37 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 | 功能 | 说明 |
 |---|---|
 | 心跳看门狗 | 监测 `EDGE_CONTROL_HEALTHY` 寄存器，M 秒未更新判定 edge 控制不可信 |
-| 模式切换 | 门控心跳正常 → edge 模式；超时 → 本地模式（预设安全 setpoint） |
+| 模式切换 | 门控心跳正常 → `EDGE_MASTER`；超时 → `PLC_LOCAL` 或 `HMI_LOCAL`（预设安全 setpoint / 本地保守 SP） |
+| **控制权锁** | PLC 持有 `AUTHORITY_OWNER` 与 `AUTHORITY_TOKEN`；edge 和 HMI 都只能申请控制权，不能绕过 PLC 私下切换 |
+| **HMI 备用直连** | edge 健康时 HMI 处于 `HMI_STANDBY`，只监视或请求接管；edge 不可用且 PLC 置 `HMI_DIRECT_ENABLE=1` 后，HMI 才能直连写允许的本地软点 |
 | **维护锁定（maintenance lock）** | 人为锁定本地模式，需**手动解除**后才允许 edge 重新接管；**在 PLC 侧实现**，否则维修中 edge 心跳恢复仍可能强行夺回控制权 |
 | bumpless 切换 | 模式切换时输出不能跳变，平滑过渡 |
 | actuator clamp | 输出限幅，不超安全范围 |
 | 急停/联锁 | 硬件级安全，edge 不介入 |
 | 上电默认 | 上电后进入安全默认状态 |
 | DO 触点告警 | 心跳超时 → DO 闭合 → DTU 短信告警（**独立于 edge，独立于网络**） |
-| 模式回读寄存器 | edge 可读当前模式（edge / 本地 / 维护锁定） |
+| 模式回读寄存器 | edge 可读当前模式、控制权 owner、token、HMI 直连授权、接管/拒绝原因 |
 
 ### 6.3 控制模式切换流程
 
 ```
-          门控心跳正常                门控心跳超时
-┌──────────┐    ┌──────────┐    ┌──────────┐
-│ edge 模式 │ →  │ 等待确认  │ →  │ 本地模式  │
-│          │    │ (防抖)    │    │ (PLC 兜底)│
-└──────────┘    └──────────┘    └──────────┘
-      ↑                                │
-      └────────── 心跳恢复 ────────────┘
+          门控心跳正常                         门控心跳超时 / edge 不可用
+┌──────────────────┐    ┌──────────┐    ┌────────────────────┐
+│ EDGE_MASTER       │ →  │ 等待确认  │ →  │ PLC_LOCAL/HMI_LOCAL │
+│ owner=EDGE        │    │ (防抖)    │    │ owner=PLC/HMI       │
+└──────────────────┘    └──────────┘    └────────────────────┘
+      ↑                                               │
+      └──── edge 恢复后读取当前状态、同步 SP、申请 token ──┘
 
+         HMI_STANDBY：edge 健康时 HMI 只监视/请求接管，不直接写控制 SP
+         HMI_DIRECT_ENABLE：PLC 授权后，HMI 才能直连写允许的本地软点
          维护锁定：人为置入 → 强制本地模式 → 仅手动解除可退出
          （锁定期间忽略 edge 心跳恢复，不自动接管）
 ```
 
 **防抖**：连续 K 次门控心跳丢失才判定故障，避免偶发丢包误切。
+
+**恢复原则**：edge 恢复后不能自动抢回控制权。它必须先读取 PLC 当前实际输出、有效 setpoint、`AUTHORITY_OWNER` 和 `AUTHORITY_TOKEN`，完成参数/状态同步后再请求 `EDGE_MASTER`。PLC 授权前，edge-api 应拒绝新 control command 或标记为 `not_actionable`。
 
 ### 6.4 PLC → 云端告警链路
 
@@ -219,7 +225,7 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 - **manual（默认）**：每条 suggestion 需人工确认，edge-api 才签发 command。
 - **autopilot（AI 自动驾驶）**：edge-api 自动把 suggestion 转签名 command 下发，由 PLC 侧 clamp / 本地模式 / 心跳门控 / 急停兜底。约束：
   - **需人工显式授权开启**，默认不开；
-  - **仅 P0-SAFETY 关闭后允许启用**（依赖 PLC 兜底真实可用），未关闭前代码层 fail-closed 禁用；
+  - **仅 P0-SAFETY 关闭后允许启用**（依赖 PLC 软点/同步/仲裁接口和本地控制兜底真实可用），未关闭前代码层 fail-closed 禁用；
   - 授权一直有效，**直到运维手动退回 manual**；
   - 进入本地模式 / 维护锁定 / 任一控制依赖 fail-closed 时**自动挂起回 manual**，恢复后**需重新人工授权**才能再次进入 autopilot。
 
@@ -261,18 +267,19 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 
 ## 8. 与 P0-SAFETY 的对齐
 
-P0-SAFETY 要求 PLC 侧补全安全能力，edge 侧补全心跳和状态机。本架构直接覆盖：
+P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制落地、控制状态机、软点策略和软件侧安全兜底；PLC 负责软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地。本架构直接覆盖：
 
 | P0-SAFETY 要求 | 本架构对应 |
 |---|---|
-| PLC 侧补 `EDGE.HEARTBEAT` | 6.1 双心跳（门控心跳 fail-closed） |
-| PLC 侧补 safe-stop | 6.2 PLC 本地闭环 - 上电默认 |
-| PLC 侧补 clamp | 6.2 PLC 本地闭环 - actuator clamp |
-| PLC 侧补急停/联锁 | 6.2 PLC 本地闭环 - 急停/联锁 |
-| PLC 侧补上电默认 | 6.2 PLC 本地闭环 - 上电默认 |
+| PLC 软点控制层 | 6.2 PLC 本地控制兜底 + 6.3 控制模式切换流程 |
+| 参数同步 / 报警同步 / 状态同步 | 6.3 控制模式切换流程 + Phase 2 接口签收 |
+| `EDGE.HEARTBEAT` 与心跳丢失切本地 | 6.1 双心跳（门控心跳 fail-closed） |
+| ACK/NAK 与原因码 | 4.1 edge-api 签发/审计 + Phase 3 ACK/NAK |
+| 无扰切换 / HMI-edge 控制权锁 | 6.2 PLC 本地闭环 + 6.3 控制模式切换流程 |
+| 现场 HMI 备用直连 | 6.2 `HMI_DIRECT_ENABLE` + 6.3 `HMI_STANDBY/HMI_LOCAL` |
 | edge 侧补心跳 | 6.1 双心跳写入（独立进程） |
 | edge 侧补 range guard | 4.1 edge-api（签发前拒绝越界） |
-| edge 侧补状态机 | 6.3 控制模式切换流程（含维护锁定） |
+| edge 侧补控制状态机和软件侧 fallback | 6.3 控制模式切换流程（含维护锁定） |
 | edge 侧补 `/control/estop` | §9 Phase 3（edge 控制契约）落位 |
 | autopilot 启用门槛 | §6.5：仅 P0-SAFETY 关闭后可启用 |
 
@@ -286,9 +293,9 @@ MVP 范围（2026-07）与 v2 目标架构分开推进：根审计当前收敛�
 |---|---|---|
 | **Phase 0** | 点表 / MVP 数据链路：PLC tags、采集、工程量换算、阈值告警、大屏 | 现场点表落库；只读数据链路 E2E 跑通；控制写入默认关闭 |
 | **Phase 1** | 保命层：宿主机 Tailscale + LAN SSH + host watchdog + enroll 改造 | `compose down` 后 Tailscale/LAN SSH 均可达；cloud-ops 仍能识别设备 tailnet 地址 |
-| **Phase 2** | PLC 安全契约：心跳寄存器、模式寄存器、本地 setpoint、clamp、联锁、维护锁定、DO 告警 | 停止 edge 后 PLC 自动切本地；DO/DTU 告警不依赖 edge 网络 |
-| **Phase 3** | edge 控制契约：suggestion schema、signed command、ACK/NAK、range guard、`/control/estop`、autopilot 授权机制 | AI 不直写 PLC；未签名/越界/本地模式下 command 被拒并审计；autopilot 仅 P0-SAFETY 关闭后可启用，且可一键退回 manual |
-| **Phase 4** | 监控层补齐：PLC 模式监控、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、控制拒绝均可见且告警 |
+| **Phase 2** | PLC 软点 / 同步 / 仲裁契约：采集寄存器、控制软点、参数同步、报警同步、状态同步、ACK/NAK、心跳切本地、HMI 备用直连、无扰切换、HMI/edge 控制权锁 | 停止 edge 心跳后 PLC 自动切本地；HMI 只在 PLC 授权后直连写入；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/token 状态可见 |
+| **Phase 3** | edge 控制契约：suggestion schema、signed command、ACK/NAK、range guard、`/control/estop`、fallback 状态机、autopilot 授权机制、owner/token gate | AI 不直写 PLC；未签名/越界/本地模式/心跳异常/非 EDGE owner/stale token 下 command 被拒并审计；autopilot 仅 P0-SAFETY 关闭后可启用，且可一键退回 manual |
+| **Phase 4** | 监控层补齐：PLC 模式监控、控制权 owner/token、HMI 直连授权、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、HMI 接管、控制拒绝均可见且告警 |
 | **Phase 5** | license-service 合并 + 文档收敛 | 功能等价测试通过；旧端点/云端探测路径有兼容或迁移说明；文档与代码一致 |
 | **Phase 6** | ops-console 接入（edge-api StaticFiles 挂卷托管，见 §7）+ 鉴权整改（代码已存在，落地排期靠后） | `dist` 挂卷只读托管于 edge-api `/console`，容器数维持 15；整改 `VITE_ADMIN_API_KEY` 把长期管理员 Key 编译进前端静态产物的泄密隐患（改登录换短期 token，不再把长期 Key 打包进 JS）；维护工程师可访问，实时数据 / 告警 / 控制模式 / 授权层级 / suggestion 可见 |
 
@@ -323,6 +330,8 @@ MVP 范围（2026-07）与 v2 目标架构分开推进：根审计当前收敛�
 | edge-api 不可用 | 无新 command 下发；PLC 不依赖 edge-api 维持安全 |
 | Modbus 写失败 | command NAK；不重放危险写入；告警可见 |
 | PLC 切本地模式 | suggestion 标 `not_actionable`；edge-api 拒绝控制写入 |
+| HMI 接管 | PLC owner 切为 HMI/PLC_LOCAL 并授予直连；edge-api 拒绝控制写入；edge 恢复后只能申请接管 |
+| stale authority token | PLC NAK；edge-api 审计为控制权过期，不重放 |
 | 越界 setpoint | edge-api range guard 拒绝；edge-daq 二次拒绝；PLC clamp 兜底 |
 | 维护锁定期间 edge 恢复 | PLC 不自动接管，需手动解除 |
 | autopilot 运行中 PLC 切本地 / 依赖 fail-closed | autopilot 自动挂起回 manual；恢复后需重新人工授权 |

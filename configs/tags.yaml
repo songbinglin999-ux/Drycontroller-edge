@@ -6,7 +6,7 @@ naming:
   notes:
     - "Use io-map V2 tag names directly as the full-stack canonical IDs."
     - "I-M* names from io-map are normalized to I_M* for identifier safety."
-    - "All 48 I/O points are read-only from edge; control soft points are separate."
+    - "All 52 I/O points are read-only from edge; control soft points are separate."
 
 tags:
   detection:
@@ -57,6 +57,16 @@ tags:
         type: float
         unit: "℃"
         description: "主机4风温"
+      - name: T_OUT2
+        signal_type: AI
+        type: float
+        unit: "℃"
+        description: "主机2出料口温度（蒸汽/排湿状态算法输入）"
+      - name: T_OUT4
+        signal_type: AI
+        type: float
+        unit: "℃"
+        description: "主机4出料口温度（末段蒸汽/排湿状态算法输入）"
       - name: TT1
         signal_type: AI
         type: float
@@ -106,22 +116,22 @@ tags:
         signal_type: AI
         type: float
         unit: "A"
-        description: "主机3 电流"
+        description: "M7 电流（发酵仓进料带，与M6串联）"
       - name: I_M8
         signal_type: AI
         type: float
         unit: "A"
-        description: "M8 电流"
+        description: "发酵仓 电流"
       - name: I_M9
         signal_type: AI
         type: float
         unit: "A"
-        description: "主机4 电流"
+        description: "M9 电流"
       - name: I_M10
         signal_type: AI
         type: float
         unit: "A"
-        description: "M10 电流"
+        description: "主机4 电流"
       - name: I_M11
         signal_type: AI
         type: float
@@ -131,12 +141,12 @@ tags:
         signal_type: AI
         type: float
         unit: "A"
-        description: "滚筛 电流"
+        description: "M12 电流"
       - name: I_M13
         signal_type: AI
         type: float
         unit: "A"
-        description: "M13 电流"
+        description: "滚筛 电流"
       - name: I_M14
         signal_type: AI
         type: float
@@ -147,6 +157,11 @@ tags:
         type: float
         unit: "A"
         description: "M15 电流"
+      - name: I_M16
+        signal_type: AI
+        type: float
+        unit: "A"
+        description: "M16 电流"
   drive_feedback:
     DO:
       - name: M1
@@ -178,48 +193,53 @@ tags:
         signal_type: DO
         type: bool
         unit: ""
-        description: "主机2→主机3 输送电机运行状态"
+        description: "主机2→发酵仓 输送电机运行状态"
       - name: M7
         signal_type: DO
         type: bool
         unit: ""
-        description: "主机3 主电机运行状态"
+        description: "发酵仓 进料传送带运行状态（与M6串联）"
       - name: M8
         signal_type: DO
         type: bool
         unit: ""
-        description: "主机3→料斗5 输送电机运行状态"
+        description: "发酵仓 主电机运行状态"
       - name: M9
         signal_type: DO
         type: bool
         unit: ""
-        description: "主机4 主电机运行状态"
+        description: "发酵仓→料斗5 输送电机运行状态"
       - name: M10
         signal_type: DO
         type: bool
         unit: ""
-        description: "主机4→料斗6 出料电机运行状态"
+        description: "主机4 主电机运行状态"
       - name: M11
         signal_type: DO
         type: bool
         unit: ""
-        description: "料斗6→滚筛 输送电机运行状态"
+        description: "主机4→料斗6 出料电机运行状态"
       - name: M12
         signal_type: DO
         type: bool
         unit: ""
-        description: "滚筛 电机运行状态"
+        description: "料斗6→滚筛 输送电机运行状态"
       - name: M13
         signal_type: DO
         type: bool
         unit: ""
-        description: "料斗7→出料 输送电机运行状态"
+        description: "滚筛 电机运行状态"
       - name: M14
         signal_type: DO
         type: bool
         unit: ""
-        description: "锅炉1 上料电机运行状态"
+        description: "料斗7→出料 输送电机运行状态"
       - name: M15
+        signal_type: DO
+        type: bool
+        unit: ""
+        description: "锅炉1 上料电机运行状态"
+      - name: M16
         signal_type: DO
         type: bool
         unit: ""

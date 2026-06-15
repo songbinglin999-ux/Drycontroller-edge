@@ -43,19 +43,20 @@ dataset/
 - `shift`：班次（如 `A/B/C`）  
 - `operator_id`：操作员编号（可选）
 
-### 3.2 工艺过程量字段（48 位号）
+### 3.2 工艺过程量字段（52 位号）
 
 字段名必须与 edge `configs/tags.yaml` 保持一致，不再使用 `DRYER1.*`、`dryer_temp_stage1` 或 `T_ZONE*` 等自造别名。
 
 | 字段名 | 含义 | 单位 | 备注 |
 |---|---|---|---|
 | `FTT1`、`FTT2`、`FTT3` | 主机风温 | ℃ | 关键温度特征 |
+| `T_OUT2`、`T_OUT4` | 出料口温度 | ℃ | 主机2/主机4出料状态特征 |
 | `TT1`、`TT2` | 锅炉温度 | ℃ | 热源相关 |
-| `I_M1` ~ `I_M15` | 电机电流 | A | 物料量 / 负载代理 |
+| `I_M1` ~ `I_M16` | 电机电流 | A | 物料量 / 负载代理 |
 | `VFM1` ~ `VFM3` | 变频给料反馈 | %/Hz | 给料状态 |
 | `VF1` ~ `VF3` | 变频风机反馈 | %/Hz | 风量状态 |
 | `LL1` ~ `LL6` | 料位信号 | bool | 料斗 / 锅炉燃料料位 |
-| `M1` ~ `M15` | 电机运行状态 | bool | 运行状态特征 |
+| `M1` ~ `M16` | 电机运行状态 | bool | 运行状态特征 |
 | `MT1` | 末端湿度 | % | 弱参考特征，非 ground-truth label |
 
 ### 3.3 标签字段
@@ -151,7 +152,7 @@ dataset/
 | `is_lab_confirmed`       | bool   | -    | 是否已对齐实验室结果                        | 否 |
 | `feature_window_start`   | int    | epoch(ms) | 特征窗口起始时间                         | 否（只在有窗口聚合时写入） |
 | `feature_window_end`     | int    | epoch(ms) | 特征窗口结束时间                         | 否 |
-| `FTT1`、`FTT2`、`FTT3`、`TT1`、`TT2`、`I_M1` ~ `I_M15`、`VFM1` ~ `VFM3`、`VF1` ~ `VF3`、`LL1` ~ `LL6`、`M1` ~ `M15`、`MT1` | float/bool | 各自单位 | 工艺输入特征（参考 `softsensor.input_features` 列表）；`MT1` 只作弱参考 | 是 |
+| `FTT1`、`FTT2`、`FTT3`、`T_OUT2`、`T_OUT4`、`TT1`、`TT2`、`I_M1` ~ `I_M16`、`VFM1` ~ `VFM3`、`VF1` ~ `VF3`、`LL1` ~ `LL6`、`M1` ~ `M16`、`MT1` | float/bool | 各自单位 | 工艺输入特征（参考 `softsensor.input_features` 列表）；`MT1` 只作弱参考 | 是 |
 | 其他新增输入特征         | float  | -    | 若模型增加新特征，需先回写 `tags.yaml` 或控制软点契约，再在此处补充说明 | 视情况 |
 
 > 模型输入字段以 `configs/ai-config.yaml` → `softsensor.input_features` 为准；如字段名称变更，需同步更新本规范。

@@ -76,6 +76,7 @@ advisory_limits:
       - I_M13
       - I_M14
       - I_M15
+      - I_M16
 
   variable_frequency_feedback:
     defaults:
@@ -117,6 +118,7 @@ digital_states:
       - M13
       - M14
       - M15
+      - M16
     expected_type: bool
 
   variable_frequency_outputs:
@@ -189,6 +191,7 @@ alarms:
         - I_M13
         - I_M14
         - I_M15
+        - I_M16
       condition: "value > critical"
       priority: "critical"
 

@@ -9,6 +9,8 @@ LL6: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 FTT1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 FTT2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 FTT3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
+T_OUT2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
+T_OUT4: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 TT1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 TT2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 MT1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
@@ -27,6 +29,7 @@ I_M12: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 I_M13: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 I_M14: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 I_M15: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
+I_M16: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 M1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 M2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 M3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
@@ -42,6 +45,7 @@ M12: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 M13: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 M14: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 M15: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
+M16: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 VFM1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 VFM2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 VFM3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}

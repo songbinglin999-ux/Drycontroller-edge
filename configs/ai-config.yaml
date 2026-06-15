@@ -6,7 +6,7 @@ softsensor:
   model_version: "v1.0.0"
   model_path: "/app/models/softsensor.onnx"
   
-  # 输入特征：48 I/O 位号来自 configs/tags.yaml；MT1 是弱参考特征，非锚定 label。
+  # 输入特征：50 I/O 位号来自 configs/tags.yaml；MT1 是弱参考特征，非锚定 label。
   input_features:
     - FTT1
     - FTT2
@@ -28,6 +28,7 @@ softsensor:
     - I_M13
     - I_M14
     - I_M15
+    - I_M16
     - VFM1
     - VFM2
     - VFM3
@@ -55,6 +56,7 @@ softsensor:
     - M13
     - M14
     - M15
+    - M16
     - MT1
     
   # 输出
@@ -127,7 +129,7 @@ optimizer:
 
     - type: "motor_current"
       tag_prefix: "I_M"
-      tags: [I_M1, I_M2, I_M3, I_M4, I_M5, I_M6, I_M7, I_M8, I_M9, I_M10, I_M11, I_M12, I_M13, I_M14, I_M15]
+      tags: [I_M1, I_M2, I_M3, I_M4, I_M5, I_M6, I_M7, I_M8, I_M9, I_M10, I_M11, I_M12, I_M13, I_M14, I_M15, I_M16]
       max: null
 
     - type: "drive_feedback"

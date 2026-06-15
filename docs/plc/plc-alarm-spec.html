@@ -143,46 +143,37 @@
 
 <hr>
 
-<h2 id="sec1">1. 温度报警</h2>
+<h2 id="sec1">1. 温度监测与运营报警</h2>
 
-<h3 id="sec1-1">1.1 FTT1/2/3 主机风温</h3>
+<h3 id="sec1-1">1.1 FTT1/2/3 与 T_OUT2/T_OUT4 主机温度输入</h3>
 <table>
   <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>限值</th><th>动作</th><th>备注</th></tr></thead>
   <tbody>
-    <tr><td rowspan="4">FTT1<br>主机1风温</td><td rowspan="4">主机1</td>
-      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span>（预警上限）</td><td>操作员关注，检查进料/风速</td><td></td></tr>
-    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">TBD ℃</span>（报警上限）</td><td>声光报警 + 增大 VF1 风速 + 减少 VFM1 进料</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span>（危险上限）</td><td>停 VFM1（断料）+ 强制 VF1 全速 + 声光报警 + 上报</td><td>安全契约 §2.5 clamp 兜底</td></tr>
-    <tr><td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温预警）</td><td>检查锅炉1供热是否正常</td><td></td></tr>
-    <tr><td rowspan="4">FTT2<br>主机2风温</td><td rowspan="4">主机2</td>
-      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同 FTT1 逻辑</td><td></td></tr>
-    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
-    <tr><td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
-    <tr><td rowspan="4">FTT3<br>主机4风温</td><td rowspan="4">主机4</td>
-      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
-    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
-    <tr><td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
+    <tr><td>FTT1<br>主机1风温</td><td>主机1</td>
+      <td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温）或异常趋势</td><td>提示检查供热/风路；edge 算法可限制 VFM1/VF1 目标</td><td>只读输入，无 PLC 温度 PID</td></tr>
+    <tr><td>FTT2<br>主机2风温</td><td>主机2</td>
+      <td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温）或异常趋势</td><td>提示检查锅炉1供热/风路；edge 算法结合 T_OUT2 判断</td><td>只读输入</td></tr>
+    <tr><td>T_OUT2<br>主机2出料口温度</td><td>主机2 出料口</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span> 或相对基线偏高</td><td>edge 判断蒸汽/排湿是否过重，可调整 VF2/VFM2 目标</td><td>算法事件，不是安全联锁</td></tr>
+    <tr><td>FTT3<br>主机4风温</td><td>主机4</td>
+      <td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温）或异常趋势</td><td>提示检查锅炉2供热/风路；edge 算法结合 T_OUT4/MT1 判断</td><td>只读输入</td></tr>
+    <tr><td>T_OUT4<br>主机4出料口温度</td><td>主机4 出料口</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span> 或相对基线偏高</td><td>edge 判断末段蒸汽/排湿是否过重，可调整 VF3/VFM3 目标</td><td>算法事件，不是安全联锁</td></tr>
   </tbody>
 </table>
 
-<blockquote><p><strong>限值层级关系</strong>：预警 &lt; 报警 &lt; 联锁。联锁值必须在 PLC clamp（安全契约 §2.5）范围内，且 ≤ 物理安全极限。</p></blockquote>
+<blockquote><p><strong>边界</strong>：主机温度点只做采集、运营提示和 edge 算法输入；不写温度目标，不做 PLC 温度 PID，不因工艺温度自动停料。</p></blockquote>
 
 <h3 id="sec1-2">1.2 TT1/2 锅炉温度</h3>
 <table>
   <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>限值</th><th>动作</th><th>备注</th></tr></thead>
   <tbody>
-    <tr><td rowspan="4">TT1<br>锅炉1温度</td><td rowspan="4">锅炉1 B1</td>
+    <tr><td rowspan="2">TT1<br>锅炉1温度</td><td rowspan="2">锅炉1 B1</td>
       <td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温预警）</td><td>检查锅炉燃烧状态，可能熄火</td><td></td></tr>
-    <tr><td><span class="lvl-hi">报警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温报警）</td><td>锅炉故障报警 + 通知主机2降负荷</td><td>炉子温度不足影响干燥</td></tr>
-    <tr><td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span>（高温预警）</td><td>检查燃烧是否过旺</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span>（超温危险）</td><td>停 M14（停止上料）+ 声光报警 + 上报</td><td></td></tr>
-    <tr><td rowspan="4">TT2<br>锅炉2温度</td><td rowspan="4">锅炉2 B2</td>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&lt; <span class="tbd">TBD ℃</span>（低温报警）</td><td>锅炉故障报警 + edge 限制主机2负荷目标</td><td>炉子温度不足影响干燥；人工处置</td></tr>
+    <tr><td rowspan="2">TT2<br>锅炉2温度</td><td rowspan="2">锅炉2 B2</td>
       <td><span class="lvl-lo">预警</span></td><td>&lt; <span class="tbd">TBD ℃</span></td><td>同 TT1 逻辑</td><td></td></tr>
     <tr><td><span class="lvl-hi">报警</span></td><td>&lt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
-    <tr><td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>同上</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">TBD ℃</span></td><td>停 M15 + 报警</td><td></td></tr>
   </tbody>
 </table>
 
@@ -217,7 +208,7 @@
 <h2 id="sec2">2. 电流报警</h2>
 
 <h3 id="sec2-1">2.1 定频电机过流/过载</h3>
-<blockquote><p>所有定频电机（M1–M15 除变频器外）通过 CT 互感器检测电流。变频设备（VFM1-3、VF1-3）电流取自变频器内部，不单设 CT。</p></blockquote>
+<blockquote><p>所有定频电机（M1–M16 除变频器外）通过 CT 互感器检测电流。变频设备（VFM1-3、VF1-3）电流取自变频器内部，不单设 CT。</p></blockquote>
 
 <table class="wrap">
   <thead><tr><th>信号</th><th>设备</th><th>等级</th><th>限值</th><th>动作</th><th>持续时间</th></tr></thead>
@@ -246,46 +237,50 @@
     <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>停 VFM2 + 报警</td><td></td></tr>
     <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M5 + 停 M6 + 报警</td><td></td></tr>
 
-    <tr><td rowspan="2">I-M6</td><td rowspan="2">M6 主机2→主机3</td>
+    <tr><td rowspan="2">I-M6</td><td rowspan="2">M6 主机2→发酵仓</td>
       <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M6 → 停 M5 + 停 M7（级联）+ 报警</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M6 → 停 M5 + 停 M7 + 停 M8（级联）+ 报警</td><td></td></tr>
 
-    <tr><td rowspan="2">I-M7</td><td rowspan="2">M7 主机3</td>
+    <tr><td rowspan="2">I-M7</td><td rowspan="2">M7 发酵仓进料带（串联 M6）</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M7 → 停 M6 + 停 M5 + 停 M8（级联）+ 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M8</td><td rowspan="2">M8 发酵仓</td>
       <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>减上游进料 + 报警</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M7 → 停 M6 → 停 M5 + 报警</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M8 → 停 M7 → 停 M6 → 停 M5 + 报警</td><td></td></tr>
 
-    <tr><td rowspan="2">I-M8</td><td rowspan="2">M8 主机3→料斗5</td>
+    <tr><td rowspan="2">I-M9</td><td rowspan="2">M9 发酵仓→料斗5</td>
       <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M8 → 停 M7 → 停 M6 + 报警</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M9 → 停 M8 → 停 M7 → 停 M6 + 报警</td><td></td></tr>
 
-    <tr><td rowspan="3">I-M9</td><td rowspan="3">M9 主机4</td>
+    <tr><td rowspan="3">I-M10</td><td rowspan="3">M10 主机4</td>
       <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">额定×100%</span></td><td>减少 VFM3 进料</td><td></td></tr>
     <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×120%</span></td><td>停 VFM3 + 报警</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M9 + 停 M10 + 报警</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>停 M10 + 停 M11 + 报警</td><td></td></tr>
 
-    <tr><td rowspan="2">I-M10</td><td rowspan="2">M10 主机4→料斗6</td>
-      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M10 + 停 M9 + 报警</td><td></td></tr>
-
-    <tr><td rowspan="2">I-M11</td><td rowspan="2">M11 料斗6→滚筛</td>
+    <tr><td rowspan="2">I-M11</td><td rowspan="2">M11 主机4→料斗6</td>
       <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
     <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M11 + 停 M10 + 报警</td><td></td></tr>
 
-    <tr><td rowspan="2">I-M12</td><td rowspan="2">M12 滚筛</td>
-      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵/堵筛检测</td><td></td></tr>
+    <tr><td rowspan="2">I-M12</td><td rowspan="2">M12 料斗6→滚筛</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
     <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M12 + 停 M11 + 报警</td><td></td></tr>
 
-    <tr><td rowspan="2">I-M13</td><td rowspan="2">M13 料斗7→出料</td>
-      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M13 + 报警</td><td></td></tr>
+    <tr><td rowspan="2">I-M13</td><td rowspan="2">M13 滚筛</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵/堵筛检测</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M13 + 停 M12 + 报警</td><td></td></tr>
 
-    <tr><td rowspan="2">I-M14</td><td rowspan="2">M14 锅炉1上料</td>
+    <tr><td rowspan="2">I-M14</td><td rowspan="2">M14 料斗7→出料</td>
       <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
     <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M14 + 报警</td><td></td></tr>
 
-    <tr><td rowspan="2">I-M15</td><td rowspan="2">M15 锅炉2上料</td>
+    <tr><td rowspan="2">I-M15</td><td rowspan="2">M15 锅炉1上料</td>
       <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
     <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M15 + 报警</td><td></td></tr>
+
+    <tr><td rowspan="2">I-M16</td><td rowspan="2">M16 锅炉2上料</td>
+      <td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">额定×150%</span></td><td>清堵逻辑</td><td></td></tr>
+    <tr><td><span class="lvl-emer">联锁</span></td><td>清堵失败</td><td>停 M16 + 报警</td><td></td></tr>
   </tbody>
 </table>
 
@@ -325,9 +320,9 @@
     <tr><td>LL4</td><td>料斗5</td>
       <td><span class="lvl-hi">报警</span></td><td>LL4 = 0 持续 <span class="tbd">TBD 分钟</span></td><td>报警「料斗5持续缺料」</td><td>长时间</td></tr>
     <tr><td>LL5</td><td>锅炉1</td>
-      <td><span class="lvl-hi">报警</span></td><td>M14 运行 T_feed_max 后 LL5 仍 = 0</td><td>停 M14 + 报警「锅炉1缺燃料」</td><td>T_feed_max</td></tr>
+      <td><span class="lvl-hi">报警</span></td><td>M15 运行 T_feed_max 后 LL5 仍 = 0</td><td>停 M15 + 报警「锅炉1缺燃料」</td><td>T_feed_max</td></tr>
     <tr><td>LL6</td><td>锅炉2</td>
-      <td><span class="lvl-hi">报警</span></td><td>M15 运行 T_feed_max 后 LL6 仍 = 0</td><td>停 M15 + 报警「锅炉2缺燃料」</td><td>T_feed_max</td></tr>
+      <td><span class="lvl-hi">报警</span></td><td>M16 运行 T_feed_max 后 LL6 仍 = 0</td><td>停 M16 + 报警「锅炉2缺燃料」</td><td>T_feed_max</td></tr>
   </tbody>
 </table>
 
@@ -340,10 +335,9 @@
 <table>
   <thead><tr><th>信号</th><th>位置</th><th>等级</th><th>限值</th><th>动作</th></tr></thead>
   <tbody>
-    <tr><td rowspan="3">MT1<br>末端湿度</td><td rowspan="3">料斗6</td>
-      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">H_target + H_band</span></td><td>降低 VFM1/2/3 进料 + 增大 VF1/2/3 风速</td></tr>
-    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">H_alarm_high</span></td><td>声光报警 + 大幅降负荷</td></tr>
-    <tr><td><span class="lvl-emer">联锁</span></td><td>&gt; <span class="tbd">H_emergency</span></td><td>停线 + 报警（成品不合格，不允许继续生产）</td></tr>
+    <tr><td rowspan="2">MT1<br>末端湿度</td><td rowspan="2">料斗6</td>
+      <td><span class="lvl-lo">预警</span></td><td>&gt; <span class="tbd">H_target + H_band</span></td><td>edge 结合 T_OUT4/FTT3/TT2/VF3/I-M10 做末段原因判断和慢修正</td></tr>
+    <tr><td><span class="lvl-hi">报警</span></td><td>&gt; <span class="tbd">H_alarm_high</span></td><td>声光报警 + 人工确认；edge 可限制 VFM3/整线稳态目标</td></tr>
   </tbody>
 </table>
 
@@ -410,16 +404,18 @@
 <table class="wrap">
   <thead><tr><th>信号</th><th>单位</th><th>预警下限</th><th>报警下限</th><th>预警上限</th><th>报警上限</th><th>联锁上限</th><th>联锁下限</th></tr></thead>
   <tbody>
-    <tr><td>FTT1 主机1风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
-    <tr><td>FTT2 主机2风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
-    <tr><td>FTT3 主机4风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
-    <tr><td>TT1 锅炉1温度</td><td>℃</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td>—</td></tr>
-    <tr><td>TT2 锅炉2温度</td><td>℃</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td>—</td></tr>
-    <tr><td>MT1 末端湿度</td><td>%</td><td>—</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
+    <tr><td>FTT1 主机1风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td>观察趋势</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>FTT2 主机2风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td>观察趋势</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>T_OUT2 主机2出料口温度</td><td>℃</td><td>—</td><td>—</td><td class="tbd">TBD/基线</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>FTT3 主机4风温</td><td>℃</td><td class="tbd">TBD</td><td>—</td><td>观察趋势</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>T_OUT4 主机4出料口温度</td><td>℃</td><td>—</td><td>—</td><td class="tbd">TBD/基线</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>TT1 锅炉1温度</td><td>℃</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>TT2 锅炉2温度</td><td>℃</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>MT1 末端湿度</td><td>%</td><td>—</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td><td>—</td></tr>
     <tr><td>I-M3 主机1电流</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×100%</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>—</td></tr>
     <tr><td>I-M5 主机2电流</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×100%</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>—</td></tr>
-    <tr><td>I-M9 主机4电流</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×100%</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>—</td></tr>
-    <tr><td>I-M1/M2/M4/M6/M8<br>M10–M15</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>清堵失败</td><td>—</td></tr>
+    <tr><td>I-M10 主机4电流</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×100%</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>—</td></tr>
+    <tr><td>I-M1/M2/M4/M6/M7/M8/M9<br>M11–M16</td><td>A</td><td>—</td><td>—</td><td class="tbd">额定×120%</td><td class="tbd">额定×150%</td><td>清堵失败</td><td>—</td></tr>
     <tr><td>轴承温度（预留）</td><td>℃</td><td>—</td><td>—</td><td class="tbd">TBD</td><td>—</td><td class="tbd">TBD</td><td>—</td></tr>
     <tr><td>成品温度（预留）</td><td>℃</td><td>—</td><td>—</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td class="tbd">TBD</td><td>—</td></tr>
   </tbody>

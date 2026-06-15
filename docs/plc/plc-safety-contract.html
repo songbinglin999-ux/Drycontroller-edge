@@ -98,6 +98,8 @@
         <li><a href="#sec1-1">1.1 核心原则</a></li>
         <li><a href="#sec1-2">1.2 当前状态</a></li>
         <li><a href="#sec1-3">1.3 「安全状态」的定义</a></li>
+        <li><a href="#sec1-4">1.4 本期控制范围与监测边界</a></li>
+        <li><a href="#sec1-5">1.5 告警分级</a></li>
       </ul>
     </li>
     <li><a href="#sec2">2. PLC 侧安全要求</a>
@@ -112,6 +114,7 @@
         <li><a href="#sec2-8">2.8 维修锁</a></li>
         <li><a href="#sec2-9">2.9 DO 触点 → DTU 短信告警</a></li>
         <li><a href="#sec2-10">2.10 传感器 / 反馈坏值 fail-safe</a></li>
+        <li><a href="#sec2-11">2.11 命令拒绝与原因码</a></li>
       </ul>
     </li>
     <li><a href="#sec3">3. Edge 侧安全要求（我方，略）</a></li>
@@ -130,7 +133,8 @@
 <header class="doc-head">
   <div class="title">PLC 安全契约（PLC Safety Contract）</div>
   <div class="meta">
-    <b>版本</b>：v1.0-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-03 &nbsp;·&nbsp; <b>状态</b>：待集成商签收<br>
+    <b>版本</b>：v1.2-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-15 &nbsp;·&nbsp; <b>状态</b>：待按新 PLC 接口边界重签收<br>
+    <b>v1.2 改归属</b>（2026-06-15）：DryController/edge 负责工艺控制落地、控制状态机、软点策略与软件侧安全兜底；PLC 负责软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地。现场触摸屏/HMI 必须作为备用人工入口保留；edge 健康时不争抢控制，edge 不可用且 PLC 授权后才启用 HMI->PLC 直连写入。旧 P1-P10 验收表需按该边界重拆。<br>
     <b>适用范围</b>：DryController 边缘控制系统与 PLC 侧安全责任划分<br>
     <b>关联架构</b>：<a href="../architecture/edge-architecture-v2.md">Edge 架构 v2</a><br>
     <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">超限报警规范</a>
@@ -140,11 +144,11 @@
 <div id="status-overview">
   <div class="stat-card">
     <h4>整体状态</h4>
-    <div class="nums">v1.0-draft · 待集成商签收<br>控制写入：默认 disabled</div>
+    <div class="nums">v1.2-draft · 待重拆签收<br>控制写入：默认 disabled</div>
   </div>
   <div class="stat-card">
-    <h4>PLC 侧验收（P1–P9）</h4>
-    <div class="nums"><span class="pill bad">未做 9</span> 0 / 9 通过</div>
+    <h4>PLC 接口验收</h4>
+    <div class="nums"><span class="pill bad">待重拆</span> 软点 / 同步 / 仲裁</div>
   </div>
 </div>
 
@@ -153,19 +157,22 @@
 <h2 id="sec1">1. 总则</h2>
 
 <h3 id="sec1-1">1.1 核心原则</h3>
-<p class="lead">PLC 是最后安全屏障，edge 不承担最终安全责任。</p>
+<p class="lead">edge 承担正常工艺控制与软件侧安全兜底；PLC 承担确定性执行、同步、仲裁和心跳丢失后的本地控制兜底。</p>
 <ul>
-  <li>Edge 系统（上位机）负责数据采集、分析、展示和控制建议</li>
-  <li>PLC（可编程逻辑控制器）负责直接控制电机、阀门、加热器等硬件</li>
-  <li>任何单点故障（edge 挂了、网络断了、软件 bug）都不应导致安全事故</li>
+  <li>Edge 系统（上位机）负责数据采集消费、分析、展示、工艺控制状态机、软点策略、range guard、mode gate 和软件侧 fallback</li>
+  <li>PLC（可编程逻辑控制器）负责软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换和 HMI/edge 控制权锁</li>
+  <li>PLC 读取 edge 心跳；edge 心跳丢失时，PLC 必须切回 PLC 本地控制，且切换过程不能造成突变输出</li>
+  <li>现场触摸屏/HMI 属于 PLC 本地备用人工入口，必须具备 HMI->PLC 备用直连能力；edge 健康时 HMI 只监视或请求接管，edge 离线、网络断开、维护锁或 PLC_LOCAL/LOCAL_MANUAL 且 PLC 授权后，HMI 才能写允许的本地/手动控制软点</li>
+  <li>PLC 必须提供 <code>AUTHORITY_OWNER</code>、<code>AUTHORITY_TOKEN</code>、<code>HMI_DIRECT_ENABLE</code>、<code>TAKEOVER_REASON</code> 与 <code>REJECT_CODE</code> 等字段；edge 与 HMI 写控制软点时必须受当前 owner/token 约束</li>
+  <li>硬件急停、热继、拉绳/跑偏等设备级保护仍属于现场硬件/PLC 执行层，edge 不直接驱动物理输出</li>
 </ul>
 
 <h3 id="sec1-2">1.2 当前状态</h3>
 <table>
   <thead><tr><th>侧</th><th>状态</th></tr></thead>
   <tbody>
-    <tr><td>PLC 侧</td><td><strong>全部未做</strong>，当前仅 Modbus passthrough（透传）</td></tr>
-    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），其余等 PLC 侧完成后跟进</td></tr>
+    <tr><td>PLC 侧</td><td><strong>待重签收</strong>：软点控制层、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换</td></tr>
+    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），仍需补控制状态机、mode/autopilot 闸、软件侧 fallback 与软点/同步/仲裁状态处理</td></tr>
   </tbody>
 </table>
 
@@ -175,6 +182,33 @@
   <li>安全状态各执行器的具体目标值由 <strong>工艺部门</strong> 定义；工艺定义到位前，集成商不得默认用「全部输出归零」作为安全状态。</li>
   <li>本契约只约束「进入安全状态」这一安全动作，<strong>不规定产线启停流程</strong>（由产线工艺控制负责）。</li>
 </ul>
+
+<h3 id="sec1-4">1.4 本期控制范围与监测边界</h3>
+<p class="lead">本期我方（edge）的<strong>控制对象只有若干台变频电机</strong>；温度、电流等均为<strong>监测点</strong>，我方不直接控制。</p>
+<table class="wrap">
+  <thead><tr><th>类别</th><th>对象</th><th>我方角色</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><strong>控制点</strong></td><td>若干台变频电机（上料 / 输送 / 滚筒 / 风机的频率与启停）</td><td>下发设定值 + 启停请求（经 PLC 安全判断，不直接驱动 Y 输出）</td><td>数量 N 与具体电机随点表冻结确定（TBD）</td></tr>
+    <tr><td><strong>监测点</strong></td><td>工艺温度（锅炉）</td><td>只读，上大屏 + 低温报警</td><td><strong>锅炉自带燃烧控制、自行控温</strong>，温度不是我方控制对象；我方仅监测 + <strong>低温报警</strong>（运营告警 §1.5）。<strong>无超温问题，无自动停料</strong>——低温由人工判断处置</td></tr>
+    <tr><td><strong>监测点</strong></td><td>上料电机电流</td><td>只读，上大屏</td><td>喂料 / 热量输入的间接指标，供人工调工艺参考；本期不报警</td></tr>
+  </tbody>
+</table>
+<blockquote>
+  <p><strong>温度控制责任归属</strong>：工艺温度由<strong>锅炉本体系统</strong>负责控制（自控温）。<strong>本场景不涉及超温</strong>，无超温保护需求。我方侧对温度的全部动作仅为：监测上报、<strong>低温运营告警</strong>（提醒人看，§1.5）。低温后是否停料由<strong>人工判断</strong>，不做自动停料。</p>
+  <p><strong>对锅炉系统的规格要求（写给锅炉厂，TBD 回填）</strong>：人工调工艺的前提是温度稳定，故锅炉需保证工艺温度稳定在 <code>___ ± ___ °C</code>（数值待定）；低于下限触发<strong>低温报警</strong>。温度不稳导致工艺无法调整，责任在锅炉侧。</p>
+  <p>温度的<strong>自动控制 / 闭环调节</strong>（如「温度→上料快慢」回路）本期<strong>不做</strong>，列入后期（AI / 控制回写阶段，<strong>也可能不做</strong>）。</p>
+</blockquote>
+
+<h3 id="sec1-5">1.5 告警分级</h3>
+<p>告警按「是否动作、是否锁存」分两级，<strong>不可混为一谈</strong>（低温只是「提醒」，<strong>不是停机</strong>）：</p>
+<table class="wrap">
+  <thead><tr><th>层级</th><th>例子</th><th>动作</th><th>锁存 / 复位</th><th>执行方</th></tr></thead>
+  <tbody>
+    <tr><td><strong>安全联锁</strong></td><td>急停、电机热继、变频器故障、坏值 fail-safe</td><td>停机进入安全状态</td><td>锁存，人工复位</td><td>PLC（§2.6、§2.10）</td></tr>
+    <tr><td><strong>运营告警</strong></td><td><strong>工艺温度低温</strong>（提醒人看）</td><td>仅提醒，<strong>不停任何设备</strong>；是否停料由人工决定</td><td>自动消除，温度回正常即解除</td><td>本地声光 + edge 大屏</td></tr>
+  </tbody>
+</table>
+<p class="note">低温报警「温度低 → 提醒人去看」既要<strong>本地声光报警</strong>（工人站在锅炉边能当场听见 / 看见，真正起作用）也要在<strong>大屏</strong>记录（曲线 + 历史，远端 / 复盘）；两者读同一温度值。<strong>无超温、无质量自动停料</strong>——低温后停不停料由工人现场判断。</p>
 
 <hr>
 
@@ -224,7 +258,7 @@
 <table>
   <tbody>
     <tr><td>用途</td><td>edge 挂了之后，PLC 自动切换到这组预设参数继续运行</td></tr>
-    <tr><td>内容</td><td>链速、抽风频率、温度目标等的安全默认值（即 §1.3 定义的安全状态，由工艺部门确定；注意加热/风机停机次序，不默认全部归零）</td></tr>
+    <tr><td>内容</td><td>各变频电机的链速、抽风频率等安全默认值（即 §1.3 定义的安全状态，由工艺部门确定；注意风机停机次序，不默认全部归零）。<strong>本期不含温度目标</strong>——温度由锅炉自控（§1.4）；安全 setpoint 存储在 PLC 本地、由现场人员设定，edge 只读不写</td></tr>
     <tr><td>切换方式</td><td>模式从 edge(1) 切到本地(0) 时，自动加载本地 setpoint</td></tr>
     <tr><td>过渡要求</td><td>bumpless 切换，输出不能跳变，平滑过渡</td></tr>
   </tbody>
@@ -234,18 +268,18 @@
 <table>
   <tbody>
     <tr><td>用途</td><td>不管 edge 给什么指令，PLC 自动把输出限制在安全范围内</td></tr>
-    <tr><td>示例</td><td>温度指令 &gt; 120°C → 强制压到 120°C；链速 &lt; 0.5 → 强制压到 0.5</td></tr>
+    <tr><td>示例</td><td>频率指令 &gt; 上限 → 强制压到上限；链速 &lt; 0.5 → 强制压到 0.5（本期限幅对象为各变频电机的频率，<strong>不含温度</strong>——温度归锅炉，见 §1.4）</td></tr>
     <tr><td>实现层级</td><td>PLC 程序内硬编码或安全功能块，不可被 edge 覆盖</td></tr>
     <tr><td>告警</td><td>触发 clamp 时，置位告警标志位，edge 可读取</td></tr>
   </tbody>
 </table>
-<p><strong>通俗说</strong>：就算 edge 发了个“温度 500 度”的指令，PLC 也会自动压到安全范围。</p>
+<p><strong>通俗说</strong>：就算 edge 发了个“风机 80 Hz”的频率目标，PLC 也会自动压到安全范围；温度不是 edge 写入对象。</p>
 
 <h3 id="sec2-6">2.6 急停 / 联锁</h3>
 <table>
   <tbody>
     <tr><td>急停</td><td>硬件级紧急停止按钮，按下后所有输出归零或安全值，<strong>不经过任何软件</strong></td></tr>
-    <tr><td>联锁</td><td>安全联锁条件（如门打开 → 自动停机、温度超限 → 自动断热）</td></tr>
+    <tr><td>联锁</td><td>安全联锁条件（如门打开 → 自动停机；电机热继 / 变频器故障 → 对应电机停机）。<strong>工艺温度不在此</strong>：温度归锅炉、本场景无超温、本期仅低温报警（人工处置），见 §1.4</td></tr>
     <tr><td>实现方式</td><td>硬接线或安全 PLC 功能块，独立于 edge 系统</td></tr>
     <tr><td>Edge 不介入</td><td>急停/联锁的判断和执行完全在 PLC 侧，edge 不参与</td></tr>
   </tbody>
@@ -257,7 +291,7 @@
     <tr><td>触发</td><td>覆盖三类：全线上电（冷启动）、PLC 单独复位/重启、动力回路单独断电恢复</td></tr>
     <tr><td>行为</td><td>任一触发后进入安全默认态：<strong>不自动带载、不沿用断电前的输出指令</strong>；先回读现场实际状态，判定完成前不驱动执行器</td></tr>
     <tr><td>模式</td><td>默认 <code>CONTROL_MODE=手动</code>，不自动交还 edge、不自动进入运行，需本地/人工显式启动</td></tr>
-    <tr><td>禁止</td><td>不允许 PLC 记忆/延续断电前状态直接恢复（防一通电就按旧指令全速加热）</td></tr>
+    <tr><td>禁止</td><td>不允许 PLC 记忆/延续断电前状态直接恢复（防一通电就按旧指令全速带载运转）</td></tr>
     <tr><td>安全默认值</td><td>各输出具体安全默认值由工艺确定（§1.3）；本契约只要求「不带载、不自动运行」，<strong>不规定启停流程</strong></td></tr>
     <tr><td>上电事件告警</td><td>断电瞬间 PLC 发不出告警，须在<strong>上电初始化时回溯补报</strong>「发生过掉电/重启」（靠掉电保持/冷启动标志判别），走数据链路上报 cloud-ops；告警<strong>锁存</strong>至人工确认并重启，避免一闪而过被漏看。能区分冷启动/掉电恢复/暖复位则分类上报（取决于 PLC 型号，TBD）</td></tr>
   </tbody>
@@ -290,12 +324,29 @@
 <h3 id="sec2-10">2.10 传感器 / 反馈坏值 fail-safe</h3>
 <table>
   <tbody>
-    <tr><td>问题</td><td>clamp（§2.5）只限 <strong>输出指令</strong>，挡不住 <strong>输入坏值</strong> 导致的失控。温度探头断线/短路/超量程读成坏值（如恒 0°C）时，PLC 本地 PID 会据此 <strong>全速加热 → 着火</strong></td></tr>
+    <tr><td>问题</td><td>clamp（§2.5）只限 <strong>输出指令</strong>，挡不住 <strong>输入坏值</strong>。本期我方不做加热 PID（温度归锅炉），但坏值仍会污染判断：①工艺温度探头断线/短路/超量程/长时间冻结 → <strong>低温误报或漏报</strong>（§1.5）；②电机链速/反馈坏值 → 控制与联锁误判</td></tr>
     <tr><td>检测</td><td>PLC 对关键反馈（温度、链速等 PV）做坏值检测：断线、超量程、长时间冻结不变</td></tr>
     <tr><td>动作</td><td>检测到坏值 → 该回路进入安全状态（见 §1.3），<strong>禁止拿坏值继续 PID 控制</strong>；置告警标志位，edge 可读</td></tr>
     <tr><td>范围</td><td>本节针对 <strong>PLC ↔ 现场仪表</strong> 这一段，独立于 edge↔PLC 链路安全</td></tr>
   </tbody>
 </table>
+
+<h3 id="sec2-11">2.11 命令拒绝与原因码</h3>
+<p>edge 写入的是<strong>命令请求</strong>（启停、设定值、模式等），PLC 先做安全 / 状态判断再决定接受或拒绝，并通过 <code>COMMAND_ACK</code>（§4）+ <code>REJECT_CODE</code> 回告。<strong>拒绝码须随对应 <code>COMMAND_ID</code> 一起返回</strong>，让 edge 知道是哪条命令被拒、为何被拒。</p>
+<table>
+  <thead><tr><th>码</th><th>含义</th><th>码</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td>0</td><td>无拒绝（ACK）</td><td>8</td><td>参数超上限</td></tr>
+    <tr><td>1</td><td>急停中</td><td>9</td><td>参数低于下限</td></tr>
+    <tr><td>2</td><td>本地 / 手动模式</td><td>10</td><td>当前状态不允许切换模式</td></tr>
+    <tr><td>3</td><td>维修锁</td><td>11</td><td>启动反馈超时</td></tr>
+    <tr><td>4</td><td>远程未授权</td><td>12</td><td>运行反馈异常</td></tr>
+    <tr><td>5</td><td>设备故障</td><td>13</td><td>通讯 / 心跳超时</td></tr>
+    <tr><td>6</td><td>联锁不满足</td><td>14</td><td>温度传感器异常 / 坏值</td></tr>
+    <tr><td>7</td><td>下游未运行（顺序联锁）</td><td>15</td><td>变频器故障</td></tr>
+  </tbody>
+</table>
+<p class="note">码值为建议基线，最终以集成商 PLC 程序实现为准；新增拒绝原因时<strong>向后追加码值，不复用旧码语义</strong>。非法参数（超上下限 / 单位错）一律「拒绝写入 + 保持旧值」，不得部分写入。</p>
 
 <hr>
 
@@ -313,8 +364,9 @@
     <tr><td><code>ESTOP_REQUEST</code></td><td>Edge → PLC</td><td>BOOL</td><td>软件急停请求</td></tr>
     <tr><td><code>COMMAND_ACK</code></td><td>PLC → Edge</td><td>UINT8</td><td>命令响应：0=待确认, 1=ACK, 2=NAK</td></tr>
     <tr><td><code>COMMAND_ID</code></td><td>Edge → PLC</td><td>UINT32</td><td>命令序列号，用于 ACK/NAK 关联</td></tr>
+    <tr><td><code>REJECT_CODE</code></td><td>PLC → Edge</td><td>UINT8</td><td>命令拒绝原因码，随 NAK 与对应 COMMAND_ID 返回（§2.11）</td></tr>
     <tr><td><code>{TAG}_SP</code></td><td>Edge → PLC</td><td>REAL</td><td>各控制参数设定值（链速、频率等）</td></tr>
-    <tr><td><code>{TAG}_PV</code></td><td>PLC → Edge</td><td>REAL</td><td>各控制参数实际值</td></tr>
+    <tr><td><code>{TAG}_PV</code></td><td>PLC → Edge</td><td>REAL</td><td>各控制参数实际值；监测点（工艺温度、上料电机电流）亦走此类，只读上报</td></tr>
   </tbody>
 </table>
 <p><strong>数据格式</strong>：</p>
@@ -366,6 +418,8 @@
     <tr><td>14</td><td>心跳计数器溢出回绕（65535→0）</td><td>PLC 视为正常更新，不误判超时切手动（§2.1 判据）</td></tr>
     <tr><td>15</td><td>DO→DTU 告警链路自检</td><td>周期性测试短信能收到；链路坏（DTU 欠费/SIM 失效）时自检失败并告警（§2.9）</td></tr>
     <tr><td>16</td><td>掉电后重新上电</td><td>PLC 回溯补报锁存的掉电/上电告警，且产线不自动启动、停在本地安全模式待人工（§2.7）</td></tr>
+    <tr><td>17</td><td>工艺温度低温</td><td>触发低温报警（本地声光 + 大屏），<strong>不自动停任何设备</strong>，由人工判断处置（§1.5）</td></tr>
+    <tr><td>18</td><td>命令被拒</td><td>PLC 回 NAK + REJECT_CODE，随对应 COMMAND_ID；非法参数保持旧值不部分写入（§2.11）</td></tr>
   </tbody>
 </table>
 
@@ -386,6 +440,7 @@
     <tr><td>P7</td><td>维修锁</td><td>锁定后 edge 无法接管，手动解除后可恢复</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P8</td><td>DO → DTU 短信</td><td>心跳超时后运维手机收到短信</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P9</td><td>传感器坏值 fail-safe</td><td>反馈坏值时该回路进入安全状态，不据坏值控制</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P10</td><td>命令拒绝与原因码</td><td>不满足条件的命令回 NAK + REJECT_CODE 并关联 COMMAND_ID；非法参数保持旧值（§2.11）</td><td><span class="pill bad">❌ 未做</span></td></tr>
   </tbody>
 </table>
 
@@ -393,10 +448,10 @@
 <blockquote><p>Edge 侧验收（E1–E7）由我方负责，<strong>集成商无需关注，本版略去</strong>；完整清单见我方内部版。</p></blockquote>
 
 <h3 id="sec7-3">7.3 关闭条件</h3>
-<p class="lead">三方全部验收通过后才能关闭 P0-SAFETY：</p>
+<p class="lead">三方全部验收通过后才能关闭 P0-SAFETY；旧 P1-P10 表仅作历史草案，新关闭条件以 2026-06-15 边界为准：</p>
 <ol>
-  <li>PLC 集成商签收 P1~P8 全部通过</li>
-  <li>Edge 侧 E1~E7 全部通过</li>
+  <li>PLC 集成商签收软点控制层、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换全部通过</li>
+  <li>Edge 侧控制状态机、range guard、mode/autopilot 闸、软件侧 fallback、`/control/estop`、软点/同步/仲裁状态处理全部通过</li>
   <li>独立复核确认失败注入验收（§6）全部通过</li>
 </ol>
 
@@ -407,15 +462,15 @@
     │
     ▼
 ┌─────────────────────────────────────────┐
-│ 阶段 1：PLC 侧安全功能实现               │
-│ 集成商完成 P1~P8                        │
+│ 阶段 1：PLC 接口与本地兜底实现           │
+│ 软点/同步/ACK/心跳/无扰切换/仲裁          │
 │ 交付物：PLC 程序 + 寄存器表 + 测试报告    │
 └─────────────┬───────────────────────────┘
               │
               ▼
 ┌─────────────────────────────────────────┐
-│ 阶段 2：Edge 侧安全功能实现               │
-│ 我方完成 E1~E7                          │
+│ 阶段 2：Edge 控制与软件兜底实现           │
+│ 我方完成状态机/range/mode/fallback        │
 │ 交付物：代码 + 测试 + 联调记录            │
 └─────────────┬───────────────────────────┘
               │
@@ -439,10 +494,11 @@
 
 <h2 id="sec9">9. 风险与免责</h2>
 <ol>
-  <li><strong>PLC 侧未实现本契约要求前，edge 控制写入全部禁用。</strong> 这不是拖延，是安全保障。</li>
+  <li><strong>PLC 侧软点/同步/心跳/仲裁接口未签收前，edge 控制写入全部禁用。</strong> 这不是拖延，是安全保障。</li>
   <li><strong>本契约不覆盖 PLC 程序本身的 bug。</strong> PLC 程序质量由集成商负责。</li>
   <li><strong>现场工艺参数（温度范围、链速范围等）由工艺部门确定。</strong> 本文档中的示例值仅为说明。</li>
   <li><strong>急停/联锁的硬件设计不在本契约范围内。</strong> 由设备制造商和安全部门负责。</li>
+  <li><strong>工艺温度的控制由锅炉本体系统负责（自控温），不在本契约 / 我方范围；本场景不涉及超温。</strong> 我方仅监测温度并做<strong>低温运营告警</strong>（§1.5），<strong>不自动停料</strong>，低温后处置由人工判断；锅炉需保证工艺温度稳定（§1.4，规格 TBD），这是人工调工艺的前提。</li>
 </ol>
 
 <hr>
@@ -460,17 +516,17 @@
 <hr>
 
 <h2 id="secA">附录 A：与 P0-SAFETY 审计条目的对应</h2>
-<p>本契约是 <code>architecture-audit-2026-05-06.md</code> 中 <code>P0-SAFETY</code> 条目的详细展开。</p>
+<p>本契约是 <code>architecture-audit-2026-05-06.md</code> 中 <code>P0-SAFETY</code> 条目的详细展开。2026-06-15 后，P0-SAFETY 的 PLC 侧主责从“工艺控制/上层安全策略”重定为“软点接口、现场 HMI 备用直连通道、同步、执行、心跳本地兜底、无扰切换与 HMI/edge 控制权锁”。</p>
 <table class="wrap">
   <thead><tr><th>审计条目要求</th><th>本契约对应章节</th></tr></thead>
   <tbody>
-    <tr><td>PLC 侧补 <code>EDGE.HEARTBEAT</code></td><td>§2.1 门控心跳看门狗</td></tr>
-    <tr><td>PLC 侧补 safe-stop</td><td>§2.7 上电默认</td></tr>
-    <tr><td>PLC 侧补 clamp</td><td>§2.5 Actuator Clamp</td></tr>
-    <tr><td>PLC 侧补急停/联锁</td><td>§2.6 急停/联锁</td></tr>
-    <tr><td>PLC 侧补上电默认</td><td>§2.7 上电默认</td></tr>
-    <tr><td>PLC 侧补维修锁</td><td>§2.8 维修锁</td></tr>
-    <tr><td>PLC 侧补 DO/DTU 告警</td><td>§2.9 DO 触点 → DTU 短信</td></tr>
+    <tr><td>PLC 侧软点控制层</td><td>§4 寄存器规划 / 待重拆</td></tr>
+    <tr><td>现场 HMI 备用直连与授权启用</td><td>§1.1 / §7.3 关闭条件</td></tr>
+    <tr><td>参数同步 / 报警同步 / 状态同步</td><td>§4 寄存器规划 / 待重拆</td></tr>
+    <tr><td><code>EDGE.HEARTBEAT</code> 与心跳丢失切本地</td><td>§2.1 门控心跳看门狗</td></tr>
+    <tr><td>ACK/NAK 与原因码</td><td>§2.11 命令拒绝与原因码</td></tr>
+    <tr><td>无扰切换 / HMI-edge 控制权锁</td><td>§4 寄存器规划 / 待重拆</td></tr>
+    <tr><td>报警输出与同步</td><td>§1.5 / §2.9 / 待重拆</td></tr>
   </tbody>
 </table>
 <p><strong>审计要求之外的补强</strong>（评审新增，非 P0-SAFETY 原文，但属关闭前应覆盖的安全项）：</p>
@@ -482,13 +538,16 @@
     <tr><td>看门狗超时与 PST 挂钩</td><td>§5</td></tr>
     <tr><td>DO/DTU 链路周期性自检</td><td>§2.9</td></tr>
     <tr><td>心跳回绕判据</td><td>§2.1 / §4</td></tr>
+    <tr><td>控制范围收敛（仅变频电机）与监测边界（温度归锅炉，仅低温报警、人工停机、无超温、无自动停料）</td><td>§1.4（v1.1 增补）</td></tr>
+    <tr><td>告警分级（安全联锁 / 运营告警 两级）</td><td>§1.5（v1.1 增补）</td></tr>
+    <tr><td>命令拒绝与原因码</td><td>§2.11（v1.1 增补）</td></tr>
   </tbody>
 </table>
 
 <hr>
 
 <h2 id="secB">附录 B：产线 I/O 点表</h2>
-<p>产线工艺流程图与完整 I/O 点表（48 点 + 建议补充点位）已抽出为独立交互页面，便于现场 / 开发查询：<a href="io-map.html">io-map.html</a>（点击流程图标签即可跳转到点表对应行）。</p>
+<p>产线工艺流程图与完整 I/O 点表（52 点 + 建议补充点位）已抽出为独立交互页面，便于现场 / 开发查询：<a href="io-map.html">io-map.html</a>（点击流程图标签即可跳转到点表对应行）。</p>
 <p class="note">其中「急停按钮、拉绳/跑偏开关、电机热继跳闸、轴承/成品超温、变频器故障」等条目正是本契约 §2.6 联锁、§2.10 坏值 fail-safe 关心的安全输入，后续点表冻结时需与本契约对齐。</p>
 
 <script>
