@@ -155,7 +155,7 @@ class PLCSimulator:
         """读取保持寄存器"""
         return await self.read_registers(address, count, function_code=3)
     
-    async def write_register(self, address: int, value: int):
+    async def write_register(self, address: int, value: int, retries: int = 2):
         """
         写入寄存器（模拟控制）
         
@@ -176,8 +176,14 @@ class PLCSimulator:
         
         return True
 
-    async def write_float(self, address: int, value: float):
+    async def write_float(self, address: int, value: float, byte_order: str = "big", retries: int = 2):
         """写入浮点数（模拟控制）"""
         self.data[address] = float(value)
-        logger.info("simulator_write_float", address=address, value=value)
+        logger.info("simulator_write_float", address=address, value=value, byte_order=byte_order)
+        return True
+
+    async def write_int32(self, address: int, value: int, byte_order: str = "big", retries: int = 2):
+        """写入 32 位整数（模拟控制）"""
+        self.data[address] = int(value)
+        logger.info("simulator_write_int32", address=address, value=value, byte_order=byte_order)
         return True

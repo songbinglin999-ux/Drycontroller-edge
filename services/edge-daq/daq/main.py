@@ -116,7 +116,7 @@ class DAQService:
         Returns:
             加载的配置字典
         """
-        config_path = Path("/app/configs/tags.yaml")
+        config_path = Path(os.getenv("TAGS_CONFIG", "/app/configs/tags.yaml"))
         
         if not config_path.exists():
             logger.warning("config_file_not_found", path=str(config_path))
@@ -200,6 +200,12 @@ class DAQService:
             logger.info("using_plc_simulator")
             self.simulator = PLCSimulator(self.config)
             self.plc_reader = PLCReader(self.simulator, self.publisher, self.config)
+            self.control_subscriber = ControlSubscriber(
+                modbus_client=self.simulator,
+                config=self.config,
+                line_id=self.publisher.line_id,
+            )
+            await self.control_subscriber.start()
         else:
             logger.info("connecting_to_plc", host=plc_host, port=plc_port)
             self.modbus_client = ModbusClient(

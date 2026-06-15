@@ -11,6 +11,7 @@ from daq.control import (
     CONTROL_SIG_INVALID,
     CONTROL_REPLAY_DROPPED,
 )
+from daq.simulator import PLCSimulator
 
 
 class FakeModbus:
@@ -131,6 +132,55 @@ def test_control_ack_publishes(monkeypatch):
     assert payload["id"] == msg_id
     assert payload["status"] == "success"
     assert qos == 1
+
+
+@pytest.mark.asyncio
+async def test_control_subscriber_writes_plc_simulator_and_acks(monkeypatch):
+    monkeypatch.setenv("CONTROL_REQUIRE_SIGNATURE", "true")
+    monkeypatch.setenv("CONTROL_REQUIRE_ID", "true")
+    monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "true")
+    monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret")
+    config = {
+        "tags": {
+            "s": {
+                "c": [
+                    {
+                        "name": "SIM_FREQ_SP",
+                        "address": 40100,
+                        "type": "float",
+                        "control_enabled": True,
+                        "range": [0, 50],
+                    }
+                ]
+            }
+        },
+    }
+    simulator = PLCSimulator(config)
+    subscriber = ControlSubscriber(simulator, config, line_id="L1")
+    subscriber.client = FakeMQTTClient()
+
+    msg_id = "sim-ack-1"
+    ts = time.time()
+    value = 12.5
+    payload = {
+        "tag": "SIM_FREQ_SP",
+        "value": value,
+        "id": msg_id,
+        "ts": ts,
+        "sig": _make_sig("secret", msg_id, ts, "SIM_FREQ_SP", value),
+    }
+    subscriber._on_message(None, None, FakeMQTTMsg(json.dumps(payload).encode()))
+    await asyncio.sleep(0)
+
+    assert simulator.data[40100] == value
+    assert subscriber.client.published
+    topic, ack, qos = subscriber.client.published[0]
+    assert topic == "control/L1/acks"
+    assert ack["id"] == msg_id
+    assert ack["status"] == "success"
+    assert qos == 1
+
+
 class FakeMsg:
     def __init__(self, payload: dict):
         self.payload = json.dumps(payload).encode("utf-8")
@@ -210,4 +260,3 @@ def test_control_disabled_or_bad_tag():
     # 禁用控制
     cs._on_message(None, None, FakeMsg({"tag": "DISABLED", "value": 1}))
     assert not modbus.calls
-
