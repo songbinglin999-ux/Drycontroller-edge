@@ -152,63 +152,69 @@ class ControlSubscriber:
             msg_sig = payload.get("sig")
         except Exception as e:
             logger.error("control_payload_parse_error", error=str(e))
-            return
+            return self._reject(None, "", None, "invalid_payload", {"error": str(e)}, remember=False)
 
         if not tag_name:
             logger.error("control_missing_tag")
-            return
+            return self._reject(msg_id, "", value, "missing_tag")
         if self.require_id and not msg_id:
             CONTROL_REPLAY_DROPPED.inc()
             logger.warning("control_missing_id")
-            return
+            return self._reject(msg_id, tag_name, value, "missing_id", remember=False)
         if self.require_timestamp and msg_ts is None:
             CONTROL_TS_INVALID.inc()
             logger.warning("control_missing_ts")
-            return
+            return self._reject(msg_id, tag_name, value, "missing_ts")
         if msg_ts is not None:
             try:
                 msg_ts_f = float(msg_ts)
             except Exception:
                 CONTROL_TS_INVALID.inc()
                 logger.warning("control_invalid_ts", ts=msg_ts)
-                return
+                return self._reject(msg_id, tag_name, value, "invalid_ts", {"ts": msg_ts})
             now = time.time()
             if abs(now - msg_ts_f) > self.idempotency_window_sec:
                 CONTROL_TS_INVALID.inc()
                 logger.warning("control_ts_out_of_window", ts=msg_ts_f, window=self.idempotency_window_sec)
-                return
+                return self._reject(
+                    msg_id,
+                    tag_name,
+                    value,
+                    "timestamp_out_of_window",
+                    {"ts": msg_ts_f, "window_sec": self.idempotency_window_sec},
+                )
         else:
             msg_ts_f = None
 
         if msg_id and self._is_duplicate(msg_id):
             CONTROL_REPLAY_DROPPED.inc()
             logger.warning("control_replay_detected", id=msg_id)
-            return
+            return self._reject(msg_id, tag_name, value, "replay_detected", remember=False)
         if self.require_signature:
             if not self.signature_secret:
                 logger.error("control_signature_secret_missing")
                 CONTROL_SIG_INVALID.inc()
-                return
+                return self._reject(msg_id, tag_name, value, "signature_secret_missing")
             if not msg_sig:
                 CONTROL_SIG_INVALID.inc()
                 logger.warning("control_signature_missing")
-                return
+                return self._reject(msg_id, tag_name, value, "signature_missing")
             if not self._verify_signature(msg_sig, msg_id, msg_ts_f, tag_name, value):
                 CONTROL_SIG_INVALID.inc()
                 logger.warning("control_signature_invalid", id=msg_id)
-                return
+                return self._reject(msg_id, tag_name, value, "signature_invalid")
 
         tag_config = self.tag_index.get(tag_name)
         if not tag_config:
             logger.error("control_tag_not_found", tag=tag_name)
-            return
+            return self._reject(msg_id, tag_name, value, "tag_not_found")
         if self.allowed_tags and tag_name not in self.allowed_tags:
             logger.warning("control_tag_not_in_acl", tag=tag_name)
-            return
+            return self._reject(msg_id, tag_name, value, "tag_not_in_acl")
 
         if not tag_config.get("control_enabled"):
             logger.warning("control_not_enabled", tag=tag_name)
-            return
+            return self._reject(msg_id, tag_name, value, "control_not_enabled")
 
         # 频率限制：默认 500ms 同一 tag 至少间隔一次
         now = time.time()
@@ -216,7 +222,14 @@ class ControlSubscriber:
         if (now - last_ts) * 1000 < self.min_interval_ms:
             logger.warning("control_rate_limited", tag=tag_name, interval_ms=self.min_interval_ms)
             CONTROL_RATE_LIMIT.inc()
-            return
+            return self._reject(
+                msg_id,
+                tag_name,
+                value,
+                "rate_limited",
+                {"interval_ms": self.min_interval_ms},
+                remember=False,
+            )
 
         # 范围校验
         value_range = tag_config.get("range")
@@ -229,7 +242,7 @@ class ControlSubscriber:
                     value=value,
                     range=value_range,
                 )
-                return
+                return self._reject(msg_id, tag_name, value, "value_out_of_range", {"range": value_range})
 
         # 根据类型写入
         tag_type = str(tag_config.get("type", "float")).lower()
@@ -238,7 +251,7 @@ class ControlSubscriber:
         scale = float(tag_config.get("scale", 1.0) or 1.0)
         if address is None:
             logger.error("control_missing_address", tag=tag_name)
-            return
+            return self._reject(msg_id, tag_name, value, "missing_address")
 
         # 工程值 -> 寄存器值转换
         reg_value = value
@@ -278,7 +291,7 @@ class ControlSubscriber:
                         byte_order=byte_order,
                         scale=scale,
                     )
-                    self._ack(msg_id, tag_name, "failed", value)
+                    self._ack(msg_id, tag_name, "failed", value, reason="plc_write_failed")
             except Exception as e:
                 CONTROL_WRITE_FAILURE.labels(tag_type).inc()
                 logger.error(
@@ -290,7 +303,7 @@ class ControlSubscriber:
                     scale=scale,
                     error=str(e),
                 )
-                self._ack(msg_id, tag_name, "error", value)
+                self._ack(msg_id, tag_name, "error", value, reason="plc_write_error", detail={"error": str(e)})
 
         # 注意：paho-mqtt 的 on_message 回调运行在其网络线程中。
         # 在真实运行时该线程通常没有 asyncio 事件循环；直接 get_event_loop() 可能抛异常导致控制失效。
@@ -330,19 +343,45 @@ class ControlSubscriber:
     def _is_duplicate(self, msg_id: str) -> bool:
         return msg_id in self._id_cache_set
 
-    def _ack(self, msg_id: Optional[str], tag: str, status: str, value: Any):
+    def _reject(
+        self,
+        msg_id: Optional[str],
+        tag: str,
+        value: Any,
+        reason: str,
+        detail: Optional[Dict[str, Any]] = None,
+        *,
+        remember: bool = True,
+    ):
+        """发布拒绝 NAK；有 id 的拒绝也进入幂等缓存，避免同一命令之后被接受。"""
+        self._ack(msg_id, tag, "nak", value, reason=reason, detail=detail)
+        if remember and msg_id and not self._is_duplicate(str(msg_id)):
+            self._remember_id(str(msg_id))
+
+    def _ack(
+        self,
+        msg_id: Optional[str],
+        tag: str,
+        status: str,
+        value: Any,
+        reason: Optional[str] = None,
+        detail: Optional[Dict[str, Any]] = None,
+    ):
         """向 ack 主题发送执行结果，便于上游确认/重试控制指令。"""
-        if not msg_id:
-            return
         try:
+            message = {
+                "id": msg_id or "",
+                "tag": tag,
+                "status": status,
+                "value": value,
+                "ts": int(time.time()),
+            }
+            if reason:
+                message["reason"] = reason
+            if detail:
+                message["detail"] = detail
             payload = json.dumps(
-                {
-                    "id": msg_id,
-                    "tag": tag,
-                    "status": status,
-                    "value": value,
-                    "ts": int(time.time()),
-                }
+                message
             )
             # 发布 QoS1，保证至少一次送达
             result = self.client.publish(self.ack_topic, payload, qos=1)
@@ -364,5 +403,3 @@ class ControlSubscriber:
         except Exception as e:
             logger.warning("control_signature_check_failed", error=str(e))
             return False
-
-

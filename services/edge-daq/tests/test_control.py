@@ -60,19 +60,37 @@ def _make_sig(secret: str, msg_id: str, ts: float, tag: str, value: float) -> st
     return hmac.new(secret.encode(), base.encode(), hashlib.sha256).hexdigest()
 
 
-def _mk_sub(monkeypatch, require_sig: bool, secret: str | None):
+def _mk_sub(
+    monkeypatch,
+    require_sig: bool,
+    secret: str | None,
+    *,
+    require_id: bool = False,
+    require_ts: bool = False,
+    config: dict | None = None,
+):
     monkeypatch.setenv("CONTROL_REQUIRE_SIGNATURE", "true" if require_sig else "false")
-    monkeypatch.setenv("CONTROL_REQUIRE_ID", "false")
-    monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "false")
+    monkeypatch.setenv("CONTROL_REQUIRE_ID", "true" if require_id else "false")
+    monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "true" if require_ts else "false")
     if secret:
         monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", secret)
-    cfg = {
+    else:
+        monkeypatch.delenv("CONTROL_SIGNATURE_SECRET", raising=False)
+    cfg = config or {
         "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "int", "control_enabled": True}]}},
     }
     modbus = FakeModbus()
     cs = ControlSubscriber(modbus, cfg, line_id="L1")
     cs.client = FakeMQTTClient()
     return cs, modbus
+
+
+def _last_ack(subscriber: ControlSubscriber) -> dict:
+    assert subscriber.client.published
+    topic, payload, qos = subscriber.client.published[-1]
+    assert topic == subscriber.ack_topic
+    assert qos == 1
+    return payload
 
 
 @pytest.mark.asyncio
@@ -103,6 +121,10 @@ async def test_control_signature_invalid(monkeypatch):
 
     assert modbus.writes == 0
     assert CONTROL_SIG_INVALID._value.get() == before + 1
+    ack = _last_ack(cs)
+    assert ack["id"] == "abc"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "signature_invalid"
 
 
 @pytest.mark.asyncio
@@ -119,6 +141,10 @@ async def test_control_replay_dropped(monkeypatch):
 
     assert modbus.writes == 1
     assert CONTROL_REPLAY_DROPPED._value.get() == before + 1
+    ack = _last_ack(cs)
+    assert ack["id"] == "same"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "replay_detected"
 
 
 def test_control_ack_publishes(monkeypatch):
@@ -132,6 +158,68 @@ def test_control_ack_publishes(monkeypatch):
     assert payload["id"] == msg_id
     assert payload["status"] == "success"
     assert qos == 1
+
+
+def test_control_rejects_missing_timestamp_with_nak(monkeypatch):
+    cs, modbus = _mk_sub(
+        monkeypatch,
+        require_sig=False,
+        secret=None,
+        require_id=True,
+        require_ts=True,
+    )
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": 10, "id": "missing-ts"}).encode()))
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "missing-ts"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "missing_ts"
+
+
+def test_control_rejects_out_of_range_with_nak(monkeypatch):
+    config = {
+        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "int", "control_enabled": True, "range": [0, 50]}]}},
+    }
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": 60, "id": "oor"}).encode()))
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "oor"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "value_out_of_range"
+    assert ack["detail"] == {"range": [0, 50]}
+
+
+def test_control_rejects_acl_with_nak(monkeypatch):
+    monkeypatch.setenv("CONTROL_ALLOWED_TAGS", "OTHER")
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": 10, "id": "acl"}).encode()))
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "acl"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "tag_not_in_acl"
+
+
+def test_control_rejects_missing_address_with_nak(monkeypatch):
+    config = {
+        "tags": {"s": {"c": [{"name": "T", "type": "int", "control_enabled": True}]}},
+    }
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": 10, "id": "no-address"}).encode()))
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "no-address"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "missing_address"
 
 
 @pytest.mark.asyncio
@@ -209,6 +297,7 @@ async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
     }
 
     cs = ControlSubscriber(modbus, config, line_id="L1")
+    cs.client = FakeMQTTClient()
     cs.min_interval_ms = 200  # 加快测试
 
     # 不启动真实 MQTT，直接调用 _on_message
@@ -227,16 +316,23 @@ async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
     cs._on_message(None, None, msg2)
     await asyncio.sleep(0)
     assert len(modbus.calls) == 1, "限流应阻止第二次写入"
+    ack = _last_ack(cs)
+    assert ack["id"] == "i2"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "rate_limited"
 
-    # 等待超过限流窗口，再次发送应成功
+    # 等待超过限流窗口，同一 id 的限速重试应成功，而不是变成 replay。
     cs.last_sent_ts["TAG1"] = time.time() - 1
     cs._on_message(None, None, msg2)
     await asyncio.sleep(0)
     assert len(modbus.calls) == 2
 
 
-def test_control_disabled_or_bad_tag():
+def test_control_disabled_or_bad_tag(monkeypatch):
     modbus = FakeModbus()
+    monkeypatch.setenv("CONTROL_REQUIRE_ID", "false")
+    monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "false")
+    monkeypatch.setenv("CONTROL_REQUIRE_SIGNATURE", "false")
     config = {
         "tags": {
             "sec": {
@@ -252,11 +348,20 @@ def test_control_disabled_or_bad_tag():
         }
     }
     cs = ControlSubscriber(modbus, config, line_id="L1")
+    cs.client = FakeMQTTClient()
 
     # 未知 tag
-    cs._on_message(None, None, FakeMsg({"tag": "UNKNOWN", "value": 1}))
+    cs._on_message(None, None, FakeMsg({"tag": "UNKNOWN", "value": 1, "id": "unknown"}))
     assert not modbus.calls
+    ack = _last_ack(cs)
+    assert ack["id"] == "unknown"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "tag_not_found"
 
     # 禁用控制
-    cs._on_message(None, None, FakeMsg({"tag": "DISABLED", "value": 1}))
+    cs._on_message(None, None, FakeMsg({"tag": "DISABLED", "value": 1, "id": "disabled"}))
     assert not modbus.calls
+    ack = _last_ack(cs)
+    assert ack["id"] == "disabled"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "control_not_enabled"
