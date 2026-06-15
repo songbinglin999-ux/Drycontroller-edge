@@ -277,7 +277,7 @@ class ControlSubscriber:
 
         if not tag_name:
             logger.error("control_missing_tag")
-            return self._reject(msg_id, "", value, "missing_tag")
+            return self._reject(msg_id, "", value, "missing_tag", remember=False)
         if self.require_id and not msg_id:
             CONTROL_REPLAY_DROPPED.inc()
             logger.warning("control_missing_id")
@@ -285,14 +285,14 @@ class ControlSubscriber:
         if self.require_timestamp and msg_ts is None:
             CONTROL_TS_INVALID.inc()
             logger.warning("control_missing_ts")
-            return self._reject(msg_id, tag_name, value, "missing_ts")
+            return self._reject(msg_id, tag_name, value, "missing_ts", remember=False)
         if msg_ts is not None:
             try:
                 msg_ts_f = float(msg_ts)
             except Exception:
                 CONTROL_TS_INVALID.inc()
                 logger.warning("control_invalid_ts", ts=msg_ts)
-                return self._reject(msg_id, tag_name, value, "invalid_ts", {"ts": msg_ts})
+                return self._reject(msg_id, tag_name, value, "invalid_ts", {"ts": msg_ts}, remember=False)
             now = time.time()
             if abs(now - msg_ts_f) > self.idempotency_window_sec:
                 CONTROL_TS_INVALID.inc()
@@ -303,6 +303,7 @@ class ControlSubscriber:
                     value,
                     "timestamp_out_of_window",
                     {"ts": msg_ts_f, "window_sec": self.idempotency_window_sec},
+                    remember=False,
                 )
         else:
             msg_ts_f = None
@@ -315,15 +316,15 @@ class ControlSubscriber:
             if not self.signature_secret:
                 logger.error("control_signature_secret_missing")
                 CONTROL_SIG_INVALID.inc()
-                return self._reject(msg_id, tag_name, value, "signature_secret_missing")
+                return self._reject(msg_id, tag_name, value, "signature_secret_missing", remember=False)
             if not msg_sig:
                 CONTROL_SIG_INVALID.inc()
                 logger.warning("control_signature_missing")
-                return self._reject(msg_id, tag_name, value, "signature_missing")
+                return self._reject(msg_id, tag_name, value, "signature_missing", remember=False)
             if not self._verify_signature(msg_sig, msg_id, msg_ts_f, tag_name, value):
                 CONTROL_SIG_INVALID.inc()
                 logger.warning("control_signature_invalid", id=msg_id)
-                return self._reject(msg_id, tag_name, value, "signature_invalid")
+                return self._reject(msg_id, tag_name, value, "signature_invalid", remember=False)
 
         tag_config = self.tag_index.get(tag_name)
         if not tag_config:

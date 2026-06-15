@@ -138,6 +138,83 @@ async def test_control_signature_invalid(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "poison_reason",
+    [
+        "missing_tag",
+        "missing_ts",
+        "invalid_ts",
+        "timestamp_out_of_window",
+        "signature_secret_missing",
+        "signature_missing",
+        "signature_invalid",
+    ],
+)
+async def test_pre_auth_rejects_do_not_poison_id_cache(monkeypatch, poison_reason):
+    secret = None if poison_reason == "signature_secret_missing" else "secret"
+    cs, modbus = _mk_sub(
+        monkeypatch,
+        require_sig=True,
+        secret=secret,
+        require_id=True,
+        require_ts=True,
+    )
+    msg_id = f"same-id-{poison_reason}"
+    value = 10
+    valid_ts = time.time()
+    valid_payload = {
+        "tag": "T",
+        "value": value,
+        "id": msg_id,
+        "ts": valid_ts,
+        "sig": _make_sig("secret", msg_id, valid_ts, "T", value),
+    }
+
+    if poison_reason == "missing_tag":
+        bad_payload = {"value": value, "id": msg_id, "ts": valid_ts, "sig": "bad"}
+    elif poison_reason == "missing_ts":
+        bad_payload = {"tag": "T", "value": value, "id": msg_id, "sig": "bad"}
+    elif poison_reason == "invalid_ts":
+        bad_payload = {"tag": "T", "value": value, "id": msg_id, "ts": "bad", "sig": "bad"}
+    elif poison_reason == "timestamp_out_of_window":
+        stale_ts = valid_ts - 3600
+        bad_payload = {
+            "tag": "T",
+            "value": value,
+            "id": msg_id,
+            "ts": stale_ts,
+            "sig": _make_sig("secret", msg_id, stale_ts, "T", value),
+        }
+    elif poison_reason == "signature_secret_missing":
+        bad_payload = valid_payload
+    elif poison_reason == "signature_missing":
+        bad_payload = {k: v for k, v in valid_payload.items() if k != "sig"}
+    else:
+        bad_payload = {**valid_payload, "sig": "bad"}
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps(bad_payload).encode()))
+    await asyncio.sleep(0)
+
+    assert modbus.writes == 0
+    bad_ack = _last_ack(cs)
+    assert bad_ack["id"] == msg_id
+    assert bad_ack["status"] == "nak"
+    assert bad_ack["reason"] == poison_reason
+    assert cs._is_duplicate(msg_id) is False
+
+    if poison_reason == "signature_secret_missing":
+        cs.signature_secret = "secret"
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps(valid_payload).encode()))
+    await asyncio.sleep(0)
+
+    assert modbus.writes == 1
+    ack = _last_ack(cs)
+    assert ack["id"] == msg_id
+    assert ack["status"] == "success"
+
+
+@pytest.mark.asyncio
 async def test_control_replay_dropped(monkeypatch):
     before = CONTROL_REPLAY_DROPPED._value.get()
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
