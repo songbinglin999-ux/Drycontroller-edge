@@ -336,6 +336,25 @@ class DAQService:
             self.health_site = None
             logger.info("health_server_stopped")
 
+    def _control_status(self):
+        if not self.control_subscriber:
+            return {
+                "ready": False,
+                "reason": "missing",
+                "started": False,
+            }
+        if hasattr(self.control_subscriber, "get_status"):
+            return self.control_subscriber.get_status()
+        if hasattr(self.control_subscriber, "is_ready"):
+            return {
+                "ready": bool(self.control_subscriber.is_ready()),
+                "reason": None,
+            }
+        return {
+            "ready": True,
+            "reason": None,
+        }
+
     def _health_payload(self):
         """
         构建健康检查响应数据
@@ -369,6 +388,7 @@ class DAQService:
                 "heartbeat_fail_count": getattr(self, "heartbeat_fail_count", None),
                 "publisher": self.publisher.get_status() if (self.publisher and hasattr(self.publisher, "get_status")) else None,
                 "control_suspended": self.control_suspended,
+                "control": self._control_status(),
             },
         }
 
@@ -390,7 +410,17 @@ class DAQService:
             pub_details = self.publisher.get_status() if hasattr(self.publisher, "get_status") else None
             pub_ok = bool(getattr(self.publisher, "mqtt_connected", False) or getattr(self.publisher, "influx_connected", False))
 
-        ready = running and modbus_ok and pub_ok and not self.control_suspended and not self.validation_errors
+        control_status = self._control_status()
+        control_ok = bool(control_status.get("ready"))
+
+        ready = (
+            running
+            and modbus_ok
+            and pub_ok
+            and control_ok
+            and not self.control_suspended
+            and not self.validation_errors
+        )
 
         reason = None
         hint = None
@@ -403,6 +433,10 @@ class DAQService:
         elif self.control_suspended:
             reason = "CONTROL_SUSPENDED"
             hint = "PLC 心跳异常触发控制挂起（为安全起见停止下发控制）。"
+        elif not control_ok:
+            reason = "CONTROL_SUBSCRIBER_NOT_READY"
+            state_reason = control_status.get("reason") or "unknown"
+            hint = f"控制订阅未就绪：{state_reason}。请检查 MQTT 连接、订阅状态和 ACK 发布路径。"
         elif not pub_ok:
             reason = "PUBLISHER_OFFLINE"
             hint = "发布通路（MQTT/Influx）未连通：请检查 mosquitto/influxdb 以及账号密码。"
@@ -428,6 +462,7 @@ class DAQService:
                 "modbus_connected": modbus_connected,
                 "publisher_ok": pub_ok,
                 "control_suspended": self.control_suspended,
+                "control": control_status,
                 "config_errors": len(self.validation_errors),
                 "publisher": pub_details,
                 "plc": {

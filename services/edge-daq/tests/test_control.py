@@ -55,6 +55,16 @@ class FakeMQTTClient:
         return R(self.rc)
 
 
+class FakeSubscribeClient:
+    def __init__(self, subscribe_rc=0):
+        self.subscribe_rc = subscribe_rc
+        self.subscriptions = []
+
+    def subscribe(self, topic, qos):
+        self.subscriptions.append((topic, qos))
+        return (self.subscribe_rc, 1)
+
+
 def _make_sig(secret: str, msg_id: str, ts: float, tag: str, value: float) -> str:
     base = f"{msg_id}:{ts}:{tag}:{value}"
     return hmac.new(secret.encode(), base.encode(), hashlib.sha256).hexdigest()
@@ -158,6 +168,86 @@ def test_control_ack_publishes(monkeypatch):
     assert payload["id"] == msg_id
     assert payload["status"] == "success"
     assert qos == 1
+    assert cs.get_status()["ack_path"]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_control_subscriber_start_failure_is_not_ready(monkeypatch):
+    monkeypatch.setenv("MQTT_TLS", "false")
+    monkeypatch.setenv("MQTT_ALLOW_INSECURE", "false")
+    monkeypatch.setenv("CONTROL_ALLOW_ANONYMOUS", "true")
+
+    config = {
+        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "int", "control_enabled": True}]}},
+    }
+    subscriber = ControlSubscriber(FakeModbus(), config, line_id="L1")
+
+    await subscriber.start()
+
+    status = subscriber.get_status()
+    assert status["ready"] is False
+    assert status["reason"] == "start_failed"
+    assert status["subscribe_state"] == "start_failed"
+    assert "MQTT TLS is required" in status["start_error"]
+
+
+def test_control_subscribe_disconnect_and_recover_status(monkeypatch):
+    subscriber, _ = _mk_sub(monkeypatch, require_sig=False, secret=None)
+    subscriber.started = True
+
+    failed_client = FakeSubscribeClient(subscribe_rc=4)
+    subscriber._on_connect(failed_client, None, None, 0)
+    failed_status = subscriber.get_status()
+    assert failed_status["ready"] is False
+    assert failed_status["reason"] == "subscribe_failed"
+    assert failed_status["mqtt_connected"] is True
+    assert failed_status["subscribed"] is False
+
+    recovered_client = FakeSubscribeClient(subscribe_rc=0)
+    subscriber._on_connect(recovered_client, None, None, 0)
+    pending_status = subscriber.get_status()
+    assert pending_status["ready"] is False
+    assert pending_status["reason"] == "subscribe_pending"
+    assert recovered_client.subscriptions == [(subscriber.topic, 1)]
+
+    subscriber._on_subscribe(recovered_client, None, 1, [1])
+    ready_status = subscriber.get_status()
+    assert ready_status["ready"] is True
+    assert ready_status["subscribed"] is True
+
+    subscriber._on_disconnect(recovered_client, None, 1)
+    disconnected_status = subscriber.get_status()
+    assert disconnected_status["ready"] is False
+    assert disconnected_status["reason"] == "mqtt_disconnected"
+    assert disconnected_status["subscribed"] is False
+
+    subscriber._on_connect(recovered_client, None, None, 0)
+    subscriber._on_subscribe(recovered_client, None, 2, [1])
+    assert subscriber.get_status()["ready"] is True
+
+
+def test_control_ack_path_failure_and_recovery_affect_status(monkeypatch):
+    subscriber, _ = _mk_sub(monkeypatch, require_sig=False, secret=None)
+    subscriber.started = True
+    subscriber.mqtt_connected = True
+    subscriber.subscribed = True
+    subscriber.subscribe_state = "subscribed"
+    subscriber.client = FakeMQTTClient(rc=1)
+
+    subscriber._ack("ack-fail", "T", "success", 10)
+
+    failed_status = subscriber.get_status()
+    assert failed_status["ready"] is False
+    assert failed_status["reason"] == "ack_publish_failed"
+    assert failed_status["ack_path"]["ok"] is False
+    assert failed_status["ack_path"]["last_publish_rc"] == 1
+
+    subscriber.client = FakeMQTTClient(rc=0)
+    subscriber._ack("ack-ok", "T", "success", 10)
+
+    recovered_status = subscriber.get_status()
+    assert recovered_status["ready"] is True
+    assert recovered_status["ack_path"]["ok"] is True
 
 
 def test_control_rejects_missing_timestamp_with_nak(monkeypatch):

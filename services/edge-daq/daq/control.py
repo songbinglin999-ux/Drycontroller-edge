@@ -87,12 +87,30 @@ class ControlSubscriber:
         self._id_cache_set = set()
         # asyncio 主事件循环（用于从 MQTT 回调线程安全调度协程）
         self._loop = None
+        self.started = False
+        self.mqtt_connected = False
+        self.subscribed = False
+        self.subscribe_state = "not_started"
+        self.start_error: Optional[str] = None
+        self.last_error: Optional[str] = None
+        self.last_connect_rc: Optional[int] = None
+        self.last_disconnect_rc: Optional[int] = None
+        self.last_subscribe_rc: Optional[int] = None
+        self.last_ack_publish_ok: Optional[bool] = None
+        self.last_ack_publish_ts: Optional[int] = None
+        self.last_ack_publish_rc: Optional[int] = None
+        self.last_ack_error: Optional[str] = None
+        self.last_ack_status: Optional[str] = None
 
     async def start(self):
         """
         启动 MQTT 订阅
         """
         try:
+            self.started = False
+            self.start_error = None
+            self.last_error = None
+            self.subscribe_state = "starting"
             # 记录启动时的事件循环，便于从 paho 网络线程回调里调度写入
             try:
                 self._loop = asyncio.get_running_loop()
@@ -110,9 +128,13 @@ class ControlSubscriber:
             if not self.mqtt_tls:
                 logger.warning("mqtt_tls_disabled_for_control")
             self.client.on_connect = self._on_connect
+            self.client.on_disconnect = self._on_disconnect
             self.client.on_message = self._on_message
+            self.client.on_subscribe = self._on_subscribe
             self.client.connect(self.mqtt_broker, self.mqtt_port, keepalive=60)
             self.client.loop_start()
+            self.started = True
+            self.subscribe_state = "waiting_connect"
             logger.info(
                 "control_subscriber_started",
                 topic=self.topic,
@@ -120,6 +142,12 @@ class ControlSubscriber:
                 port=self.mqtt_port,
             )
         except Exception as e:
+            self.started = False
+            self.mqtt_connected = False
+            self.subscribed = False
+            self.subscribe_state = "start_failed"
+            self.start_error = str(e)
+            self.last_error = str(e)
             logger.error("control_subscriber_start_error", error=str(e))
 
     async def stop(self):
@@ -130,17 +158,110 @@ class ControlSubscriber:
             if self.client:
                 self.client.loop_stop()
                 self.client.disconnect()
+            self.started = False
+            self.mqtt_connected = False
+            self.subscribed = False
+            self.subscribe_state = "stopped"
             logger.info("control_subscriber_stopped")
         except Exception as e:
+            self.last_error = str(e)
             logger.error("control_subscriber_stop_error", error=str(e))
+
+    def _ready_state(self) -> tuple[bool, Optional[str]]:
+        if not self.started:
+            return False, "start_failed" if self.start_error else "not_started"
+        if not self.mqtt_connected:
+            return False, "mqtt_disconnected"
+        if not self.subscribed:
+            return False, f"subscribe_{self.subscribe_state}"
+        if self.last_ack_publish_ok is False:
+            return False, "ack_publish_failed"
+        return True, None
+
+    def is_ready(self) -> bool:
+        ready, _reason = self._ready_state()
+        return ready
+
+    def get_status(self) -> Dict[str, Any]:
+        ready, reason = self._ready_state()
+        return {
+            "ready": ready,
+            "reason": reason,
+            "started": self.started,
+            "start_error": self.start_error,
+            "mqtt_connected": self.mqtt_connected,
+            "subscribed": self.subscribed,
+            "subscribe_state": self.subscribe_state,
+            "topic": self.topic,
+            "ack_topic": self.ack_topic,
+            "broker": self.mqtt_broker,
+            "port": self.mqtt_port,
+            "last_error": self.last_error,
+            "last_connect_rc": self.last_connect_rc,
+            "last_disconnect_rc": self.last_disconnect_rc,
+            "last_subscribe_rc": self.last_subscribe_rc,
+            "ack_path": {
+                "ok": self.last_ack_publish_ok,
+                "last_publish_ts": self.last_ack_publish_ts,
+                "last_publish_rc": self.last_ack_publish_rc,
+                "last_error": self.last_ack_error,
+                "last_status": self.last_ack_status,
+            },
+        }
 
     # -------------------- MQTT callbacks -------------------- #
     def _on_connect(self, client, userdata, flags, rc):
+        self.last_connect_rc = rc
         if rc == 0:
+            self.mqtt_connected = True
+            self.subscribed = False
+            self.subscribe_state = "subscribing"
+            self.last_error = None
             logger.info("control_mqtt_connected")
-            client.subscribe(self.topic, qos=1)
+            try:
+                result = client.subscribe(self.topic, qos=1)
+                subscribe_rc = result[0] if isinstance(result, tuple) else getattr(result, "rc", None)
+                self.last_subscribe_rc = subscribe_rc
+                if subscribe_rc == mqtt.MQTT_ERR_SUCCESS:
+                    self.subscribe_state = "pending"
+                else:
+                    self.subscribe_state = "failed"
+                    self.last_error = f"subscribe rc={subscribe_rc}"
+                    logger.error("control_mqtt_subscribe_failed", topic=self.topic, rc=subscribe_rc)
+            except Exception as e:
+                self.subscribe_state = "failed"
+                self.last_error = str(e)
+                logger.error("control_mqtt_subscribe_error", topic=self.topic, error=str(e))
         else:
+            self.mqtt_connected = False
+            self.subscribed = False
+            self.subscribe_state = "connect_failed"
+            self.last_error = f"connect rc={rc}"
             logger.error("control_mqtt_connect_failed", return_code=rc)
+
+    def _on_subscribe(self, client, userdata, mid, granted_qos, *args):
+        failed = any(int(qos) == 128 for qos in granted_qos)
+        if failed:
+            self.subscribed = False
+            self.subscribe_state = "failed"
+            self.last_error = f"subscribe rejected qos={granted_qos}"
+            logger.error("control_mqtt_subscribe_rejected", topic=self.topic, granted_qos=granted_qos)
+            return
+        self.subscribed = True
+        self.subscribe_state = "subscribed"
+        self.last_error = None
+        logger.info("control_mqtt_subscribed", topic=self.topic, granted_qos=granted_qos)
+
+    def _on_disconnect(self, client, userdata, rc, *args):
+        self.last_disconnect_rc = rc
+        self.mqtt_connected = False
+        self.subscribed = False
+        self.subscribe_state = "disconnected"
+        if rc:
+            self.last_error = f"disconnect rc={rc}"
+            logger.warning("control_mqtt_disconnected", return_code=rc)
+        else:
+            logger.info("control_mqtt_disconnected", return_code=rc)
 
     def _on_message(self, client, userdata, msg):
         try:
@@ -385,11 +506,22 @@ class ControlSubscriber:
             )
             # 发布 QoS1，保证至少一次送达
             result = self.client.publish(self.ack_topic, payload, qos=1)
+            self.last_ack_publish_ts = int(time.time())
+            self.last_ack_publish_rc = result.rc
+            self.last_ack_status = status
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                self.last_ack_publish_ok = True
+                self.last_ack_error = None
                 CONTROL_ACK_SENT.labels(status).inc()
             else:
+                self.last_ack_publish_ok = False
+                self.last_ack_error = f"publish rc={result.rc}"
                 logger.warning("control_ack_failed", id=msg_id, rc=result.rc, status=status)
         except Exception as e:
+            self.last_ack_publish_ts = int(time.time())
+            self.last_ack_publish_ok = False
+            self.last_ack_error = str(e)
+            self.last_ack_status = status
             logger.error("control_ack_error", id=msg_id, error=str(e), status=status)
 
     def _verify_signature(self, sig: str, msg_id: Optional[str], msg_ts: Optional[float], tag: str, value: Any) -> bool:
