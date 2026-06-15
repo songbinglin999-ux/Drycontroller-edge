@@ -34,6 +34,7 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
+    settings.validate_startup_security()
     logger.info("starting_edge_api", version=settings.VERSION)
     event_recorder.record_event(
         "service_starting",

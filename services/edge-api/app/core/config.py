@@ -128,6 +128,24 @@ class Settings(BaseSettings):
     def api_security_enabled(self) -> bool:
         return bool(self.CONTROL_API_KEYS or self.ADMIN_API_KEYS)
 
+    def validate_startup_security(self) -> None:
+        env = (self.ENV or "").strip().lower()
+        if env not in {"prod", "production"}:
+            return
+
+        def _is_weak_secret(value: str, default: str) -> bool:
+            secret = (value or "").strip()
+            return not secret or secret == default or secret.lower().startswith("change_me")
+
+        weak = []
+        if _is_weak_secret(self.POSTGRES_PASSWORD, "edge_password"):
+            weak.append("POSTGRES_PASSWORD")
+        if _is_weak_secret(self.MQTT_PASSWORD, "mqtt_password"):
+            weak.append("MQTT_PASSWORD")
+        if weak:
+            names = ", ".join(weak)
+            raise RuntimeError(f"production edge-api startup requires non-default secrets: {names}")
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _parse_cors_origins(cls, value):
