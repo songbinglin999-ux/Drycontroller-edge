@@ -103,7 +103,8 @@ GET  /ready
 GET  /api/v1/system/status?line=L1
 GET  /api/realtime/latest
 GET  /api/history
-POST /api/v1/control/set
+GET  /api/v1/control/recommendations
+POST /api/v1/control/recommendations/manual-confirm
 POST /api/v1/ops/plc-config/apply
 WS   /api/ws/realtime
 WS   /api/ws/ai

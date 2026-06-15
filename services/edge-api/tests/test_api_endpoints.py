@@ -17,11 +17,13 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
 
 from app.api.v1.ai import router as ai_router, get_ai_softsensor_service
 from app.api.v1.system import _bootstrap_summary, router as system_router, get_system_status_service
-from app.api.v1.control import router as control_router, get_control_recommendation_service
+from app.api.v1.control import (
+    get_control_orchestrator,
+    router as control_router,
+)
 from app.api.v1.alarms import router as alarm_router
 from app.core.config import settings
 from app.core.database import get_db
-from app.services.control_command import get_control_command_service
 
 settings.CONTROL_API_KEYS = ["test-control"]
 settings.ADMIN_API_KEYS = ["test-admin"]
@@ -50,15 +52,45 @@ class DummyControlSvc:
         return {
             "success": True,
             "data": {
-                "schema_version": "drycontroller.diagnosis_suggestion.v1",
-                "line": "L1",
-                "actionable": False,
-                "actionability": "not_actionable",
-                "diagnosis": [],
-                "suggestions": [],
-                "blocked_by": ["P0-SAFETY"],
+                "schema_version": "drycontroller.control_recommendation.v1",
+                "line_id": "L1",
+                "freshness": {"status": "fresh", "missing_tags": [], "stale_tags": []},
+                "control_state": {
+                    "CONTROL_MODE": "SEMI_AUTO",
+                    "AUTHORITY_OWNER": "EDGE",
+                    "HMI_DIRECT_ENABLE": False,
+                    "maintenance_lock": False,
+                    "emergency_stop": False,
+                },
+                "recommendations": [],
+                "allowed_targets": ["VFM3_FREQ_SP"],
+                "requires_confirmation": True,
             },
         }
+
+
+class DummyControlOrchestrator:
+    async def get_recommendations(self, **kwargs):
+        return await DummyControlSvc().get_recommendations(**kwargs)
+
+    async def confirm_recommendation(self, **kwargs):
+        return {
+            "success": True,
+            "status": "confirmed",
+            "recommendation": {"id": kwargs["recommendation_id"]},
+            "command_results": [{"success": True, "status": "acked"}],
+        }
+
+    async def confirm_manual_action(self, **kwargs):
+        return {
+            "success": True,
+            "status": "confirmed",
+            "recommendation": {"id": kwargs["request_id"], "line_id": kwargs["line"]},
+            "command_results": [{"success": True, "status": "acked"}],
+        }
+
+    async def dismiss_recommendation(self, **kwargs):
+        return {"success": True, "status": "dismissed", "id": kwargs["recommendation_id"]}
 
 
 class _DummyScalars:
@@ -97,9 +129,8 @@ app.include_router(control_router, prefix="/api/v1/control")
 app.include_router(alarm_router, prefix="/api/v1/alarms")
 app.dependency_overrides[get_ai_softsensor_service] = lambda: DummyAISvc()
 app.dependency_overrides[get_system_status_service] = lambda: DummySystemSvc()
-app.dependency_overrides[get_control_recommendation_service] = lambda: DummyControlSvc()
+app.dependency_overrides[get_control_orchestrator] = lambda: DummyControlOrchestrator()
 app.dependency_overrides[get_db] = _override_get_db
-app.dependency_overrides[get_control_command_service] = lambda: DummyControlCommandSvc()
 client = TestClient(app)
 
 
@@ -149,45 +180,74 @@ def test_bootstrap_summary_degraded_without_completion(tmp_path):
     assert item["message"] == "未检测到完成标记"
 
 
-def test_control_recommend_endpoint():
+def test_legacy_control_recommend_endpoint_removed():
     resp = client.get(
         "/api/v1/control/recommend",
         headers={settings.API_KEY_HEADER: "test-control"},
     )
-    assert resp.status_code == 200
-    body = resp.json()["data"]
-    assert body["schema_version"] == "drycontroller.diagnosis_suggestion.v1"
-    assert body["actionable"] is False
-    assert "recommendations" not in body
+    assert resp.status_code == 404
 
 
-class DummyControlCommandSvc:
-    async def send_set(self, **kwargs):
-        # 模拟 ACK 成功闭环
-        return {
-            "success": True,
-            "status": "acked",
-            "data": {"id": "ctl_x", "tag": kwargs.get("tag"), "ack_status": "success", "value": kwargs.get("value")},
-            "timestamp": 1,
-        }
-
-    async def send_batch(self, **kwargs):
-        return {"success": True, "count": 1, "data": [{"success": True}], "timestamp": 1}
-
-    async def emergency_stop(self, **kwargs):
-        return {"success": True, "count": 1, "data": [{"success": True}], "timestamp": 1}
-
-
-def test_control_set_endpoint():
-    resp = client.post(
-        "/api/v1/control/set",
-        json={"tag": "CTRL_TEST_SPEED", "value": 10, "wait_ack": True, "timeout_sec": 1.0},
+def test_control_recommendations_endpoint():
+    resp = client.get(
+        "/api/v1/control/recommendations",
         headers={settings.API_KEY_HEADER: "test-control"},
     )
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["success"] is True
-    assert body["status"] == "acked"
+    body = resp.json()["data"]
+    assert body["schema_version"] == "drycontroller.control_recommendation.v1"
+    assert body["allowed_targets"] == ["VFM3_FREQ_SP"]
+
+
+def test_control_recommendation_confirm_endpoint():
+    resp = client.post(
+        "/api/v1/control/recommendations/rec_l1_x/confirm",
+        json={"line": "L1", "timeout_sec": 1.0},
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "confirmed"
+
+
+def test_manual_control_confirm_endpoint():
+    resp = client.post(
+        "/api/v1/control/recommendations/manual-confirm",
+        json={
+            "line": "L1",
+            "target_softpoint": "VFM1_FREQ_SP",
+            "value": 20.0,
+            "request_id": "manual-1",
+            "operator_id": "operator-a",
+            "reason": "hmi_panel_submit",
+            "timeout_sec": 1.0,
+        },
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "confirmed"
+
+
+def test_control_recommendation_dismiss_endpoint():
+    resp = client.post(
+        "/api/v1/control/recommendations/rec_l1_x/dismiss",
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dismissed"
+
+
+def test_legacy_control_write_endpoints_removed():
+    for path in (
+        "/api/v1/control/set",
+        "/api/v1/control/batch",
+        "/api/v1/control/emergency-stop",
+    ):
+        resp = client.post(
+            path,
+            json={},
+            headers={settings.API_KEY_HEADER: "test-control"},
+        )
+        assert resp.status_code == 404
 
 
 def test_alarm_active_endpoint_reads_alarm_events_table():

@@ -2,7 +2,7 @@
 控制命令下发（edge-api -> MQTT -> edge-daq -> ACK -> edge-api）
 
 实现目标：
-- /api/v1/control/set|batch|emergency-stop 可用
+- 仅供 control_orchestrator 内部调用，不作为公开直写 API
 - 控制命令使用 QoS1 发布
 - 控制命令带幂等 id + timestamp + HMAC-SHA256 签名（与 edge-daq 对齐）
 - 可选等待 edge-daq 的 ACK（强闭环），超时可控
@@ -26,6 +26,7 @@ import structlog
 
 from app.core.mqtt_client import mqtt_manager
 from app.services.control_history import write_control_history
+from app.services.control_core.models import ALLOWED_CONTROL_SOFTPOINTS
 from app.utils.tag_loader import get_tag_config
 
 logger = structlog.get_logger(__name__)
@@ -78,6 +79,8 @@ class ControlAck:
     status: str
     value: Any
     ts: Optional[float] = None
+    reason: Optional[str] = None
+    detail: Optional[Dict[str, Any]] = None
 
 
 class ControlCommandService:
@@ -140,6 +143,8 @@ class ControlCommandService:
             status=str(data.get("status") or "unknown"),
             value=data.get("value"),
             ts=data.get("ts"),
+            reason=data.get("reason") or data.get("error"),
+            detail=data.get("detail") if isinstance(data.get("detail"), dict) else None,
         )
 
         loop = self._loop
@@ -153,9 +158,21 @@ class ControlCommandService:
     def _validate_tag(self, tag: str, value: Any) -> Tuple[bool, str]:
         """
         控制安全校验（API侧先拦截，减少无效下发）：
-        - tag 必须存在且 control_enabled=true（除非允许无配置）
+        - 新控制软点必须在 ALLOWED_CONTROL_SOFTPOINTS 且 value 在范围内
+        - 历史 tags.yaml control_enabled 仅作为内部测试/迁移兜底
         - 若 range 存在且 value 为数值，则必须在范围内
         """
+        softpoint_range = ALLOWED_CONTROL_SOFTPOINTS.get(tag)
+        if softpoint_range is not None:
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                return False, "value_not_numeric"
+            lo, hi, _unit = softpoint_range
+            if numeric_value < lo or numeric_value > hi:
+                return False, "value_out_of_range"
+            return True, "ok"
+
         if not self._tag_index:
             if self._allow_without_tag_config:
                 return True, "tag_config_missing_but_allowed"
@@ -263,7 +280,33 @@ class ControlCommandService:
                 ack: ControlAck = await asyncio.wait_for(fut, timeout=timeout_sec)  # type: ignore[arg-type]
                 ack_status = ack.status or "unknown"
                 ack_at = dt.datetime.now(dt.timezone.utc)
-                ack_detail = {"id": ack.id, "tag": ack.tag, "value": ack.value, "ack_ts": ack.ts}
+                ack_detail = {
+                    "id": ack.id,
+                    "tag": ack.tag,
+                    "value": ack.value,
+                    "ack_ts": ack.ts,
+                    "reason": ack.reason,
+                    "detail": ack.detail,
+                }
+                if ack_status.lower() not in {"success", "ok", "acked"}:
+                    history_error = ack.reason or ack_status
+                    return {
+                        "success": False,
+                        "status": "nak",
+                        "error": "control_nak",
+                        "data": {
+                            "id": ack.id,
+                            "tag": ack.tag,
+                            "ack_status": ack.status,
+                            "reason": ack.reason,
+                            "detail": ack.detail,
+                            "value": ack.value,
+                            "ack_ts": ack.ts,
+                            "line": line,
+                            "topic": topic,
+                        },
+                        "timestamp": int(time.time()),
+                    }
                 return {
                     "success": True,
                     "status": "acked",
@@ -271,6 +314,8 @@ class ControlCommandService:
                         "id": ack.id,
                         "tag": ack.tag,
                         "ack_status": ack.status,
+                        "reason": ack.reason,
+                        "detail": ack.detail,
                         "value": ack.value,
                         "ack_ts": ack.ts,
                         "line": line,
@@ -414,4 +459,3 @@ class ControlCommandService:
 @lru_cache(maxsize=1)
 def get_control_command_service() -> ControlCommandService:
     return ControlCommandService()
-

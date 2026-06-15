@@ -26,6 +26,17 @@ async def _noop_write_control_history(*_args, **_kwargs):
     return None
 
 
+def test_control_command_service_accepts_allowed_control_softpoints():
+    from app.services.control_command import ControlCommandService
+
+    svc = ControlCommandService()
+    svc._tag_index = {}
+
+    assert svc._validate_tag("VFM1_FREQ_SP", 20.0) == (True, "ok")
+    assert svc._validate_tag("VFM1_FREQ_SP", 60.0) == (False, "value_out_of_range")
+    assert svc._validate_tag("M1", 1.0) == (False, "tags_config_missing")
+
+
 @pytest.mark.asyncio
 async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
     from app.services.control_command import ControlCommandService, _hmac_sig
@@ -114,6 +125,55 @@ async def test_control_send_set_timeout(monkeypatch):
     resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=0.2)
     assert resp["success"] is False
     assert resp["error"] == "ack_timeout"
+
+
+@pytest.mark.asyncio
+async def test_control_send_set_returns_failure_on_nak(monkeypatch):
+    from app.services.control_command import ControlCommandService
+
+    monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret-1")
+    monkeypatch.setattr(
+        "app.services.control_command.write_control_history",
+        _noop_write_control_history,
+    )
+
+    callbacks = {}
+
+    class DummyMQTT:
+        connected = True
+
+        def subscribe(self, topic: str, qos: int = 1):
+            return None
+
+        def register_callback(self, pattern: str, cb):
+            callbacks[pattern] = cb
+            return cb
+
+        def publish(self, topic: str, payload: dict, qos: int = 1):
+            ack_payload = json.dumps(
+                {
+                    "id": payload["id"],
+                    "tag": payload["tag"],
+                    "status": "nak",
+                    "reason": "value_out_of_range",
+                    "value": payload["value"],
+                    "ts": 1,
+                }
+            )
+            callbacks["control/+/acks"]("control/L1/acks", ack_payload)
+
+    monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
+
+    svc = ControlCommandService()
+    svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
+
+    resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=1.0)
+
+    assert resp["success"] is False
+    assert resp["status"] == "nak"
+    assert resp["error"] == "control_nak"
+    assert resp["data"]["ack_status"] == "nak"
+    assert resp["data"]["reason"] == "value_out_of_range"
 
 
 @pytest.mark.asyncio

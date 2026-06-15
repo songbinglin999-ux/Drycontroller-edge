@@ -21,9 +21,8 @@ from app.services.realtime_data import RealtimeDataService  # noqa: E402
 from app.services.ai_softsensor import AISoftsensorService  # noqa: E402
 from app.services.system_status import SystemStatusService  # noqa: E402
 from app.services.event_bus import EventBus  # noqa: E402
-from app.services.control_recommendation import (  # noqa: E402
-    ControlRecommendationService,
-)
+from app.services.control_core.models import SCHEMA_VERSION  # noqa: E402
+from app.services.control_orchestrator import ControlOrchestrator  # noqa: E402
 from app.services.alarm import AlarmService  # noqa: E402
 from app.services.influx import InfluxQueryService  # noqa: E402
 from app.services.monitor_config import MonitorConfigService  # noqa: E402
@@ -84,6 +83,15 @@ class DummyInflux:
         if include_history:
             return [alarm, dict(alarm)]
         return [alarm]
+
+
+async def _noop_write_audit(*_args, **_kwargs):
+    return None
+
+
+def _control_orchestrator(realtime_stub: RealtimeDataService, monkeypatch) -> ControlOrchestrator:
+    monkeypatch.setattr("app.services.control_orchestrator.write_audit", _noop_write_audit)
+    return ControlOrchestrator(realtime_service=realtime_stub)
 
 
 @pytest.mark.asyncio
@@ -437,75 +445,83 @@ class DummyRealtimeConveyorEmptyRun:
 
 
 @pytest.mark.asyncio
-async def test_control_recommendations_use_new_diagnosis_schema():
+async def test_control_recommendations_use_new_diagnosis_schema(monkeypatch):
     realtime_stub = cast(RealtimeDataService, DummyRealtimeControl())
-    service = ControlRecommendationService(realtime_service=realtime_stub)
+    orchestrator = _control_orchestrator(realtime_stub, monkeypatch)
 
-    payload = await service.get_recommendations(line="L1", lookback="5m")
+    payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
 
     assert payload["success"] is True
     data = payload["data"]
-    assert data["schema_version"] == ControlRecommendationService.SCHEMA_VERSION
-    assert data["actionable"] is False
-    assert "recommendations" not in data
+    assert data["schema_version"] == SCHEMA_VERSION
+    assert data["requires_confirmation"] is True
+    assert "recommendations" in data
+    assert "diagnosis" not in data
     assert "DRYER1" not in str(data)
 
-    diagnosis = data["diagnosis"][0]
-    assert diagnosis["severity"] == "warning"
-    assert diagnosis["probable_cause"] == "load_rising_or_possible_downstream_blockage"
-    assert diagnosis["evidence"][0]["tag"] == "I_M3"
-    assert data["suggestions"][0]["actionable"] is False
-    assert "P0-SAFETY" in data["suggestions"][0]["blocked_by"]
+    recommendation = next(
+        item for item in data["recommendations"]
+        if item["diagnosis_code"] == "current_trend_high_load"
+    )
+    assert recommendation["level"] == "warning"
+    assert recommendation["evidence"][0]["tag"] == "I_M3"
+    assert recommendation["requires_confirmation"] is True
+    assert recommendation["actionable"] is False
+    assert "DATA_MISSING_OR_STALE" in recommendation["blocked_by"]
 
 
 @pytest.mark.asyncio
-async def test_control_recommendations_detect_downstream_blockage():
+async def test_control_recommendations_detect_downstream_blockage(monkeypatch):
     realtime_stub = cast(RealtimeDataService, DummyRealtimeConveyorBlockage())
-    service = ControlRecommendationService(realtime_service=realtime_stub)
+    orchestrator = _control_orchestrator(realtime_stub, monkeypatch)
 
-    payload = await service.get_recommendations(line="L1", lookback="5m")
+    payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
 
-    diagnosis = payload["data"]["diagnosis"][0]
-    assert diagnosis["id"] == "material_flow_M11"
-    assert diagnosis["probable_cause"] == "downstream_blockage_suspected"
-    assert diagnosis["severity"] == "warning"
-    assert diagnosis["actionable"] is False
-    assert [item["tag"] for item in diagnosis["evidence"]] == ["I_M11", "I_M12"]
-    assert diagnosis["evidence"][0]["signal"] == "conveyor_current_high"
-    assert diagnosis["evidence"][1]["signal"] == "downstream_load_high"
-    assert "automatic control" in diagnosis["recommended_action"][1]["text"]
+    recommendation = next(
+        item for item in payload["data"]["recommendations"]
+        if item["diagnosis_code"] == "current_trend_high_load"
+    )
+    assert recommendation["id"] == "rec_l1_current_trend_high_load_m11"
+    assert recommendation["level"] == "warning"
+    assert recommendation["actionable"] is False
+    assert recommendation["evidence"][0]["tag"] == "I_M11"
+    assert recommendation["evidence"][0]["signal"] == "current"
+    assert recommendation["suggested_actions"][0]["target_softpoint"] == "VFM3_FREQ_SP"
+    assert "M11" not in {action["target_softpoint"] for action in recommendation["suggested_actions"]}
 
 
 @pytest.mark.asyncio
-async def test_control_recommendations_detect_empty_run():
+async def test_control_recommendations_detect_empty_run(monkeypatch):
     realtime_stub = cast(RealtimeDataService, DummyRealtimeConveyorEmptyRun())
-    service = ControlRecommendationService(realtime_service=realtime_stub)
+    orchestrator = _control_orchestrator(realtime_stub, monkeypatch)
 
-    payload = await service.get_recommendations(line="L1", lookback="5m")
+    payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
 
-    diagnosis = payload["data"]["diagnosis"][0]
-    assert diagnosis["id"] == "material_flow_M1"
-    assert diagnosis["probable_cause"] == "empty_run_or_underfeed_suspected"
-    assert diagnosis["severity"] == "warning"
-    assert diagnosis["actionable"] is False
-    assert [item["signal"] for item in diagnosis["evidence"]] == [
-        "running_low_load",
-        "downstream_low_load",
+    recommendation = next(
+        item for item in payload["data"]["recommendations"]
+        if item["diagnosis_code"] == "current_trend_empty_run"
+    )
+    assert recommendation["id"] == "rec_l1_current_trend_empty_run_m1"
+    assert recommendation["level"] == "warning"
+    assert recommendation["actionable"] is False
+    assert [item["signal"] for item in recommendation["evidence"]] == [
+        "current",
+        "motor_feedback",
     ]
 
 
 @pytest.mark.asyncio
-async def test_control_recommendations_mark_missing_when_no_data():
+async def test_control_recommendations_mark_missing_when_no_data(monkeypatch):
     realtime_stub = cast(RealtimeDataService, DummyRealtimeControlNoData())
-    service = ControlRecommendationService(realtime_service=realtime_stub)
+    orchestrator = _control_orchestrator(realtime_stub, monkeypatch)
 
-    payload = await service.get_recommendations(line="L1", lookback="5m")
+    payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
 
     data = payload["data"]
-    assert data["freshness"] == "missing"
-    assert data["diagnosis"][0]["freshness"] == "missing"
-    assert data["diagnosis"][0]["evidence"] == []
-    assert data["suggestions"][0]["freshness"] == "missing"
+    assert data["freshness"]["status"] == "missing"
+    assert data["recommendations"][0]["diagnosis_code"] == "data_degraded"
+    assert data["recommendations"][0]["actionable"] is False
+    assert "DATA_MISSING_OR_STALE" in data["recommendations"][0]["blocked_by"]
 
 
 @pytest.mark.asyncio

@@ -200,30 +200,27 @@ curl http://localhost:8000/api/v1/ai/moisture/current | jq
 curl http://localhost:8000/api/v1/ai/optimization/recommendation | jq
 ```
 
-## 测试控制功能
-
-### 设置链速
+## 测试控制建议与人工确认
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/control/set \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tag": "DRYER1.CHAIN.SPEED",
-    "value": 4.5,
-    "mode": "manual"
-  }' | jq
+curl http://localhost:8000/api/v1/control/recommendations \
+  -H "X-API-Key: $CONTROL_API_KEY" | jq
 ```
 
-### 批量控制
+人工确认软点写入必须走编排层；旧 `/api/v1/control/set`、`/batch`、`/emergency-stop`
+不再作为公开入口。
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/control/batch \
+curl -X POST http://localhost:8000/api/v1/control/recommendations/manual-confirm \
+  -H "X-API-Key: $CONTROL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "commands": [
-      {"tag": "DRYER1.CHAIN.SPEED", "value": 4.5},
-      {"tag": "DRYER1.FAN.SPEED", "value": 35.0}
-    ]
+    "line": "L1",
+    "target_softpoint": "VFM1_FREQ_SP",
+    "value": 20.0,
+    "request_id": "manual-demo-1",
+    "operator_id": "operator-local",
+    "reason": "hmi_panel_submit"
   }' | jq
 ```
 
