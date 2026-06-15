@@ -361,6 +361,39 @@ def test_control_rejects_out_of_range_with_nak(monkeypatch):
     assert ack["detail"] == {"range": [0, 50]}
 
 
+def test_control_rejects_non_numeric_value_with_nak(monkeypatch):
+    # 字符串 value 会绕过 isinstance 门控的范围校验，必须在写入前以 NAK 拒绝。
+    config = {
+        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "float", "control_enabled": True, "range": [0, 50]}]}},
+    }
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": "999", "id": "str"}).encode()))
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "str"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "value_not_numeric"
+
+
+def test_control_rejects_nan_value_with_nak(monkeypatch):
+    # NaN 的比较恒为 False，会穿透范围校验；必须在写入前以 NAK 拒绝。
+    config = {
+        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "float", "control_enabled": True, "range": [0, 50]}]}},
+    }
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
+
+    # json.dumps(float("nan")) 默认输出 NaN 字面量，模拟 paho 收到的原始报文。
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": float("nan"), "id": "nan"}).encode()))
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "nan"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "value_not_numeric"
+
+
 def test_control_rejects_acl_with_nak(monkeypatch):
     monkeypatch.setenv("CONTROL_ALLOWED_TAGS", "OTHER")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)

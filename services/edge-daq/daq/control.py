@@ -5,6 +5,7 @@
 """
 
 import json
+import math
 import os
 import time
 import asyncio
@@ -352,6 +353,14 @@ class ControlSubscriber:
                 {"interval_ms": self.min_interval_ms},
                 remember=False,
             )
+
+        # 数值有效性校验：控制写入只接受有限数值。
+        # 非数字（如字符串 "999"）会绕过下面 isinstance 门控的范围校验，
+        # NaN 的比较恒为 False 同样穿透范围校验，二者都会把非法值直送 PLC。
+        # bool 是 int 子类，需单独排除，避免被当 0/1 写入。
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+            logger.warning("control_value_not_numeric", tag=tag_name, value=value)
+            return self._reject(msg_id, tag_name, value, "value_not_numeric")
 
         # 范围校验
         value_range = tag_config.get("range")
