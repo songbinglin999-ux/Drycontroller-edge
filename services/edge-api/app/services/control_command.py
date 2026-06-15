@@ -408,52 +408,28 @@ class ControlCommandService:
         timeout_sec: float = 6.0,
     ) -> dict:
         """
-        紧急停机（best-effort）：
-        - 如果 tags.yaml 可用：对所有 control_enabled=true 的链速/风机标签执行“安全值”写入
-          - *.CHAIN.SPEED -> range 最小值（默认）
-          - *.FAN.SPEED -> 0（若范围允许，否则取最小值）
-        - 如果无 tags.yaml：默认拒绝（除非显式允许不安全模式）
+        软件急停暂不可用。
+
+        旧实现从 tags.yaml 的 control_enabled + *.CHAIN.SPEED/*.FAN.SPEED 推导安全动作。
+        2026-06-07 A 线后 I/O 点表已改为只读，真实 /control/estop 必须等
+        EDGE-V2-P3 软点、authority、ACK/NAK 和 fallback 模型签收后重新实现。
         """
-        if not self._tag_index and not self._allow_without_tag_config:
-            return {"success": False, "error": "tags_config_missing"}
-
-        actions = []
-        for tag, cfg in self._tag_index.items():
-            if not cfg.get("control_enabled"):
-                continue
-            t = str(tag)
-            rng = cfg.get("range") if isinstance(cfg, dict) else None
-            lo = None
-            hi = None
-            if isinstance(rng, (list, tuple)) and len(rng) == 2:
-                try:
-                    lo = float(rng[0])
-                    hi = float(rng[1])
-                except Exception:
-                    lo = None
-                    hi = None
-
-            if t.endswith(".CHAIN.SPEED"):
-                # 链速：降到最小（如果没有 range，就跳过）
-                if lo is None:
-                    continue
-                actions.append({"tag": t, "value": lo})
-            elif t.endswith(".FAN.SPEED"):
-                # 风机：优先置 0（若允许），否则取最小
-                v = 0.0
-                if lo is not None and hi is not None:
-                    if v < lo:
-                        v = lo
-                    if v > hi:
-                        v = hi
-                elif lo is not None:
-                    v = lo
-                actions.append({"tag": t, "value": v})
-
-        if not actions:
-            return {"success": False, "error": "no_emergency_stop_actions"}
-
-        return await self.send_batch(line, actions, wait_ack=wait_ack, timeout_sec=timeout_sec)
+        logger.warning(
+            "software_estop_unavailable_pending_softpoint_contract",
+            line=line,
+            wait_ack=wait_ack,
+            timeout_sec=timeout_sec,
+        )
+        return {
+            "success": False,
+            "status": "unavailable",
+            "error": "software_estop_unavailable_pending_softpoint_contract",
+            "data": {
+                "reason": "edge_v2_p3_softpoint_contract_pending",
+                "required_contract": "EDGE-V2-P3 /control/estop",
+            },
+            "timestamp": int(time.time()),
+        }
 
 
 @lru_cache(maxsize=1)

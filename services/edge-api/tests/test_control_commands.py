@@ -259,3 +259,30 @@ async def test_control_send_set_publish_failure_clears_pending(monkeypatch):
     assert resp["success"] is False
     assert resp["error"] == "control_publish_failed"
     assert svc._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_unavailable_until_softpoint_contract(monkeypatch):
+    from app.services.control_command import ControlCommandService
+
+    svc = ControlCommandService()
+    svc._tag_index = {
+        "DRYER1.CHAIN.SPEED": {"control_enabled": True, "range": [0, 50]},
+        "DRYER1.FAN.SPEED": {"control_enabled": True, "range": [0, 50]},
+    }
+    send_batch_called = False
+
+    async def fail_if_send_batch_called(*_args, **_kwargs):
+        nonlocal send_batch_called
+        send_batch_called = True
+        return {"success": True}
+
+    monkeypatch.setattr(svc, "send_batch", fail_if_send_batch_called)
+
+    resp = await svc.emergency_stop(line="L1", wait_ack=True, timeout_sec=0.1)
+
+    assert resp["success"] is False
+    assert resp["status"] == "unavailable"
+    assert resp["error"] == "software_estop_unavailable_pending_softpoint_contract"
+    assert resp["data"]["reason"] == "edge_v2_p3_softpoint_contract_pending"
+    assert send_batch_called is False
