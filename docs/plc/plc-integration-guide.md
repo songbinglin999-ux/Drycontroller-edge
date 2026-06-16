@@ -31,8 +31,9 @@
   - 设定值与控制量  
   - 状态位与报警位  
 - 将地址规划结果同步到：
-  - `docs/plc/tag-definition-standard.md`  
-  - `configs/tags.yaml`
+  - `docs/plc/io-and-control-contract.md` / `docs/plc/io-map.html`
+  - `configs/tags.yaml`（位号语义）
+  - `configs/modbus-address-map.yaml`（地址 / scale / byte_order）
 
 ---
 

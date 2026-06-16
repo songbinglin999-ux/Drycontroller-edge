@@ -2,7 +2,7 @@
 #
 # 与 configs/tags.yaml 和 docs/plc/io-map.html 的当前位号保持一致。
 # 本文件只描述 edge 可用于告警/展示的建议阈值；PLC 安全联锁和
-# operator-touch 软设定值不在这里定义。
+# V1 六频率目标软点签收不在这里定义。
 
 line_id: L1
 contract_source:
@@ -219,8 +219,8 @@ interlocks:
   note: "edge 只暴露告警和确认状态，不在此文件定义安全动作。"
 
 control_constraints:
-  status: "deferred_to_operator_touch_softpoints"
-  note: "控制设定值待 operator-touch 软点位定稿后单独建模。"
+  status: "v1_six_frequency_softpoints_only"
+  note: "V1 只允许 VFM1-3_FREQ_SP / VF1-3_FREQ_SP；V2/V3 更多控制设定值待 PLC/HMI/edge 软点清单签收后单独建模。"
 
 recommended_parameters:
   status: "not_configured"

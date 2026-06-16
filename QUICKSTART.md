@@ -94,8 +94,8 @@ curl http://localhost:8000/api/v1/system/status
 # 获取所有实时数据
 curl http://localhost:8000/api/v1/data/realtime | jq
 
-# 获取特定标签
-curl "http://localhost:8000/api/v1/data/realtime?tags=DRYER1.OUT.TEMP,DRYER1.CHAIN.SPEED" | jq
+# 获取特定标签（当前 SSOT 使用 io-map V2 位号）
+curl "http://localhost:8000/api/v1/data/realtime?tags=FTT1,VF1" | jq
 ```
 
 ### 方式 2: 订阅 MQTT

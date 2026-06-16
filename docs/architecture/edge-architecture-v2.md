@@ -3,7 +3,7 @@
 > **版本**：v2.1-draft
 > **日期**：2026-06-01
 > **背景**：基于 5/30 级联故障复盘 + P0-SAFETY 对账结论 + 控制策略重新分层；2026-06-01 已合并 Codex / Claude 评审意见入正文。
-> **状态**：目标架构 + 分阶段验收（非一次性重写）。控制闭环相关改造在 PLC 安全契约签收前默认 disabled。
+> **状态**：目标架构 + 分阶段验收（非一次性重写）。2026-06-16 起按产品大版本拆分：V1 只验收六个变频频率目标写入；V2/V3 才验收完整监督控制、PLC authority、HMI 直连和 autopilot。
 
 ---
 
@@ -13,7 +13,7 @@
 2. **PLC 是最后安全屏障**：edge 系统故障时 PLC 必须能独立维持安全运行，edge 不承担最终安全责任。
 3. **最小容器数**：合并职责单一的微服务，减少编排复杂度和故障域。
 4. **离线 7x24**：不依赖云端，本地闭环完整可运行。
-5. **控制建议与控制命令分离**：AI 永不直接写 PLC；`edge-api` 是唯一 command issuer；`edge-daq` 只消费签名后的 command 并回 ACK/NAK。是否人工逐条确认取决于授权层级（见 §6.5）：默认 **manual**；经人工授权可进入 **autopilot** 自动签发，但 edge-api 这一层（range guard / 签名 / 审计）始终不被旁路。
+5. **控制建议与控制命令分离**：AI 永不直接写 PLC；`edge-api` 是唯一 command issuer；`edge-daq` 只消费签名后的 command 并回 ACK/NAK。是否人工逐条确认取决于授权层级（见 §6.5）：默认 **manual**；经人工授权可进入 **autopilot** 自动签发，但 edge-api 这一层（range guard / ramp-slew gate / 工艺联锁 / 签名 / 审计）始终不被旁路。
 6. **保命层不依赖 tailnet 可用性**：LAN SSH + 防火墙默认 ACCEPT 是不可动摇的最终兜底，独立于 Tailscale 控制面是否可达。
 
 ---
@@ -102,8 +102,8 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 |---|---|
 | 统一 REST/WebSocket 网关 | 唯一对外入口 |
 | 控制模式管理 | edge 模式 / 本地模式 / 模式切换 |
-| **唯一 command issuer** | 按授权层级签发 **signed control command**（manual：人工逐条确认；autopilot：人工授权后自动签发）；两种层级都过 range guard + 签名 + 审计，AI 不旁路（见 §6.5） |
-| range guard | 越界 setpoint 在签发前拒绝 |
+| **唯一 command issuer** | 按授权层级签发 **signed control command**（manual：人工逐条确认；autopilot：人工授权后自动签发）；两种层级都过 range guard + ramp/slew limiter + 工艺联锁 + 签名 + 审计，AI 不旁路（见 §6.5） |
+| range guard / ramp / 工艺联锁 | 越界 setpoint 在签发前拒绝；合法 setpoint 按变化率缓变；工艺联锁不满足时标记 not_actionable |
 | 授权校验 | 合并原 license-service 的 `/verify` 逻辑，减少一个容器 |
 | Alembic 迁移 | 启动时自动执行 |
 | 审计与 outbox | 控制命令、告警事件、command ACK/NAK 落库同步 |
@@ -125,7 +125,7 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 | 输出形态 | 发布到**独立 suggestion topic/schema**，仅供 edge-api / ops-console 展示与决策；**绝不直达 edge-daq 或 PLC** |
 | 模式感知 | PLC 处于本地模式时，suggestion 继续计算但标记 `not_actionable` 并记录，不进入 command 签发链路 |
 
-**关键变化**：v1 中 ai-ctrl-optimizer 输出的 MQTT control command 由 edge-daq 直接写 PLC。v2 下它只产出 suggestion，能否变成 command 由 §6.5 协议裁决，闭环控制权在 PLC 侧。
+**关键变化**：v1 中 ai-ctrl-optimizer 输出的 MQTT control command 由 edge-daq 直接写 PLC。v2 下它只产出 suggestion，能否变成 command 由 edge-api 的控制状态机、range guard、ramp/slew limiter、工艺联锁和 §6.5 授权协议裁决；PLC 只持有现场控制权锁与执行兜底，不做工艺推理。
 
 ---
 
@@ -162,9 +162,9 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 **心跳语义拆分**（v1 的单一 `EDGE.HEARTBEAT` 不够，PLC 用它决定是否允许 edge 模式，若控制链路已失效却仍递增会更危险）：
 
 - `HOST_ALIVE`：主机或基础运行时还活着，**仅用于诊断**。
-- `EDGE_CONTROL_HEALTHY`（门控心跳）：仅当控制路径关键依赖（MQTT、edge-api、命令签名、range guard、Modbus 写链路）全部健康、模式状态明确、最近一次写入/ACK 契约满足时才递增；任一不满足即 **fail-closed**（停止递增），让 PLC 切本地模式。PLC 的看门狗监测的是这个门控心跳。
+- `EDGE_CONTROL_HEALTHY`（门控心跳）：仅当控制路径关键依赖（MQTT、edge-api、命令签名、range guard、ramp/slew limiter、工艺联锁、Modbus 写链路）全部健康、模式状态明确、最近一次写入/ACK 契约满足时才递增；任一不满足即 **fail-closed**（停止递增），让 PLC 切本地模式。PLC 的看门狗监测的是这个门控心跳。
 
-### 6.2 PLC 本地闭环（PLC 侧实现）
+### 6.2 PLC 本地兜底 / 最终安全（PLC / VFD / 硬接线侧实现）
 
 | 功能 | 说明 |
 |---|---|
@@ -173,9 +173,9 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 | **控制权锁** | PLC 持有 `AUTHORITY_OWNER` 与 `AUTHORITY_TOKEN`；edge 和 HMI 都只能申请控制权，不能绕过 PLC 私下切换 |
 | **HMI 备用直连** | edge 健康时 HMI 处于 `HMI_STANDBY`，只监视或请求接管；edge 不可用且 PLC 置 `HMI_DIRECT_ENABLE=1` 后，HMI 才能直连写允许的本地软点 |
 | **维护锁定（maintenance lock）** | 人为锁定本地模式，需**手动解除**后才允许 edge 重新接管；**在 PLC 侧实现**，否则维修中 edge 心跳恢复仍可能强行夺回控制权 |
-| bumpless 切换 | 模式切换时输出不能跳变，平滑过渡 |
-| actuator clamp | 输出限幅，不超安全范围 |
-| 急停/联锁 | 硬件级安全，edge 不介入 |
+| bumpless 切换 | 模式切换时输出不能跳变，平滑过渡；正常工艺 ramp/slew 仍由 edge 控制状态机负责 |
+| actuator final clamp | PLC/VFD 对已收到的输出做最后物理限幅兜底；正常工艺限幅由 edge-api 签发前完成 |
+| 急停/硬安全联锁 | 硬件级安全，edge 不介入；工艺联锁由 edge 控制状态机负责 |
 | 上电默认 | 上电后进入安全默认状态 |
 | DO 触点告警 | 心跳超时 → DO 闭合 → DTU 短信告警（**独立于 edge，独立于网络**） |
 | 模式回读寄存器 | edge 可读当前模式、控制权 owner、token、HMI 直连授权、接管/拒绝原因 |
@@ -220,7 +220,7 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 | PLC 拒绝 | 拒绝原因可回读、审计、上报；NAK 不触发危险重放 |
 | 本地模式行为 | suggestion 标记 `not_actionable` 并记录，不进入签发链路 |
 
-**授权层级**（无论哪一级，edge-api 的 range guard / 签名 / 审计都不被旁路，AI 始终不直接写 PLC）：
+**授权层级**（无论哪一级，edge-api 的 range guard / ramp-slew gate / 工艺联锁 / 签名 / 审计都不被旁路，AI 始终不直接写 PLC）：
 
 - **manual（默认）**：每条 suggestion 需人工确认，edge-api 才签发 command。
 - **autopilot（AI 自动驾驶）**：edge-api 自动把 suggestion 转签名 command 下发，由 PLC 侧 clamp / 本地模式 / 心跳门控 / 急停兜底。约束：
@@ -267,7 +267,9 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 
 ## 8. 与 P0-SAFETY 的对齐
 
-P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制落地、控制状态机、软点策略和软件侧安全兜底；PLC 负责软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地。本架构直接覆盖：
+P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制落地、控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁和软件侧安全兜底；PLC 负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地；VFD/硬接线/设备自保护保留最终物理安全兜底。本架构直接覆盖：
+
+> **V1 标记**：上面是 V2/V3 目标安全契约。V1 当前只需要六个频率目标软点的地址/量程/写入/反馈/PLC 安全覆盖状态签收，并通过 edge-api 的人工确认、白名单、范围、变化率和审计链路；PLC authority、HMI 直连、完整 ACK/NAK/owner-token 和 autopilot 不作为 V1 验收 blocker。
 
 | P0-SAFETY 要求 | 本架构对应 |
 |---|---|
@@ -278,8 +280,8 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 | 无扰切换 / HMI-edge 控制权锁 | 6.2 PLC 本地闭环 + 6.3 控制模式切换流程 |
 | 现场 HMI 备用直连 | 6.2 `HMI_DIRECT_ENABLE` + 6.3 `HMI_STANDBY/HMI_LOCAL` |
 | edge 侧补心跳 | 6.1 双心跳写入（独立进程） |
-| edge 侧补 range guard | 4.1 edge-api（签发前拒绝越界） |
-| edge 侧补控制状态机和软件侧 fallback | 6.3 控制模式切换流程（含维护锁定） |
+| edge 侧补 range guard / ramp / 工艺联锁 | 4.1 edge-api（签发前拒绝越界、按变化率缓变、联锁不满足时拒绝） |
+| edge 侧补控制状态机和软件侧 fallback | 4.1 edge-api + 6.3 控制模式切换流程（含维护锁定） |
 | edge 侧补 `/control/estop` | §9 Phase 3（edge 控制契约）落位 |
 | autopilot 启用门槛 | §6.5：仅 P0-SAFETY 关闭后可启用 |
 
@@ -287,14 +289,26 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 
 ## 9. 推进顺序
 
-MVP 范围（2026-07）与 v2 目标架构分开推进：根审计当前收敛的 7 月交付 = PLC 采集 → 工程量换算/基础统计 → 阈值告警 → 大屏，AI 与控制回写整体延后。控制写入在 P0-SAFETY 关闭前默认 disabled。
+V1 范围与 v2 目标架构分开推进：V1 交付 = PLC 采集 → 工程量换算/基础统计 → 阈值告警 → 大屏 + 六个变频频率目标写入。除这六个频率目标外，其余控制写入在 V2/V3 安全契约签收前默认 disabled。
+
+### 9.1 产品大版本（控制能力）
+
+这三档是产品大版本，不是 git tag。V1 先替代人工设定 6 个变频频率目标；V2/V3 才进入真正的监督控制和稳态控制。
+
+| 大版本 | 定位 | PLC 边界 | Edge 边界 |
+|---|---|---|---|
+| V1：6 路变频目标自动设定器 | 替代人工设定 `VFM1-3` / `VF1-3` 六个目标频率，不声称完整监督控制 | PLC 保留现场逻辑、安全、顺控、联锁、设备保护和实际输出；提供 6 个 SP、实际反馈、运行/故障/料位/安全覆盖状态 | edge 管“谁能写、写多少、何时写”：人工确认、模式锁、软点白名单、限幅、变化率、审计和可解释建议 |
+| V2：6 频率监督控制 | edge 接管 6 个频率的稳态策略，目标是料流更平稳 | PLC 转为执行、保护、veto、ACK/NAK、reason、本地兜底；`EDGE_MASTER` 下不再私自做恢复节奏/调频策略 | edge 根据电流、料位事件、温度、湿度、下游能力等生成 6 个频率策略 |
+| V3：完整稳态控制 | 补足过程测量后的连续稳态优化 | PLC 只做确定性执行、安全和本地降级 | edge 基于连续料位/称重/等价过程测量、softsensor 和历史窗口做全线稳态优化 |
+
+### 9.2 工程推进 Phase
 
 | Phase | 内容 | 验收标准 |
 |---|---|---|
 | **Phase 0** | 点表 / MVP 数据链路：PLC tags、采集、工程量换算、阈值告警、大屏 | 现场点表落库；只读数据链路 E2E 跑通；控制写入默认关闭 |
 | **Phase 1** | 保命层：宿主机 Tailscale + LAN SSH + host watchdog + enroll 改造 | `compose down` 后 Tailscale/LAN SSH 均可达；cloud-ops 仍能识别设备 tailnet 地址 |
-| **Phase 2** | PLC 软点 / 同步 / 仲裁契约：采集寄存器、控制软点、参数同步、报警同步、状态同步、ACK/NAK、心跳切本地、HMI 备用直连、无扰切换、HMI/edge 控制权锁 | 停止 edge 心跳后 PLC 自动切本地；HMI 只在 PLC 授权后直连写入；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/token 状态可见 |
-| **Phase 3** | edge 控制契约：suggestion schema、signed command、ACK/NAK、range guard、`/control/estop`、fallback 状态机、autopilot 授权机制、owner/token gate | AI 不直写 PLC；未签名/越界/本地模式/心跳异常/非 EDGE owner/stale token 下 command 被拒并审计；autopilot 仅 P0-SAFETY 关闭后可启用，且可一键退回 manual |
+| **Phase 2** | V2/V3 PLC 软点 / 同步 / 仲裁契约：采集寄存器、控制软点、参数同步、报警同步、状态同步、ACK/NAK、心跳切本地、HMI 备用直连、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC 自动切本地；HMI 只在 PLC 授权后直连写入；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/token 状态可见；VFD/硬接线/设备保护可现场验收 |
+| **Phase 3** | V2/V3 edge 控制契约：suggestion schema、signed command、ACK/NAK、range guard、setpoint ramp/slew limiter、工艺联锁、`/control/estop`、fallback 状态机、autopilot 授权机制、owner/token gate | AI 不直写 PLC；未签名/越界/变化率超限/工艺联锁不满足/本地模式/心跳异常/非 EDGE owner/stale token 下 command 被拒并审计；autopilot 仅 P0-SAFETY 关闭后可启用，且可一键退回 manual |
 | **Phase 4** | 监控层补齐：PLC 模式监控、控制权 owner/token、HMI 直连授权、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、HMI 接管、控制拒绝均可见且告警 |
 | **Phase 5** | license-service 合并 + 文档收敛 | 功能等价测试通过；旧端点/云端探测路径有兼容或迁移说明；文档与代码一致 |
 | **Phase 6** | ops-console 接入（edge-api StaticFiles 挂卷托管，见 §7）+ 鉴权整改（代码已存在，落地排期靠后） | `dist` 挂卷只读托管于 edge-api `/console`，容器数维持 15；整改 `VITE_ADMIN_API_KEY` 把长期管理员 Key 编译进前端静态产物的泄密隐患（改登录换短期 token，不再把长期 Key 打包进 JS）；维护工程师可访问，实时数据 / 告警 / 控制模式 / 授权层级 / suggestion 可见 |
@@ -332,7 +346,7 @@ MVP 范围（2026-07）与 v2 目标架构分开推进：根审计当前收敛�
 | PLC 切本地模式 | suggestion 标 `not_actionable`；edge-api 拒绝控制写入 |
 | HMI 接管 | PLC owner 切为 HMI/PLC_LOCAL 并授予直连；edge-api 拒绝控制写入；edge 恢复后只能申请接管 |
 | stale authority token | PLC NAK；edge-api 审计为控制权过期，不重放 |
-| 越界 setpoint | edge-api range guard 拒绝；edge-daq 二次拒绝；PLC clamp 兜底 |
+| 越界 / 变化率超限 setpoint | edge-api range guard / ramp-slew gate 拒绝或缓变；edge-daq 二次拒绝非法值；PLC/VFD final clamp 兜底 |
 | 维护锁定期间 edge 恢复 | PLC 不自动接管，需手动解除 |
 | autopilot 运行中 PLC 切本地 / 依赖 fail-closed | autopilot 自动挂起回 manual；恢复后需重新人工授权 |
 | 宿主机重启 | Tailscale、SSH、watchdog、业务 compose 按序恢复，无需现场介入 |

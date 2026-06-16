@@ -41,7 +41,7 @@
 - `P0-SAFETY`、`P0-CTRL-NAK`、`P0-CTRL-MODE` 的阻断状态。
 - `actionable=false` / `control_actionable=false`。
 - 52 位号身份、`configs/tags.yaml` 点位语义、`modbus-address-map.yaml` 地址映射。
-- operator-touch 控制软点清单和设定值上下限。
+- HMI/edge-api 控制软点清单和设定值上下限；V1 固定为六个频率目标，V2/V3 才允许扩展。
 - 已确认异常、停机、维护、传感器 stale 期间的数据，不得自动吸收到健康基线。
 
 如果某个候选更新需要改变这些内容，系统必须拒绝生成自动候选，只能转为人工设计变更。
@@ -325,5 +325,5 @@ assets:
 
 - 现场是否能提供维护窗口、换件记录、班次和配方；没有这些，候选只能更保守。
 - PLC 报警码清单何时确认；它是弱标签质量的关键输入。
-- 是否允许工程师在 operator-touch 或 ops-console 中审批候选参数。
+- 是否允许工程师在 HMI 或 ops-console 中审批候选参数。
 - 参数版本最终落本地文件、数据库，还是两者都落；v0.1 先按文件产物设计。

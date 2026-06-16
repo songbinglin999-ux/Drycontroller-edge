@@ -86,7 +86,7 @@ realtimeSocket.onmessage = (event) => {
 realtimeSocket.onclose = () => setTimeout(() => reconnect(), 3000);
 ```
 
-- 若只关心少量点位，可追加 `&tags=DRYER1.IN.TEMP,DRYER1.OUT.TEMP`；
+- 若只关心少量点位，可追加 `&tags=FTT1,T_OUT2`；
 - AI、系统健康同理，分别监听 `/api/ws/ai`、`/api/ws/system`。
 
 ## 4. 与 MQTT 对齐
@@ -110,7 +110,7 @@ WebSocket 消息与 MQTT 载荷完全一致，字段说明：
    - 启动 WebSocket 持续更新。
 
 2. **历史回放**  
-   - 调用 `/api/history?tag=DRYER1.OUT.TEMP&period=6h&window=1m` 获取折线；  
+   - 调用 `/api/history?tag=FTT1&period=6h&window=1m` 获取折线；
    - 若需 AI 历史，调用 `/api/v1/ai/moisture/history`。
 
 3. **系统告警**  
@@ -130,4 +130,3 @@ WebSocket 消息与 MQTT 载荷完全一致，字段说明：
 - `websocat ws://localhost:8000/api/ws/realtime` 验证实时推送；
 - `curl http://localhost:8000/api/system/health` 检查系统缓存；
 - `docker compose logs -f edge-api edge-daq ai-softsensor edge-monitor` 查看链路日志。
-

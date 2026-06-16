@@ -108,8 +108,8 @@
         <li><a href="#sec2-2">2.2 模式寄存器</a></li>
         <li><a href="#sec2-3">2.3 控制模式切换流程</a></li>
         <li><a href="#sec2-4">2.4 本地安全 Setpoint</a></li>
-        <li><a href="#sec2-5">2.5 Actuator Clamp</a></li>
-        <li><a href="#sec2-6">2.6 急停 / 联锁</a></li>
+        <li><a href="#sec2-5">2.5 Actuator Final Clamp</a></li>
+        <li><a href="#sec2-6">2.6 急停 / 硬安全联锁</a></li>
         <li><a href="#sec2-7">2.7 上电默认 / 断电恢复</a></li>
         <li><a href="#sec2-8">2.8 维修锁</a></li>
         <li><a href="#sec2-9">2.9 DO 触点 → DTU 短信告警</a></li>
@@ -136,7 +136,7 @@
   <div class="title">PLC 安全契约（PLC Safety Contract）</div>
   <div class="meta">
     <b>版本</b>：v1.2-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-15 &nbsp;·&nbsp; <b>状态</b>：待按新 PLC 接口边界重签收<br>
-    <b>v1.2 改归属</b>（2026-06-15）：DryController/edge 负责工艺控制落地、控制状态机、软点策略与软件侧安全兜底；PLC 负责软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地。现场触摸屏/HMI 必须作为备用人工入口保留；edge 健康时不争抢控制，edge 不可用且 PLC 授权后才启用 HMI->PLC 直连写入。旧 P1-P10 验收表需按该边界重拆。<strong>（claude 收尾 2026-06-15：§7.1 重拆为 P1–P16，补 §2.12 控制权仲裁、§2.13 极简-PLC 降级路径——集成商做不动目标版时降级到 4 件笨活 + 硬接线/VFD 参数。）</strong><br>
+    <b>v1.2 改归属</b>（2026-06-15）：DryController/edge 负责工艺控制落地、控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁与软件侧安全兜底；PLC 负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地；VFD/硬接线/设备自保护保留最终物理安全兜底。现场触摸屏/HMI 必须作为备用人工入口保留；edge 健康时不争抢控制，edge 不可用且 PLC 授权后才启用 HMI->PLC 直连写入。旧 P1-P10 验收表需按该边界重拆。<strong>（claude 收尾 2026-06-15：§7.1 重拆为 P1–P16，补 §2.12 控制权仲裁、§2.13 极简-PLC 降级路径——集成商做不动目标版时降级到 4 件笨活 + 硬接线/VFD 参数。）</strong><br>
     <b>适用范围</b>：DryController 边缘控制系统与 PLC 侧安全责任划分<br>
     <b>关联架构</b>：<a href="../architecture/edge-architecture-v2.md">Edge 架构 v2</a><br>
     <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">超限报警规范</a>
@@ -159,22 +159,22 @@
 <h2 id="sec1">1. 总则</h2>
 
 <h3 id="sec1-1">1.1 核心原则</h3>
-<p class="lead">edge 承担正常工艺控制与软件侧安全兜底；PLC 承担确定性执行、同步、仲裁和心跳丢失后的本地控制兜底。</p>
+<p class="lead">edge 承担正常工艺控制、限幅、斜坡、工艺联锁与软件侧安全兜底；PLC 承担确定性执行、同步、仲裁和心跳丢失后的本地控制兜底；VFD/硬接线/设备自保护承担最终物理安全兜底。</p>
 <ul>
-  <li>Edge 系统（上位机）负责数据采集消费、分析、展示、工艺控制状态机、软点策略、range guard、mode gate 和软件侧 fallback</li>
-  <li>PLC（可编程逻辑控制器）负责软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换和 HMI/edge 控制权锁</li>
+  <li>Edge 系统（上位机）负责数据采集消费、分析、展示、工艺控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁、mode gate 和软件侧 fallback</li>
+  <li>PLC（可编程逻辑控制器）负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换和 HMI/edge 控制权锁</li>
   <li>PLC 读取 edge 心跳；edge 心跳丢失时，PLC 必须切回 PLC 本地控制，且切换过程不能造成突变输出</li>
   <li>现场触摸屏/HMI 属于 PLC 本地备用人工入口，必须具备 HMI->PLC 备用直连能力；edge 健康时 HMI 只监视或请求接管，edge 离线、网络断开、维护锁或 PLC_LOCAL/LOCAL_MANUAL 且 PLC 授权后，HMI 才能写允许的本地/手动控制软点</li>
   <li>PLC 必须提供 <code>AUTHORITY_OWNER</code>、<code>AUTHORITY_TOKEN</code>、<code>HMI_DIRECT_ENABLE</code>、<code>TAKEOVER_REASON</code> 与 <code>REJECT_CODE</code> 等字段；edge 与 HMI 写控制软点时必须受当前 owner/token 约束</li>
-  <li>硬件急停、热继、拉绳/跑偏等设备级保护仍属于现场硬件/PLC 执行层，edge 不直接驱动物理输出</li>
+  <li>硬件急停、热继、拉绳/跑偏等设备级保护仍属于现场硬件/PLC/VFD 执行层，edge 不直接驱动物理输出；这类硬安全不等同于 edge 的工艺联锁</li>
 </ul>
 
 <h3 id="sec1-2">1.2 当前状态</h3>
 <table>
   <thead><tr><th>侧</th><th>状态</th></tr></thead>
   <tbody>
-    <tr><td>PLC 侧</td><td><strong>待重签收</strong>：软点控制层、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换</td></tr>
-    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），仍需补控制状态机、mode/autopilot 闸、软件侧 fallback 与软点/同步/仲裁状态处理</td></tr>
+    <tr><td>PLC 侧</td><td><strong>待重签收</strong>：软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换、最终物理安全兜底回读</td></tr>
+    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），仍需补控制状态机、ramp/slew limiter、工艺联锁、mode/autopilot 闸、软件侧 fallback 与软点/同步/仲裁状态处理</td></tr>
   </tbody>
 </table>
 
@@ -206,7 +206,7 @@
 <table class="wrap">
   <thead><tr><th>层级</th><th>例子</th><th>动作</th><th>锁存 / 复位</th><th>执行方</th></tr></thead>
   <tbody>
-    <tr><td><strong>安全联锁</strong></td><td>急停、电机热继、变频器故障、坏值 fail-safe</td><td>停机进入安全状态</td><td>锁存，人工复位</td><td>PLC（§2.6、§2.10）</td></tr>
+    <tr><td><strong>硬安全联锁</strong></td><td>急停、电机热继、变频器故障、坏值 fail-safe</td><td>停机进入安全状态</td><td>锁存，人工复位</td><td>PLC/VFD/硬接线（§2.6、§2.10）</td></tr>
     <tr><td><strong>运营告警</strong></td><td><strong>工艺温度低温</strong>（提醒人看）</td><td>仅提醒，<strong>不停任何设备</strong>；是否停料由人工决定</td><td>自动消除，温度回正常即解除</td><td>本地声光 + edge 大屏</td></tr>
   </tbody>
 </table>
@@ -266,24 +266,25 @@
   </tbody>
 </table>
 
-<h3 id="sec2-5">2.5 Actuator Clamp（输出限幅）</h3>
+<h3 id="sec2-5">2.5 Actuator Final Clamp（最终输出限幅）</h3>
 <table>
   <tbody>
-    <tr><td>用途</td><td>不管 edge 给什么指令，PLC 自动把输出限制在安全范围内</td></tr>
-    <tr><td>示例</td><td>频率指令 &gt; 上限 → 强制压到上限；链速 &lt; 0.5 → 强制压到 0.5（本期限幅对象为各变频电机的频率，<strong>不含温度</strong>——温度归锅炉，见 §1.4）</td></tr>
-    <tr><td>实现层级</td><td>PLC 程序内硬编码或安全功能块，不可被 edge 覆盖</td></tr>
-    <tr><td>告警</td><td>触发 clamp 时，置位告警标志位，edge 可读取</td></tr>
+    <tr><td>用途</td><td>edge 已负责正常工艺限幅；PLC/VFD 只对已经到达执行层的输出做最终物理限幅兜底，防止异常命令或执行层配置错误伤害设备</td></tr>
+    <tr><td>示例</td><td>频率指令 &gt; VFD 上限 → VFD/PLC 强制压到上限；频率 &lt; 允许下限 → 保持下限或 NAK（本期最终限幅对象为各变频电机的频率，<strong>不含温度</strong>——温度归锅炉，见 §1.4）</td></tr>
+    <tr><td>实现层级</td><td>优先 VFD 参数，其次 PLC 程序内硬编码或安全功能块；不可被 edge 覆盖</td></tr>
+    <tr><td>告警</td><td>触发 final clamp 时，置位告警标志位，edge 可读取并审计为执行层兜底</td></tr>
   </tbody>
 </table>
-<p><strong>通俗说</strong>：就算 edge 发了个“风机 80 Hz”的频率目标，PLC 也会自动压到安全范围；温度不是 edge 写入对象。</p>
+<p><strong>通俗说</strong>：正常情况下 edge 不应该发出越界目标；如果异常情况下真到了执行层，VFD/PLC 还要把“风机 80 Hz”压到物理安全范围。温度不是 edge 写入对象。</p>
 
-<h3 id="sec2-6">2.6 急停 / 联锁</h3>
+<h3 id="sec2-6">2.6 急停 / 硬安全联锁</h3>
 <table>
   <tbody>
     <tr><td>急停</td><td>硬件级紧急停止按钮，按下后所有输出归零或安全值，<strong>不经过任何软件</strong></td></tr>
-    <tr><td>联锁</td><td>安全联锁条件（如门打开 → 自动停机；电机热继 / 变频器故障 → 对应电机停机）。<strong>工艺温度不在此</strong>：温度归锅炉、本场景无超温、本期仅低温报警（人工处置），见 §1.4</td></tr>
+    <tr><td>硬安全联锁</td><td>安全联锁条件（如急停、门开、热继、变频器故障 → 对应输出安全化）。<strong>工艺温度不在此</strong>：温度归锅炉、本场景无超温、本期仅低温报警（人工处置），见 §1.4</td></tr>
+    <tr><td>工艺联锁</td><td>上下游工况、数据新鲜度、模式/权限、给料/风机互斥等工艺联锁由 edge 控制状态机负责；不再要求 PLC 判断“为什么要调”</td></tr>
     <tr><td>实现方式</td><td>硬接线或安全 PLC 功能块，独立于 edge 系统</td></tr>
-    <tr><td>Edge 不介入</td><td>急停/联锁的判断和执行完全在 PLC 侧，edge 不参与</td></tr>
+    <tr><td>Edge 不介入硬安全</td><td>急停/硬安全联锁的判断和执行在 PLC/VFD/硬接线侧，edge 不直接驱动物理输出；edge 只消费这些状态作为工艺决策证据</td></tr>
   </tbody>
 </table>
 
@@ -326,7 +327,7 @@
 <h3 id="sec2-10">2.10 传感器 / 反馈坏值 fail-safe</h3>
 <table>
   <tbody>
-    <tr><td>问题</td><td>clamp（§2.5）只限 <strong>输出指令</strong>，挡不住 <strong>输入坏值</strong>。本期我方不做加热 PID（温度归锅炉），但坏值仍会污染判断：①工艺温度探头断线/短路/超量程/长时间冻结 → <strong>低温误报或漏报</strong>（§1.5）；②电机链速/反馈坏值 → 控制与联锁误判</td></tr>
+    <tr><td>问题</td><td>final clamp（§2.5）只限 <strong>输出指令</strong>，挡不住 <strong>输入坏值</strong>。本期我方不做加热 PID（温度归锅炉），但坏值仍会污染判断：①工艺温度探头断线/短路/超量程/长时间冻结 → <strong>低温误报或漏报</strong>（§1.5）；②电机链速/反馈坏值 → edge 控制与工艺联锁误判</td></tr>
     <tr><td>检测</td><td>PLC 对关键反馈（温度、链速等 PV）做坏值检测：断线、超量程、长时间冻结不变</td></tr>
     <tr><td>动作</td><td>检测到坏值 → 该回路进入安全状态（见 §1.3），<strong>禁止拿坏值继续 PID 控制</strong>；置告警标志位，edge 可读</td></tr>
     <tr><td>范围</td><td>本节针对 <strong>PLC ↔ 现场仪表</strong> 这一段，独立于 edge↔PLC 链路安全</td></tr>
@@ -368,8 +369,8 @@
   <thead><tr><th>项</th><th>目标版（§2.1–2.12）</th><th>降级版（极简-PLC）</th></tr></thead>
   <tbody>
     <tr><td>PLC 只做</td><td>软点控制层 + 同步 + ACK/NAK + 无扰切换 + 控制权锁 + 心跳切本地</td><td><strong>①透传命令→输出 ②IO 采集上传 ③心跳判掉线 ④掉线→固定时序安全停机</strong>（其余全砍）</td></tr>
-    <tr><td>限幅</td><td>PLC Actuator Clamp（§2.5）</td><td>移到<strong>变频器参数</strong>（每台 drive 设 max 频率）</td></tr>
-    <tr><td>急停 / 防损联锁 / 坏值</td><td>PLC 联锁（§2.6 / §2.10）</td><td>移到<strong>硬接线 + 设备自带</strong>：急停继电器、下游→上游 permissive、热继串接、VFD / 锅炉 / 断路器自保护</td></tr>
+    <tr><td>最终限幅</td><td>PLC/VFD Actuator Final Clamp（§2.5；正常工艺限幅在 edge）</td><td>移到<strong>变频器参数</strong>（每台 drive 设 max 频率）</td></tr>
+    <tr><td>急停 / 硬防损联锁 / 坏值</td><td>PLC/VFD/硬接线联锁（§2.6 / §2.10；正常工艺联锁在 edge）</td><td>移到<strong>硬接线 + 设备自带</strong>：急停继电器、下游→上游 permissive、热继串接、VFD / 锅炉 / 断路器自保护</td></tr>
     <tr><td>命令拒绝 / 仲裁</td><td>§2.11 / §2.12</td><td><strong>砍掉</strong>（PLC 纯透传不判断）</td></tr>
     <tr><td>掉线兜底</td><td>本地安全 setpoint 续跑（§2.4）</td><td>改为<strong>固定时序安全停机</strong>（停料 → 延时排风 → 停机），不续跑</td></tr>
   </tbody>
@@ -388,12 +389,12 @@
     <tr><td><code>EDGE_CONTROL_HEALTHY</code></td><td>Edge → PLC</td><td>UINT16 递增计数</td><td>门控心跳，PLC 看门狗监测</td></tr>
     <tr><td><code>HOST_ALIVE</code></td><td>Edge → PLC</td><td>UINT16 递增计数</td><td>主机存活心跳，诊断用</td></tr>
     <tr><td><code>CONTROL_MODE</code></td><td>PLC → Edge</td><td>UINT8 (0/1/2)</td><td>当前控制模式：手动/自动/维修锁</td></tr>
-    <tr><td><code>CLAMP_ACTIVE</code></td><td>PLC → Edge</td><td>BOOL</td><td>clamp 限幅触发标志</td></tr>
+    <tr><td><code>CLAMP_ACTIVE</code></td><td>PLC → Edge</td><td>BOOL</td><td>final clamp 最终限幅触发标志</td></tr>
     <tr><td><code>ESTOP_REQUEST</code></td><td>Edge → PLC</td><td>BOOL</td><td>软件急停请求</td></tr>
     <tr><td><code>COMMAND_ACK</code></td><td>PLC → Edge</td><td>UINT8</td><td>命令响应：0=待确认, 1=ACK, 2=NAK</td></tr>
     <tr><td><code>COMMAND_ID</code></td><td>Edge → PLC</td><td>UINT32</td><td>命令序列号，用于 ACK/NAK 关联</td></tr>
     <tr><td><code>REJECT_CODE</code></td><td>PLC → Edge</td><td>UINT8</td><td>命令拒绝原因码，随 NAK 与对应 COMMAND_ID 返回（§2.11）</td></tr>
-    <tr><td><code>{TAG}_SP</code></td><td>Edge → PLC</td><td>REAL</td><td>各控制参数设定值（链速、频率等）</td></tr>
+    <tr><td><code>{TAG}_SP</code></td><td>Edge → PLC</td><td>REAL</td><td>V1 仅六个频率目标；链速、启停、温度设定等为 V2/V3</td></tr>
     <tr><td><code>{TAG}_PV</code></td><td>PLC → Edge</td><td>REAL</td><td>各控制参数实际值；监测点（工艺温度、上料电机电流）亦走此类，只读上报</td></tr>
   </tbody>
 </table>
@@ -436,7 +437,7 @@
     <tr><td>4</td><td>MQTT 不可用</td><td>门控心跳 fail-closed，PLC 切手动</td></tr>
     <tr><td>5</td><td>Edge API 不可用</td><td>无新 command 下发，PLC 不依赖 edge-api 维持安全</td></tr>
     <tr><td>6</td><td>Modbus 写失败</td><td>Command NAK，不重放危险写入，告警可见</td></tr>
-    <tr><td>7</td><td>Edge 发越界指令</td><td>Edge range guard 拒绝 → 不发到 PLC；万一到了 PLC → clamp 兜底</td></tr>
+    <tr><td>7</td><td>Edge 发越界指令</td><td>Edge range guard 拒绝 → 不发到 PLC；万一到了执行层 → PLC/VFD final clamp 兜底</td></tr>
     <tr><td>8</td><td>维修锁期间 edge 恢复</td><td>PLC 不自动接管，需手动解除锁定</td></tr>
     <tr><td>9</td><td>模式切换时输出跳变</td><td>bumpless 过渡，输出平滑</td></tr>
     <tr><td>10</td><td>上电重启</td><td>PLC 进入安全默认状态，不记忆上次状态</td></tr>
@@ -456,10 +457,16 @@
 <h2 id="sec7">7. 验收标准与关闭条件</h2>
 
 <h3 id="sec7-1">7.1 PLC 侧验收清单</h3>
+<p class="note"><strong>2026-06-16 V1 标记：</strong>V1 不是完整监督控制，只验收六个变频频率目标写入（<code>VFM1_FREQ_SP</code>、<code>VFM2_FREQ_SP</code>、<code>VFM3_FREQ_SP</code>、<code>VF1_FREQ_SP</code>、<code>VF2_FREQ_SP</code>、<code>VF3_FREQ_SP</code>）。PLC 继续保留现场工艺逻辑、安全、顺控、联锁、设备保护和实际输出。PLC authority、HMI 直连、owner/token、完整 ACK/NAK/原因码和无扰接管属于 V2/V3 目标版，不作为 V1 blocker。</p>
 <table class="wrap">
   <thead><tr><th>#</th><th>验收项</th><th>验收方式</th><th>状态</th></tr></thead>
   <tbody>
-    <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">v1.2 接口能力（目标版）</td></tr>
+    <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V1 六频率目标写入最小验收</td></tr>
+    <tr><td>V1-1</td><td>六个 SP 地址/量程/字节序签收</td><td>PLC 回填六个频率目标寄存器地址、数据类型、缩放、0-50Hz 或现场签收范围、读写权限</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>V1-2</td><td>六个实际频率反馈</td><td>edge 能读取 <code>VFM1-3</code>、<code>VF1-3</code> 实际频率或等价反馈，用于写后核对与趋势展示</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>V1-3</td><td>PLC 安全覆盖状态/报警码</td><td>PLC/VFD/硬接线触发限幅、故障、停机、料位保护时，edge/HMI 可见该写入被覆盖或不可继续调节的状态</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>V1-4</td><td>六 SP 写入 E2E</td><td>HMI/edge-api 人工确认 → edge-daq → PLC → 变频器目标变化 → 反馈回读；越界/未授权/edge 不健康时拒绝</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V2/V3 目标版接口能力（非 V1 blocker）</td></tr>
     <tr><td>P1</td><td>IO 采集上传</td><td>现场全部 IO（料位/温度/电流/状态/急停）稳定实时上报 edge</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P2</td><td>软点控制层执行</td><td>edge 软点命令 → PLC 正确输出到变频器/接触器/阀</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P3</td><td>参数同步</td><td>edge ↔ PLC 参数读写一致</td><td><span class="pill bad">❌ 未做</span></td></tr>
@@ -471,24 +478,25 @@
     <tr><td>P9</td><td>控制权锁 / HMI 备用</td><td>edge 健康不争抢；edge 挂 + 授权后 HMI 直连；防双写（§2.12）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">安全基础（目标版与降级版均须满足；降级版可由硬接线/VFD参数实现，见 §2.13）</td></tr>
     <tr><td>P10</td><td>本地安全 setpoint 兜底</td><td>切本地后设备用安全参数续跑（§2.4；降级版改固定时序安全停机）</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>P11</td><td>Actuator clamp / 限幅</td><td>越界指令被限幅（§2.5；降级版由 VFD max 频率参数实现）</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>P12</td><td>急停 / 防损联锁</td><td>硬件急停输出安全化；下游停→上游禁进料（§2.6；降级版由硬接线实现）</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P11</td><td>Actuator final clamp / 最终限幅</td><td>执行层收到越界指令时仍被 VFD/PLC 限幅（§2.5；正常工艺限幅在 edge；降级版由 VFD max 频率参数实现）</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P12</td><td>急停 / 硬防损联锁</td><td>硬件急停输出安全化；硬件/设备级下游 permissive、热继、VFD 故障等可独立保护（§2.6；正常工艺联锁在 edge；降级版由硬接线实现）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P13</td><td>上电默认安全</td><td>上电进安全态，不记忆旧状态、不自动带载（§2.7）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P14</td><td>维修锁</td><td>锁定后 edge/HMI 无法接管，手动解除后可恢复（§2.8）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P15</td><td>传感器坏值 fail-safe</td><td>反馈坏值时该回路进入安全状态（§2.10；降级版由设备自带保护兜底）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P16</td><td>DO → DTU 短信 <span class="pill part">暂缓</span></td><td>有人值守暂缓（§2.9）</td><td><span class="pill part">暂缓</span></td></tr>
   </tbody>
 </table>
-<p class="note">本表为<strong>目标版（能干 PLC）</strong>验收。若走 <strong>§2.13 降级版（极简-PLC）</strong>，P2/P7 + IO采集 + 掉线安全停机 仍由 PLC 验收，其余（P3-P6/P8/P9/P11/P12/P15）改由<strong>变频器参数 / 硬接线 / 设备自带</strong>实现并物理验收，验收项相应转移而非取消。</p>
+<p class="note">V1 关闭只看 V1-1 到 V1-4 加现场安全兜底确认；本表下方 P1-P16 为<strong>目标版（能干 PLC）</strong>验收。若走 <strong>§2.13 降级版（极简-PLC）</strong>，P2/P7 + IO采集 + 掉线安全停机 仍由 PLC 验收，其余（P3-P6/P8/P9/P11/P12/P15）改由<strong>变频器参数 / 硬接线 / 设备自带</strong>实现并物理验收，验收项相应转移而非取消。</p>
 
 <h3 id="sec7-2">7.2 Edge 侧验收清单</h3>
 <blockquote><p>Edge 侧验收（E1–E7）由我方负责，<strong>集成商无需关注，本版略去</strong>；完整清单见我方内部版。</p></blockquote>
 
 <h3 id="sec7-3">7.3 关闭条件</h3>
-<p class="lead">三方全部验收通过后才能关闭 P0-SAFETY；旧 P1-P10 表仅作历史草案，新关闭条件以 2026-06-15 边界为准：</p>
+<p class="lead">关闭条件按版本拆分：V1 只关闭六频率目标写入能力；P0-SAFETY 全量关闭属于 V2/V3 监督控制前置条件。旧 P1-P10 表仅作历史草案，新关闭条件以 2026-06-16 版本边界为准：</p>
 <ol>
-  <li>PLC 集成商签收软点控制层、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换全部通过</li>
-  <li>Edge 侧控制状态机、range guard、mode/autopilot 闸、软件侧 fallback、`/control/estop`、软点/同步/仲裁状态处理全部通过</li>
+  <li>V1 关闭：六个频率目标 SP 地址/量程/字节序/写权限签收，实际频率反馈可读，PLC 安全覆盖/报警状态可见，HMI/edge-api → edge-daq → PLC → 变频器 E2E 写入与拒绝路径通过</li>
+  <li>PLC 集成商签收软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换全部通过，并完成 VFD/硬接线/设备自保护的最终物理安全兜底验收</li>
+  <li>Edge 侧控制状态机、range guard、setpoint ramp/slew limiter、工艺联锁、mode/autopilot 闸、软件侧 fallback、`/control/estop`、软点/同步/仲裁状态处理全部通过</li>
   <li>独立复核确认失败注入验收（§6）全部通过</li>
 </ol>
 
@@ -531,7 +539,7 @@
 
 <h2 id="sec9">9. 风险与免责</h2>
 <ol>
-  <li><strong>PLC 侧软点/同步/心跳/仲裁接口未签收前，edge 控制写入全部禁用。</strong> 这不是拖延，是安全保障。</li>
+  <li><strong>V1 只允许六个频率目标 SP 在签收后启用；其他 edge 控制写入在 PLC 侧软点/同步/心跳/仲裁接口未签收前全部禁用。</strong> 这不是拖延，是安全保障。</li>
   <li><strong>本契约不覆盖 PLC 程序本身的 bug。</strong> PLC 程序质量由集成商负责。</li>
   <li><strong>现场工艺参数（温度范围、链速范围等）由工艺部门确定。</strong> 本文档中的示例值仅为说明。</li>
   <li><strong>急停/联锁的硬件设计不在本契约范围内。</strong> 由设备制造商和安全部门负责。</li>

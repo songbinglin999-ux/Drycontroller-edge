@@ -137,14 +137,15 @@
 <header class="doc-head">
   <div class="title">工艺控制逻辑（上位机 / Edge）</div>
   <div class="meta">
-    <b>版本</b>：v0.3-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-15 &nbsp;·&nbsp; <b>状态</b>：框架搭建中<br>
+    <b>版本</b>：v0.4-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-16 &nbsp;·&nbsp; <b>状态</b>：V2/V3 工艺控制设计草案，非 V1 验收清单<br>
+    <b>v0.4 版本标记</b>（2026-06-16）：V1 只做六个变频频率目标写入，替代人工设定目标频率；料位报警后的停转/延时开启、顺控、联锁、设备保护和实际输出仍由 PLC 负责。本文描述的多变量消歧、完整工艺控制状态机、启停/反转/复位编排和监督控制逻辑属于 V2/V3。<br>
     <b>v0.3 改归属</b>（2026-06-15）：本文从「PLC 交付物」改为<strong>上位机（edge）工艺控制设计</strong>——工艺控制落地、控制状态机、软点策略与软件侧安全兜底由 edge 负责。PLC 提供软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK、无扰切换、HMI/edge 控制权锁和心跳丢失切本地。<br>
     <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-alarm-spec.html">超限报警规范</a> · <a href="plc-safety-contract.html">安全契约（PLC 交付）</a><br>
     <b>说明</b>：本文定义每台设备的控制方法与编排逻辑。<span class="tbd">橙色斜体</span>为待工艺确认的占位值。
   </div>
 </header>
 
-<blockquote><p><strong>本文归属：上位机（edge）工艺设计，<u>非集成商 / PLC 交付物</u>。</strong> 分层原则：<strong>工艺控制智能（状态机、配方、模式、给料/风机目标、过程判断）和软件侧安全兜底在上位机；PLC 只实现接口、同步、执行与本地控制权兜底</strong>（软点层、参数/报警/状态同步、限幅、斜坡、ACK/NAK、无扰切换、HMI/edge 控制权锁、心跳丢失切本地、实际频率跟随）。本文中的工艺逻辑由我方（edge）实现，不要求 PLC 推理“为什么要调”。本文涉及顺序联锁处会标明哪部分是 <strong>PLC 执行/仲裁接口</strong>，哪部分是 <strong>edge 正常编排</strong>。</p></blockquote>
+<blockquote><p><strong>本文归属：上位机（edge）工艺设计，<u>非集成商 / PLC 交付物</u>。</strong> 但它是 V2/V3 监督控制设计，不是当前 V1 交付边界。V1 只要求 edge/HMI 经 edge-api 写六个频率目标，并做白名单、范围、变化率、模式锁、人工确认和审计；PLC 继续执行现场工艺逻辑、安全、顺控、联锁、设备保护和实际输出。V2/V3 才按本文把工艺控制智能（状态机、配方、模式、给料/风机目标、过程判断）逐步放到 edge。</p></blockquote>
 
 <hr>
 
@@ -156,9 +157,9 @@
   <tbody>
     <tr><td>安全联锁</td><td>硬接线或安全 PLC，不经过上位机，最高优先级</td><td>急停、拉绳跑偏、热继跳闸</td></tr>
     <tr><td>设备保护联锁</td><td>PLC 程序内实现，过流/过载/坏值等</td><td>电流超限→停机、反转清堵</td></tr>
-    <tr><td>工艺联锁</td><td>上下游设备启停顺序、料位联动</td><td>逆启顺停、缺料停下游</td></tr>
-    <tr><td>工艺算法</td><td>edge 用多变量因果判断计算变频目标和软点</td><td>电流高 + 温度/出料温度/湿度判断是过料、供热不足还是排湿不足</td></tr>
-    <tr><td>执行控制</td><td>PLC 接收 edge 目标频率，做限幅、斜坡、ACK/NAK、实际频率跟随</td><td>edge 给 VFM2/VF2 目标频率，PLC 按安全规则执行</td></tr>
+    <tr><td>工艺联锁</td><td>V1 仍由 PLC 执行；V2/V3 可由 edge 监督策略参与目标生成</td><td>逆启顺停、料位报警后的停转/延时开启</td></tr>
+    <tr><td>工艺算法</td><td>V2/V3：edge 用多变量因果判断计算变频目标和软点</td><td>电流高 + 温度/出料温度/湿度判断是过料、供热不足还是排湿不足</td></tr>
+    <tr><td>执行控制</td><td>V1：PLC 接收六个 edge 目标频率，做限幅、斜坡、实际频率跟随；ACK/NAK/authority 为 V2/V3</td><td>edge 给 VFM2/VF2 目标频率，PLC 按安全规则执行</td></tr>
   </tbody>
 </table>
 <blockquote><p>低层级可覆盖高层级：安全联锁 > 设备保护联锁 > 工艺联锁 > PLC 执行限幅/斜坡 > edge 工艺算法目标。温度只作为采样输入；本系统不写温度目标，不做 PLC 温度 PID。</p></blockquote>
@@ -168,7 +169,7 @@
   <thead><tr><th>术语</th><th>在本系统中的含义</th><th>例子</th></tr></thead>
   <tbody>
     <tr><td>PV</td><td>过程量 / 反馈量，主要由 PLC 采集后给 edge 使用</td><td><code>I_M5</code>、<code>FTT2</code>、<code>T_OUT2</code>、<code>MT1</code>、<code>VFM2</code> 实际反馈</td></tr>
-    <tr><td>SP</td><td>edge 算法或 operator-touch 给 PLC 的目标值</td><td><code>VFM2_FREQ_SP</code>、<code>VF2_FREQ_SP</code>、整线模式软点</td></tr>
+    <tr><td>SP</td><td>edge/HMI 给 PLC 的目标值；V1 仅六个频率目标</td><td><code>VFM2_FREQ_SP</code>、<code>VF2_FREQ_SP</code></td></tr>
     <tr><td>MV</td><td>PLC / 变频器实际输出给执行机构的量</td><td>PLC 限幅和斜坡后的 VFM2/VF2 实际频率</td></tr>
   </tbody>
 </table>

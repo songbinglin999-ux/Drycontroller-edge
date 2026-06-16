@@ -190,12 +190,12 @@
         <tr id="io-M15"><td>45</td><td>M15</td><td>锅炉1 上料电机</td><td>锅炉1</td><td>DO</td><td>启/停</td><td>LL5 控制（同 M1 逻辑）；I-M15 监测</td><td><span class="tag-new">新增</span></td></tr>
         <tr id="io-M16"><td>46</td><td>M16</td><td>锅炉2 上料电机</td><td>锅炉2</td><td>DO</td><td>启/停</td><td>LL6 控制；I-M16 监测</td><td><span class="tag-new">新增</span></td></tr>
         <tr class="group"><td colspan="8">AO · 变频给料/风机（模拟输出反馈）</td></tr>
-        <tr id="io-VFM1"><td>47</td><td>VFM1</td><td>料斗3→主机1 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>反馈；目标频率来自 edge 算法软点，PLC 限幅/跟随</td><td>含 DO启停、DI故障</td></tr>
-        <tr id="io-VFM2"><td>48</td><td>VFM2</td><td>料斗4→主机2 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>反馈；目标频率来自 edge 算法软点，PLC 限幅/跟随</td><td>含 DO启停、DI故障</td></tr>
-        <tr id="io-VFM3"><td>49</td><td>VFM3</td><td>料斗5→主机4 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>反馈；目标频率来自 edge 算法软点，PLC 限幅/跟随</td><td>含 DO启停、DI故障</td></tr>
-        <tr id="io-VF1"><td>50</td><td>VF1</td><td>主机1 变频风机</td><td>主机1</td><td>AO</td><td>0–100% / Hz</td><td>反馈；目标频率来自 edge 算法软点，PLC 限幅/跟随</td><td></td></tr>
-        <tr id="io-VF2"><td>51</td><td>VF2</td><td>主机2 变频风机</td><td>主机2</td><td>AO</td><td>0–100% / Hz</td><td>反馈；目标频率来自 edge 算法软点，PLC 限幅/跟随</td><td></td></tr>
-        <tr id="io-VF3"><td>52</td><td>VF3</td><td>主机4 变频风机</td><td>主机4</td><td>AO</td><td>0–100% / Hz</td><td>反馈；目标频率来自 edge 算法软点，PLC 限幅/跟随</td><td></td></tr>
+        <tr id="io-VFM1"><td>47</td><td>VFM1</td><td>料斗3→主机1 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>反馈；V1 目标频率来自六频率软点，PLC 限幅/跟随</td><td>含 DO启停、DI故障</td></tr>
+        <tr id="io-VFM2"><td>48</td><td>VFM2</td><td>料斗4→主机2 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>反馈；V1 目标频率来自六频率软点，PLC 限幅/跟随</td><td>含 DO启停、DI故障</td></tr>
+        <tr id="io-VFM3"><td>49</td><td>VFM3</td><td>料斗5→主机4 变频给料</td><td>—</td><td>AO</td><td>0–100% / Hz</td><td>反馈；V1 目标频率来自六频率软点，PLC 限幅/跟随</td><td>含 DO启停、DI故障</td></tr>
+        <tr id="io-VF1"><td>50</td><td>VF1</td><td>主机1 变频风机</td><td>主机1</td><td>AO</td><td>0–100% / Hz</td><td>反馈；V1 目标频率来自六频率软点，PLC 限幅/跟随</td><td></td></tr>
+        <tr id="io-VF2"><td>51</td><td>VF2</td><td>主机2 变频风机</td><td>主机2</td><td>AO</td><td>0–100% / Hz</td><td>反馈；V1 目标频率来自六频率软点，PLC 限幅/跟随</td><td></td></tr>
+        <tr id="io-VF3"><td>52</td><td>VF3</td><td>主机4 变频风机</td><td>主机4</td><td>AO</td><td>0–100% / Hz</td><td>反馈；V1 目标频率来自六频率软点，PLC 限幅/跟随</td><td></td></tr>
         <tr class="group"><td>—</td><td>点数统计</td><td>DI</td><td>AI</td><td>DO</td><td>AO</td><td>总点数</td><td></td></tr>
         <tr><td>—</td><td>合计</td><td>6</td><td>24</td><td>16</td><td>6</td><td>52</td><td></td></tr>
       </tbody>

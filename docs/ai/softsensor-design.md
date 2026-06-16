@@ -36,7 +36,7 @@
 
 ### ctrl-optimizer（本期一并规划）
 - 目标：优化设定值（链速/变频给料/风机等控制软点）达成含水率目标 + 能耗/稳定性约束，消费 softsensor 输出 + 52 位号状态。
-- 角色：autopilot，替代 operator-touch 人工输入，**永不直写 PLC**，经 edge-api 签名/限幅/审计；先 advisory（人工确认）→ 闭环 gated by `P0-SAFETY`。PSO/约束/控制变量见 `ai-config.yaml optimizer`，同样需从旧位号对齐到控制软点（待 operator-touch 软点清单定义）。详见 `docs/architecture/control-strategy.md`。
+- 角色：V2/V3 autopilot，替代人工调频经验，**永不直写 PLC**，经 edge-api 签名/限幅/审计；V1 仅 advisory/人工确认六个频率目标，闭环 gated by `P0-SAFETY`。PSO/约束/控制变量见 `ai-config.yaml optimizer`，同样需从旧位号对齐到控制软点（V1 六频率已固定，更多软点待 V2/V3 签收）。详见 `docs/architecture/control-strategy.md`。
 
 ---
 

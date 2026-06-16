@@ -98,12 +98,11 @@ optimizer:
       minimize: true
       weight: 0.3
       
-  # 控制变量：控制软点由 operator-touch / EDGE-V2-P3 定义后再填。
+  # 控制变量：V1 固定六频率目标；AI optimizer 仍为 V2/V3，等 EDGE-V2-P3 定义后再填。
   control_variables: []
   control_variable_notes:
-    - "TBD: chain speed setpoint soft point"
-    - "TBD: fan setpoint soft point"
-    - "TBD: feeder setpoint soft point"
+    - "V1 write targets are VFM1-3_FREQ_SP / VF1-3_FREQ_SP via edge-api manual confirmation."
+    - "TBD V2/V3: optimizer-controlled fan/feed setpoint soft points."
       
   # 约束条件
   constraints:

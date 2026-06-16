@@ -98,28 +98,23 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 ### 4.2 控制接口
 
-- **下发控制指令**
+当前 V1 只允许 6 个变频频率目标写入：`VFM1-3_FREQ_SP` / `VF1-3_FREQ_SP`。PLC 保留现场逻辑、安全、顺控、联锁和设备保护；除 6 个频率 SP 外，其余控制写入保持禁用。
 
-  - `POST /control/set`
-  - 功能：提交对链速、风机频率等控制建议的“应用”请求  
-  - 请求示例：
+- `GET /api/v1/control/recommendations`
+  - 功能：读取 edge 生成的可解释建议，建议默认需要人工确认。
+- `POST /api/v1/control/recommendations/{id}/confirm`
+  - 功能：确认一条建议；edge-api 复核 freshness / mode / 软点白名单 / range / 变化率后签发 command。
+- `POST /api/v1/control/manual-confirm`
+  - 功能：人工输入 6 个频率目标之一并确认写入。
+- `POST /api/v1/control/recommendations/{id}/dismiss`
+  - 功能：驳回建议并记录审计。
 
-  ```json
-  {
-    "target": "line1",
-    "commands": [
-      { "tag": "CHAIN_SPEED_SETPOINT", "value": 1.8 },
-      { "tag": "FAN_FREQ_SETPOINT", "value": 35.0 }
-    ],
-    "mode": "manual_confirm",   // 预留：未来支持 auto
-    "operator": "operator_a"
-  }
-  ```
+处理逻辑：
 
-  - 处理逻辑：
-    - 写入 PostgreSQL 控制操作日志  
-    - 通过 MQTT 将控制命令发送给 `edge-daq`  
-    - 由 `edge-daq` 将对应值写入 PLC
+1. 写入 PostgreSQL 控制操作日志。
+2. 通过 MQTT 将 signed command 发送给 `edge-daq`。
+3. `edge-daq` 按 `configs/modbus-address-map.yaml` 写 PLC 的 V1 频率 SP。
+4. PLC 执行自己的现场保护/顺控/联锁后，edge 读取实际频率反馈和覆盖状态。
 
 ### 4.3 AI 接口
 
@@ -209,5 +204,4 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 - 引入 OpenAPI 规范驱动的前后端代码自动生成  
 - 对接 API 网关（如 Nginx / Kong）做限流、熔断与审计
-
 

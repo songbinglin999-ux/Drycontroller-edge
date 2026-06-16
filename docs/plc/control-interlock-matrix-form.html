@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>算法控制安全联锁梳理表 - DryController</title>
+<style>
+  :root {
+    --fg: #17202c;
+    --muted: #596575;
+    --line: #dce2ea;
+    --bg: #ffffff;
+    --band: #f6f8fb;
+    --head: #eef2f7;
+    --accent: #245e9f;
+    --accent-soft: #eaf2fb;
+    --danger: #a33131;
+    --warn: #87620e;
+    --ok: #26734d;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    padding: 0 36px 96px;
+    color: var(--fg);
+    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
+      "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  header.doc-head {
+    max-width: 1500px;
+    margin: 30px auto 0;
+    padding: 0 0 18px;
+    border-bottom: 3px solid var(--accent);
+  }
+  h1 {
+    margin: 0 0 10px;
+    font-size: 28px;
+    line-height: 1.25;
+    color: #20334f;
+  }
+  h2 {
+    margin: 34px 0 10px;
+    font-size: 21px;
+    line-height: 1.3;
+    color: #20334f;
+  }
+  h3 {
+    margin: 24px 0 8px;
+    font-size: 16px;
+    color: #2a3f5e;
+  }
+  p { margin: 8px 0; }
+  a { color: var(--accent); }
+  code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.94em;
+    background: #f2f5f8;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .meta {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(170px, 1fr));
+    gap: 8px 16px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .meta b { color: #2a3f5e; }
+  .toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    max-width: 1500px;
+    margin: 0 auto;
+    background: rgba(255, 255, 255, 0.96);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    backdrop-filter: blur(8px);
+  }
+  .toolbar a,
+  .toolbar button {
+    border: 1px solid var(--line);
+    background: #fff;
+    color: #24364f;
+    text-decoration: none;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .toolbar button.primary {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .toolbar .status {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  main {
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  .notice {
+    margin: 18px 0;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    background: var(--band);
+    border-left: 4px solid var(--accent);
+  }
+  .danger-note { border-left-color: var(--danger); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0 18px;
+    border: 1px solid var(--line);
+    table-layout: fixed;
+  }
+  caption {
+    caption-side: top;
+    text-align: left;
+    font-weight: 700;
+    color: #24364f;
+    margin: 0 0 6px;
+  }
+  th,
+  td {
+    border: 1px solid var(--line);
+    padding: 8px 10px;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+  th {
+    background: var(--head);
+    color: #24364f;
+    font-weight: 650;
+  }
+  tbody tr:nth-child(even) { background: #fbfcfe; }
+  td[contenteditable="true"],
+  .editable-block,
+  textarea,
+  input,
+  select {
+    background: #fffdf3;
+    outline: none;
+  }
+  td[contenteditable="true"]:focus,
+  .editable-block:focus,
+  textarea:focus,
+  input:focus,
+  select:focus {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  textarea,
+  input,
+  select {
+    width: 100%;
+    border: 1px solid #ccd5e0;
+    border-radius: 4px;
+    padding: 7px 8px;
+    font: inherit;
+    color: inherit;
+  }
+  textarea {
+    min-height: 86px;
+    resize: vertical;
+  }
+  .editable-block {
+    min-height: 78px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .pill {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .pill.ok { background: #e7f4ee; color: var(--ok); }
+  .pill.warn { background: #fff4cf; color: var(--warn); }
+  .pill.bad { background: #f9e5e5; color: var(--danger); }
+  .two-col {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 18px;
+  }
+  .small { font-size: 13px; color: var(--muted); }
+  .nowrap { white-space: nowrap; }
+  .section-band {
+    margin-top: 28px;
+    padding-top: 2px;
+    border-top: 1px solid var(--line);
+  }
+  .checkbox-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(160px, 1fr));
+    gap: 8px 14px;
+  }
+  label.check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  label.check input { width: auto; }
+  @media (max-width: 900px) {
+    body { padding: 0 16px 80px; }
+    .meta,
+    .two-col,
+    .checkbox-grid { grid-template-columns: 1fr; }
+    .toolbar { position: static; }
+    .toolbar .status { width: 100%; margin-left: 0; }
+    table { table-layout: auto; }
+  }
+  @media print {
+    body { padding: 0; font-size: 12px; }
+    .toolbar { display: none; }
+    textarea, input, select { border: 0; padding: 0; }
+    .notice { break-inside: avoid; }
+    table { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<header class="doc-head">
+  <h1>算法控制安全联锁梳理表</h1>
+  <div class="meta">
+    <div><b>项目</b>：DryController edge 工艺算法控制</div>
+    <div><b>用途</b>：先定文档，再落参数库/配置/代码</div>
+    <div><b>点位来源</b>：<code>io-map.html</code> + <code>configs/tags.yaml</code></div>
+    <div><b>填写日期</b>：<span contenteditable="true" data-field="meta-date">YYYY-MM-DD</span></div>
+    <div><b>填写人</b>：<span contenteditable="true" data-field="meta-author">待填写</span></div>
+    <div><b>策略版本</b>：<span contenteditable="true" data-field="meta-version">draft-v0</span></div>
+    <div><b>适用产线</b>：<span contenteditable="true" data-field="meta-line">L1 / 待确认</span></div>
+    <div><b>审阅状态</b>：<span contenteditable="true" data-field="meta-review">未审阅</span></div>
+  </div>
+</header>
+
+<nav class="toolbar" aria-label="文档导航与操作">
+  <a href="#topology">设备拓扑</a>
+  <a href="#points">读点/写点</a>
+  <a href="#permit">全局许可</a>
+  <a href="#state-machine">状态机</a>
+  <a href="#matrix">联锁矩阵</a>
+  <a href="#thresholds">阈值</a>
+  <a href="#open-items">待定项</a>
+  <button type="button" class="primary" id="export-html">导出填写版 HTML</button>
+  <button type="button" id="print-page">打印/PDF</button>
+  <button type="button" id="clear-draft">清空本机暂存</button>
+  <span class="status" id="save-status" aria-live="polite">本机暂存已启用</span>
+</nav>
+
+<main>
+  <section class="notice" aria-labelledby="usage-title">
+    <h2 id="usage-title">填写说明</h2>
+    <p>黄色区域都可以填写。浏览器中填写会自动暂存在本机；要让我在仓库里看到最终内容，请点击“导出填写版 HTML”，把导出的文件放回这个目录，或直接在编辑器里改本文件并保存。</p>
+    <p>本表只梳理 <strong>非 AI 的工艺算法控制</strong>。AI、MPC、自学习、含水率最优控制先不进入本版。</p>
+    <p><strong>2026-06-16 V1 标记：</strong>V1 只填写并验收六个频率目标软点（<code>VFM1_FREQ_SP</code>、<code>VFM2_FREQ_SP</code>、<code>VFM3_FREQ_SP</code>、<code>VF1_FREQ_SP</code>、<code>VF2_FREQ_SP</code>、<code>VF3_FREQ_SP</code>）。料位报警后的停转/延时开启、顺控、联锁、设备保护和实际输出仍由 PLC 执行。控制权锁、HMI 直连、启停命令、完整监督控制为 V2/V3 填写项，不作为 V1 验收 blocker。</p>
+  </section>
+
+  <section id="topology" class="section-band" aria-labelledby="topology-title">
+    <h2 id="topology-title">1. 设备拓扑表</h2>
+    <p class="small">目标：先把物料流向、上下游关系、排空路径捋清。不要在这张表里讨论阈值。</p>
+    <table>
+      <caption>1.1 主物料流向</caption>
+      <thead>
+        <tr>
+          <th style="width:64px">序号</th>
+          <th style="width:120px">节点/位号</th>
+          <th>设备/位置</th>
+          <th>上游</th>
+          <th>下游</th>
+          <th>正常作用</th>
+          <th>堵料时优先动作</th>
+          <th>现场确认/备注</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>M1</td><td>料斗1 -> 料斗2输送</td><td>料斗1</td><td>LL1/料斗2</td><td>补料到料斗2</td><td>过流则停/清堵，不能继续送料</td><td contenteditable="true" data-field="topo-m1-note"></td></tr>
+        <tr><td>2</td><td>LL1</td><td>料斗2料位</td><td>M1</td><td>M2</td><td>判断料斗2有/无料</td><td>满/有料时禁止继续补料</td><td contenteditable="true" data-field="topo-ll1-note"></td></tr>
+        <tr><td>3</td><td>M2</td><td>料斗2 -> 料斗3输送</td><td>料斗2</td><td>LL2/料斗3</td><td>补料到料斗3</td><td>过流则停/清堵，保护 VFM1 供料</td><td contenteditable="true" data-field="topo-m2-note"></td></tr>
+        <tr><td>4</td><td>LL2</td><td>料斗3料位</td><td>M2</td><td>VFM1</td><td>VFM1 上游缓冲</td><td>缺料时 VFM1 不应继续加大</td><td contenteditable="true" data-field="topo-ll2-note"></td></tr>
+        <tr><td>5</td><td>VFM1</td><td>料斗3 -> 主机1给料</td><td>LL2/料斗3</td><td>M3/主机1</td><td>主机1给料频率</td><td>主机1/下游异常时降料</td><td contenteditable="true" data-field="topo-vfm1-note"></td></tr>
+        <tr><td>6</td><td>M3</td><td>主机1</td><td>VFM1</td><td>M4</td><td>干燥主机1</td><td>edge 优先断 VFM1；主机硬故障由 PLC/VFD</td><td contenteditable="true" data-field="topo-m3-note"></td></tr>
+        <tr><td>7</td><td>M4</td><td>主机1 -> 料斗4输送</td><td>M3</td><td>LL3/料斗4</td><td>主机1出料</td><td>LL3 满或 M4 过流时 VFM1 降/停</td><td contenteditable="true" data-field="topo-m4-note"></td></tr>
+        <tr><td>8</td><td>LL3</td><td>料斗4料位</td><td>M4</td><td>VFM2</td><td>VFM2 上游缓冲</td><td>满料时禁止 VFM1 继续加料</td><td contenteditable="true" data-field="topo-ll3-note"></td></tr>
+        <tr><td>9</td><td>VFM2</td><td>料斗4 -> 主机2给料</td><td>LL3/料斗4</td><td>M5/主机2</td><td>主机2给料频率</td><td>M5 超流或 M6-M9 链路异常时降料</td><td contenteditable="true" data-field="topo-vfm2-note"></td></tr>
+        <tr><td>10</td><td>M5</td><td>主机2</td><td>VFM2</td><td>M6/M7/M8</td><td>干燥主机2</td><td>edge 不主动停；超流先断 VFM2，保持排料</td><td contenteditable="true" data-field="topo-m5-note">确认“不主动停”的现场边界</td></tr>
+        <tr><td>11</td><td>M6/M7</td><td>主机2 -> 发酵仓输送链</td><td>M5</td><td>M8</td><td>主机2出料进仓</td><td>异常时降/停 VFM2，必要时停上游输送</td><td contenteditable="true" data-field="topo-m6m7-note"></td></tr>
+        <tr><td>12</td><td>M8</td><td>发酵仓主电机</td><td>M6/M7</td><td>M9</td><td>发酵仓处理</td><td>异常时保护 VFM2，默认不反转</td><td contenteditable="true" data-field="topo-m8-note"></td></tr>
+        <tr><td>13</td><td>M9</td><td>发酵仓 -> 料斗5输送</td><td>M8</td><td>LL4/料斗5</td><td>给料斗5补料</td><td>LL4 满/过流时保护 VFM2</td><td contenteditable="true" data-field="topo-m9-note"></td></tr>
+        <tr><td>14</td><td>LL4</td><td>料斗5料位</td><td>M9</td><td>VFM3</td><td>VFM3 上游缓冲</td><td>无料时防 VFM3 空转；满料时保护 VFM2</td><td contenteditable="true" data-field="topo-ll4-note"></td></tr>
+        <tr><td>15</td><td>VFM3</td><td>料斗5 -> 主机4给料</td><td>LL4/料斗5</td><td>M10/主机4</td><td>主机4给料频率</td><td>M10 超流或 M11-M14 链路异常时降料</td><td contenteditable="true" data-field="topo-vfm3-note"></td></tr>
+        <tr><td>16</td><td>M10</td><td>主机4</td><td>VFM3</td><td>M11</td><td>干燥主机4</td><td>edge 不主动停；超流先断 VFM3，保持排料</td><td contenteditable="true" data-field="topo-m10-note">确认“不主动停”的现场边界</td></tr>
+        <tr><td>17</td><td>M11</td><td>主机4 -> 料斗6输送</td><td>M10</td><td>料斗6/MT1</td><td>主机4出料</td><td>异常时保护 VFM3</td><td contenteditable="true" data-field="topo-m11-note"></td></tr>
+        <tr><td>18</td><td>MT1/料斗6</td><td>末端湿度/缓冲</td><td>M11</td><td>M12</td><td>质量慢反馈</td><td>不做秒级防堵主条件</td><td contenteditable="true" data-field="topo-mt1-note"></td></tr>
+        <tr><td>19</td><td>M12</td><td>料斗6 -> 滚筛输送</td><td>料斗6</td><td>M13</td><td>滚筛进料</td><td>M13 异常时停/降上游排料</td><td contenteditable="true" data-field="topo-m12-note"></td></tr>
+        <tr><td>20</td><td>M13</td><td>滚筛</td><td>M12</td><td>料斗7</td><td>筛分</td><td>堵筛报警，保护 VFM3</td><td contenteditable="true" data-field="topo-m13-note"></td></tr>
+        <tr><td>21</td><td>M14</td><td>料斗7 -> 出料输送</td><td>料斗7</td><td>出料口</td><td>最终出料</td><td>异常时保护 VFM3/停上游</td><td contenteditable="true" data-field="topo-m14-note"></td></tr>
+      </tbody>
+    </table>
+
+    <table>
+      <caption>1.2 锅炉/供热侧边界</caption>
+      <thead>
+        <tr>
+          <th>节点</th>
+          <th>作用</th>
+          <th>edge 行为</th>
+          <th>联锁/报警边界</th>
+          <th>现场确认</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>LL5 / M15 / I_M15 / TT1</td><td>锅炉1燃料与温度状态，服务主机2供热判断</td><td>只读，不写锅炉，不做温度 PID</td><td>低温运营报警；燃料/上料异常建议人工处理</td><td contenteditable="true" data-field="boiler1-note"></td></tr>
+        <tr><td>LL6 / M16 / I_M16 / TT2</td><td>锅炉2燃料与温度状态，服务主机4供热判断</td><td>只读，不写锅炉，不做温度 PID</td><td>低温运营报警；燃料/上料异常建议人工处理</td><td contenteditable="true" data-field="boiler2-note"></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="points" class="section-band" aria-labelledby="points-title">
+    <h2 id="points-title">2. 读点 / 写点边界</h2>
+    <div class="two-col">
+      <div>
+        <h3>2.1 当前只读输入/反馈点</h3>
+        <table>
+          <thead><tr><th>类别</th><th>点位</th><th>用途</th><th>坏值/缺失策略</th></tr></thead>
+          <tbody>
+            <tr><td>料位</td><td>LL1-LL6</td><td>补料、缓冲、锅炉燃料状态</td><td contenteditable="true" data-field="read-ll-policy">关键料位缺失时禁止自动加料</td></tr>
+            <tr><td>温度/湿度</td><td>FTT1-3, T_OUT2, T_OUT4, TT1-2, MT1</td><td>供热/排湿/质量慢判断</td><td contenteditable="true" data-field="read-temp-policy">只做诊断，不作为停主机硬联锁</td></tr>
+            <tr><td>电流</td><td>I_M1-I_M16</td><td>负载、超流、自调区/报警区判断</td><td contenteditable="true" data-field="read-current-policy">关键电流缺失时相关对象进入 WATCH 或 blocked</td></tr>
+            <tr><td>运行/输出状态</td><td>M1-M16</td><td>当前 PLC 输出/运行状态回读</td><td contenteditable="true" data-field="read-m-policy">未来需补真实 RUN_FB，不能只信命令状态</td></tr>
+            <tr><td>变频反馈</td><td>VFM1-3, VF1-3</td><td>给料/风机实际频率反馈</td><td contenteditable="true" data-field="read-vfd-policy">反馈异常时禁止依赖该回路继续自动调参</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>2.2 必补安全/反馈点</h3>
+        <table>
+          <thead><tr><th>点位/信号</th><th>涉及设备</th><th>用途</th><th>当前决定</th></tr></thead>
+          <tbody>
+            <tr><td>ESTOP / 急停 DI</td><td>整线/工位</td><td>硬安全停机</td><td contenteditable="true" data-field="missing-estop">必须硬接线/PLC/VFD，edge 只读状态</td></tr>
+            <tr><td>THERMAL_TRIP / 热继</td><td>M1-M16</td><td>过载/短路保护</td><td contenteditable="true" data-field="missing-thermal">缺失时不能声明完整安全联锁</td></tr>
+            <tr><td>VFD_FAULT</td><td>VFM1-3 / VF1-3</td><td>变频器故障</td><td contenteditable="true" data-field="missing-vfd-fault">故障时相关软点 blocked</td></tr>
+            <tr><td>RUN_FB</td><td>M1-M16</td><td>真实运行反馈</td><td contenteditable="true" data-field="missing-run-fb">未来启停/反转必须依赖</td></tr>
+            <tr><td>DIR_FB</td><td>可反转电机</td><td>方向反馈</td><td contenteditable="true" data-field="missing-dir-fb">反转清堵前后确认</td></tr>
+            <tr><td>拉绳/跑偏</td><td>传送带</td><td>人身/输送安全</td><td contenteditable="true" data-field="missing-pull-belt">必须硬安全或 PLC 侧保护</td></tr>
+            <tr><td>零速/打滑</td><td>传送带/滚筛</td><td>防止停转仍送料</td><td contenteditable="true" data-field="missing-zero-speed">没有时只能靠电流弱判断</td></tr>
+            <tr><td>高料位/溢料</td><td>料斗1-7</td><td>防溢料/堆料</td><td contenteditable="true" data-field="missing-high-level">当前单点料位不足以覆盖满仓风险</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <h3>2.3 写点/命令点草案</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:180px">写点/命令</th>
+          <th style="width:120px">阶段</th>
+          <th>写入方</th>
+          <th>用途</th>
+          <th>硬限制</th>
+          <th>是否需要人工确认</th>
+          <th>备注/现场填写</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>VFM1_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机1给料频率目标</td><td>0-50Hz；只允许通过软点写</td><td contenteditable="true" data-field="confirm-vfm1">V1 人工确认；V2/V3 再做自动降料</td><td contenteditable="true" data-field="write-vfm1-note"></td></tr>
+        <tr><td>VFM2_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机2给料频率目标</td><td>0-50Hz；M5 超流时只降不升</td><td contenteditable="true" data-field="confirm-vfm2">V1 人工确认；报警区人工</td><td contenteditable="true" data-field="write-vfm2-note"></td></tr>
+        <tr><td>VFM3_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机4给料频率目标</td><td>0-50Hz；M10 超流时只降不升</td><td contenteditable="true" data-field="confirm-vfm3">V1 人工确认；报警区人工</td><td contenteditable="true" data-field="write-vfm3-note"></td></tr>
+        <tr><td>VF1_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机1风机频率目标</td><td>不作为防堵主动作</td><td contenteditable="true" data-field="confirm-vf1">V1 人工确认</td><td contenteditable="true" data-field="write-vf1-note"></td></tr>
+        <tr><td>VF2_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机2风机频率目标</td><td>供热不足时禁止盲目加风</td><td contenteditable="true" data-field="confirm-vf2">V1 人工确认</td><td contenteditable="true" data-field="write-vf2-note"></td></tr>
+        <tr><td>VF3_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机4风机频率目标</td><td>供热不足时禁止盲目加风</td><td contenteditable="true" data-field="confirm-vf3">V1 人工确认</td><td contenteditable="true" data-field="write-vf3-note"></td></tr>
+        <tr><td>M*_RUN_CMD</td><td>V2/V3</td><td>edge / HMI</td><td>M1-M16 启停请求</td><td>必须走顺序状态机和控制权锁</td><td contenteditable="true" data-field="confirm-run-cmd">默认人工/流程确认</td><td contenteditable="true" data-field="write-run-note"></td></tr>
+        <tr><td>M*_DIR_CMD</td><td>V2/V3</td><td>edge / HMI</td><td>正反转请求</td><td>只允许清堵短时反转；限次数</td><td contenteditable="true" data-field="confirm-dir-cmd">必须人工或强门控</td><td contenteditable="true" data-field="write-dir-note"></td></tr>
+        <tr><td>M*_RESET_CMD</td><td>V2/V3</td><td>HMI</td><td>故障复位</td><td>不能自动复位硬故障</td><td contenteditable="true" data-field="confirm-reset-cmd">人工确认</td><td contenteditable="true" data-field="write-reset-note"></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="permit" class="section-band" aria-labelledby="permit-title">
+    <h2 id="permit-title">3. 全局动作许可表</h2>
+    <p class="small">任何算法动作先过这张表。这里不判断“该怎么调”，只判断“现在有没有资格动”。</p>
+    <table>
+      <thead>
+        <tr>
+          <th>许可项</th>
+          <th>允许条件</th>
+          <th>不满足时动作</th>
+          <th>适用对象</th>
+          <th>确认/备注</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>数据新鲜度</td><td>本次动作依赖的读点全部新鲜</td><td>禁止自动加料；关键点缺失进入 blocked</td><td>所有动作</td><td contenteditable="true" data-field="permit-fresh"></td></tr>
+        <tr><td>控制模式</td><td><code>CONTROL_MODE</code> 在允许列表</td><td>禁止写</td><td>所有写点</td><td contenteditable="true" data-field="permit-mode">填写允许模式，如 SEMI_AUTO / MANUAL_ASSIST</td></tr>
+        <tr><td>控制权</td><td><code>AUTHORITY_OWNER=EDGE</code></td><td>禁止写</td><td>所有写点</td><td contenteditable="true" data-field="permit-authority">V2/V3；V1 六频率 edge-api 写入不以 PLC authority token 为前置</td></tr>
+        <tr><td>HMI 直连</td><td><code>HMI_DIRECT_ENABLE=false</code></td><td>edge 禁止写，避免双写</td><td>所有写点</td><td contenteditable="true" data-field="permit-hmi">V2/V3；V1 HMI 只走 edge-api，不直连 PLC</td></tr>
+        <tr><td>维修锁</td><td><code>MAINTENANCE_LOCK=false</code></td><td>禁止写；只能人工解除</td><td>所有写点</td><td contenteditable="true" data-field="permit-maint"></td></tr>
+        <tr><td>急停/硬安全</td><td><code>EMERGENCY_STOP=false</code> 且硬安全无触发</td><td>禁止写；实际停机由硬件/PLC/VFD</td><td>所有写点</td><td contenteditable="true" data-field="permit-estop"></td></tr>
+        <tr><td>ACK/NAK 通道</td><td>DAQ/MQTT/ACK 正常</td><td>不连续重试；进入 blocked</td><td>所有写点</td><td contenteditable="true" data-field="permit-ack"></td></tr>
+        <tr><td>白名单</td><td>目标软点在允许清单内</td><td>拒绝</td><td>所有写点</td><td contenteditable="true" data-field="permit-allowlist"></td></tr>
+        <tr><td>范围</td><td>目标值在 hard range 内</td><td>拒绝；不得部分写入</td><td>所有写点</td><td contenteditable="true" data-field="permit-range">当前频率 0-50Hz</td></tr>
+        <tr><td>步长/冷却</td><td>本周期变化量、累计变化量、冷却时间满足</td><td>延后动作或只报警</td><td>算法动作</td><td contenteditable="true" data-field="permit-cooldown"></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="state-machine" class="section-band" aria-labelledby="state-title">
+    <h2 id="state-title">4. 控制状态机</h2>
+    <p class="small">建议每个控制对象都用同一套状态，避免散落 if/else。</p>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:160px">状态</th>
+          <th>进入条件</th>
+          <th>允许动作</th>
+          <th>禁止动作</th>
+          <th>退出条件</th>
+          <th>是否需要人工</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="pill ok">NORMAL</span></td><td contenteditable="true" data-field="state-normal-in">所有关键指标正常</td><td contenteditable="true" data-field="state-normal-allow">保持；后续是否允许加料待定</td><td contenteditable="true" data-field="state-normal-deny">不得跳过全局许可</td><td contenteditable="true" data-field="state-normal-out">出现 WATCH/SELF_ADJUST 触发条件</td><td contenteditable="true" data-field="state-normal-human">否</td></tr>
+        <tr><td><span class="pill warn">WATCH</span></td><td contenteditable="true" data-field="state-watch-in">轻微负载升高、趋势异常、关键点不确定</td><td contenteditable="true" data-field="state-watch-allow">观察、禁止加料、可提示</td><td contenteditable="true" data-field="state-watch-deny">禁止自动提速/加料</td><td contenteditable="true" data-field="state-watch-out">恢复稳定或进入自调区</td><td contenteditable="true" data-field="state-watch-human">通常否</td></tr>
+        <tr><td><span class="pill warn">SELF_ADJUST</span></td><td contenteditable="true" data-field="state-self-in">电流进入自调区，且未达报警线</td><td contenteditable="true" data-field="state-self-allow">按步长降给料；等待冷却；记录事件</td><td contenteditable="true" data-field="state-self-deny">禁止加料；禁止停 M5/M10</td><td contenteditable="true" data-field="state-self-out">电流回落、次数耗尽、或进入报警区</td><td contenteditable="true" data-field="state-self-human">否，除非多次无效</td></tr>
+        <tr><td><span class="pill bad">ALARM_LOCK</span></td><td contenteditable="true" data-field="state-alarm-in">超过报警线，或自调后持续不下降</td><td contenteditable="true" data-field="state-alarm-allow">报警；锁定禁止加料；建议人工检查</td><td contenteditable="true" data-field="state-alarm-deny">不再继续自动优化；不自动复位</td><td contenteditable="true" data-field="state-alarm-out">人工确认 + 指标恢复 + 复位条件满足</td><td contenteditable="true" data-field="state-alarm-human">是</td></tr>
+        <tr><td><span class="pill bad">FAULT_LOCK</span></td><td contenteditable="true" data-field="state-fault-in">热继/VFD/急停/RUN_FB 异常/硬故障</td><td contenteditable="true" data-field="state-fault-allow">保持锁定；只读状态；人工处理</td><td contenteditable="true" data-field="state-fault-deny">禁止自动重启/反转/复位</td><td contenteditable="true" data-field="state-fault-out">现场排障 + 人工复位 + 控制权重新授权</td><td contenteditable="true" data-field="state-fault-human">是</td></tr>
+      </tbody>
+    </table>
+    <label for="state-notes"><strong>状态机补充说明</strong></label>
+    <textarea id="state-notes" data-field="state-notes" placeholder="填写状态流转例外、人工复位要求、事件记录要求等。"></textarea>
+  </section>
+
+  <section id="matrix" class="section-band" aria-labelledby="matrix-title">
+    <h2 id="matrix-title">5. 安全联锁矩阵</h2>
+    <section class="notice danger-note">
+      <p><strong>硬安全边界</strong>：急停、热继、VFD 故障、跑偏拉绳等必须由硬接线/PLC/VFD/设备自保护兜底。edge 软件联锁只能作为动作许可和工艺降载，不能替代硬安全。</p>
+    </section>
+
+    <h3>5.1 给料软点联锁</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:130px">软点</th>
+          <th>保护链路</th>
+          <th>关键输入</th>
+          <th>禁止加料条件</th>
+          <th>自调区动作</th>
+          <th>报警区动作</th>
+          <th>备注/待填</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>VFM1_FREQ_SP</td><td>主机1及主机1出料</td><td>M3, M4, LL2, LL3, I_M3, I_M4, VFM1</td><td contenteditable="true" data-field="matrix-vfm1-deny">M3/M4 异常；LL3 满；I_M3/I_M4 高；LL2 缺料时不加</td><td contenteditable="true" data-field="matrix-vfm1-self">按步长降低 VFM1</td><td contenteditable="true" data-field="matrix-vfm1-alarm">锁定禁止加料，报警人工检查主机1/出料链</td><td contenteditable="true" data-field="matrix-vfm1-note"></td></tr>
+        <tr><td>VFM2_FREQ_SP</td><td>主机2 -> 发酵仓 -> 料斗5</td><td>M5-M9, LL3, LL4, I_M5-I_M9, VFM2</td><td contenteditable="true" data-field="matrix-vfm2-deny">M5 超流；M6/M7/M8/M9 异常；LL4 满；下游无法排料</td><td contenteditable="true" data-field="matrix-vfm2-self">I_M5 自调区内降低 VFM2；M5 不停；下游尽量排料</td><td contenteditable="true" data-field="matrix-vfm2-alarm">超过 I_M5 报警线后停止优化，禁止加料，建议人工</td><td contenteditable="true" data-field="matrix-vfm2-note"></td></tr>
+        <tr><td>VFM3_FREQ_SP</td><td>主机4 -> 料斗6 -> 滚筛 -> 出料</td><td>M10-M14, LL4, MT1, I_M10-I_M14, VFM3</td><td contenteditable="true" data-field="matrix-vfm3-deny">M10 超流；M11-M14 异常；LL4 缺料时不加；下游堵塞</td><td contenteditable="true" data-field="matrix-vfm3-self">I_M10 自调区内降低 VFM3；M10 不停；下游尽量排料</td><td contenteditable="true" data-field="matrix-vfm3-alarm">超过 I_M10 报警线后停止优化，禁止加料，建议人工</td><td contenteditable="true" data-field="matrix-vfm3-note"></td></tr>
+      </tbody>
+    </table>
+
+    <h3>5.2 主机2 / 主机4超流专表</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:110px">主机</th>
+          <th>超流输入</th>
+          <th>edge 可自动处理范围</th>
+          <th>edge 自调动作</th>
+          <th>超过报警线</th>
+          <th>硬故障/跳闸</th>
+          <th>人工介入说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>M5 / 主机2</td><td>I_M5</td><td contenteditable="true" data-field="m5-auto-range">I_warn <= I_M5 < I_alarm</td><td contenteditable="true" data-field="m5-auto-action">降 VFM2；M5 保持运行；M6/M7/M8 尽量排料</td><td contenteditable="true" data-field="m5-alarm-action">停止继续优化，禁止加料，报警</td><td contenteditable="true" data-field="m5-fault-action">PLC/VFD/热继处理；edge 不自动恢复</td><td contenteditable="true" data-field="m5-human-note"></td></tr>
+        <tr><td>M10 / 主机4</td><td>I_M10</td><td contenteditable="true" data-field="m10-auto-range">I_warn <= I_M10 < I_alarm</td><td contenteditable="true" data-field="m10-auto-action">降 VFM3；M10 保持运行；M11-M14 尽量排料</td><td contenteditable="true" data-field="m10-alarm-action">停止继续优化，禁止加料，报警</td><td contenteditable="true" data-field="m10-fault-action">PLC/VFD/热继处理；edge 不自动恢复</td><td contenteditable="true" data-field="m10-human-note"></td></tr>
+      </tbody>
+    </table>
+
+    <h3>5.3 M1-M16 启停/正反转未来边界</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:110px">对象</th>
+          <th>普通启停</th>
+          <th>联锁停机</th>
+          <th>反转清堵</th>
+          <th>默认禁止</th>
+          <th>现场确认</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>M1</td><td contenteditable="true" data-field="m1-run">按 LL1 补料逻辑</td><td contenteditable="true" data-field="m1-stop">过流/料满/硬故障</td><td contenteditable="true" data-field="m1-rev">可作为候选，需 RUN_FB/DIR_FB</td><td contenteditable="true" data-field="m1-deny">禁止自动连续反转</td><td contenteditable="true" data-field="m1-confirm"></td></tr>
+        <tr><td>M2</td><td contenteditable="true" data-field="m2-run">按 LL2 补料逻辑</td><td contenteditable="true" data-field="m2-stop">过流/料满/硬故障</td><td contenteditable="true" data-field="m2-rev">可作为候选，需 RUN_FB/DIR_FB</td><td contenteditable="true" data-field="m2-deny">禁止自动连续反转</td><td contenteditable="true" data-field="m2-confirm"></td></tr>
+        <tr><td>M3</td><td contenteditable="true" data-field="m3-run">整线顺序控制</td><td contenteditable="true" data-field="m3-stop">硬安全/本地人工</td><td contenteditable="true" data-field="m3-rev">默认不允许</td><td contenteditable="true" data-field="m3-deny">edge 防堵不主动停主机1，待确认</td><td contenteditable="true" data-field="m3-confirm"></td></tr>
+        <tr><td>M4</td><td contenteditable="true" data-field="m4-run">M3 运行且 LL3 未满</td><td contenteditable="true" data-field="m4-stop">LL3 满/过流/硬故障</td><td contenteditable="true" data-field="m4-rev">可作为候选</td><td contenteditable="true" data-field="m4-deny"></td><td contenteditable="true" data-field="m4-confirm"></td></tr>
+        <tr><td>M5</td><td contenteditable="true" data-field="m5-run">整线顺序控制</td><td contenteditable="true" data-field="m5-stop">硬安全/本地人工</td><td contenteditable="true" data-field="m5-rev">默认不允许</td><td contenteditable="true" data-field="m5-deny">edge 防堵不主动停主机2</td><td contenteditable="true" data-field="m5-confirm"></td></tr>
+        <tr><td>M6/M7</td><td contenteditable="true" data-field="m6m7-run">M8 就绪后运行</td><td contenteditable="true" data-field="m6m7-stop">过流/下游故障/硬故障</td><td contenteditable="true" data-field="m6m7-rev">可作为候选，需互锁</td><td contenteditable="true" data-field="m6m7-deny"></td><td contenteditable="true" data-field="m6m7-confirm"></td></tr>
+        <tr><td>M8</td><td contenteditable="true" data-field="m8-run">发酵仓主电机</td><td contenteditable="true" data-field="m8-stop">硬安全/本地人工/严重故障</td><td contenteditable="true" data-field="m8-rev">默认不允许</td><td contenteditable="true" data-field="m8-deny">不作为 edge 清堵反转对象</td><td contenteditable="true" data-field="m8-confirm"></td></tr>
+        <tr><td>M9</td><td contenteditable="true" data-field="m9-run">M8 运行且 LL4 未满</td><td contenteditable="true" data-field="m9-stop">LL4 满/过流/硬故障</td><td contenteditable="true" data-field="m9-rev">可作为候选</td><td contenteditable="true" data-field="m9-deny"></td><td contenteditable="true" data-field="m9-confirm"></td></tr>
+        <tr><td>M10</td><td contenteditable="true" data-field="m10-run">整线顺序控制</td><td contenteditable="true" data-field="m10-stop">硬安全/本地人工</td><td contenteditable="true" data-field="m10-rev">默认不允许</td><td contenteditable="true" data-field="m10-deny">edge 防堵不主动停主机4</td><td contenteditable="true" data-field="m10-confirm"></td></tr>
+        <tr><td>M11/M12</td><td contenteditable="true" data-field="m11m12-run">下游排料链</td><td contenteditable="true" data-field="m11m12-stop">过流/下游故障/硬故障</td><td contenteditable="true" data-field="m11m12-rev">可作为候选，需互锁</td><td contenteditable="true" data-field="m11m12-deny"></td><td contenteditable="true" data-field="m11m12-confirm"></td></tr>
+        <tr><td>M13</td><td contenteditable="true" data-field="m13-run">滚筛</td><td contenteditable="true" data-field="m13-stop">堵筛/过流/硬故障</td><td contenteditable="true" data-field="m13-rev">默认人工确认</td><td contenteditable="true" data-field="m13-deny">机械是否允许反转待确认</td><td contenteditable="true" data-field="m13-confirm"></td></tr>
+        <tr><td>M14</td><td contenteditable="true" data-field="m14-run">最终出料</td><td contenteditable="true" data-field="m14-stop">过流/出料通道异常</td><td contenteditable="true" data-field="m14-rev">可作为候选</td><td contenteditable="true" data-field="m14-deny"></td><td contenteditable="true" data-field="m14-confirm"></td></tr>
+        <tr><td>M15/M16</td><td contenteditable="true" data-field="m15m16-run">锅炉上料</td><td contenteditable="true" data-field="m15m16-stop">锅炉/燃料/硬故障</td><td contenteditable="true" data-field="m15m16-rev">默认不纳入 edge 清堵</td><td contenteditable="true" data-field="m15m16-deny">锅炉系统独立处理</td><td contenteditable="true" data-field="m15m16-confirm"></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="thresholds" class="section-band" aria-labelledby="threshold-title">
+    <h2 id="threshold-title">6. 阈值含义与待填参数</h2>
+    <p class="small">先填“语义”和“百分比/相对值”，拿到铭牌/变频器参数后再落具体数值。</p>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:120px">对象</th>
+          <th>额定电流</th>
+          <th>I_warn</th>
+          <th>I_control_hi</th>
+          <th>I_alarm</th>
+          <th>I_trip</th>
+          <th>持续周期</th>
+          <th>降料步长</th>
+          <th>冷却时间</th>
+          <th>safe_low</th>
+          <th>人工复位条件</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>M5 / 主机2</td><td contenteditable="true" data-field="m5-rated">待填 A</td><td contenteditable="true" data-field="m5-warn">额定 x ?%</td><td contenteditable="true" data-field="m5-control-hi">额定 x ?%</td><td contenteditable="true" data-field="m5-alarm">额定 x ?%</td><td contenteditable="true" data-field="m5-trip">热继/VFD</td><td contenteditable="true" data-field="m5-cycles">N=?</td><td contenteditable="true" data-field="m5-step">? Hz</td><td contenteditable="true" data-field="m5-cooldown">? s</td><td contenteditable="true" data-field="m5-safe-low">? Hz</td><td contenteditable="true" data-field="m5-reset"></td></tr>
+        <tr><td>M10 / 主机4</td><td contenteditable="true" data-field="m10-rated">待填 A</td><td contenteditable="true" data-field="m10-warn">额定 x ?%</td><td contenteditable="true" data-field="m10-control-hi">额定 x ?%</td><td contenteditable="true" data-field="m10-alarm">额定 x ?%</td><td contenteditable="true" data-field="m10-trip">热继/VFD</td><td contenteditable="true" data-field="m10-cycles">N=?</td><td contenteditable="true" data-field="m10-step">? Hz</td><td contenteditable="true" data-field="m10-cooldown">? s</td><td contenteditable="true" data-field="m10-safe-low">? Hz</td><td contenteditable="true" data-field="m10-reset"></td></tr>
+        <tr><td>VFM1</td><td contenteditable="true" data-field="vfm1-rated">不适用/待填</td><td contenteditable="true" data-field="vfm1-warn"></td><td contenteditable="true" data-field="vfm1-control-hi"></td><td contenteditable="true" data-field="vfm1-alarm"></td><td contenteditable="true" data-field="vfm1-trip"></td><td contenteditable="true" data-field="vfm1-cycles"></td><td contenteditable="true" data-field="vfm1-step">? Hz</td><td contenteditable="true" data-field="vfm1-cooldown">? s</td><td contenteditable="true" data-field="vfm1-safe-low">? Hz</td><td contenteditable="true" data-field="vfm1-reset"></td></tr>
+        <tr><td>VFM2</td><td contenteditable="true" data-field="vfm2-rated">不适用/待填</td><td contenteditable="true" data-field="vfm2-warn"></td><td contenteditable="true" data-field="vfm2-control-hi"></td><td contenteditable="true" data-field="vfm2-alarm"></td><td contenteditable="true" data-field="vfm2-trip"></td><td contenteditable="true" data-field="vfm2-cycles"></td><td contenteditable="true" data-field="vfm2-step">? Hz</td><td contenteditable="true" data-field="vfm2-cooldown">? s</td><td contenteditable="true" data-field="vfm2-safe-low">? Hz</td><td contenteditable="true" data-field="vfm2-reset"></td></tr>
+        <tr><td>VFM3</td><td contenteditable="true" data-field="vfm3-rated">不适用/待填</td><td contenteditable="true" data-field="vfm3-warn"></td><td contenteditable="true" data-field="vfm3-control-hi"></td><td contenteditable="true" data-field="vfm3-alarm"></td><td contenteditable="true" data-field="vfm3-trip"></td><td contenteditable="true" data-field="vfm3-cycles"></td><td contenteditable="true" data-field="vfm3-step">? Hz</td><td contenteditable="true" data-field="vfm3-cooldown">? s</td><td contenteditable="true" data-field="vfm3-safe-low">? Hz</td><td contenteditable="true" data-field="vfm3-reset"></td></tr>
+      </tbody>
+    </table>
+
+    <h3>6.1 阈值语义固定区</h3>
+    <table>
+      <thead><tr><th>参数</th><th>含义</th><th>edge 行为</th><th>是否可入库配置</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td>I_warn</td><td>开始关注的负载上沿</td><td>进入 WATCH；禁止加料</td><td contenteditable="true" data-field="db-i-warn">是</td><td contenteditable="true" data-field="meaning-i-warn"></td></tr>
+        <tr><td>I_control_hi</td><td>自调区上沿或加大降料步长边界</td><td>进入 SELF_ADJUST；小步降料</td><td contenteditable="true" data-field="db-i-control-hi">是</td><td contenteditable="true" data-field="meaning-i-control-hi"></td></tr>
+        <tr><td>I_alarm</td><td>超过后不再自动优化</td><td>ALARM_LOCK；禁止加料；人工介入</td><td contenteditable="true" data-field="db-i-alarm">是，但需权限/审计</td><td contenteditable="true" data-field="meaning-i-alarm"></td></tr>
+        <tr><td>I_trip</td><td>硬保护线/热继/VFD 跳闸</td><td>FAULT_LOCK；edge 不自动恢复</td><td contenteditable="true" data-field="db-i-trip">不应只靠数据库</td><td contenteditable="true" data-field="meaning-i-trip">应在硬件/VFD/PLC 落地</td></tr>
+        <tr><td>safe_low</td><td>保守低给料频率</td><td>严重自调或人工确认后使用</td><td contenteditable="true" data-field="db-safe-low">是</td><td contenteditable="true" data-field="meaning-safe-low"></td></tr>
+        <tr><td>cooldown_sec</td><td>两次自动动作之间等待时间</td><td>避免抖动和连续追调</td><td contenteditable="true" data-field="db-cooldown">是</td><td contenteditable="true" data-field="meaning-cooldown"></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="open-items" class="section-band" aria-labelledby="open-title">
+    <h2 id="open-title">7. 待定项 / 决策记录</h2>
+    <table>
+      <thead><tr><th style="width:80px">编号</th><th>问题</th><th>当前倾向</th><th>负责人/来源</th><th>结论</th></tr></thead>
+      <tbody>
+        <tr><td>Q1</td><td>M5 主机2“不主动停”的例外边界是什么？</td><td>仅硬安全/本地人工/有序停机可停</td><td contenteditable="true" data-field="q1-owner"></td><td contenteditable="true" data-field="q1-result"></td></tr>
+        <tr><td>Q2</td><td>M10 主机4“不主动停”的例外边界是什么？</td><td>仅硬安全/本地人工/有序停机可停</td><td contenteditable="true" data-field="q2-owner"></td><td contenteditable="true" data-field="q2-result"></td></tr>
+        <tr><td>Q3</td><td>M1-M16 哪些机械结构允许反转？</td><td>输送类候选，主机/发酵仓/锅炉默认不允许</td><td contenteditable="true" data-field="q3-owner"></td><td contenteditable="true" data-field="q3-result"></td></tr>
+        <tr><td>Q4</td><td>报警区是否允许 edge 一次性降到 0？</td><td>超过 I_alarm 后停止优化，禁止加料，人工介入</td><td contenteditable="true" data-field="q4-owner"></td><td contenteditable="true" data-field="q4-result"></td></tr>
+        <tr><td>Q5</td><td>高料位/溢料点是否补充？</td><td>建议补，否则只能靠单点料位弱判断</td><td contenteditable="true" data-field="q5-owner"></td><td contenteditable="true" data-field="q5-result"></td></tr>
+        <tr><td>Q6</td><td>RUN_FB / DIR_FB / VFD_FAULT 是否纳入第一批补点？</td><td>启停/反转前必须补</td><td contenteditable="true" data-field="q6-owner"></td><td contenteditable="true" data-field="q6-result"></td></tr>
+        <tr><td contenteditable="true" data-field="q7-id">Q7</td><td contenteditable="true" data-field="q7-question"></td><td contenteditable="true" data-field="q7-bias"></td><td contenteditable="true" data-field="q7-owner"></td><td contenteditable="true" data-field="q7-result"></td></tr>
+        <tr><td contenteditable="true" data-field="q8-id">Q8</td><td contenteditable="true" data-field="q8-question"></td><td contenteditable="true" data-field="q8-bias"></td><td contenteditable="true" data-field="q8-owner"></td><td contenteditable="true" data-field="q8-result"></td></tr>
+      </tbody>
+    </table>
+
+    <h3>7.1 其他说明</h3>
+    <textarea data-field="free-notes" placeholder="填写现场经验、异常案例、需要我后续转成数据库参数/代码规则的内容。"></textarea>
+
+    <h3>7.2 签收</h3>
+    <table>
+      <thead><tr><th>角色</th><th>姓名</th><th>日期</th><th>意见</th></tr></thead>
+      <tbody>
+        <tr><td>工艺/现场</td><td contenteditable="true" data-field="sign-process-name"></td><td contenteditable="true" data-field="sign-process-date"></td><td contenteditable="true" data-field="sign-process-note"></td></tr>
+        <tr><td>软件/edge</td><td contenteditable="true" data-field="sign-edge-name"></td><td contenteditable="true" data-field="sign-edge-date"></td><td contenteditable="true" data-field="sign-edge-note"></td></tr>
+        <tr><td>PLC/电气</td><td contenteditable="true" data-field="sign-plc-name"></td><td contenteditable="true" data-field="sign-plc-date"></td><td contenteditable="true" data-field="sign-plc-note"></td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+(() => {
+  const storageKey = "drycontroller-control-interlock-matrix-form-v1";
+  const status = document.getElementById("save-status");
+  const fields = () => Array.from(document.querySelectorAll("[data-field]"));
+
+  function fieldKey(el, index) {
+    return el.getAttribute("data-field") || `field-${index}`;
+  }
+
+  function getValue(el) {
+    if (el instanceof HTMLInputElement) {
+      if (el.type === "checkbox") return el.checked;
+      return el.value;
+    }
+    if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return el.value;
+    return el.innerHTML;
+  }
+
+  function setValue(el, value) {
+    if (value === undefined || value === null) return;
+    if (el instanceof HTMLInputElement) {
+      if (el.type === "checkbox") el.checked = Boolean(value);
+      else el.value = String(value);
+      return;
+    }
+    if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+      el.value = String(value);
+      return;
+    }
+    el.innerHTML = String(value);
+  }
+
+  function saveDraft() {
+    const data = {};
+    fields().forEach((el, index) => {
+      data[fieldKey(el, index)] = getValue(el);
+    });
+    localStorage.setItem(storageKey, JSON.stringify(data));
+    if (status) status.textContent = `已暂存 ${new Date().toLocaleTimeString()}`;
+  }
+
+  function loadDraft() {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      fields().forEach((el, index) => setValue(el, data[fieldKey(el, index)]));
+      if (status) status.textContent = "已载入本机暂存";
+    } catch {
+      if (status) status.textContent = "暂存读取失败";
+    }
+  }
+
+  function syncFormValues(root) {
+    root.querySelectorAll("textarea").forEach((el) => {
+      el.textContent = el.value;
+    });
+    root.querySelectorAll("input").forEach((el) => {
+      if (el.type === "checkbox") {
+        if (el.checked) el.setAttribute("checked", "checked");
+        else el.removeAttribute("checked");
+      } else {
+        el.setAttribute("value", el.value);
+      }
+    });
+    root.querySelectorAll("select").forEach((el) => {
+      Array.from(el.options).forEach((option) => {
+        if (option.selected) option.setAttribute("selected", "selected");
+        else option.removeAttribute("selected");
+      });
+    });
+  }
+
+  function exportHtml() {
+    saveDraft();
+    const clone = document.documentElement.cloneNode(true);
+    syncFormValues(clone);
+    const html = "<!DOCTYPE html>\n" + clone.outerHTML;
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 13);
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `control-interlock-matrix-filled-${stamp}.html`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+    if (status) status.textContent = "已导出填写版 HTML";
+  }
+
+  loadDraft();
+  fields().forEach((el) => {
+    el.addEventListener("input", saveDraft);
+    el.addEventListener("change", saveDraft);
+  });
+  document.getElementById("export-html")?.addEventListener("click", exportHtml);
+  document.getElementById("print-page")?.addEventListener("click", () => window.print());
+  document.getElementById("clear-draft")?.addEventListener("click", () => {
+    if (!confirm("清空本机暂存？当前页面内容不会自动恢复。")) return;
+    localStorage.removeItem(storageKey);
+    if (status) status.textContent = "本机暂存已清空";
+  });
+})();
+</script>
+</body>
+</html>
