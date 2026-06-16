@@ -45,6 +45,25 @@ def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 name = tag.get("name")
                 if name:
                     index[name] = tag
+    # 控制写软点的寄存器地址来自中间层 configs/modbus-address-map.yaml（位号→地址），
+    # 不再从只读 tags.yaml 取。带 writable=true 的条目即 V1 控制软点（六个 *_FREQ_SP）；
+    # range/unit 与 edge-api ALLOWED_CONTROL_SOFTPOINTS 镜像，edge-daq 独立做范围兜底
+    # （纵深防御，见 P0-CTRL-NAK）。address/scale 在集成商签收前为 "TBD"。
+    address_map = config.get("modbus_address_map", {})
+    if isinstance(address_map, dict):
+        for name, entry in address_map.items():
+            if not isinstance(entry, dict) or not entry.get("writable"):
+                continue
+            index[name] = {
+                "name": name,
+                "type": entry.get("type", "float"),
+                "address": entry.get("address"),
+                "scale": entry.get("scale", 1.0),
+                "byte_order": entry.get("byte_order", "big"),
+                "range": entry.get("range"),
+                "unit": entry.get("unit", ""),
+                "control_enabled": True,
+            }
     return index
 
 
@@ -379,10 +398,23 @@ class ControlSubscriber:
         tag_type = str(tag_config.get("type", "float")).lower()
         address = tag_config.get("address")
         byte_order = tag_config.get("byte_order", "big")
-        scale = float(tag_config.get("scale", 1.0) or 1.0)
         if address is None:
             logger.error("control_missing_address", tag=tag_name)
             return self._reject(msg_id, tag_name, value, "missing_address")
+        # Fail-closed：中间层地址/scale 在 PLC 集成商签收前为 "TBD"（非数值）。
+        # 绝不能把 "TBD" 当寄存器地址/比例写下去，必须 NAK。bool 是 int 子类需单独排除。
+        scale_raw = tag_config.get("scale", 1.0)
+        if (
+            not isinstance(address, int)
+            or isinstance(address, bool)
+            or not isinstance(scale_raw, (int, float))
+            or isinstance(scale_raw, bool)
+        ):
+            logger.error(
+                "control_address_not_configured", tag=tag_name, address=address, scale=scale_raw
+            )
+            return self._reject(msg_id, tag_name, value, "address_not_configured")
+        scale = float(scale_raw) or 1.0
 
         # 工程值 -> 寄存器值转换
         reg_value = value

@@ -545,6 +545,72 @@ async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
     assert len(modbus.calls) == 2
 
 
+def _address_map_softpoint(address: object, scale: object = 1.0):
+    return {
+        "modbus_address_map": {
+            "VFM1_FREQ_SP": {
+                "address": address,
+                "function_code": 6,
+                "scale": scale,
+                "byte_order": "big",
+                "writable": True,
+                "type": "float",
+                "range": [0.0, 50.0],
+                "unit": "Hz",
+            }
+        }
+    }
+
+
+def test_control_softpoint_from_address_map_tbd_rejected(monkeypatch):
+    # 中间层软点地址在 PLC 集成商签收前为 "TBD"，必须 NAK，绝不把 "TBD" 当地址下发。
+    config = _address_map_softpoint(address="TBD", scale="TBD")
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
+
+    cs._on_message(
+        None, None, FakeMQTTMsg(json.dumps({"tag": "VFM1_FREQ_SP", "value": 25, "id": "tbd"}).encode())
+    )
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "tbd"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "address_not_configured"
+
+
+def test_control_softpoint_from_address_map_configured_writes(monkeypatch):
+    # 集成商回填真实地址后，软点经中间层解析并写入。
+    config = _address_map_softpoint(address=40100, scale=1.0)
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
+
+    cs._on_message(
+        None, None, FakeMQTTMsg(json.dumps({"tag": "VFM1_FREQ_SP", "value": 25.0, "id": "ok"}).encode())
+    )
+
+    assert modbus.writes == 1
+    kind, address, reg_value, _ = modbus.calls[0]
+    assert kind == "float"
+    assert address == 40100
+    assert reg_value == 25.0
+    ack = _last_ack(cs)
+    assert ack["status"] == "success"
+
+
+def test_control_softpoint_from_address_map_out_of_range_rejected(monkeypatch):
+    # 中间层软点仍受 edge-daq 独立 range guard（纵深防御）。
+    config = _address_map_softpoint(address=40100, scale=1.0)
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
+
+    cs._on_message(
+        None, None, FakeMQTTMsg(json.dumps({"tag": "VFM1_FREQ_SP", "value": 75, "id": "hi"}).encode())
+    )
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "value_out_of_range"
+
+
 def test_control_disabled_or_bad_tag(monkeypatch):
     modbus = FakeModbus()
     monkeypatch.setenv("CONTROL_REQUIRE_ID", "false")

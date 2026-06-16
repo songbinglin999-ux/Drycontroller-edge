@@ -124,7 +124,19 @@ class DAQService:
         
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
-        
+
+        # 中间层：寄存器地址（位号→地址）与控制写软点从 configs/modbus-address-map.yaml 取，
+        # 不内嵌在只读 tags.yaml 里。带 writable 的条目即 V1 六个频率控制软点。
+        address_map_path = Path(os.getenv("MODBUS_ADDRESS_MAP", "/app/configs/modbus-address-map.yaml"))
+        address_map = {}
+        if address_map_path.exists():
+            with open(address_map_path, "r") as f:
+                address_map = yaml.safe_load(f) or {}
+        else:
+            logger.warning("modbus_address_map_not_found", path=str(address_map_path))
+        if isinstance(self.config, dict):
+            self.config["modbus_address_map"] = address_map
+
         logger.info("config_loaded", tags_count=len(self.config.get("tags", {})))
         return self.config
     
