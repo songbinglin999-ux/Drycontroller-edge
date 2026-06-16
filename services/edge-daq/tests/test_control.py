@@ -252,6 +252,36 @@ async def test_control_replay_dropped(monkeypatch):
     assert ack["reason"] == "replay_detected"
 
 
+def test_control_replay_reservation_is_atomic(monkeypatch):
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
+    assert cs._remember_id_if_new("reserved") is True
+    assert cs._remember_id_if_new("reserved") is False
+
+    payload = {"tag": CONTROL_TAG, "value": 10, "id": "reserved", "ts": time.time()}
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps(payload).encode()))
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "reserved"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "replay_detected"
+
+
+def test_control_closed_captured_loop_falls_back_without_crash(monkeypatch):
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
+    loop = asyncio.new_event_loop()
+    loop.close()
+    cs._loop = loop
+
+    payload = {"tag": CONTROL_TAG, "value": 10, "id": "closed-loop", "ts": time.time()}
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps(payload).encode()))
+
+    assert modbus.writes == 1
+    ack = _last_ack(cs)
+    assert ack["id"] == "closed-loop"
+    assert ack["status"] == "success"
+
+
 def test_control_ack_publishes(monkeypatch):
     cs, _ = _mk_sub(monkeypatch, require_sig=False, secret=None)
     msg_id = "abc"

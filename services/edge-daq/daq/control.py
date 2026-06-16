@@ -9,6 +9,7 @@ import math
 import os
 import time
 import asyncio
+import threading
 from typing import Any, Dict, Optional
 from collections import deque
 import hmac
@@ -105,6 +106,7 @@ class ControlSubscriber:
         cache_size = int(os.getenv("CONTROL_ID_CACHE_SIZE", "1000") or "1000")
         self._id_cache = deque(maxlen=cache_size)
         self._id_cache_set = set()
+        self._id_cache_lock = threading.Lock()
         # asyncio 主事件循环（用于从 MQTT 回调线程安全调度协程）
         self._loop = None
         self.started = False
@@ -328,7 +330,7 @@ class ControlSubscriber:
         else:
             msg_ts_f = None
 
-        if msg_id and self._is_duplicate(msg_id):
+        if msg_id and self._is_duplicate(str(msg_id)):
             CONTROL_REPLAY_DROPPED.inc()
             logger.warning("control_replay_detected", id=msg_id)
             return self._reject(msg_id, tag_name, value, "replay_detected", remember=False)
@@ -464,16 +466,31 @@ class ControlSubscriber:
                 )
                 self._ack(msg_id, tag_name, "error", value, reason="plc_write_error", detail={"error": str(e)})
 
-        # 注意：paho-mqtt 的 on_message 回调运行在其网络线程中。
-        # 在真实运行时该线程通常没有 asyncio 事件循环；直接 get_event_loop() 可能抛异常导致控制失效。
-        # - 如果当前线程就是 asyncio 主循环线程：直接 create_task
-        # - 否则：用 run_coroutine_threadsafe 安全投递到 start() 捕获的主循环
+        if msg_id and not self._remember_id_if_new(str(msg_id)):
+            CONTROL_REPLAY_DROPPED.inc()
+            logger.warning("control_replay_detected", id=msg_id)
+            return self._reject(msg_id, tag_name, value, "replay_detected", remember=False)
+
+        self._dispatch_write(_do_write)
+        self.last_sent_ts[tag_name] = now
+
+    def _dispatch_write(self, write_coro_factory):
+        """把写 PLC 协程投递到可用事件循环；captured loop 已关闭时走同步兜底。"""
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(_do_write())
+            loop.create_task(write_coro_factory())
+            return
         except RuntimeError:
-            if self._loop:
-                fut = asyncio.run_coroutine_threadsafe(_do_write(), self._loop)
+            pass
+
+        loop = self._loop
+        if loop and not loop.is_closed():
+            coro = write_coro_factory()
+            try:
+                fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            except RuntimeError:
+                coro.close()
+            else:
                 # 不阻塞回调线程；记录可能的异常（避免静默失败）
                 def _log_future_result(f):
                     try:
@@ -484,23 +501,26 @@ class ControlSubscriber:
                         return
 
                 fut.add_done_callback(_log_future_result)
-            else:
-                # 最后兜底：没有可用 loop 时直接同步运行（避免静默丢控制）
-                asyncio.run(_do_write())
-        self.last_sent_ts[tag_name] = now
-        if msg_id:
-            self._remember_id(msg_id)
+                return
 
-    def _remember_id(self, msg_id: str):
-        """将已处理的消息 ID 放入去重缓存。"""
-        if len(self._id_cache) >= self._id_cache.maxlen:
-            old = self._id_cache.popleft()
-            self._id_cache_set.discard(old)
-        self._id_cache.append(msg_id)
-        self._id_cache_set.add(msg_id)
+        # 最后兜底：没有可用 loop 时直接同步运行（避免静默丢控制）
+        asyncio.run(write_coro_factory())
+
+    def _remember_id_if_new(self, msg_id: str) -> bool:
+        """原子保留消息 ID；返回 False 表示重复消息。"""
+        with self._id_cache_lock:
+            if msg_id in self._id_cache_set:
+                return False
+            if len(self._id_cache) >= self._id_cache.maxlen:
+                old = self._id_cache.popleft()
+                self._id_cache_set.discard(old)
+            self._id_cache.append(msg_id)
+            self._id_cache_set.add(msg_id)
+            return True
 
     def _is_duplicate(self, msg_id: str) -> bool:
-        return msg_id in self._id_cache_set
+        with self._id_cache_lock:
+            return msg_id in self._id_cache_set
 
     def _reject(
         self,
@@ -514,8 +534,8 @@ class ControlSubscriber:
     ):
         """发布拒绝 NAK；有 id 的拒绝也进入幂等缓存，避免同一命令之后被接受。"""
         self._ack(msg_id, tag, "nak", value, reason=reason, detail=detail)
-        if remember and msg_id and not self._is_duplicate(str(msg_id)):
-            self._remember_id(str(msg_id))
+        if remember and msg_id:
+            self._remember_id_if_new(str(msg_id))
 
     def _ack(
         self,
