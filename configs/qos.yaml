@@ -54,7 +54,7 @@ rate_limiting:
     
   # 按 API 端点限流
   by_endpoint:
-    - path: "/api/v1/data/realtime"
+    - path: "/api/realtime/latest"
       requests_per_minute: 120
       
     - path: "/api/v1/control/*"

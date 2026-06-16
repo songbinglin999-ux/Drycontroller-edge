@@ -80,7 +80,7 @@ http://localhost:8000/docs
 curl http://localhost:8000/health
 
 # 获取实时数据
-curl http://localhost:8000/api/v1/data/realtime
+curl http://localhost:8000/api/realtime/latest
 
 # 获取系统状态
 curl http://localhost:8000/api/v1/system/status
@@ -92,10 +92,10 @@ curl http://localhost:8000/api/v1/system/status
 
 ```bash
 # 获取所有实时数据
-curl http://localhost:8000/api/v1/data/realtime | jq
+curl http://localhost:8000/api/realtime/latest | jq
 
 # 获取特定标签（当前 SSOT 使用 io-map V2 位号）
-curl "http://localhost:8000/api/v1/data/realtime?tags=FTT1,VF1" | jq
+curl "http://localhost:8000/api/realtime/latest?tags=FTT1&tags=VF1" | jq
 ```
 
 ### 方式 2: 订阅 MQTT

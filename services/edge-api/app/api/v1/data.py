@@ -2,79 +2,15 @@
 数据查询 API（v1）
 """
 
-# pyright: reportMissingImports=false
-
-from typing import List, Optional
-
-import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends
 
 from app.services.realtime_data import (
     RealtimeDataService,
     get_realtime_data_service,
 )
+from app.core.security import require_readonly_http_source
 
-router = APIRouter()
-logger = structlog.get_logger(__name__)
-
-def _normalize_tags(tags: Optional[List[str]]) -> Optional[List[str]]:
-    """
-    FastAPI 对 List[str] 的 Query 默认只支持多次传参：
-      ?tags=a&tags=b
-    但前端/脚本经常会传逗号分隔：
-      ?tags=a,b
-    这里做兼容：支持“多值 + 逗号分隔”混用。
-    """
-    if not tags:
-        return None
-    out: list[str] = []
-    for item in tags:
-        if not item:
-            continue
-        parts = [p.strip() for p in item.split(",")]
-        out.extend([p for p in parts if p])
-    return out or None
-
-
-@router.get("/realtime")
-async def get_realtime_data(
-    tags: Optional[List[str]] = Query(None, description="标签列表"),
-    lookback: str = Query("5m", description="查询时间窗口，例：5m/1h/1d"),
-    service: RealtimeDataService = Depends(get_realtime_data_service),
-):
-    """
-    获取实时数据（等价于 `/api/realtime/latest`）
-    """
-    tags = _normalize_tags(tags)
-    try:
-        return await service.get_latest_payload(tags, lookback=lookback)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-
-@router.get("/history")
-async def get_history_data(
-    tag: str = Query(..., description="标签名称"),
-    period: str = Query("1h", description="查询时间范围（例如 1h/6h/1d）"),
-    window: str = Query("1m", description="聚合窗口（例如 1m/5m/1h）"),
-    aggregation: str = Query(
-        "mean",
-        description="聚合函数：mean/max/min/sum/last/first",
-    ),
-    service: RealtimeDataService = Depends(get_realtime_data_service),
-):
-    """
-    查询历史数据
-    """
-    try:
-        return await service.get_history_payload(
-            tag=tag,
-            period=period,
-            window=window,
-            aggregation=aggregation,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+router = APIRouter(dependencies=[Depends(require_readonly_http_source)])
 
 
 @router.get("/tags")
@@ -83,4 +19,3 @@ async def get_tags(service: RealtimeDataService = Depends(get_realtime_data_serv
     获取所有可用标签
     """
     return service.get_tags_payload()
-

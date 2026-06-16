@@ -63,16 +63,17 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 ## 4. 核心 API 设计
 
-> 以下路径以 `/api/v1` 为前缀。
+> 以下路径为 edge-api 当前公开路径；控制/运维接口仍以 `/api/v1` 为前缀。
 
 ### 4.1 数据查询接口
 
 - **实时数据**
 
-  - `GET /data/realtime`
+  - `GET /api/realtime/latest`
   - 功能：返回当前产线关键点位的实时值  
   - 典型请求参数：
-    - `tags`: 逗号分隔的点位名（可选，默认返回核心点位）
+    - `tags`: 点位名（可重复传参；可选，默认返回全部配置点位）
+    - `lookback`: 查询窗口（默认 `5m`）
   - 返回示例：
 
   ```json
@@ -88,13 +89,13 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 - **历史数据**
 
-  - `GET /data/history`
+  - `GET /api/history`
   - 功能：查询指定时间范围内的历史曲线（来自 InfluxDB）  
   - 典型请求参数：
-    - `tags`: 点位列表  
-    - `start`: 起始时间  
-    - `end`: 结束时间  
-    - `interval`: 聚合间隔（如 `1m`、`5m`）
+    - `tag`: 点位名
+    - `period`: 时间范围（如 `1h`、`6h`、`1d`）
+    - `window`: 聚合窗口（如 `1m`、`5m`）
+    - `aggregation`: 聚合函数（如 `mean`、`max`、`min`）
 
 ### 4.2 控制接口
 
@@ -140,7 +141,7 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 ### 5.1 连接端点
 
-- `GET /ws/realtime`
+- `WS /api/ws/realtime`
   - 用于大屏订阅实时数据与事件流  
   - 建议支持以下订阅类型：
     - `realtime_data`：实时工艺点位  

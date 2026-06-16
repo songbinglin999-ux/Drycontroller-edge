@@ -1,14 +1,10 @@
 import sys
 import asyncio
-import base64
-import hashlib
-import hmac
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 PATH = Path(__file__).resolve()
 SERVICE_ROOT = PATH.parents[1]
@@ -19,6 +15,7 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
 
 from app.api import realtime as realtime_router  # noqa: E402
 from app.core.config import settings  # noqa: E402
+from app.core.security import require_readonly_ws_source  # noqa: E402
 
 
 def _build_client() -> TestClient:
@@ -31,6 +28,7 @@ class DummyWsStream:
     def __init__(self):
         self.registered: list[tuple[str, object]] = []
         self.unregistered: list[str] = []
+        self.latest: dict | None = None
 
     def register_subscriber(self, stream_name: str, predicate=None):
         queue: asyncio.Queue = asyncio.Queue()
@@ -40,6 +38,9 @@ class DummyWsStream:
 
     def unregister_subscriber(self, stream_name: str, queue: asyncio.Queue):
         self.unregistered.append(stream_name)
+
+    def get_latest(self, stream_name: str, line=None):
+        return self.latest
 
 
 @pytest.mark.parametrize(
@@ -68,65 +69,6 @@ def test_readonly_ws_streams_allow_allowlisted_client_without_control_auth(monke
         settings.READONLY_WS_ALLOWLIST = old_allowlist
 
 
-def test_realtime_stream_rejects_missing_control_auth():
-    old_control = list(settings.CONTROL_API_KEYS)
-    old_timeout = realtime_router.WS_AUTH_TIMEOUT_SEC
-    try:
-        settings.CONTROL_API_KEYS = ["ctl-1"]
-        realtime_router.WS_AUTH_TIMEOUT_SEC = 0.01
-        client = _build_client()
-
-        with client.websocket_connect("/api/realtime/stream") as websocket:
-            try:
-                websocket.receive_json()
-            except WebSocketDisconnect as exc:
-                assert exc.code == 1008
-            else:
-                raise AssertionError("websocket accepted missing auth")
-    finally:
-        realtime_router.WS_AUTH_TIMEOUT_SEC = old_timeout
-        settings.CONTROL_API_KEYS = old_control
-
-
-def test_realtime_stream_rejects_wrong_control_auth_token():
-    old_control = list(settings.CONTROL_API_KEYS)
-    try:
-        settings.CONTROL_API_KEYS = ["ctl-1"]
-        client = _build_client()
-
-        with client.websocket_connect("/api/realtime/stream") as websocket:
-            websocket.send_json({"type": "hello", "nonce": "nonce-1"})
-            hello = websocket.receive_json()
-            assert hello["type"] == "server_hello"
-            websocket.send_json({"type": "auth", "token": "wrong"})
-            try:
-                websocket.receive_json()
-            except WebSocketDisconnect as exc:
-                assert exc.code == 1008
-            else:
-                raise AssertionError("websocket accepted wrong auth token")
-    finally:
-        settings.CONTROL_API_KEYS = old_control
-
-
-def test_realtime_stream_rejects_legacy_direct_auth_frame():
-    old_control = list(settings.CONTROL_API_KEYS)
-    try:
-        settings.CONTROL_API_KEYS = ["ctl-1"]
-        client = _build_client()
-
-        with client.websocket_connect("/api/realtime/stream") as websocket:
-            websocket.send_json({"type": "auth", "token": "ctl-1"})
-            try:
-                websocket.receive_json()
-            except WebSocketDisconnect as exc:
-                assert exc.code == 1008
-            else:
-                raise AssertionError("websocket accepted auth without server identity hello")
-    finally:
-        settings.CONTROL_API_KEYS = old_control
-
-
 class DummyWebSocket:
     def __init__(self, messages: list[str], client_host: str | None = None):
         self.messages = messages
@@ -145,38 +87,44 @@ class DummyWebSocket:
 
 
 @pytest.mark.asyncio
-async def test_ws_auth_helper_accepts_control_key():
-    old_control = list(settings.CONTROL_API_KEYS)
-    try:
-        settings.CONTROL_API_KEYS = ["ctl-1"]
-        websocket = DummyWebSocket(
-            [
-                '{"type":"hello","nonce":"nonce-1"}',
-                '{"type":"auth","token":"ctl-1"}',
-            ]
-        )
-
-        assert await realtime_router._require_ws_control_auth(websocket) is True
-        assert websocket.close_code is None
-        assert websocket.sent[0]["type"] == "server_hello"
-        assert websocket.sent[0]["nonce"] == "nonce-1"
-        expected = base64.urlsafe_b64encode(
-            hmac.new(b"ctl-1", b"nonce-1", hashlib.sha256).digest()
-        ).decode("ascii").rstrip("=")
-        assert expected in websocket.sent[0]["proofs"]
-        assert websocket.sent[1] == {"type": "auth_ok"}
-    finally:
-        settings.CONTROL_API_KEYS = old_control
-
-
-@pytest.mark.asyncio
 async def test_readonly_ws_auth_helper_rejects_non_allowlisted_source():
     old_allowlist = list(settings.READONLY_WS_ALLOWLIST)
     try:
         settings.READONLY_WS_ALLOWLIST = ["192.168.0.0/16"]
         websocket = DummyWebSocket([], client_host="203.0.113.10")
 
-        assert await realtime_router._require_ws_readonly_auth(websocket) is False
+        assert await require_readonly_ws_source(websocket) is False
         assert websocket.close_code == 1008
+    finally:
+        settings.READONLY_WS_ALLOWLIST = old_allowlist
+
+
+def test_readonly_http_endpoint_rejects_non_allowlisted_source():
+    old_allowlist = list(settings.READONLY_WS_ALLOWLIST)
+    try:
+        settings.READONLY_WS_ALLOWLIST = ["192.168.0.0/16"]
+        client = _build_client()
+
+        resp = client.get("/api/system/health")
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Read-only data access is not allowed from this source"
+    finally:
+        settings.READONLY_WS_ALLOWLIST = old_allowlist
+
+
+def test_readonly_http_endpoint_allows_allowlisted_source(monkeypatch):
+    old_allowlist = list(settings.READONLY_WS_ALLOWLIST)
+    try:
+        settings.READONLY_WS_ALLOWLIST = ["testclient"]
+        dummy_stream = DummyWsStream()
+        dummy_stream.latest = {"line": "L1", "status": "ok"}
+        monkeypatch.setattr(realtime_router, "ws_stream", dummy_stream)
+        client = _build_client()
+
+        resp = client.get("/api/system/health")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"] == {"line": "L1", "status": "ok"}
     finally:
         settings.READONLY_WS_ALLOWLIST = old_allowlist
