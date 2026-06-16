@@ -25,7 +25,11 @@ CONTROL_STATE_TAGS = [
     "MAINTENANCE_LOCK",
     "EMERGENCY_STOP",
 ]
-REQUIRED_SNAPSHOT_TAGS = PROCESS_TAGS + CONTROL_STATE_TAGS
+# V1 only replaces manual writes to the six frequency setpoints. PLC authority
+# state is a V2/V3 contract, so it is sampled opportunistically but must not be
+# required for V1 recommendation/manual-confirm acceptance.
+SNAPSHOT_TAGS = PROCESS_TAGS + CONTROL_STATE_TAGS
+REQUIRED_SNAPSHOT_TAGS = PROCESS_TAGS
 
 ALLOWED_CONTROL_SOFTPOINTS = {
     "VFM1_FREQ_SP": (0.0, 50.0, "Hz"),
@@ -97,7 +101,9 @@ class SuggestedAction(BaseModel):
     risk_note: str
 
     def is_executable(self) -> bool:
-        return self.action_type in {"setpoint_delta", "setpoint_hold", "stop_feed"}
+        # V1 executable scope is frequency target setting only. Process actions
+        # such as stop_feed are kept as V2/V3 vocabulary but are advisory here.
+        return self.action_type in {"setpoint_delta", "setpoint_hold"}
 
 
 class ControlRecommendation(BaseModel):

@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 from app.services.control_core.models import (
-    CONTROL_STATE_TAGS,
     CURRENT_TAGS,
     PROCESS_TAGS,
     REQUIRED_SNAPSHOT_TAGS,
+    SNAPSHOT_TAGS,
     ControlState,
     ProcessSnapshot,
     SnapshotFreshness,
@@ -26,7 +26,7 @@ async def build_process_snapshot(
 ) -> ProcessSnapshot:
     service = realtime_service or get_realtime_data_service()
     payload = await service.get_latest_payload(
-        requested_tags=list(REQUIRED_SNAPSHOT_TAGS),
+        requested_tags=list(SNAPSHOT_TAGS),
         lookback=lookback,
     )
     records = payload.get("data") or []
@@ -67,7 +67,8 @@ def _records_to_map(records: List[dict]) -> Dict[str, Any]:
 
 def _missing_tags(present_tags: Iterable[str], payload_missing: List[str]) -> List[str]:
     present = set(present_tags)
-    missing = set(payload_missing)
+    required = set(REQUIRED_SNAPSHOT_TAGS)
+    missing = {tag for tag in payload_missing if tag in required}
     missing.update(tag for tag in REQUIRED_SNAPSHOT_TAGS if tag not in present)
     return sorted(missing)
 

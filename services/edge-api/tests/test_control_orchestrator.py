@@ -77,6 +77,24 @@ class DummyRealtimeMissing:
         return {"success": True, "data": {"tag": tag, "points": []}, "count": 0, "timestamp": 1}
 
 
+class DummyRealtimeNoPlcControlState(DummyRealtimeFull):
+    async def get_latest_payload(self, requested_tags, lookback):
+        payload = await super().get_latest_payload(requested_tags, lookback)
+        optional_state_tags = {
+            "CONTROL_MODE",
+            "AUTHORITY_OWNER",
+            "HMI_DIRECT_ENABLE",
+            "MAINTENANCE_LOCK",
+            "EMERGENCY_STOP",
+        }
+        payload["data"] = [
+            row for row in payload["data"]
+            if row["tag"] not in optional_state_tags
+        ]
+        payload["missing"] = sorted(optional_state_tags)
+        return payload
+
+
 class DummyRealtimeModeChanges(DummyRealtimeFull):
     def __init__(self):
         self.latest_calls = 0
@@ -256,6 +274,43 @@ async def test_orchestrator_confirms_manual_softpoint_through_gate(monkeypatch):
     ]
     assert audit_events[-1]["action"] == "control.recommendation.confirmed"
     assert audit_events[-1]["result"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_confirms_manual_softpoint_without_plc_control_state(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_orchestrator.write_audit", fake_write_audit)
+    command = DummyCommand()
+    orchestrator = ControlOrchestrator(
+        realtime_service=DummyRealtimeNoPlcControlState(),
+        command_service=command,
+    )
+
+    confirmed = await orchestrator.confirm_manual_action(
+        line="L1",
+        target_softpoint="VF1_FREQ_SP",
+        value=25.0,
+        actor="operator:test",
+        operator_id="operator-a",
+        request_id="manual-no-plc-state",
+        reason="v1_frequency_target_write",
+        timeout_sec=1.0,
+    )
+
+    assert confirmed["success"] is True
+    assert confirmed["recommendation"]["blocked_by"] == []
+    assert command.calls == [
+        {
+            "line": "L1",
+            "tag": "VF1_FREQ_SP",
+            "value": 25.0,
+            "msg_id": "manual-no-plc-state",
+            "wait_ack": True,
+            "timeout_sec": 1.0,
+        }
+    ]
 
 
 @pytest.mark.asyncio
