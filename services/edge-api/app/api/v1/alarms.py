@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import require_admin_api_key
+from app.core.security import require_admin_api_key, require_readonly_http_source
 from app.models import AlarmEvent
 from app.services.alarm_event import ack_alarm_event, apply_alarm_transition
 
@@ -68,7 +68,7 @@ def _serialize_alarm(row: AlarmEvent) -> dict[str, Any]:
     }
 
 
-@router.get("/active")
+@router.get("/active", dependencies=[Depends(require_readonly_http_source)])
 async def get_active_alarms(
     period: str = Query("10m", description="时间范围，例如 10m / 24h / 7d"),
     severity: Optional[str] = Query(None, description="筛选 severity：warning/critical"),
@@ -133,7 +133,7 @@ async def acknowledge_alarm(
     return {"success": True, **result}
 
 
-@router.get("/history")
+@router.get("/history", dependencies=[Depends(require_readonly_http_source)])
 async def get_alarm_history(
     period: str = Query("24h", description="时间范围，例如 24h / 7d"),
     severity: Optional[str] = Query(None, description="筛选 severity：warning/critical"),

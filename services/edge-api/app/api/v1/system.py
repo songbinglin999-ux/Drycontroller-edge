@@ -15,7 +15,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.config import settings
-from app.core.security import require_admin_api_key
+from app.core.security import require_admin_api_key, require_readonly_http_source
 from app.services.system_status import (
     SystemStatusService,
     get_system_status_service,
@@ -172,7 +172,7 @@ def _plc_summary(status_payload: dict | None) -> dict:
     }
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_readonly_http_source)])
 async def get_system_status(
     line: Optional[str] = Query(None, description="可选：按产线过滤，如 L1"),
     service: SystemStatusService = Depends(get_system_status_service),
@@ -189,7 +189,7 @@ async def get_system_status(
     return payload
 
 
-@router.get("/metrics")
+@router.get("/metrics", dependencies=[Depends(require_readonly_http_source)])
 async def get_system_metrics(
     line: Optional[str] = Query(None, description="可选：按产线过滤"),
     service: SystemStatusService = Depends(get_system_status_service),
@@ -206,7 +206,7 @@ async def get_system_metrics(
     return payload
 
 
-@router.get("/local-summary")
+@router.get("/local-summary", dependencies=[Depends(require_readonly_http_source)])
 async def get_local_status_summary(
     line: Optional[str] = Query(None, description="可选：按产线过滤，如 L1"),
     service: SystemStatusService = Depends(get_system_status_service),
@@ -265,7 +265,7 @@ async def get_local_status_summary(
     }
 
 
-@router.get("/metrics/trend")
+@router.get("/metrics/trend", dependencies=[Depends(require_readonly_http_source)])
 async def get_system_metric_trend(
     field: str = Query("cpu_percent", description="指标字段，例如 cpu_percent"),
     period: str = Query("6h", description="时间范围，例如 6h/12h/1d"),

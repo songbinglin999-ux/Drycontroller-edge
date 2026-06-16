@@ -27,6 +27,7 @@ from app.core.database import get_db
 
 settings.CONTROL_API_KEYS = ["test-control"]
 settings.ADMIN_API_KEYS = ["test-admin"]
+settings.READONLY_WS_ALLOWLIST = ["testclient"]
 
 
 class DummyAISvc:
@@ -151,6 +152,22 @@ def test_system_metric_trend_endpoint():
     resp = client.get("/api/v1/system/metrics/trend?field=cpu_percent")
     assert resp.status_code == 200
     assert resp.json()["count"] == 1
+
+
+def test_v1_readonly_routes_reject_non_allowlisted_source():
+    old_allowlist = list(settings.READONLY_WS_ALLOWLIST)
+    try:
+        settings.READONLY_WS_ALLOWLIST = ["192.168.0.0/16"]
+        for path in (
+            "/api/v1/ai/lab/samples?start=-1d&limit=1",
+            "/api/v1/system/metrics/trend?field=cpu_percent",
+            "/api/v1/alarms/active?period=10m",
+        ):
+            resp = client.get(path)
+            assert resp.status_code == 403
+            assert resp.json()["detail"] == "Read-only data access is not allowed from this source"
+    finally:
+        settings.READONLY_WS_ALLOWLIST = old_allowlist
 
 
 def test_bootstrap_summary_accepts_legacy_sentinel(tmp_path):

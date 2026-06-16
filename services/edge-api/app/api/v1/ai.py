@@ -7,12 +7,13 @@ from typing import Optional
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.core.security import require_readonly_http_source
 from app.services.ai_softsensor import (
     AISoftsensorService,
     get_ai_softsensor_service,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_readonly_http_source)])
 logger = structlog.get_logger(__name__)
 
 
