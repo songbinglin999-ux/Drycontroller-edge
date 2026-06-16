@@ -144,6 +144,21 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 - 控制命令被 PLC 拒绝（NAK）时可见并告警。
 - 监控 autopilot 授权状态，autopilot 被自动挂起回 manual 时告警。
 
+### 5.1 对外只读面鉴权分层
+
+edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可共用一套鉴权**：只读面用来源白名单或绑定面，控制/运维面才用 HMAC / ops key。控制级握手套到只读流上是分层错配（曾经 `/ws/realtime` 与控制流共用 HMAC challenge-response，已纠正）。
+
+| 面 | 端点（示例） | 鉴权 | 理由 |
+|---|---|---|---|
+| 只读面（edge-api） | `/ws/realtime`·`/ws/ai`·`/ws/system`、`/realtime/latest`·`/history`·`/system/health`、`v1/data`·`v1/ai`·`v1/alarms`(读)·`v1/system`(读) | 来源 IP 白名单（`require_readonly_*_source` → `READONLY_WS_ALLOWLIST`），**零凭证** | 同 LAN 只读，无需下发/管理凭证 |
+| 只读面（edge-monitor） | `/system/health`·`/system/metrics`·`/health`·`/ready`·`/metrics` | 无应用层鉴权，靠主机端口绑定 + 防火墙（LAN/tailnet） | 纯只读快照，暴露面由网络层控制 |
+| 控制/写入面（edge-api） | 控制 / signed command WS 与写入流 | 控制级 HMAC challenge-response + 签名 command | 写 PLC 执行器需防误写/防重放，与网络是否可信无关 |
+| 运维操作面（edge-monitor） | `/ops/*`（self-heal / logs / alerts） | ops API key（`MONITOR_OPS_API_KEYS` / `ADMIN_API_KEYS`） | 触发重启 / 读日志属敏感操作 |
+
+> 两个只读面用了**两种不同机制**（edge-api 应用层 IP 白名单 vs edge-monitor 绑定面 + 防火墙）。都可接受，但新增只读端点时必须明确归属哪一种，不要默认套控制握手。
+
+**防回归（硬约束）**：新增任何只读 HTTP/WS 流，默认归只读面——来源白名单或绑定面 + 防火墙，**不得套控制级握手**；只有控制/写入流才用 HMAC + 签名 command，运维操作流才用 ops key。只读面与控制面共用一套鉴权即视为分层错配。
+
 ---
 
 ## 6. 控制层 — PLC 交互
@@ -325,6 +340,7 @@ V1 范围与 v2 目标架构分开推进：V1 交付 = PLC 采集 → 工程量�
 - JWT secret 空值 fail-closed、API key 分级。
 - Job/JobItem 状态机。
 - 所有主机端口默认绑定 `127.0.0.1`。
+- 对外只读面（数据/健康）走来源白名单或绑定面 + 防火墙、零控制凭证；控制/写入面才用 HMAC + 签名 command，运维操作面才用 ops key（见 §5.1）。
 - Mosquitto 禁匿名、ACL 隔离。
 - 自愈机制：阈值触发 + 冷却 + 熔断升级。
 
