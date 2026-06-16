@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_USER: str = "edge_user"
-    POSTGRES_PASSWORD: str = "edge_password"
+    POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = "edge_db"
     
     # InfluxDB 配置
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     MQTT_BROKER: str = "localhost"
     MQTT_PORT: int = 1883
     MQTT_USER: str = "edge_mqtt"
-    MQTT_PASSWORD: str = "mqtt_password"
+    MQTT_PASSWORD: str = ""
     MQTT_CLIENT_ID: str = "edge-api"
     
     # API 配置

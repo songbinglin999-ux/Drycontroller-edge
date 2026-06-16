@@ -24,6 +24,18 @@ def test_production_rejects_default_secrets():
         settings.validate_startup_security()
 
 
+def test_secret_defaults_are_empty(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    monkeypatch.delenv("MQTT_PASSWORD", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.POSTGRES_PASSWORD == ""
+    assert settings.MQTT_PASSWORD == ""
+
+
 def test_production_rejects_placeholder_secrets():
     from app.core.config import Settings
 

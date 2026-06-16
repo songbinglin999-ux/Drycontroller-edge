@@ -467,10 +467,13 @@ def test_plc_config_apply_records_version(monkeypatch):
     assert recorded[0]["restart_required"] is True
 
 
-def test_plc_config_apply_records_pending_restart_when_restart_fails(monkeypatch):
+def test_plc_config_apply_rolls_back_config_when_restart_fails(tmp_path: Path, monkeypatch):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     recorded = []
+    cfg_path = tmp_path / "plc.yaml"
+    old_config = "host: 192.168.1.10\nport: 502\n"
+    cfg_path.write_text(old_config, encoding="utf-8")
 
     class _FailingMonitorClient:
         async def restart_service(self, *_args, **_kwargs):
@@ -479,7 +482,7 @@ def test_plc_config_apply_records_pending_restart_when_restart_fails(monkeypatch
     async def fake_record_config_version(**kwargs):
         recorded.append(kwargs)
 
-    monkeypatch.setattr(ops_module, "_atomic_write_yaml", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ops_module, "PLC_CONFIG_RUNTIME_PATH", cfg_path)
     monkeypatch.setattr(ops_module, "record_config_version", fake_record_config_version)
     app = FastAPI()
     app.include_router(ops_module.router, prefix="/api/v1/ops")
@@ -492,5 +495,5 @@ def test_plc_config_apply_records_pending_restart_when_restart_fails(monkeypatch
             headers={"X-API-Key": "admin-1"},
         )
 
-    assert recorded[0]["scope"] == "plc"
-    assert recorded[0]["restart_required"] is True
+    assert recorded == []
+    assert cfg_path.read_text(encoding="utf-8") == old_config

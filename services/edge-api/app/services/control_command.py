@@ -104,10 +104,6 @@ class ControlCommandService:
         if not msg_id:
             return
 
-        fut = self._pending.pop(msg_id, None)
-        if not fut:
-            return
-
         ack = ControlAck(
             id=msg_id,
             tag=str(data.get("tag") or ""),
@@ -119,12 +115,15 @@ class ControlCommandService:
         )
 
         loop = self._loop
-        if loop:
-            def _set_ack_result() -> None:
-                if not fut.done():
-                    fut.set_result(ack)
+        if not loop:
+            return
 
-            loop.call_soon_threadsafe(_set_ack_result)
+        def _deliver_ack() -> None:
+            fut = self._pending.pop(msg_id, None)
+            if fut and not fut.done():
+                fut.set_result(ack)
+
+        loop.call_soon_threadsafe(_deliver_ack)
 
     def _validate_tag(self, tag: str, value: Any) -> Tuple[bool, str]:
         """
@@ -183,8 +182,8 @@ class ControlCommandService:
                 history_error = "control_signature_secret_missing"
                 return {"success": False, "error": history_error}
 
-            self._ensure_ack_subscription()
             self._loop = self._loop or asyncio.get_running_loop()
+            self._ensure_ack_subscription()
 
             final_msg_id = msg_id or _gen_id()
             msg_ts = _now_ts()

@@ -222,6 +222,30 @@ async def test_control_send_set_ignores_duplicate_ack(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ack_callback_mutates_pending_on_event_loop(monkeypatch):
+    from app.services.control_command import ControlCommandService
+
+    svc = ControlCommandService()
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    svc._loop = loop
+    svc._pending["ack-1"] = fut
+
+    svc._on_ack_message(
+        "control/L1/acks",
+        json.dumps({"id": "ack-1", "tag": "VFM1_FREQ_SP", "status": "success", "value": 10, "ts": 1}),
+    )
+
+    assert "ack-1" in svc._pending
+
+    await asyncio.sleep(0)
+
+    assert fut.done()
+    assert fut.result().id == "ack-1"
+    assert svc._pending == {}
+
+
+@pytest.mark.asyncio
 async def test_control_send_set_publish_failure_clears_pending(monkeypatch):
     from app.services.control_command import ControlCommandService
 

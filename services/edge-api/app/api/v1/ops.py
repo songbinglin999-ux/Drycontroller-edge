@@ -48,6 +48,7 @@ from common.license_verifier import load_public_key, verify_signature
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
 # 注意：这里需要拿到实际 api_key 以便代理调用 edge-monitor 的 /ops/*
 router = APIRouter()
+PLC_CONFIG_RUNTIME_PATH = Path(os.getenv("PLC_CONFIG_RUNTIME_PATH", "/app/configs-runtime/plc.yaml"))
 
 
 class LicenseInstallRequest(BaseModel):
@@ -677,7 +678,7 @@ async def apply_plc_config(
         # 工业现场必坑：容器内 127.0.0.1 指向自身，必然连不上 PLC
         raise HTTPException(status_code=400, detail="PLC_HOST cannot be 127.0.0.1/localhost in docker; use real PLC IP")
 
-    cfg_path = Path("/app/configs-runtime/plc.yaml")
+    cfg_path = PLC_CONFIG_RUNTIME_PATH
     payload = {
         "host": req.plc_host.strip(),
         "port": int(req.plc_port),
@@ -686,6 +687,7 @@ async def apply_plc_config(
         "updated_at": int(time.time()),
         "updated_by": "cloud",
     }
+    previous_cfg = cfg_path.read_bytes() if cfg_path.exists() else None
     _atomic_write_yaml(cfg_path, payload)
 
     restart_result = None
@@ -693,13 +695,7 @@ async def apply_plc_config(
         try:
             restart_result = await client.restart_service("edge-daq", api_key=api_key)
         except Exception:
-            await record_config_version(
-                scope="plc",
-                payload=payload,
-                source="cloud",
-                applied_by=api_key_actor(api_key, role="admin"),
-                restart_required=True,
-            )
+            _restore_or_remove(cfg_path, previous_cfg)
             raise
 
     await record_config_version(
