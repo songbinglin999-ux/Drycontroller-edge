@@ -28,30 +28,31 @@ CONTROL_TS_INVALID = Counter("control_timestamp_invalid_total", "Control command
 CONTROL_ACK_SENT = Counter("control_ack_sent_total", "Control ack sent", ["status"])
 CONTROL_SIG_INVALID = Counter("control_signature_invalid_total", "Control commands dropped due to signature invalid/missing")
 
+ALLOWED_CONTROL_SOFTPOINTS = {
+    "VFM1_FREQ_SP",
+    "VFM2_FREQ_SP",
+    "VFM3_FREQ_SP",
+    "VF1_FREQ_SP",
+    "VF2_FREQ_SP",
+    "VF3_FREQ_SP",
+}
+
 
 def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """
-    将 tags 配置拍平成 name -> config 的索引，便于快速查找。
+    V1 控制写入只接受 modbus-address-map.yaml 中签收的 6 个频率软点。
+    52 个 tags.yaml I/O 点均为只读，不再从 control_enabled 推导写点。
     """
     index = {}
-    tags_config = config.get("tags", {})
-    for section, categories in tags_config.items():
-        if not isinstance(categories, dict):
-            continue
-        for category, tags in categories.items():
-            if not isinstance(tags, list):
-                continue
-            for tag in tags:
-                name = tag.get("name")
-                if name:
-                    index[name] = tag
     # 控制写软点的寄存器地址来自中间层 configs/modbus-address-map.yaml（位号→地址），
-    # 不再从只读 tags.yaml 取。带 writable=true 的条目即 V1 控制软点（六个 *_FREQ_SP）；
+    # 不再从只读 tags.yaml 取。带 writable=true 且在白名单中的条目即 V1 控制软点；
     # range/unit 与 edge-api ALLOWED_CONTROL_SOFTPOINTS 镜像，edge-daq 独立做范围兜底
     # （纵深防御，见 P0-CTRL-NAK）。address/scale 在集成商签收前为 "TBD"。
     address_map = config.get("modbus_address_map", {})
     if isinstance(address_map, dict):
         for name, entry in address_map.items():
+            if name not in ALLOWED_CONTROL_SOFTPOINTS:
+                continue
             if not isinstance(entry, dict) or not entry.get("writable"):
                 continue
             index[name] = {
@@ -62,7 +63,6 @@ def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 "byte_order": entry.get("byte_order", "big"),
                 "range": entry.get("range"),
                 "unit": entry.get("unit", ""),
-                "control_enabled": True,
             }
     return index
 
@@ -353,10 +353,6 @@ class ControlSubscriber:
         if self.allowed_tags and tag_name not in self.allowed_tags:
             logger.warning("control_tag_not_in_acl", tag=tag_name)
             return self._reject(msg_id, tag_name, value, "tag_not_in_acl")
-
-        if not tag_config.get("control_enabled"):
-            logger.warning("control_not_enabled", tag=tag_name)
-            return self._reject(msg_id, tag_name, value, "control_not_enabled")
 
         # 频率限制：默认 500ms 同一 tag 至少间隔一次
         now = time.time()

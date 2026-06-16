@@ -65,6 +65,26 @@ class FakeSubscribeClient:
         return (self.subscribe_rc, 1)
 
 
+CONTROL_TAG = "VFM1_FREQ_SP"
+
+
+def _address_map_softpoint(address: object, scale: object = 1.0, *, tag: str = CONTROL_TAG):
+    return {
+        "modbus_address_map": {
+            tag: {
+                "address": address,
+                "function_code": 6,
+                "scale": scale,
+                "byte_order": "big",
+                "writable": True,
+                "type": "float",
+                "range": [0.0, 50.0],
+                "unit": "Hz",
+            }
+        }
+    }
+
+
 def _make_sig(secret: str, msg_id: str, ts: float, tag: str, value: float) -> str:
     base = f"{msg_id}:{ts}:{tag}:{value}"
     return hmac.new(secret.encode(), base.encode(), hashlib.sha256).hexdigest()
@@ -86,9 +106,7 @@ def _mk_sub(
         monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", secret)
     else:
         monkeypatch.delenv("CONTROL_SIGNATURE_SECRET", raising=False)
-    cfg = config or {
-        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "int", "control_enabled": True}]}},
-    }
+    cfg = config or _address_map_softpoint(address=1)
     modbus = FakeModbus()
     cs = ControlSubscriber(modbus, cfg, line_id="L1")
     cs.client = FakeMQTTClient()
@@ -108,8 +126,8 @@ async def test_control_signature_valid(monkeypatch):
     cs, modbus = _mk_sub(monkeypatch, require_sig=True, secret="secret")
     msg_id = "abc"
     ts = time.time()
-    sig = _make_sig("secret", msg_id, ts, "T", 10)
-    payload = {"tag": "T", "value": 10, "id": msg_id, "ts": ts, "sig": sig}
+    sig = _make_sig("secret", msg_id, ts, CONTROL_TAG, 10)
+    payload = {"tag": CONTROL_TAG, "value": 10, "id": msg_id, "ts": ts, "sig": sig}
     msg = FakeMQTTMsg(json.dumps(payload).encode())
 
     cs._on_message(None, None, msg)
@@ -123,7 +141,7 @@ async def test_control_signature_valid(monkeypatch):
 async def test_control_signature_invalid(monkeypatch):
     before = CONTROL_SIG_INVALID._value.get()
     cs, modbus = _mk_sub(monkeypatch, require_sig=True, secret="secret")
-    payload = {"tag": "T", "value": 10, "id": "abc", "ts": time.time(), "sig": "bad"}
+    payload = {"tag": CONTROL_TAG, "value": 10, "id": "abc", "ts": time.time(), "sig": "bad"}
     msg = FakeMQTTMsg(json.dumps(payload).encode())
 
     cs._on_message(None, None, msg)
@@ -163,27 +181,27 @@ async def test_pre_auth_rejects_do_not_poison_id_cache(monkeypatch, poison_reaso
     value = 10
     valid_ts = time.time()
     valid_payload = {
-        "tag": "T",
+        "tag": CONTROL_TAG,
         "value": value,
         "id": msg_id,
         "ts": valid_ts,
-        "sig": _make_sig("secret", msg_id, valid_ts, "T", value),
+        "sig": _make_sig("secret", msg_id, valid_ts, CONTROL_TAG, value),
     }
 
     if poison_reason == "missing_tag":
         bad_payload = {"value": value, "id": msg_id, "ts": valid_ts, "sig": "bad"}
     elif poison_reason == "missing_ts":
-        bad_payload = {"tag": "T", "value": value, "id": msg_id, "sig": "bad"}
+        bad_payload = {"tag": CONTROL_TAG, "value": value, "id": msg_id, "sig": "bad"}
     elif poison_reason == "invalid_ts":
-        bad_payload = {"tag": "T", "value": value, "id": msg_id, "ts": "bad", "sig": "bad"}
+        bad_payload = {"tag": CONTROL_TAG, "value": value, "id": msg_id, "ts": "bad", "sig": "bad"}
     elif poison_reason == "timestamp_out_of_window":
         stale_ts = valid_ts - 3600
         bad_payload = {
-            "tag": "T",
+            "tag": CONTROL_TAG,
             "value": value,
             "id": msg_id,
             "ts": stale_ts,
-            "sig": _make_sig("secret", msg_id, stale_ts, "T", value),
+            "sig": _make_sig("secret", msg_id, stale_ts, CONTROL_TAG, value),
         }
     elif poison_reason == "signature_secret_missing":
         bad_payload = valid_payload
@@ -218,7 +236,7 @@ async def test_pre_auth_rejects_do_not_poison_id_cache(monkeypatch, poison_reaso
 async def test_control_replay_dropped(monkeypatch):
     before = CONTROL_REPLAY_DROPPED._value.get()
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
-    payload = {"tag": "T", "value": 10, "id": "same", "ts": time.time()}
+    payload = {"tag": CONTROL_TAG, "value": 10, "id": "same", "ts": time.time()}
     msg = FakeMQTTMsg(json.dumps(payload).encode())
 
     cs._on_message(None, None, msg)
@@ -237,7 +255,7 @@ async def test_control_replay_dropped(monkeypatch):
 def test_control_ack_publishes(monkeypatch):
     cs, _ = _mk_sub(monkeypatch, require_sig=False, secret=None)
     msg_id = "abc"
-    cs._ack(msg_id, "T", "success", 10)
+    cs._ack(msg_id, CONTROL_TAG, "success", 10)
 
     assert len(cs.client.published) == 1
     topic, payload, qos = cs.client.published[0]
@@ -254,9 +272,7 @@ async def test_control_subscriber_start_failure_is_not_ready(monkeypatch):
     monkeypatch.setenv("MQTT_ALLOW_INSECURE", "false")
     monkeypatch.setenv("CONTROL_ALLOW_ANONYMOUS", "true")
 
-    config = {
-        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "int", "control_enabled": True}]}},
-    }
+    config = _address_map_softpoint(address=1)
     subscriber = ControlSubscriber(FakeModbus(), config, line_id="L1")
 
     await subscriber.start()
@@ -311,7 +327,7 @@ def test_control_ack_path_failure_and_recovery_affect_status(monkeypatch):
     subscriber.subscribe_state = "subscribed"
     subscriber.client = FakeMQTTClient(rc=1)
 
-    subscriber._ack("ack-fail", "T", "success", 10)
+    subscriber._ack("ack-fail", CONTROL_TAG, "success", 10)
 
     failed_status = subscriber.get_status()
     assert failed_status["ready"] is False
@@ -320,7 +336,7 @@ def test_control_ack_path_failure_and_recovery_affect_status(monkeypatch):
     assert failed_status["ack_path"]["last_publish_rc"] == 1
 
     subscriber.client = FakeMQTTClient(rc=0)
-    subscriber._ack("ack-ok", "T", "success", 10)
+    subscriber._ack("ack-ok", CONTROL_TAG, "success", 10)
 
     recovered_status = subscriber.get_status()
     assert recovered_status["ready"] is True
@@ -336,7 +352,7 @@ def test_control_rejects_missing_timestamp_with_nak(monkeypatch):
         require_ts=True,
     )
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": 10, "id": "missing-ts"}).encode()))
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": 10, "id": "missing-ts"}).encode()))
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -346,12 +362,10 @@ def test_control_rejects_missing_timestamp_with_nak(monkeypatch):
 
 
 def test_control_rejects_out_of_range_with_nak(monkeypatch):
-    config = {
-        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "int", "control_enabled": True, "range": [0, 50]}]}},
-    }
+    config = _address_map_softpoint(address=1)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": 60, "id": "oor"}).encode()))
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": 60, "id": "oor"}).encode()))
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -363,12 +377,10 @@ def test_control_rejects_out_of_range_with_nak(monkeypatch):
 
 def test_control_rejects_non_numeric_value_with_nak(monkeypatch):
     # 字符串 value 会绕过 isinstance 门控的范围校验，必须在写入前以 NAK 拒绝。
-    config = {
-        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "float", "control_enabled": True, "range": [0, 50]}]}},
-    }
+    config = _address_map_softpoint(address=1)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": "999", "id": "str"}).encode()))
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": "999", "id": "str"}).encode()))
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -379,13 +391,11 @@ def test_control_rejects_non_numeric_value_with_nak(monkeypatch):
 
 def test_control_rejects_nan_value_with_nak(monkeypatch):
     # NaN 的比较恒为 False，会穿透范围校验；必须在写入前以 NAK 拒绝。
-    config = {
-        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "float", "control_enabled": True, "range": [0, 50]}]}},
-    }
+    config = _address_map_softpoint(address=1)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
     # json.dumps(float("nan")) 默认输出 NaN 字面量，模拟 paho 收到的原始报文。
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": float("nan"), "id": "nan"}).encode()))
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": float("nan"), "id": "nan"}).encode()))
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -397,12 +407,10 @@ def test_control_rejects_nan_value_with_nak(monkeypatch):
 @pytest.mark.parametrize("bad_value", [True, float("inf"), float("-inf")])
 def test_control_rejects_bool_and_infinite_values_with_nak(monkeypatch, bad_value):
     # bool 是 int 子类、±inf 非有限数；即便 tag 无 range，也必须在写入前 NAK，把行为钉死。
-    config = {
-        "tags": {"s": {"c": [{"name": "T", "address": 1, "type": "float", "control_enabled": True}]}},
-    }
+    config = _address_map_softpoint(address=1)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": bad_value, "id": "bad"}).encode()))
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": bad_value, "id": "bad"}).encode()))
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -415,7 +423,7 @@ def test_control_rejects_acl_with_nak(monkeypatch):
     monkeypatch.setenv("CONTROL_ALLOWED_TAGS", "OTHER")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": 10, "id": "acl"}).encode()))
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": 10, "id": "acl"}).encode()))
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -425,12 +433,10 @@ def test_control_rejects_acl_with_nak(monkeypatch):
 
 
 def test_control_rejects_missing_address_with_nak(monkeypatch):
-    config = {
-        "tags": {"s": {"c": [{"name": "T", "type": "int", "control_enabled": True}]}},
-    }
+    config = _address_map_softpoint(address=None)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "T", "value": 10, "id": "no-address"}).encode()))
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": 10, "id": "no-address"}).encode()))
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -446,14 +452,14 @@ async def test_control_subscriber_writes_plc_simulator_and_acks(monkeypatch):
     monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "true")
     monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret")
     config = {
+        **_address_map_softpoint(address=40100),
         "tags": {
             "s": {
                 "c": [
                     {
-                        "name": "SIM_FREQ_SP",
+                        "name": CONTROL_TAG,
                         "address": 40100,
                         "type": "float",
-                        "control_enabled": True,
                         "range": [0, 50],
                     }
                 ]
@@ -468,11 +474,11 @@ async def test_control_subscriber_writes_plc_simulator_and_acks(monkeypatch):
     ts = time.time()
     value = 12.5
     payload = {
-        "tag": "SIM_FREQ_SP",
+        "tag": CONTROL_TAG,
         "value": value,
         "id": msg_id,
         "ts": ts,
-        "sig": _make_sig("secret", msg_id, ts, "SIM_FREQ_SP", value),
+        "sig": _make_sig("secret", msg_id, ts, CONTROL_TAG, value),
     }
     subscriber._on_message(None, None, FakeMQTTMsg(json.dumps(payload).encode()))
     await asyncio.sleep(0)
@@ -497,28 +503,14 @@ async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
     monkeypatch.setenv("CONTROL_REQUIRE_ID", "false")
     monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "false")
     monkeypatch.setenv("CONTROL_REQUIRE_SIGNATURE", "false")
-    config = {
-        "tags": {
-            "sec": {
-                "cat": [
-                    {
-                        "name": "TAG1",
-                        "address": 40010,
-                        "type": "float",
-                        "scale": 0.1,
-                        "control_enabled": True,
-                    }
-                ]
-            }
-        }
-    }
+    config = _address_map_softpoint(address=40010, scale=0.1)
 
     cs = ControlSubscriber(modbus, config, line_id="L1")
     cs.client = FakeMQTTClient()
     cs.min_interval_ms = 200  # 加快测试
 
     # 不启动真实 MQTT，直接调用 _on_message
-    msg = FakeMsg({"tag": "TAG1", "value": 50, "id": "i1", "ts": time.time()})
+    msg = FakeMsg({"tag": CONTROL_TAG, "value": 50, "id": "i1", "ts": time.time()})
     cs._on_message(None, None, msg)
     await asyncio.sleep(0)  # 让 create_task 执行
 
@@ -529,7 +521,7 @@ async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
     assert call[2] == 500
 
     # 立即再次发送，因限流不应追加调用
-    msg2 = FakeMsg({"tag": "TAG1", "value": 60, "id": "i2", "ts": time.time()})
+    msg2 = FakeMsg({"tag": CONTROL_TAG, "value": 45, "id": "i2", "ts": time.time()})
     cs._on_message(None, None, msg2)
     await asyncio.sleep(0)
     assert len(modbus.calls) == 1, "限流应阻止第二次写入"
@@ -539,27 +531,10 @@ async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
     assert ack["reason"] == "rate_limited"
 
     # 等待超过限流窗口，同一 id 的限速重试应成功，而不是变成 replay。
-    cs.last_sent_ts["TAG1"] = time.time() - 1
+    cs.last_sent_ts[CONTROL_TAG] = time.time() - 1
     cs._on_message(None, None, msg2)
     await asyncio.sleep(0)
     assert len(modbus.calls) == 2
-
-
-def _address_map_softpoint(address: object, scale: object = 1.0):
-    return {
-        "modbus_address_map": {
-            "VFM1_FREQ_SP": {
-                "address": address,
-                "function_code": 6,
-                "scale": scale,
-                "byte_order": "big",
-                "writable": True,
-                "type": "float",
-                "range": [0.0, 50.0],
-                "unit": "Hz",
-            }
-        }
-    }
 
 
 def test_control_softpoint_from_address_map_tbd_rejected(monkeypatch):
@@ -611,26 +586,12 @@ def test_control_softpoint_from_address_map_out_of_range_rejected(monkeypatch):
     assert ack["reason"] == "value_out_of_range"
 
 
-def test_control_disabled_or_bad_tag(monkeypatch):
+def test_control_rejects_unmapped_or_bad_tag(monkeypatch):
     modbus = FakeModbus()
     monkeypatch.setenv("CONTROL_REQUIRE_ID", "false")
     monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "false")
     monkeypatch.setenv("CONTROL_REQUIRE_SIGNATURE", "false")
-    config = {
-        "tags": {
-            "sec": {
-                "cat": [
-                    {
-                        "name": "DISABLED",
-                        "address": 1,
-                        "type": "int",
-                        "control_enabled": False,
-                    }
-                ]
-            }
-        }
-    }
-    cs = ControlSubscriber(modbus, config, line_id="L1")
+    cs = ControlSubscriber(modbus, {}, line_id="L1")
     cs.client = FakeMQTTClient()
 
     # 未知 tag
@@ -641,10 +602,10 @@ def test_control_disabled_or_bad_tag(monkeypatch):
     assert ack["status"] == "nak"
     assert ack["reason"] == "tag_not_found"
 
-    # 禁用控制
-    cs._on_message(None, None, FakeMsg({"tag": "DISABLED", "value": 1, "id": "disabled"}))
+    # V1 软点未在地址表中签收，也拒绝。
+    cs._on_message(None, None, FakeMsg({"tag": CONTROL_TAG, "value": 1, "id": "unmapped"}))
     assert not modbus.calls
     ack = _last_ack(cs)
-    assert ack["id"] == "disabled"
+    assert ack["id"] == "unmapped"
     assert ack["status"] == "nak"
-    assert ack["reason"] == "control_not_enabled"
+    assert ack["reason"] == "tag_not_found"

@@ -75,8 +75,3 @@ def get_all_tag_metadata() -> List[Dict[str, Any]]:
 
     by_name = {item["name"]: item for item in collector}
     return [by_name[name] for name in sorted(by_name)]
-
-
-@lru_cache(maxsize=1)
-def get_tag_config() -> Dict:
-    return _load_tag_config()

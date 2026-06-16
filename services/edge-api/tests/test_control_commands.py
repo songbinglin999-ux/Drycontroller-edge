@@ -30,11 +30,10 @@ def test_control_command_service_accepts_allowed_control_softpoints():
     from app.services.control_command import ControlCommandService
 
     svc = ControlCommandService()
-    svc._tag_index = {}
 
     assert svc._validate_tag("VFM1_FREQ_SP", 20.0) == (True, "ok")
     assert svc._validate_tag("VFM1_FREQ_SP", 60.0) == (False, "value_out_of_range")
-    assert svc._validate_tag("M1", 1.0) == (False, "tags_config_missing")
+    assert svc._validate_tag("M1", 1.0) == (False, "softpoint_not_allowed")
 
 
 @pytest.mark.asyncio
@@ -78,10 +77,8 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
     monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
 
     svc = ControlCommandService()
-    # 避免依赖真实 tags.yaml：直接注入测试专用可控 tag
-    svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
 
-    resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=1.0)
+    resp = await svc.send_set(line="L1", tag="VFM1_FREQ_SP", value=10, wait_ack=True, timeout_sec=1.0)
     assert resp["success"] is True
     assert resp["status"] == "acked"
 
@@ -89,7 +86,7 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
     assert published["topic"] == "control/L1/tags"
 
     payload = published["payload"]
-    assert payload["tag"] == "CTRL_TEST_SPEED"
+    assert payload["tag"] == "VFM1_FREQ_SP"
     assert payload["value"] == 10
     assert "id" in payload and "ts" in payload and "sig" in payload
     assert payload["sig"] == _hmac_sig("secret-1", payload["id"], payload["ts"], payload["tag"], payload["value"])
@@ -120,9 +117,8 @@ async def test_control_send_set_timeout(monkeypatch):
     monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
 
     svc = ControlCommandService()
-    svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
 
-    resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=0.2)
+    resp = await svc.send_set(line="L1", tag="VFM1_FREQ_SP", value=10, wait_ack=True, timeout_sec=0.2)
     assert resp["success"] is False
     assert resp["error"] == "ack_timeout"
 
@@ -165,9 +161,8 @@ async def test_control_send_set_returns_failure_on_nak(monkeypatch):
     monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
 
     svc = ControlCommandService()
-    svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
 
-    resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=1.0)
+    resp = await svc.send_set(line="L1", tag="VFM1_FREQ_SP", value=10, wait_ack=True, timeout_sec=1.0)
 
     assert resp["success"] is False
     assert resp["status"] == "nak"
@@ -215,9 +210,8 @@ async def test_control_send_set_ignores_duplicate_ack(monkeypatch):
 
     try:
         svc = ControlCommandService()
-        svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
 
-        resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=1.0)
+        resp = await svc.send_set(line="L1", tag="VFM1_FREQ_SP", value=10, wait_ack=True, timeout_sec=1.0)
         await asyncio.sleep(0)
     finally:
         loop.set_exception_handler(old_handler)
@@ -252,9 +246,8 @@ async def test_control_send_set_publish_failure_clears_pending(monkeypatch):
     monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
 
     svc = ControlCommandService()
-    svc._tag_index = {"CTRL_TEST_SPEED": {"control_enabled": True, "range": [0, 50]}}
 
-    resp = await svc.send_set(line="L1", tag="CTRL_TEST_SPEED", value=10, wait_ack=True, timeout_sec=1.0)
+    resp = await svc.send_set(line="L1", tag="VFM1_FREQ_SP", value=10, wait_ack=True, timeout_sec=1.0)
 
     assert resp["success"] is False
     assert resp["error"] == "control_publish_failed"
@@ -266,10 +259,6 @@ async def test_emergency_stop_unavailable_until_softpoint_contract(monkeypatch):
     from app.services.control_command import ControlCommandService
 
     svc = ControlCommandService()
-    svc._tag_index = {
-        "DRYER1.CHAIN.SPEED": {"control_enabled": True, "range": [0, 50]},
-        "DRYER1.FAN.SPEED": {"control_enabled": True, "range": [0, 50]},
-    }
     send_batch_called = False
 
     async def fail_if_send_batch_called(*_args, **_kwargs):

@@ -223,11 +223,10 @@ async def test_simulator_mode_starts_control_subscriber(tmp_path, monkeypatch):
                 "s": {
                     "c": [
                         {
-                            "name": "SIM_FREQ_SP",
+                            "name": "VFM1_FREQ_SP",
                             "address": 40100,
                             "signal_type": "AO",
                             "type": "float",
-                            "control_enabled": True,
                         }
                     ]
                 }

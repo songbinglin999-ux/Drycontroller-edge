@@ -104,7 +104,7 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
   - 功能：读取 edge 生成的可解释建议，建议默认需要人工确认。
 - `POST /api/v1/control/recommendations/{id}/confirm`
   - 功能：确认一条建议；edge-api 复核 freshness / mode / 软点白名单 / range / 变化率后签发 command。
-- `POST /api/v1/control/manual-confirm`
+- `POST /api/v1/control/recommendations/manual-confirm`
   - 功能：人工输入 6 个频率目标之一并确认写入。
 - `POST /api/v1/control/recommendations/{id}/dismiss`
   - 功能：驳回建议并记录审计。
@@ -204,4 +204,3 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 - 引入 OpenAPI 规范驱动的前后端代码自动生成  
 - 对接 API 网关（如 Nginx / Kong）做限流、熔断与审计
-

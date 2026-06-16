@@ -27,30 +27,8 @@ import structlog
 from app.core.mqtt_client import mqtt_manager
 from app.services.control_history import write_control_history
 from app.services.control_core.models import ALLOWED_CONTROL_SOFTPOINTS
-from app.utils.tag_loader import get_tag_config
 
 logger = structlog.get_logger(__name__)
-
-
-def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """
-    将 tags.yaml 展开为 name -> tag_config 的索引，便于控制侧做白名单/范围校验。
-    与 edge-daq 的 _build_tag_index 语义保持一致（但避免跨服务 import）。
-    """
-    index: Dict[str, Dict[str, Any]] = {}
-    tags_config = (config or {}).get("tags", {})
-    if not isinstance(tags_config, dict):
-        return index
-    for _section, categories in tags_config.items():
-        if not isinstance(categories, dict):
-            continue
-        for _category, tags in categories.items():
-            if not isinstance(tags, list):
-                continue
-            for tag in tags:
-                if isinstance(tag, dict) and tag.get("name"):
-                    index[str(tag["name"])] = tag
-    return index
 
 
 def _now_ts() -> float:
@@ -92,7 +70,6 @@ class ControlCommandService:
         self._pending: Dict[str, asyncio.Future] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._subscribed = False
-        self._tag_index = _build_tag_index(get_tag_config())
 
         # 与 edge-daq 默认 topic 对齐，可通过环境变量覆盖
         self._topic_tpl = os.getenv("MQTT_TOPIC_CONTROL_TPL", "control/{line}/tags")
@@ -100,12 +77,6 @@ class ControlCommandService:
 
         # 与 edge-daq 的 CONTROL_SIGNATURE_SECRET 必须一致
         self._signature_secret = os.getenv("CONTROL_SIGNATURE_SECRET", "").strip()
-
-        # 允许在 tags.yaml 缺失时放行（仅用于开发/单测；生产强烈不建议）
-        self._allow_without_tag_config = os.getenv(
-            "CONTROL_ALLOW_UNSAFE_TAGS_IF_CONFIG_MISSING",
-            "false",
-        ).lower() == "true"
 
         # 统一订阅：用通配符接所有产线的 ack
         self._ack_pattern = os.getenv("CONTROL_ACK_SUB_PATTERN", "control/+/acks")
@@ -158,42 +129,19 @@ class ControlCommandService:
     def _validate_tag(self, tag: str, value: Any) -> Tuple[bool, str]:
         """
         控制安全校验（API侧先拦截，减少无效下发）：
-        - 新控制软点必须在 ALLOWED_CONTROL_SOFTPOINTS 且 value 在范围内
-        - 历史 tags.yaml control_enabled 仅作为内部测试/迁移兜底
-        - 若 range 存在且 value 为数值，则必须在范围内
+        - V1 只允许 ALLOWED_CONTROL_SOFTPOINTS 中的 6 个频率软点
+        - value 必须可转为数值并落在签收范围内
         """
         softpoint_range = ALLOWED_CONTROL_SOFTPOINTS.get(tag)
-        if softpoint_range is not None:
-            try:
-                numeric_value = float(value)
-            except (TypeError, ValueError):
-                return False, "value_not_numeric"
-            lo, hi, _unit = softpoint_range
-            if numeric_value < lo or numeric_value > hi:
-                return False, "value_out_of_range"
-            return True, "ok"
-
-        if not self._tag_index:
-            if self._allow_without_tag_config:
-                return True, "tag_config_missing_but_allowed"
-            return False, "tags_config_missing"
-
-        cfg = self._tag_index.get(tag)
-        if not cfg:
-            return False, "tag_not_found"
-        if not cfg.get("control_enabled"):
-            return False, "control_not_enabled"
-        rng = cfg.get("range")
-        if rng and isinstance(value, (int, float)) and isinstance(rng, (list, tuple)) and len(rng) == 2:
-            try:
-                lo = float(rng[0])
-                hi = float(rng[1])
-                v = float(value)
-                if v < lo or v > hi:
-                    return False, "value_out_of_range"
-            except Exception:
-                # range 结构异常：让 edge-daq 再兜底，但 API 侧也标记
-                return False, "range_invalid"
+        if softpoint_range is None:
+            return False, "softpoint_not_allowed"
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return False, "value_not_numeric"
+        lo, hi, _unit = softpoint_range
+        if numeric_value < lo or numeric_value > hi:
+            return False, "value_out_of_range"
         return True, "ok"
 
     def _topic_for_line(self, line: str) -> str:
@@ -410,9 +358,9 @@ class ControlCommandService:
         """
         软件急停暂不可用。
 
-        旧实现从 tags.yaml 的 control_enabled + *.CHAIN.SPEED/*.FAN.SPEED 推导安全动作。
-        2026-06-07 A 线后 I/O 点表已改为只读，真实 /control/estop 必须等
-        EDGE-V2-P3 软点、authority、ACK/NAK 和 fallback 模型签收后重新实现。
+        V1 只开放六个频率设定软点的普通写入；52 个 I/O 点保持只读。
+        真实 /control/estop 必须等 EDGE-V2-P3 软点、authority、ACK/NAK
+        和 fallback 模型签收后重新实现。
         """
         logger.warning(
             "software_estop_unavailable_pending_softpoint_contract",
