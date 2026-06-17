@@ -105,7 +105,7 @@ class EventRecorder:
         # 析构阶段尽量避免 Influx SDK 抛出噪音异常
         try:
             self.close()
-        except (OSError, RuntimeError, ValueError):
+        except Exception:  # noqa: BLE001 - 故意宽捕：__del__ 内任何异常（含 Influx ApiException）都不得冒泡
             pass
 
     def record_event(

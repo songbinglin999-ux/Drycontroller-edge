@@ -82,7 +82,7 @@ class InfluxQueryService:
         # 兜底：异常不应在析构阶段冒泡
         try:
             self.close()
-        except (OSError, RuntimeError, ValueError):
+        except Exception:  # noqa: BLE001 - 故意宽捕：__del__ 内任何异常（含 Influx ApiException）都不得冒泡
             pass
 
     async def latest_points(self, tags: List[str], lookback: str = "5m") -> List[Dict[str, Any]]:
