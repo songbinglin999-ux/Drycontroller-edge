@@ -10,10 +10,11 @@ USB_MAKER = Path(__file__).resolve().parents[3] / "tools" / "os-installer-usb-ma
 PREFLIGHT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "preflight.sh"
 RELEASE_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "build-os-installer-release.sh"
 USB_WRITE_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "write-os-installer-usb.sh"
+LEGACY_TAILNET_DIR = Path(__file__).resolve().parents[2] / "tailnet"
 EDGE_API_ACTIVATION_API = (
     Path(__file__).resolve().parents[3] / "services" / "edge-api" / "app" / "api" / "v1" / "activation.py"
 )
-EDGE_API_ACTIVATION_CLI = (
+LEGACY_EDGE_API_ACTIVATION_CLI = (
     Path(__file__).resolve().parents[3] / "services" / "edge-api" / "app" / "services" / "activation_cli.py"
 )
 
@@ -328,13 +329,15 @@ def test_shell_preflight_uses_activated_edge_api_bind_address():
 
 def test_edge_api_no_longer_exposes_factory_activation_write_path():
     api_text = EDGE_API_ACTIVATION_API.read_text(encoding="utf-8")
-    cli_text = EDGE_API_ACTIVATION_CLI.read_text(encoding="utf-8")
 
     assert "run_activation" not in api_text
     assert "@router.post" not in api_text
     assert "ActivationTriggerRequest" not in api_text
-    assert "drycontroller-host-activation.sh" in cli_text
-    assert "deprecated: use /usr/local/sbin/drycontroller-host-activation.sh" in cli_text
+    assert not LEGACY_EDGE_API_ACTIVATION_CLI.exists()
+
+
+def test_legacy_tailnet_installer_tree_removed():
+    assert not LEGACY_TAILNET_DIR.exists()
 
 
 def test_install_edge_host_installs_activation_agent_service():
