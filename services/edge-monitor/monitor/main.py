@@ -799,11 +799,12 @@ class MonitorService:
                     if "application/json" in ct and text:
                         try:
                             result["response_json"] = response.json()
-                        except Exception:
-                            # keep text only
-                            pass
-                except Exception:
-                    pass
+                        except Exception as exc:
+                            result["response_json_error"] = str(exc)
+                            logger.warning("http_health_response_json_parse_failed", url=url, error=str(exc))
+                except Exception as exc:
+                    result["response_body_error"] = str(exc)
+                    logger.warning("http_health_response_body_read_failed", url=url, error=str(exc))
             
             # 根据状态码判断健康状态
             if 200 <= response.status_code < 300:
@@ -1062,15 +1063,13 @@ class MonitorService:
         alarm_key = f"{self.line_id}:{name}:health"
         # message 优先取 http check 的 detail，否则容器/tcp/monitor 的 detail
         message: Optional[str] = None
-        try:
-            checks = record.get("checks") or {}
+        checks = record.get("checks") if isinstance(record, dict) else {}
+        if isinstance(checks, dict):
             for slot in ("http", "container", "tcp", "monitor"):
-                slot_cfg = checks.get(slot) or {}
-                if slot_cfg.get("detail"):
+                slot_cfg = checks.get(slot)
+                if isinstance(slot_cfg, dict) and slot_cfg.get("detail"):
                     message = str(slot_cfg["detail"])[:512]
                     break
-        except Exception:
-            message = None
 
         if curr in ("degraded", "down"):
             severity = _STATUS_TO_SEVERITY.get(curr, "warning")
@@ -1079,7 +1078,7 @@ class MonitorService:
                 "alarm_key": alarm_key,
                 "state": "firing",
                 "severity": severity,
-                "message": message,
+                "message": message or f"{name} health changed from {prev} to {curr}",
                 "previous_status": prev,
                 "current_status": curr,
             }

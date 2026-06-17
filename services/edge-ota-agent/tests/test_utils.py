@@ -2,11 +2,14 @@
 edge-ota-agent 工具函数单元测试
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
 import importlib
+from types import SimpleNamespace
 
+import pytest
 
 
 PATH = Path(__file__).resolve()
@@ -159,3 +162,35 @@ def test_registry_credential_check_follows_docker_config_env(tmp_path: Path, mon
     result = ota_main._registry_credential_check(ota_main.OtaStartRequest(mode="online"))
 
     assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_pump_process_stdout_requires_pipe(tmp_path: Path):
+    ota_main = _load_module(tmp_path)
+    proc = SimpleNamespace(stdout=None)
+
+    with pytest.raises(RuntimeError, match="stdout_pipe_missing"):
+        await ota_main._pump_process_stdout(proc, tmp_path / "ota.log")
+
+
+@pytest.mark.asyncio
+async def test_operation_task_exception_updates_status(tmp_path: Path, monkeypatch):
+    ota_main = _load_module(tmp_path)
+    payload = ota_main.OtaStartRequest(mode="online")
+    op = ota_main._create_operation(payload)
+
+    async def fail_run_online(op_id, payload):
+        raise RuntimeError("background boom")
+
+    monkeypatch.setattr(ota_main, "_run_online", fail_run_online)
+
+    task = ota_main._start_operation_task(op["operation_id"], payload)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert task.done()
+    saved = ota_main._read_json(ota_main._op_path(op["operation_id"]))
+    assert saved["status"] == "failed"
+    assert saved["step"] == "task_error"
+    assert saved["error"] == "background boom"
+    assert op["operation_id"] not in ota_main.runtime.tasks

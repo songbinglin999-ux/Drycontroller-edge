@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -170,9 +170,54 @@ class OtaOperationOut(BaseModel):
 @dataclass
 class AgentRuntime:
     lock: asyncio.Lock
+    tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
 
 
 runtime = AgentRuntime(lock=asyncio.Lock())
+
+
+def _operation_done_callback(op_id: str, task: asyncio.Task[None]) -> None:
+    runtime.tasks.pop(op_id, None)
+    if task.cancelled():
+        try:
+            _update_operation(
+                op_id,
+                {
+                    "status": "failed",
+                    "step": "cancelled",
+                    "finished_at": _now().isoformat(),
+                    "error": "operation_task_cancelled",
+                },
+            )
+        except Exception as exc:
+            logger.error("ota_task_cancel_status_update_failed", operation_id=op_id, error=str(exc))
+        logger.error("ota_task_cancelled", operation_id=op_id)
+        return
+
+    exc = task.exception()
+    if exc is None:
+        return
+
+    try:
+        _update_operation(
+            op_id,
+            {
+                "status": "failed",
+                "step": "task_error",
+                "finished_at": _now().isoformat(),
+                "error": str(exc),
+            },
+        )
+    except Exception as update_exc:
+        logger.error("ota_task_exception_status_update_failed", operation_id=op_id, error=str(update_exc))
+    logger.error("ota_task_exception", operation_id=op_id, error=str(exc), exc_info=True)
+
+
+def _start_operation_task(op_id: str, payload: OtaStartRequest) -> asyncio.Task[None]:
+    task = asyncio.create_task(_run_online(op_id, payload), name=f"ota_online:{op_id}")
+    runtime.tasks[op_id] = task
+    task.add_done_callback(lambda done: _operation_done_callback(op_id, done))
+    return task
 
 
 def _create_operation(payload: OtaStartRequest) -> dict[str, Any]:
@@ -288,22 +333,19 @@ async def _run_online(op_id: str, payload: OtaStartRequest) -> None:
             env=env,
         )
 
-        async def _pump() -> None:
-            assert proc.stdout is not None
-            with log_path.open("a", encoding="utf-8") as f:
-                while True:
-                    chunk = await proc.stdout.readline()
-                    if not chunk:
-                        break
-                    s = chunk.decode("utf-8", errors="replace")
-                    f.write(s)
-                    f.flush()
-
-        pump_task = asyncio.create_task(_pump())
+        pump_task = asyncio.create_task(_pump_process_stdout(proc, log_path), name=f"ota_pump:{op_id}")
         try:
             code = await asyncio.wait_for(proc.wait(), timeout=timeout_sec)
-        finally:
+            await pump_task
+        except asyncio.TimeoutError:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
             await asyncio.gather(pump_task, return_exceptions=True)
+            raise
 
         finished = _now().isoformat()
         if code == 0:
@@ -328,6 +370,20 @@ async def _run_online(op_id: str, payload: OtaStartRequest) -> None:
     except Exception as exc:
         _update_operation(op_id, {"status": "failed", "step": "error", "finished_at": _now().isoformat(), "error": str(exc)})
         logger.error("ota_exception", operation_id=op_id, error=str(exc))
+
+
+async def _pump_process_stdout(proc: asyncio.subprocess.Process, log_path: Path) -> None:
+    stdout = proc.stdout
+    if stdout is None:
+        raise RuntimeError("ota_process_stdout_pipe_missing")
+    with log_path.open("a", encoding="utf-8") as f:
+        while True:
+            chunk = await stdout.readline()
+            if not chunk:
+                break
+            s = chunk.decode("utf-8", errors="replace")
+            f.write(s)
+            f.flush()
 
 
 def _extract_images_from_compose_yaml(yaml_text: str) -> list[str]:
@@ -528,7 +584,7 @@ async def start_ota(payload: OtaStartRequest, _: str = Depends(require_ops_api_k
     async with runtime.lock:
         op = _create_operation(payload)
         # 后台执行
-        asyncio.create_task(_run_online(op["operation_id"], payload))
+        _start_operation_task(op["operation_id"], payload)
         return OtaOperationOut(**op)
 
 

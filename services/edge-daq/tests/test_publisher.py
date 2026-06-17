@@ -104,3 +104,47 @@ async def test_publish_tag_data_buffers_when_mqtt_not_ready(monkeypatch, tmp_pat
     assert len(pub.mqtt_buffer) == 1
     assert len(pub.influx_buffer) == 1
 
+
+def test_backpressure_failure_returns_max_delay(monkeypatch, tmp_path):
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
+    monkeypatch.setenv("BACKPRESSURE_MAX_DELAY_SEC", "0.25")
+    pub = DataPublisher()
+    pub.mqtt_buffer = None
+
+    delay = pub.get_backpressure_delay()
+
+    assert delay == pytest.approx(0.25)
+    assert pub.last_backpressure_error
+
+
+def test_persist_buffer_disables_on_statvfs_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
+    monkeypatch.setenv("BUFFER_MIN_FREE_BYTES", "1")
+    pub = DataPublisher()
+
+    def fail_statvfs(path):
+        raise OSError("stat failed")
+
+    monkeypatch.setattr("daq.publisher.os.statvfs", fail_statvfs)
+
+    pub._persist_buffer(pub.mqtt_buffer_file, {"a": 1}, enable=True)
+
+    assert pub._persist_disabled["mqtt"] is True
+    assert pub.last_buffer_error == "stat failed"
+    assert not pub.mqtt_buffer_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_publish_tag_data_rejects_invalid_timestamp(monkeypatch, tmp_path):
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
+    pub = DataPublisher()
+
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        await pub.publish_tag_data(tag_name="T", value=1.23, unit="u", timestamp="not-a-time")
+
+    assert pub.last_influx_error == "invalid_timestamp: 'not-a-time'"
+    assert len(pub.mqtt_buffer) == 0
+    assert len(pub.influx_buffer) == 0

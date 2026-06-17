@@ -578,11 +578,37 @@ async def main():
     
     # 获取事件循环并注册信号处理
     loop = asyncio.get_event_loop()
+    stop_task: asyncio.Task | None = None
+
+    def stop_done_callback(task: asyncio.Task) -> None:
+        nonlocal stop_task
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            logger.warning("shutdown_task_cancelled")
+            service.running = False
+            return
+        finally:
+            if stop_task is task:
+                stop_task = None
+        if exc:
+            logger.error("shutdown_task_failed", error=str(exc), exc_info=True)
+            event_recorder.record_event(
+                "shutdown_task_failed",
+                severity="error",
+                fields={"error": str(exc)},
+                tags={"component": "edge-daq"},
+            )
+            service.running = False
     
     def signal_handler():
         """处理 SIGTERM/SIGINT 信号，触发优雅关闭"""
+        nonlocal stop_task
         logger.info("received_shutdown_signal")
-        asyncio.create_task(service.stop())
+        if stop_task and not stop_task.done():
+            return
+        stop_task = asyncio.create_task(service.stop(), name="daq_service_stop")
+        stop_task.add_done_callback(stop_done_callback)
     
     # 注册 SIGTERM（Docker stop）和 SIGINT（Ctrl+C）信号
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -607,6 +633,8 @@ async def main():
     
     finally:
         # 确保资源被清理
+        if stop_task and not stop_task.done():
+            await stop_task
         await service.stop()
 
 

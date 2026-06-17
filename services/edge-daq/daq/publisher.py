@@ -59,6 +59,7 @@ INFLUX_PENDING_BATCH_SIZE = Gauge("influx_pending_batch_size", "Pending batch po
 INFLUX_WRITE_RATE_LIMITED = Counter("influx_write_rate_limited_total", "Influx writes deferred by rate limit")
 INFLUX_BUFFER_WARN = Counter("influx_buffer_warn_total", "Influx buffer exceeded warn threshold")
 MQTT_BUFFER_WARN = Counter("mqtt_buffer_warn_total", "MQTT buffer exceeded warn threshold")
+BACKPRESSURE_CALC_FAILURE = Counter("backpressure_calc_failure_total", "Backpressure calculation failures")
 
 # 工业级运维：背压/落盘/丢弃监控
 BUFFER_PERSIST_FAILURE = Counter("buffer_persist_failure_total", "Buffer persist failures", ["type", "reason"])
@@ -101,6 +102,8 @@ class DataPublisher:
         self.influx_connected = False
         self.last_mqtt_error: Optional[str] = None
         self.last_influx_error: Optional[str] = None
+        self.last_backpressure_error: Optional[str] = None
+        self.last_buffer_error: Optional[str] = None
         self.mqtt_buffer = deque(maxlen=int(os.getenv("MQTT_BUFFER_MAX", "1000") or "1000"))
         self.influx_buffer = deque(maxlen=int(os.getenv("INFLUX_BUFFER_MAX", "2000") or "2000"))
         # MQTT 配置
@@ -213,15 +216,47 @@ class DataPublisher:
                     (ratio - self.backpressure_ratio_threshold) / span * self.backpressure_max_delay_sec,
                 ),
             )
-        except Exception:
-            return 0.0
+        except Exception as e:
+            self.last_backpressure_error = str(e)
+            BACKPRESSURE_CALC_FAILURE.inc()
+            logger.error("backpressure_calculation_failed", error=str(e), exc_info=True)
+            return max(0.0, self.backpressure_max_delay_sec)
 
     def _disk_free_bytes(self) -> int:
         try:
             st = os.statvfs(str(self.buffer_dir))
             return int(st.f_bavail) * int(st.f_frsize)
-        except Exception:
-            return 0
+        except Exception as e:
+            self.last_buffer_error = str(e)
+            logger.error("buffer_disk_free_check_failed", path=str(self.buffer_dir), error=str(e), exc_info=True)
+            return -1
+
+    def _buffer_has_min_disk_space(self, buf_type: str) -> bool:
+        if self.buffer_min_free_bytes <= 0:
+            return True
+        free_b = self._disk_free_bytes()
+        if free_b < 0:
+            BUFFER_PERSIST_FAILURE.labels(buf_type, "statvfs").inc()
+            BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
+            self._persist_disabled[buf_type] = True
+            logger.error(
+                "buffer_persist_disabled_disk_check_failed",
+                type=buf_type,
+                min_free_bytes=self.buffer_min_free_bytes,
+            )
+            return False
+        if free_b < self.buffer_min_free_bytes:
+            BUFFER_PERSIST_FAILURE.labels(buf_type, "low_disk").inc()
+            BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
+            self._persist_disabled[buf_type] = True
+            logger.error(
+                "buffer_persist_disabled_low_disk",
+                type=buf_type,
+                free_bytes=free_b,
+                min_free_bytes=self.buffer_min_free_bytes,
+            )
+            return False
+        return True
 
     def _make_msg_id(self, kind: str, tag: str, ts_ns: int) -> str:
         """
@@ -239,8 +274,10 @@ class DataPublisher:
             return time.time_ns()
         try:
             return int(float(timestamp) * 1_000_000_000)
-        except Exception:
-            return time.time_ns()
+        except (TypeError, ValueError, OverflowError) as e:
+            self.last_influx_error = f"invalid_timestamp: {timestamp!r}"
+            logger.error("timestamp_conversion_failed", timestamp=repr(timestamp), error=str(e))
+            raise ValueError(f"invalid timestamp for tag data: {timestamp!r}") from e
 
     def _influx_entry_ts_sec(self, entry: dict) -> float:
         """
@@ -830,19 +867,8 @@ class DataPublisher:
         if self._persist_disabled.get(buf_type):
             BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
             return
-        if self.buffer_min_free_bytes > 0:
-            free_b = self._disk_free_bytes()
-            if free_b and free_b < self.buffer_min_free_bytes:
-                BUFFER_PERSIST_FAILURE.labels(buf_type, "low_disk").inc()
-                BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
-                self._persist_disabled[buf_type] = True
-                logger.error(
-                    "buffer_persist_disabled_low_disk",
-                    type=buf_type,
-                    free_bytes=free_b,
-                    min_free_bytes=self.buffer_min_free_bytes,
-                )
-                return
+        if not self._buffer_has_min_disk_space(buf_type):
+            return
         try:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
@@ -863,19 +889,8 @@ class DataPublisher:
         if self._persist_disabled.get(buf_type):
             BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
             return
-        if self.buffer_min_free_bytes > 0:
-            free_b = self._disk_free_bytes()
-            if free_b and free_b < self.buffer_min_free_bytes:
-                BUFFER_PERSIST_FAILURE.labels(buf_type, "low_disk").inc()
-                BUFFER_PERSIST_DISABLED.labels(buf_type).set(1)
-                self._persist_disabled[buf_type] = True
-                logger.error(
-                    "buffer_persist_disabled_low_disk",
-                    type=buf_type,
-                    free_bytes=free_b,
-                    min_free_bytes=self.buffer_min_free_bytes,
-                )
-                return
+        if not self._buffer_has_min_disk_space(buf_type):
+            return
         try:
             with path.open("w", encoding="utf-8") as f:
                 for entry in entries:
@@ -966,6 +981,8 @@ class DataPublisher:
             "influx_connected": self.influx_connected,
             "last_mqtt_error": self.last_mqtt_error,
             "last_influx_error": self.last_influx_error,
+            "last_backpressure_error": self.last_backpressure_error,
+            "last_buffer_error": self.last_buffer_error,
             "mqtt_backoff": self._mqtt_reconnect_backoff,
             "mqtt_buffer_size": len(self.mqtt_buffer),
             "influx_buffer_size": len(self.influx_buffer),

@@ -114,6 +114,60 @@ async def test_http_health_check_without_client():
 
 
 @pytest.mark.asyncio
+async def test_http_health_check_records_json_parse_error(monkeypatch):
+    service = _new_service()
+
+    class DummyResponse:
+        status_code = 503
+        text = "not json"
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            raise ValueError("bad json")
+
+    class DummyClient:
+        async def get(self, url):
+            return DummyResponse()
+
+    service.http_client = cast(AsyncClient, DummyClient())
+    perf_calls = iter([100.0, 100.01])
+    monkeypatch.setattr("monitor.main.time.perf_counter", lambda: next(perf_calls))
+
+    result = await service._http_health_check("http://edge-api/health")
+
+    assert result["status"] == "degraded"
+    assert result["response_body"] == "not json"
+    assert result["response_json_error"] == "bad json"
+    assert result["detail"] == "http 503"
+
+
+@pytest.mark.asyncio
+async def test_http_health_check_records_body_read_error(monkeypatch):
+    service = _new_service()
+
+    class DummyResponse:
+        status_code = 503
+
+        @property
+        def text(self):
+            raise RuntimeError("body read failed")
+
+    class DummyClient:
+        async def get(self, url):
+            return DummyResponse()
+
+    service.http_client = cast(AsyncClient, DummyClient())
+    perf_calls = iter([100.0, 100.01])
+    monkeypatch.setattr("monitor.main.time.perf_counter", lambda: next(perf_calls))
+
+    result = await service._http_health_check("http://edge-api/health")
+
+    assert result["status"] == "degraded"
+    assert result["response_body_error"] == "body read failed"
+    assert result["detail"] == "http 503"
+
+
+@pytest.mark.asyncio
 async def test_tcp_health_check_success(monkeypatch):
     service = _new_service()
     
@@ -217,6 +271,7 @@ def test_alarm_transition_healthy_to_degraded_emits_firing_warning():
     t = service._build_alarm_transition("edge-api", "healthy", "degraded", {})
     assert t["state"] == "firing"
     assert t["severity"] == "warning"
+    assert t["message"] == "edge-api health changed from healthy to degraded"
 
 
 def test_alarm_transition_degraded_to_down_emits_firing_critical():
@@ -253,6 +308,14 @@ def test_alarm_transition_first_run_none_down_emits_firing():
     assert t is not None
     assert t["state"] == "firing"
     assert t["severity"] == "critical"
+    assert t["message"] == "edge-api health changed from healthy to down"
+
+
+def test_alarm_transition_malformed_checks_still_has_message():
+    service = _new_service()
+    t = service._build_alarm_transition("edge-api", "healthy", "down", {"checks": ["bad"]})
+    assert t["state"] == "firing"
+    assert t["message"] == "edge-api health changed from healthy to down"
 
 
 def test_update_service_states_returns_transitions_tuple():
