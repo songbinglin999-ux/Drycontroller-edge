@@ -57,6 +57,7 @@ MQTT_BUFFER_OLDEST_AGE_SEC = Gauge("mqtt_buffer_oldest_age_sec", "Oldest MQTT bu
 INFLUX_BUFFER_OLDEST_AGE_SEC = Gauge("influx_buffer_oldest_age_sec", "Oldest Influx buffered point age (s)")
 INFLUX_PENDING_BATCH_SIZE = Gauge("influx_pending_batch_size", "Pending batch points before write")
 INFLUX_WRITE_RATE_LIMITED = Counter("influx_write_rate_limited_total", "Influx writes deferred by rate limit")
+INFLUX_TIMESTAMP_PARSE_FAILURE = Counter("influx_timestamp_parse_failure_total", "Influx timestamp parse failures", ["field"])
 INFLUX_BUFFER_WARN = Counter("influx_buffer_warn_total", "Influx buffer exceeded warn threshold")
 MQTT_BUFFER_WARN = Counter("mqtt_buffer_warn_total", "MQTT buffer exceeded warn threshold")
 BACKPRESSURE_CALC_FAILURE = Counter("backpressure_calc_failure_total", "Backpressure calculation failures")
@@ -291,8 +292,8 @@ class DataPublisher:
         if ts_ns is not None:
             try:
                 return float(int(ts_ns)) / 1_000_000_000
-            except Exception:
-                pass
+            except (TypeError, ValueError, OverflowError) as e:
+                self._record_influx_timestamp_parse_failure("ts_ns", ts_ns, e)
         ts = entry.get("ts")
         try:
             ts_f = float(ts)
@@ -300,8 +301,19 @@ class DataPublisher:
             if ts_f > 1_000_000_000_000:  # ~2001-09-09 之后的纳秒量级
                 return ts_f / 1_000_000_000
             return ts_f
-        except Exception:
+        except (TypeError, ValueError, OverflowError) as e:
+            self._record_influx_timestamp_parse_failure("ts", ts, e)
             return time.time()
+
+    def _record_influx_timestamp_parse_failure(self, field: str, value: object, exc: Exception) -> None:
+        self.last_influx_error = f"invalid_buffer_timestamp_{field}: {value!r}"
+        INFLUX_TIMESTAMP_PARSE_FAILURE.labels(field).inc()
+        logger.warning(
+            "influx_buffer_timestamp_parse_failed",
+            field=field,
+            value=repr(value),
+            error=str(exc),
+        )
 
     def _to_ts_ns_any(self, ts: object) -> int:
         """

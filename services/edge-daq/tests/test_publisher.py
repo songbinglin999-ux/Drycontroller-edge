@@ -6,6 +6,7 @@ from daq.publisher import (
     DataPublisher,
     MQTT_BUFFER_OLDEST_AGE_SEC,
     INFLUX_BUFFER_OLDEST_AGE_SEC,
+    INFLUX_TIMESTAMP_PARSE_FAILURE,
 )
 
 
@@ -148,3 +149,30 @@ async def test_publish_tag_data_rejects_invalid_timestamp(monkeypatch, tmp_path)
     assert pub.last_influx_error == "invalid_timestamp: 'not-a-time'"
     assert len(pub.mqtt_buffer) == 0
     assert len(pub.influx_buffer) == 0
+
+
+def test_influx_entry_ts_sec_records_bad_ts_ns_and_uses_legacy_ts(monkeypatch, tmp_path):
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
+    pub = DataPublisher()
+    before = INFLUX_TIMESTAMP_PARSE_FAILURE.labels("ts_ns")._value.get()
+
+    ts = pub._influx_entry_ts_sec({"ts_ns": "bad-ns", "ts": 123.5})
+
+    assert ts == pytest.approx(123.5)
+    assert pub.last_influx_error == "invalid_buffer_timestamp_ts_ns: 'bad-ns'"
+    assert INFLUX_TIMESTAMP_PARSE_FAILURE.labels("ts_ns")._value.get() == pytest.approx(before + 1)
+
+
+def test_influx_entry_ts_sec_records_bad_ts_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
+    pub = DataPublisher()
+    before = INFLUX_TIMESTAMP_PARSE_FAILURE.labels("ts")._value.get()
+    monkeypatch.setattr("daq.publisher.time.time", lambda: 456.0)
+
+    ts = pub._influx_entry_ts_sec({"ts": "bad-ts"})
+
+    assert ts == pytest.approx(456.0)
+    assert pub.last_influx_error == "invalid_buffer_timestamp_ts: 'bad-ts'"
+    assert INFLUX_TIMESTAMP_PARSE_FAILURE.labels("ts")._value.get() == pytest.approx(before + 1)
