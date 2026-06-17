@@ -131,7 +131,7 @@ class DiscoveryAgent:
         try:
             self.bootstrap_path.parent.mkdir(parents=True, exist_ok=True)
             self.bootstrap_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.error("discovery_bootstrap_write_failed", path=str(self.bootstrap_path), error=str(exc))
 
     def _sign_payload(self, payload: Dict[str, Any]) -> str:
@@ -184,7 +184,7 @@ class DiscoveryAgent:
             await self._mdns.async_register_service(info)
             self._mdns_info = info
             logger.info("mdns_service_registered", service=self.mdns_service_name, port=self.mdns_port)
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.warning("mdns_register_failed", error=str(exc), exception=repr(exc))
             self._mdns = None
             self._mdns_info = None
@@ -206,7 +206,7 @@ class DiscoveryAgent:
             )
             await mdns.async_update_service(updated_info)
             self._mdns_info = updated_info
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.warning("mdns_update_failed", error=str(exc), exception=repr(exc))
 
     def _build_mdns_properties(self, payload: Dict[str, Any]) -> Dict[bytes, bytes]:
@@ -245,12 +245,12 @@ class DiscoveryAgent:
             info = self._mdns_info
             if info:
                 await mdns.async_unregister_service(info)
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.warning("mdns_unregister_failed", error=str(exc), exception=repr(exc))
         finally:
             try:
                 await mdns.async_close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError):
                 pass
             self._mdns = None
             self._mdns_info = None
@@ -261,7 +261,7 @@ class DiscoveryAgent:
         client = None
         try:
             client = self._mqtt_client_supplier()
-        except Exception:
+        except (AttributeError, RuntimeError):
             client = None
         if not client:
             return
@@ -277,10 +277,9 @@ class DiscoveryAgent:
                 topic=self.mqtt_topic,
                 retain=self.mqtt_retain,
             )
-        except Exception as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.warning(
                 "bootstrap_mqtt_publish_failed",
                 error=str(exc),
                 topic=self.mqtt_topic,
             )
-

@@ -23,6 +23,7 @@ DB_URL="${DATABASE_URL:-}"
 parse_pg_env() {
   python - "$DB_URL" <<'PY'
 import sys
+from argparse import ArgumentError
 try:
     raw_url = sys.argv[1].strip()
     if raw_url:
@@ -32,7 +33,7 @@ try:
         db_url = settings.database_url
     from sqlalchemy.engine import make_url
     u = make_url(db_url)
-except Exception:
+except (IndexError, ImportError, ArgumentError, ValueError):
     sys.exit(0)
 if not u.get_backend_name().startswith("postgresql"):
     sys.exit(0)

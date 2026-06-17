@@ -19,7 +19,7 @@ def load_edge_identity() -> dict[str, str | None]:
     )
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         data = {}
     return {
         "edge_device_id": _clean(data.get("device_id")),

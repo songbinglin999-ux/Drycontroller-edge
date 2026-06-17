@@ -32,14 +32,14 @@ def _validate_acquisition(cfg: Dict[str, Any], errors: List[str]) -> None:
         try:
             if float(scan) <= 0:
                 errors.append("acquisition.scan_interval must be > 0")
-        except Exception:
+        except (TypeError, ValueError):
             errors.append("acquisition.scan_interval must be numeric")
     batch = acquisition.get("batch_size")
     if batch is not None:
         try:
             if int(batch) < 0:
                 errors.append("acquisition.batch_size must be >= 0")
-        except Exception:
+        except (TypeError, ValueError):
             errors.append("acquisition.batch_size must be integer")
 
 
@@ -54,7 +54,7 @@ def _validate_heartbeat(cfg: Dict[str, Any], errors: List[str]) -> None:
         if hb.get(field) is not None:
             try:
                 int(hb.get(field))
-            except Exception:
+            except (TypeError, ValueError):
                 errors.append(f"heartbeat.{field} must be integer")
 
 

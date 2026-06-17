@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import structlog
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -53,8 +54,8 @@ async def record_preflight_run(payload: dict[str, Any]) -> None:
                     )
                 )
                 await db.commit()
-            except Exception:
+            except (RuntimeError, OSError, SQLAlchemyError):
                 await db.rollback()
                 raise
-    except Exception as exc:
+    except (RuntimeError, OSError, SQLAlchemyError) as exc:
         logger.error("edge_preflight_history_write_failed", status=status, error=str(exc))

@@ -169,7 +169,7 @@ class PLCReader:
             try:
                 if self.publisher and hasattr(self.publisher, "get_backpressure_delay"):
                     bp_delay = float(self.publisher.get_backpressure_delay() or 0.0)
-            except Exception:
+            except (TypeError, ValueError):
                 bp_delay = 0.0
             if bp_delay > 0:
                 PLC_SCAN_BACKPRESSURE_TOTAL.inc()
@@ -198,7 +198,7 @@ class PLCReader:
                 logger.info("scan_loop_cancelled")
                 self.running = False
                 break
-            except Exception as e:
+            except (OSError, RuntimeError, TypeError, ValueError) as e:
                 PLC_SCAN_LOOP_ERROR.inc()
                 logger.error("scan_error", error=str(e), exc_info=True)
 
@@ -347,7 +347,7 @@ class PLCReader:
 
                 await self._after_read_value(item["raw"], value, item["unit"])
 
-            except Exception as e:
+            except (IndexError, KeyError, RuntimeError, TypeError, ValueError, struct.error) as e:
                 logger.error("batch_read_parse_error", tag=item["name"], error=str(e))
 
     async def _after_read_value(self, tag_config: dict, value, unit: str):
@@ -512,11 +512,10 @@ class PLCReader:
                 value = value * scale
             await self._after_read_value(tag_config, value, unit)
         
-        except Exception as e:
+        except (IndexError, OSError, RuntimeError, TypeError, ValueError) as e:
             logger.error(
                 "tag_read_error",
                 tag=tag_name,
                 address=address,
                 error=str(e),
             )
-

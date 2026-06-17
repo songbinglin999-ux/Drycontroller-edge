@@ -134,7 +134,7 @@ payload = {}
 if path.exists():
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         payload = {}
 payload["state"] = os.environ["STATE"]
 payload["message"] = os.environ.get("MESSAGE") or payload.get("message") or ""
@@ -175,7 +175,7 @@ state = {}
 if state_path.exists():
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         state = {}
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -288,7 +288,7 @@ path = Path(os.environ["DEVICE_JSON"])
 if path.exists():
     try:
         existing = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         existing = {}
 existing.update({k: v for k, v in payload.items() if v})
 path.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -601,7 +601,7 @@ if not path.exists():
     raise SystemExit(0)
 try:
     print((json.loads(path.read_text(encoding="utf-8")).get("state") or "").strip())
-except Exception:
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
     print("")
 PY
 )"

@@ -39,14 +39,14 @@ _TAILSCALE_CONFIG_DIR = Path("/var/lib/tailscale")
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 
 def _machine_id() -> str:
     try:
         return Path("/etc/machine-id").read_text(encoding="utf-8").strip()
-    except Exception:
+    except (OSError, UnicodeDecodeError):
         return ""
 
 

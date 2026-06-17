@@ -184,7 +184,7 @@ class SoftSensorService:
         if self.mqtt_handler:
             try:
                 dq = self.mqtt_handler.dq_snapshot()
-            except Exception:
+            except (RuntimeError, TypeError, ValueError):
                 dq = None
         return {
             "success": True,
@@ -250,7 +250,7 @@ async def main():
         while service.running:
             await asyncio.sleep(1)
     
-    except Exception as e:
+    except (OSError, RuntimeError, TypeError, ValueError, yaml.YAMLError) as e:
         logger.error("service_error", error=str(e), exc_info=True)
         event_recorder.record_event(
             "service_error",

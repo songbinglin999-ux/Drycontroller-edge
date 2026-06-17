@@ -131,7 +131,7 @@ class MQTTWebSocketRelay:
             payload = event.get("data")
             try:
                 self._handle_message(stream_name, topic, payload)
-            except Exception:
+            except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
                 # 7x24：避免单条坏消息/处理异常导致后台任务整体退出
                 logger.exception("ws_stream_handle_message_failed", stream=stream_name, topic=topic)
     
@@ -275,4 +275,3 @@ class MQTTWebSocketRelay:
 
 # 全局单例实例
 ws_stream = MQTTWebSocketRelay()
-

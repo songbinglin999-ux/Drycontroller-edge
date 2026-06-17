@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import structlog
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -132,7 +133,7 @@ class RetentionRunner:
                 logger.info("data_retention_completed", totals=totals)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except (RuntimeError, SQLAlchemyError, ValueError) as exc:
                 logger.error("data_retention_failed", error=str(exc))
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)

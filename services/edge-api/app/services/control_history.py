@@ -4,6 +4,7 @@ import datetime as dt
 from typing import Any
 
 import structlog
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -112,10 +113,10 @@ async def write_control_history(
                     )
                 )
                 await db.commit()
-            except Exception:
+            except (RuntimeError, OSError, SQLAlchemyError):
                 await db.rollback()
                 raise
-    except Exception as exc:
+    except (RuntimeError, OSError, SQLAlchemyError) as exc:
         logger.error(
             "edge_control_history_write_failed",
             command_type=command_type,

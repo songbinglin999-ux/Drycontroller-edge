@@ -165,7 +165,7 @@ class SoftSensorModel:
             
             return result
         
-        except Exception as e:
+        except (ArithmeticError, KeyError, TypeError, ValueError) as e:
             logger.error("inference_failed", error=str(e), exc_info=True)
             return None
     

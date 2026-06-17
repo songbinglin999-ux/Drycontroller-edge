@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import os
 import time
@@ -133,7 +134,7 @@ def _validate_license_install_shape(req: LicenseInstallRequest) -> None:
             raise HTTPException(status_code=400, detail={"success": False, "error": "license_payload_missing_field", "field": field})
     try:
         base64.b64decode(req.license_public_key.strip(), validate=True)
-    except Exception:
+    except (binascii.Error, ValueError):
         raise HTTPException(status_code=400, detail={"success": False, "error": "invalid_license_public_key_base64"})
 
 
@@ -142,12 +143,12 @@ def _trusted_license_public_key(public_key_path: Path) -> bytes:
     if configured:
         try:
             return base64.b64decode(configured, validate=True)
-        except Exception:
+        except (binascii.Error, ValueError):
             raise HTTPException(status_code=500, detail={"success": False, "error": "invalid_trusted_license_public_key"})
     if public_key_path.is_file():
         try:
             return load_public_key(public_key_path)
-        except Exception:
+        except (OSError, binascii.Error, ValueError):
             raise HTTPException(status_code=500, detail={"success": False, "error": "invalid_existing_license_public_key"})
     raise HTTPException(status_code=409, detail={"success": False, "error": "missing_trusted_license_public_key"})
 
@@ -159,7 +160,7 @@ def _verify_license_install_request(req: LicenseInstallRequest, *, public_key_pa
         raise HTTPException(status_code=403, detail={"success": False, "error": "license_public_key_not_trusted"})
     try:
         verify_signature(req.license, trusted_public_key)
-    except Exception as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail={"success": False, "error": "license_signature_invalid"}) from exc
     return trusted_public_key
 
@@ -171,7 +172,7 @@ async def _call_license_verify() -> dict:
             resp = await hc.get(url)
         body = resp.json() if resp.content else {}
         return {"url": url, "status_code": resp.status_code, "body": body}
-    except Exception as exc:
+    except (httpx.HTTPError, ValueError) as exc:
         return {"url": url, "status_code": 0, "error": str(exc)}
 
 
@@ -211,7 +212,7 @@ def _preflight_bootstrap_completion(checks: list[dict[str, Any]]) -> None:
         try:
             data = json.loads(activation_state_path.read_text(encoding="utf-8"))
             activation_state = str(data.get("state") or "").strip()
-        except Exception:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             activation_state = ""
     if activation_state == "formal_license_active":
         _preflight_check(
@@ -255,7 +256,7 @@ def _preflight_device_identity(checks: list[dict[str, Any]]) -> None:
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         _preflight_check(checks, "device.identity", "fail", "invalid_json", hint="device.json must be valid JSON", detail={"path": str(path), "error": str(exc)})
         return
     missing = [k for k in ("device_id", "tenant_id", "node_name") if not data.get(k)]
@@ -302,7 +303,7 @@ async def _preflight_http_check(
         body: Any
         try:
             body = resp.json() if resp.content else None
-        except Exception:
+        except ValueError:
             body = resp.text[:800]
         detail = {"url": url, "status_code": resp.status_code, "body": body}
         if 200 <= resp.status_code < 300:
@@ -311,7 +312,7 @@ async def _preflight_http_check(
             _preflight_check(checks, check_id, "degraded", "service_degraded", hint="accepted in factory mode; use strict for final acceptance", detail=detail)
         else:
             _preflight_check(checks, check_id, "fail", f"http_{resp.status_code}", hint="unexpected readiness status", detail=detail)
-    except Exception as exc:
+    except httpx.HTTPError as exc:
         _preflight_check(checks, check_id, "fail", "unreachable", hint="endpoint is not reachable", detail={"url": url, "error": str(exc)})
 
 
@@ -694,7 +695,7 @@ async def apply_plc_config(
     if req.restart_edge_daq:
         try:
             restart_result = await client.restart_service("edge-daq", api_key=api_key)
-        except Exception:
+        except (httpx.HTTPError, RuntimeError, ValueError):
             _restore_or_remove(cfg_path, previous_cfg)
             raise
 
@@ -720,7 +721,7 @@ async def apply_plc_config(
                     "json": resp.json() if resp.content else None,
                     "text": (resp.text[:1000] if resp.text else None),
                 }
-        except Exception as exc:
+        except (httpx.HTTPError, ValueError) as exc:
             ready_result = {"url": url, "status_code": 0, "error": str(exc)}
 
     if req.fail_on_not_ready and ready_result and int(ready_result.get("status_code") or 0) >= 400:

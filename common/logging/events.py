@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client.rest import ApiException
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -59,7 +60,7 @@ class EventRecorder:
                 service=service_name,
                 measurement=self._config.measurement,
             )
-        except Exception as exc:  # pragma: no cover - 网络问题
+        except (ApiException, OSError, RuntimeError, ValueError) as exc:  # pragma: no cover - 网络问题
             logger.error(
                 "event_recorder_init_failed",
                 error=str(exc),
@@ -104,7 +105,7 @@ class EventRecorder:
         # 析构阶段尽量避免 Influx SDK 抛出噪音异常
         try:
             self.close()
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             pass
 
     def record_event(
@@ -148,7 +149,7 @@ class EventRecorder:
                 record=payload,
             )
             return True
-        except Exception as exc:  # pragma: no cover - 网络问题
+        except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:  # pragma: no cover - 网络问题
             logger.error(
                 "event_record_failed",
                 event_name=event,
@@ -156,5 +157,4 @@ class EventRecorder:
                 service=self.service_name,
             )
             return False
-
 

@@ -36,6 +36,7 @@ import paho.mqtt.client as mqtt
 import structlog
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
+from influxdb_client.rest import ApiException
 from prometheus_client import Counter, Gauge
 
 logger = structlog.get_logger(__name__)
@@ -217,7 +218,7 @@ class DataPublisher:
                     (ratio - self.backpressure_ratio_threshold) / span * self.backpressure_max_delay_sec,
                 ),
             )
-        except Exception as e:
+        except (TypeError, ValueError, ZeroDivisionError) as e:
             self.last_backpressure_error = str(e)
             BACKPRESSURE_CALC_FAILURE.inc()
             logger.error("backpressure_calculation_failed", error=str(e), exc_info=True)
@@ -227,7 +228,7 @@ class DataPublisher:
         try:
             st = os.statvfs(str(self.buffer_dir))
             return int(st.f_bavail) * int(st.f_frsize)
-        except Exception as e:
+        except OSError as e:
             self.last_buffer_error = str(e)
             logger.error("buffer_disk_free_check_failed", path=str(self.buffer_dir), error=str(e), exc_info=True)
             return -1
@@ -332,7 +333,7 @@ class DataPublisher:
                 return int(ts) * 1_000_000_000
             # float seconds
             return int(float(ts) * 1_000_000_000)
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             return time.time_ns()
     
     async def connect(self):
@@ -439,13 +440,13 @@ class DataPublisher:
 
             try:
                 self.mqtt_client = _connect(self.mqtt_broker, self.mqtt_port, is_backup=False)
-            except Exception as primary_err:
+            except (OSError, RuntimeError, ValueError) as primary_err:
                 if not self.mqtt_broker_backup:
                     raise
                 logger.warning("mqtt_primary_connect_failed_try_backup", error=str(primary_err))
                 self.mqtt_client = _connect(self.mqtt_broker_backup, self.mqtt_port_backup, is_backup=True)
         
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.error("mqtt_connect_error", error=str(e))
             self.last_mqtt_error = str(e)
             self.mqtt_connected = False
@@ -482,7 +483,7 @@ class DataPublisher:
                 await asyncio.to_thread(client.health)
                 self._active_influx_is_backup = False
                 INFLUX_ACTIVE_HOST.set(0)
-            except Exception as primary_err:
+            except (ApiException, OSError, RuntimeError, ValueError) as primary_err:
                 if not self.influx_host_backup:
                     raise primary_err
                 logger.warning("influx_primary_connect_failed_try_backup", error=str(primary_err))
@@ -507,7 +508,7 @@ class DataPublisher:
             INFLUX_CONNECTED.set(1)
             self.influx_connected = True
 
-        except Exception as e:
+        except (ApiException, OSError, RuntimeError, ValueError) as e:
             logger.error("influxdb_connect_error", error=str(e))
             self.last_influx_error = str(e)
             INFLUX_CONNECTED.set(0)
@@ -547,7 +548,7 @@ class DataPublisher:
                 self.influx_connected = True
                 INFLUX_CONNECTED.set(1)
                 return True
-            except Exception as e:
+            except (ApiException, OSError, RuntimeError, ValueError) as e:
                 self.last_influx_error = str(e)
                 self.influx_connected = False
                 INFLUX_CONNECTED.set(0)
@@ -655,7 +656,7 @@ class DataPublisher:
             reason = str(result.rc)
             MQTT_PUBLISH_FAILURE.labels(reason).inc()
             logger.error("mqtt_publish_failed", topic=topic, rc=result.rc)
-        except Exception as e:
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
             reason = e.__class__.__name__
             MQTT_PUBLISH_FAILURE.labels(reason).inc()
             self.last_mqtt_error = str(e)
@@ -765,7 +766,7 @@ class DataPublisher:
                     MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
                     break
                 flushed += 1
-            except Exception as e:
+            except (OSError, RuntimeError, TypeError, ValueError) as e:
                 self.last_mqtt_error = str(e)
                 self.mqtt_buffer.append(item)
                 MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
@@ -799,7 +800,7 @@ class DataPublisher:
                     record=point,
                 )
                 flushed += 1
-            except Exception as e:
+            except (ApiException, AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 self.last_influx_error = str(e)
                 self.influx_connected = False
                 INFLUX_CONNECTED.set(0)
@@ -827,12 +828,12 @@ class DataPublisher:
                     try:
                         if isinstance(pt._time, int):
                             ts_ns = int(pt._time)
-                    except Exception:
+                    except (TypeError, ValueError):
                         ts_ns = None
                     if ts_ns is None:
                         ts_ns = time.time_ns()
                     self._buffer_influx(tag_name, val, unit, ts_ns)
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     continue
             self.influx_pending_batch.clear()
             INFLUX_PENDING_BATCH_SIZE.set(0)
@@ -846,7 +847,7 @@ class DataPublisher:
             self.influx_pending_batch.clear()
             INFLUX_PENDING_BATCH_SIZE.set(0)
             self._last_influx_flush_ts = time.time()
-        except Exception as e:
+        except (ApiException, OSError, RuntimeError, TypeError, ValueError) as e:
             reason = e.__class__.__name__
             INFLUX_WRITE_FAILURE.labels(reason).inc()
             self.last_influx_error = str(e)
@@ -861,12 +862,12 @@ class DataPublisher:
                     try:
                         if isinstance(pt._time, int):
                             ts_ns = int(pt._time)
-                    except Exception:
+                    except (TypeError, ValueError):
                         ts_ns = None
                     if ts_ns is None:
                         ts_ns = time.time_ns()
                     self._buffer_influx(tag_name, val, unit, ts_ns)
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     continue
             self.influx_pending_batch.clear()
             INFLUX_PENDING_BATCH_SIZE.set(0)
@@ -884,7 +885,7 @@ class DataPublisher:
         try:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             reason = e.__class__.__name__
             if isinstance(e, OSError) and getattr(e, "errno", None) == errno.ENOSPC:
                 reason = "ENOSPC"
@@ -907,7 +908,7 @@ class DataPublisher:
             with path.open("w", encoding="utf-8") as f:
                 for entry in entries:
                     f.write(json.dumps(entry) + "\n")
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             reason = e.__class__.__name__
             if isinstance(e, OSError) and getattr(e, "errno", None) == errno.ENOSPC:
                 reason = "ENOSPC"
@@ -933,9 +934,9 @@ class DataPublisher:
                             target.append(obj)
                             if len(target) > maxlen:
                                 target.popleft()
-                        except Exception:
+                        except (json.JSONDecodeError, TypeError):
                             continue
-            except Exception as e:
+            except OSError as e:
                 logger.warning("buffer_load_failed", path=str(path), error=str(e))
         load_file(self.mqtt_buffer_file, self.mqtt_buffer, self.mqtt_buffer.maxlen)
         load_file(self.influx_buffer_file, self.influx_buffer, self.influx_buffer.maxlen)
@@ -965,7 +966,7 @@ class DataPublisher:
                 BUFFER_DEADLETTER_TOTAL.labels("mqtt").inc()
             else:
                 BUFFER_DEADLETTER_TOTAL.labels("influx").inc()
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             logger.warning("dead_letter_write_failed", path=str(path), error=str(e))
 
     def _check_buffer_thresholds(self):

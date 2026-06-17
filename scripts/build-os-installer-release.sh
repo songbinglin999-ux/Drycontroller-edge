@@ -321,7 +321,7 @@ def image_entries(path: Path) -> list[dict[str, object]]:
                     config_bytes = config_member.read()
                     try:
                         created = json.loads(config_bytes.decode("utf-8")).get("created")
-                    except Exception:
+                    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
                         created = None
             rows.append(
                 {

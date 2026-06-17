@@ -190,7 +190,7 @@ class DAQService:
                     plc_slave_id = int(runtime_cfg.get("slave_id") or plc_slave_id)
                     plc_connect_timeout = int(runtime_cfg.get("connect_timeout") or plc_connect_timeout)
                     self.plc_config_source = "runtime_file"
-            except Exception as exc:
+            except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
                 logger.warning("runtime_plc_config_load_failed", path=str(runtime_cfg_path), error=str(exc))
                 self.plc_config_source = "env"
         else:
@@ -276,7 +276,7 @@ class DAQService:
             # 停机尽力重放缓冲（超时可控）
             try:
                 drain_timeout = float(os.getenv("PUBLISHER_DRAIN_TIMEOUT_SEC", "10") or "10")
-            except Exception:
+            except (TypeError, ValueError):
                 drain_timeout = 10.0
             if hasattr(self.publisher, "drain"):
                 await self.publisher.drain(timeout_sec=drain_timeout)
@@ -513,7 +513,7 @@ class DAQService:
                 if heartbeat_cfg.get(field) is not None:
                     try:
                         int(heartbeat_cfg.get(field))
-                    except Exception:
+                    except (TypeError, ValueError):
                         errors.append(f"invalid_heartbeat_{field}")
         allowed_signal_types = {"DI", "AI", "DO", "AO"}
         for section, categories in tags_cfg.items():
@@ -622,7 +622,7 @@ async def main():
         while service.running:
             await asyncio.sleep(1)
     
-    except Exception as e:
+    except (OSError, RuntimeError, TypeError, ValueError, yaml.YAMLError) as e:
         logger.error("service_error", error=str(e), exc_info=True)
         event_recorder.record_event(
             "service_error",

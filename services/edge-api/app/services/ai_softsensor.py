@@ -180,7 +180,7 @@ class AISoftsensorService:
         try:
             with self._config_path.open("r", encoding="utf-8") as fp:
                 return yaml.safe_load(fp) or {}
-        except Exception:
+        except (OSError, yaml.YAMLError):
             return {}
 
     @staticmethod
@@ -200,4 +200,3 @@ class AISoftsensorService:
 def get_ai_softsensor_service() -> AISoftsensorService:
     """获取 AI 软测量服务单例"""
     return AISoftsensorService()
-

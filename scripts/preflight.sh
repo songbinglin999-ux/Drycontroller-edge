@@ -150,7 +150,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 try:
     data = json.loads(path.read_text(encoding="utf-8"))
-except Exception as exc:
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
     print(json.dumps({"ok": False, "reason": "invalid_json", "error": str(exc)}, ensure_ascii=False))
     raise SystemExit(0)
 
@@ -229,7 +229,7 @@ try:
 except urllib.error.HTTPError as exc:
     body = exc.read(800).decode("utf-8", "replace")
     print(json.dumps({"http_code": exc.code, "body": body}, ensure_ascii=False))
-except Exception as exc:
+except (OSError, TimeoutError, urllib.error.URLError) as exc:
     print(json.dumps({"http_code": 0, "body": "", "error": str(exc)}, ensure_ascii=False))
 PY
 )"
@@ -287,7 +287,7 @@ import json
 import sys
 try:
     data = json.loads(sys.argv[1])
-except Exception:
+except json.JSONDecodeError:
     raise SystemExit(1)
 raise SystemExit(0 if data.get("valid") is True else 1)
 PY
@@ -338,7 +338,7 @@ try:
         ["docker", "compose", "ps", "--format", "json"],
         text=True,
     ).strip()
-except Exception as exc:
+except (OSError, subprocess.SubprocessError) as exc:
     print(json.dumps({"ok": False, "reason": "compose_ps_failed", "error": str(exc)}, ensure_ascii=False))
     raise SystemExit(0)
 
@@ -467,7 +467,7 @@ with open(checks_path, "r", encoding="utf-8") as fh:
         check_id, status, reason, hint, detail_raw = line.split("\t", 4)
         try:
             detail = json.loads(detail_raw)
-        except Exception:
+        except json.JSONDecodeError:
             detail = {"raw": detail_raw}
         checks.append({
             "id": check_id,

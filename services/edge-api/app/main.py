@@ -50,26 +50,26 @@ async def lifespan(app: FastAPI):
     # 连接 MQTT & 启动事件总线
     try:
         await mqtt_manager.connect()
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         # 允许启动进入 degraded：MQTT 后续由 paho 自动重连，/ready 会返回 503
         logger.error("mqtt_startup_connect_failed", error=str(exc))
     try:
         await event_bus.start()
-    except Exception as exc:
+    except (RuntimeError, ValueError) as exc:
         logger.error("event_bus_start_failed", error=str(exc))
     
     # 启动 MQTT → WS 转发
     try:
         await ws_stream.start()
-    except Exception as exc:
+    except (RuntimeError, ValueError) as exc:
         logger.error("ws_stream_start_failed", error=str(exc))
     try:
         await cloud_sync_outbox_drainer.start()
-    except Exception as exc:
+    except (RuntimeError, ValueError) as exc:
         logger.error("cloud_sync_outbox_drain_start_failed", error=str(exc))
     try:
         await retention_runner.start()
-    except Exception as exc:
+    except (RuntimeError, ValueError) as exc:
         logger.error("data_retention_start_failed", error=str(exc))
     
     logger.info("edge_api_started")
@@ -167,7 +167,7 @@ async def log_requests(request: Request, call_next):
         
         return response
     
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.error(
             "request_failed",
             request_id=request_id,

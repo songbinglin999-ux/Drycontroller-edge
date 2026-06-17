@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+from docker import errors as docker_errors
 import structlog
 import os
 
@@ -148,7 +149,7 @@ class SelfHealExecutor:
             await loop.run_in_executor(None, _restart)
             self.logger.info("self_heal_restart_success", container=container_name)
             return SelfHealExecutionResult(success=True)
-        except Exception as exc:  # pragma: no cover - 依赖 docker 环境
+        except (docker_errors.DockerException, OSError, RuntimeError) as exc:  # pragma: no cover - 依赖 docker 环境
             self.logger.error("self_heal_restart_failed", container=container_name, error=str(exc))
             return SelfHealExecutionResult(success=False, error=str(exc))
 
@@ -200,7 +201,7 @@ class SelfHealManager:
             if decision.action == "escalate":
                 try:
                     cooldown_sec = int(os.getenv("SELF_HEAL_ESCALATE_COOLDOWN_SEC", "1800") or "1800")
-                except Exception:
+                except (TypeError, ValueError):
                     cooldown_sec = 1800
                 state_updates.update(
                     {
@@ -235,4 +236,3 @@ class SelfHealManager:
 
         outcome.state_updates = {k: v for k, v in state_updates.items() if v is not None}
         return outcome
-

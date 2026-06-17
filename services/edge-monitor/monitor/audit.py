@@ -72,7 +72,7 @@ class SelfHealAuditor:
                     "error": execution_error or "",
                 },
             )
-        except Exception as exc:  # pragma: no cover
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:  # pragma: no cover
             self.logger.warning("self_heal_event_record_failed", error=str(exc))
 
     def _publish_mqtt(self, service_name: str, outcome: SelfHealOutcome) -> None:
@@ -107,6 +107,5 @@ class SelfHealAuditor:
 
         try:
             client.publish(self.topic, json.dumps(payload), qos=1, retain=False)
-        except Exception as exc:  # pragma: no cover
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:  # pragma: no cover
             self.logger.warning("self_heal_event_publish_failed", error=str(exc))
-

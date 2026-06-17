@@ -39,6 +39,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.security import APIKeyHeader
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
+from influxdb_client.rest import ApiException
 import paho.mqtt.client as mqtt
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
@@ -413,7 +414,7 @@ class MonitorService:
             try:
                 if hasattr(self.mqtt_client, "reconnect_delay_set"):
                     self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=int(self._mqtt_reconnect_backoff_max))
-            except Exception:
+            except (TypeError, ValueError):
                 pass
 
             # 连接回调：仅在真正连上 broker 后才认为“connected”
@@ -427,7 +428,7 @@ class MonitorService:
                 logger.error("monitor_mqtt_connect_rc", rc=rc)
                 try:
                     client.disconnect()
-                except Exception:
+                except (OSError, RuntimeError, ValueError):
                     pass
                 self.mqtt_client = None
                 self._next_mqtt_connect_at = time.time() + self._mqtt_reconnect_backoff
@@ -446,7 +447,7 @@ class MonitorService:
             self.mqtt_client.loop_start()
             # connect_async 是异步的：这里不要假装已连接；并设置最小重试间隔避免频繁重试
             self._next_mqtt_connect_at = time.time() + 1.0
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.error("monitor_mqtt_connect_failed", error=str(exc))
             self.mqtt_client = None
             self._next_mqtt_connect_at = time.time() + self._mqtt_reconnect_backoff
@@ -465,7 +466,7 @@ class MonitorService:
             logger.info("monitor_influx_connected", url=url, bucket=self.influx_bucket)
             self._influx_reconnect_backoff = 1.0
             self._next_influx_connect_at = 0.0
-        except Exception as exc:
+        except (ApiException, OSError, RuntimeError, ValueError) as exc:
             logger.error("monitor_influx_connect_failed", error=str(exc))
             self.influx_client = None
             self.write_api = None
@@ -554,7 +555,7 @@ class MonitorService:
         except httpx.HTTPStatusError as exc:
             logger.error("alertmanager_http_error", status=exc.response.status_code, detail=str(exc))
             raise HTTPException(status_code=exc.response.status_code, detail="alertmanager error")
-        except Exception as exc:
+        except (httpx.HTTPError, ValueError) as exc:
             logger.error("alertmanager_fetch_failed", error=str(exc))
             raise HTTPException(status_code=502, detail="failed to fetch alerts")
     
@@ -799,10 +800,10 @@ class MonitorService:
                     if "application/json" in ct and text:
                         try:
                             result["response_json"] = response.json()
-                        except Exception as exc:
+                        except ValueError as exc:
                             result["response_json_error"] = str(exc)
                             logger.warning("http_health_response_json_parse_failed", url=url, error=str(exc))
-                except Exception as exc:
+                except (RuntimeError, UnicodeDecodeError) as exc:
                     result["response_body_error"] = str(exc)
                     logger.warning("http_health_response_body_read_failed", url=url, error=str(exc))
             
@@ -817,10 +818,10 @@ class MonitorService:
                     rj = result.get("response_json") or {}
                     if isinstance(rj, dict):
                         reason = rj.get("reason")
-                except Exception:
+                except (AttributeError, TypeError):
                     reason = None
                 result["detail"] = f"{reason}" if reason else f"http {response.status_code}"
-        except Exception as exc:
+        except httpx.HTTPError as exc:
             # 请求失败（连接超时、拒绝等）
             result["status"] = "down"
             result["detail"] = str(exc)
@@ -869,7 +870,7 @@ class MonitorService:
             result["latency_ms"] = round(latency_ms, 2)
             result["status"] = "healthy"
             
-        except Exception as exc:
+        except (OSError, asyncio.TimeoutError) as exc:
             # 连接失败（超时、拒绝、主机不可达等）
             result["status"] = "down"
             result["detail"] = str(exc)
@@ -1140,7 +1141,7 @@ class MonitorService:
                         alarm_key=t["alarm_key"],
                         state=t["state"],
                     )
-            except Exception as exc:
+            except (httpx.HTTPError, RuntimeError) as exc:
                 logger.warning(
                     "alarm_ingest_failed",
                     alarm_key=t["alarm_key"],
@@ -1191,7 +1192,7 @@ class MonitorService:
                     state=state,
                     observe_interval_sec=self.service_interval,
                 )
-            except Exception as exc:  # pragma: no cover - 保护主循环
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:  # pragma: no cover - 保护主循环
                 logger.error("self_heal_evaluation_failed", service=name, error=str(exc))
                 continue
 
@@ -1278,7 +1279,7 @@ class MonitorService:
             )
             self.write_api.write(self.influx_bucket, self.influx_org, point)
             
-        except Exception as exc:
+        except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.error("system_metrics_write_failed", error=str(exc))
             event_recorder.record_event(
                 "system_metrics_write_failed",
@@ -1329,7 +1330,7 @@ class MonitorService:
             if points:
                 self.write_api.write(self.influx_bucket, self.influx_org, points)
                 
-        except Exception as exc:
+        except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.error("service_health_write_failed", error=str(exc))
             event_recorder.record_event(
                 "service_health_write_failed",
@@ -1354,7 +1355,7 @@ class MonitorService:
         try:
             # 发布到 MQTT（QoS=1 确保送达）
             self.mqtt_client.publish(self.status_topic, json.dumps(payload), qos=1)
-        except Exception as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.error("status_publish_failed", error=str(exc))
             event_recorder.record_event(
                 "status_publish_failed",
@@ -1412,7 +1413,7 @@ class MonitorService:
                             "hint": rj.get("hint") or "PLC/Modbus 不通：请检查 PLC 上电/网络/地址配置。",
                         }
                     )
-            except Exception:
+            except (AttributeError, TypeError):
                 continue
         
         # 组装完整消息
@@ -1572,7 +1573,7 @@ async def fetch_service_logs(
         data = monitor_service.read_service_logs(service, lines)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="log_file_not_found")
-    except Exception as exc:  # pragma: no cover - 文件 IO
+    except (OSError, UnicodeDecodeError) as exc:  # pragma: no cover - 文件 IO
         logger.error("log_read_failed", service=service, error=str(exc))
         raise HTTPException(status_code=500, detail="log_read_failed")
     return {"success": True, "service": service, "count": len(data), "data": data}
@@ -1607,4 +1608,3 @@ if __name__ == "__main__":
         port=8080,
         log_level=os.getenv("LOG_LEVEL", "info").lower(),
     )
-

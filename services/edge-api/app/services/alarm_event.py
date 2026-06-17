@@ -5,6 +5,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -119,10 +120,10 @@ async def write_alarm_event(
                     )
                 )
                 await db.commit()
-            except Exception:
+            except (RuntimeError, OSError, SQLAlchemyError):
                 await db.rollback()
                 raise
-    except Exception as exc:
+    except (RuntimeError, OSError, SQLAlchemyError) as exc:
         logger.error(
             "edge_alarm_event_write_failed",
             alarm_key=alarm_key,
@@ -289,10 +290,10 @@ async def apply_alarm_transition(
                 )
                 await db.commit()
                 return {"action": "updated", "alarm_id": existing_row.id}
-            except Exception:
+            except (RuntimeError, OSError, SQLAlchemyError):
                 await db.rollback()
                 raise
-    except Exception as exc:
+    except (RuntimeError, OSError, SQLAlchemyError) as exc:
         logger.error(
             "edge_alarm_transition_failed",
             alarm_key=alarm_key,
@@ -345,10 +346,10 @@ async def ack_alarm_event(
                 )
                 await db.commit()
                 return {"action": "acknowledged", "alarm_id": row.id}
-            except Exception:
+            except (RuntimeError, OSError, SQLAlchemyError):
                 await db.rollback()
                 raise
-    except Exception as exc:
+    except (RuntimeError, OSError, SQLAlchemyError) as exc:
         logger.error(
             "edge_alarm_ack_failed",
             alarm_id=alarm_id,

@@ -172,7 +172,7 @@ class Settings(BaseSettings):
                     parsed = json.loads(raw)
                     if isinstance(parsed, list):
                         return [str(v).strip() for v in parsed if str(v).strip()]
-                except Exception:
+                except json.JSONDecodeError:
                     # 回退到逗号分隔
                     pass
             return [item.strip() for item in raw.split(",") if item.strip()]
@@ -199,7 +199,7 @@ class Settings(BaseSettings):
                     parsed = json.loads(raw)
                     if isinstance(parsed, list):
                         return [str(v).strip() for v in parsed if str(v).strip()]
-                except Exception:
+                except json.JSONDecodeError:
                     pass
             return [item.strip() for item in raw.split(",") if item.strip()]
         return value or []

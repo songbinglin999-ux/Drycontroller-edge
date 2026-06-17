@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import structlog
 from sqlalchemy import or_, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -83,7 +84,7 @@ class CloudSyncOutboxDrainer:
                 await self.drain_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except (RuntimeError, SQLAlchemyError, ValueError) as exc:
                 logger.error("cloud_sync_outbox_drain_loop_failed", error=str(exc))
             await asyncio.sleep(max(0.2, float(settings.CLOUD_SYNC_OUTBOX_INTERVAL_SEC)))
 
@@ -217,7 +218,7 @@ class CloudSyncOutboxDrainer:
                 return True, ""
             text_body = resp.text[:1000] if resp.text else ""
             return False, f"http_{resp.status_code}:{text_body}"
-        except Exception as exc:
+        except httpx.HTTPError as exc:
             return False, str(exc)
 
 

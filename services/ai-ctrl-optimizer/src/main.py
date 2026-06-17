@@ -128,7 +128,7 @@ async def main():
         await service.start()
         while service.running:
             await asyncio.sleep(1)
-    except Exception as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         logger.error("optimizer_error", error=str(exc), exc_info=True)
         event_recorder.record_event(
             "service_error",
@@ -142,4 +142,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

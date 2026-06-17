@@ -82,7 +82,7 @@ class InfluxQueryService:
         # 兜底：异常不应在析构阶段冒泡
         try:
             self.close()
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             pass
 
     async def latest_points(self, tags: List[str], lookback: str = "5m") -> List[Dict[str, Any]]:

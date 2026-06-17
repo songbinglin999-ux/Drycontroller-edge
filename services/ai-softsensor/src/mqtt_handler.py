@@ -15,6 +15,7 @@ import threading
 import time
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import ASYNCHRONOUS
+from influxdb_client.rest import ApiException
 from prometheus_client import Counter, Gauge
 
 logger = structlog.get_logger(__name__)
@@ -124,7 +125,7 @@ class MQTTHandler:
         self._stop_event = asyncio.Event()
         try:
             self._loop = asyncio.get_running_loop()
-        except Exception:
+        except RuntimeError:
             self._loop = None
         self.client = mqtt.Client(client_id="ai-softsensor")
         
@@ -139,7 +140,7 @@ class MQTTHandler:
         try:
             if hasattr(self.client, "reconnect_delay_set"):
                 self.client.reconnect_delay_set(min_delay=1, max_delay=30)
-        except Exception:
+        except (TypeError, ValueError):
             pass
         
         self.client.connect_async(self.mqtt_broker, self.mqtt_port, keepalive=60)
@@ -156,7 +157,7 @@ class MQTTHandler:
         """断开 MQTT"""
         try:
             self._stop_event.set()
-        except Exception:
+        except RuntimeError:
             pass
         if self._maintenance_task:
             self._maintenance_task.cancel()
@@ -187,7 +188,7 @@ class MQTTHandler:
             self.write_api = self.influx_client.write_api(write_options=ASYNCHRONOUS)
             logger.info("softsensor_influx_connected", url=url, bucket=self.influx_bucket)
             INFLUX_CONNECTED.set(1)
-        except Exception as exc:
+        except (ApiException, OSError, RuntimeError, ValueError) as exc:
             logger.error("softsensor_influx_connect_failed", error=str(exc))
             self.influx_client = None
             self.write_api = None
@@ -226,7 +227,7 @@ class MQTTHandler:
                 await asyncio.sleep(self.flush_interval_sec)
             except asyncio.CancelledError:
                 return
-            except Exception as exc:
+            except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
                 logger.error("maintenance_loop_error", error=str(exc))
                 await asyncio.sleep(self.flush_interval_sec)
 
@@ -240,7 +241,7 @@ class MQTTHandler:
         for _ in range(min(len(self.mqtt_outbox), 200)):
             try:
                 topic, payload = self.mqtt_outbox[0]
-            except Exception:
+            except (IndexError, TypeError):
                 break
             try:
                 result = self.client.publish(topic, payload, qos=1)
@@ -248,7 +249,7 @@ class MQTTHandler:
                     MQTT_PUBLISH_FAILURE_TOTAL.labels(str(result.rc)).inc()
                     break
                 self.mqtt_outbox.popleft()
-            except Exception as exc:
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 MQTT_PUBLISH_FAILURE_TOTAL.labels(exc.__class__.__name__).inc()
                 break
         MQTT_OUTBOX_SIZE.set(len(self.mqtt_outbox))
@@ -274,7 +275,7 @@ class MQTTHandler:
                 org=self.influx_org,
                 record=points,
             )
-        except Exception as exc:
+        except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
             INFLUX_WRITE_FAILURE_TOTAL.labels(exc.__class__.__name__).inc()
             # 写失败：放回（保持顺序尽量）
             for pt in reversed(points):
@@ -317,12 +318,12 @@ class MQTTHandler:
                 if ts_ns is not None:
                     try:
                         msg_ts_sec = float(int(ts_ns)) / 1_000_000_000
-                    except Exception:
+                    except (OverflowError, TypeError, ValueError):
                         msg_ts_sec = now
                 elif ts is not None:
                     try:
                         msg_ts_sec = float(ts)
-                    except Exception:
+                    except (OverflowError, TypeError, ValueError):
                         msg_ts_sec = now
 
                 with self._lock:
@@ -380,7 +381,7 @@ class MQTTHandler:
 
                 self._schedule_inference(snapshot)
         
-        except Exception as e:
+        except (AttributeError, RuntimeError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as e:
             MQTT_RX_PARSE_ERROR_TOTAL.inc()
             logger.error("message_processing_error", error=str(e))
     
@@ -432,7 +433,7 @@ class MQTTHandler:
             # 没有 loop 时退化：直接执行（不推荐，但避免静默不推理）
             try:
                 self._run_inference(snapshot)
-            except Exception:
+            except (OSError, RuntimeError, TypeError, ValueError):
                 return
             return
         loop.call_soon_threadsafe(lambda: asyncio.create_task(self._run_inference_async(snapshot)))
@@ -462,7 +463,7 @@ class MQTTHandler:
             INFERENCE_LAST_TS.set(int(time.time()))
             # 成功推理后，更新 last inference（用于 readiness）
             self._last_inference_ts = time.time()
-        except Exception as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             INFERENCE_FAILED_TOTAL.inc()
             logger.error("inference_task_failed", error=str(exc))
         finally:
@@ -491,11 +492,11 @@ class MQTTHandler:
                     self._buffer_mqtt_outbox(self.ai_topic, encoded)
             else:
                 self._buffer_mqtt_outbox(self.ai_topic, encoded)
-        except Exception as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             MQTT_PUBLISH_FAILURE_TOTAL.labels(exc.__class__.__name__).inc()
             try:
                 self._buffer_mqtt_outbox(self.ai_topic, json.dumps(payload))
-            except Exception:
+            except (RuntimeError, TypeError, ValueError):
                 pass
         
         self._write_influx(payload, timestamp)
@@ -526,7 +527,7 @@ class MQTTHandler:
         try:
             point = self._build_influx_point(payload, timestamp)
             self.write_api.write(bucket=self.influx_bucket, org=self.influx_org, record=point)
-        except Exception as exc:
+        except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
             INFLUX_WRITE_FAILURE_TOTAL.labels(exc.__class__.__name__).inc()
             logger.error("softsensor_influx_write_failed", error=str(exc))
             self._buffer_influx_point(self._build_influx_point(payload, timestamp))
@@ -595,7 +596,7 @@ class MQTTHandler:
         try:
             point = self._build_training_point(payload, feature_snapshot, timestamp, result)
             self.write_api.write(bucket=self.influx_bucket, org=self.influx_org, record=point)
-        except Exception as exc:
+        except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
             INFLUX_WRITE_FAILURE_TOTAL.labels(exc.__class__.__name__).inc()
             logger.error("softsensor_training_influx_write_failed", error=str(exc))
             self._buffer_influx_point(self._build_training_point(payload, feature_snapshot, timestamp, result))

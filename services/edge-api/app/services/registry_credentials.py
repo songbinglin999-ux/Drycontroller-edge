@@ -38,7 +38,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 
@@ -51,7 +51,7 @@ def _parse_ts(value: Any) -> dt.datetime | None:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=dt.timezone.utc)
         return parsed.astimezone(dt.timezone.utc)
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 
@@ -136,7 +136,7 @@ def registry_credential_check(
     if expected_version is not None:
         try:
             current_version = int(data.get("version") or 0)
-        except Exception:
+        except (TypeError, ValueError):
             current_version = 0
         if current_version < int(expected_version):
             return {"ok": False, "reason": "registry_credential_version_stale", "detail": data}

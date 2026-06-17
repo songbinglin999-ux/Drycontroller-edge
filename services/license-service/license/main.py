@@ -2,7 +2,9 @@
 授权服务
 """
 
+import binascii
 import datetime as dt
+import json
 import os
 from pathlib import Path
 
@@ -37,7 +39,7 @@ def _machine_id() -> str:
         return explicit
     try:
         return Path("/etc/machine-id").read_text(encoding="utf-8").strip()
-    except Exception:
+    except (OSError, UnicodeDecodeError):
         return ""
 
 
@@ -109,7 +111,7 @@ async def verify_license():
         payload = load_json(license_path)
         public_key = load_public_key(public_key_path)
         verify_signature(payload, public_key)
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error, ValueError) as exc:
         logger.warning("license_verify_failed", reason="signature_invalid", error=str(exc))
         return _result(False, "signature_invalid", None)
 
@@ -117,7 +119,7 @@ async def verify_license():
     try:
         expires_at = parse_dt(str(payload["expires_at"]))
         issued_at = parse_dt(str(payload["issued_at"]))
-    except Exception as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         logger.warning("license_verify_failed", reason="malformed_license", error=str(exc))
         return _result(False, "malformed_license", None)
 

@@ -49,7 +49,7 @@ def _read_activation_state(path: Path) -> str:
         return ""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return ""
     return str(data.get("state") or "").strip()
 
@@ -98,7 +98,7 @@ async def _license_summary() -> dict:
             "message": "有效" if valid else str(body.get("reason") or f"http {resp.status_code}"),
             "detail": body,
         }
-    except Exception as exc:  # pragma: no cover - depends on sibling service
+    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover - depends on sibling service
         return {
             "key": "license",
             "label": "授权",
@@ -127,7 +127,7 @@ async def _cloud_summary() -> dict:
             "message": "在线" if resp.status_code < 400 else f"http {resp.status_code}",
             "detail": {"url": base_url, "status_code": resp.status_code},
         }
-    except Exception as exc:  # pragma: no cover - depends on cloud connectivity
+    except httpx.HTTPError as exc:  # pragma: no cover - depends on cloud connectivity
         return {
             "key": "cloud",
             "label": "云端",

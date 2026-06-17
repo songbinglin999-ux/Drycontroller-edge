@@ -40,7 +40,7 @@ EDGE_API_WS_STREAM_SUBSCRIBERS = Gauge(
 def _safe_int(value: object, default: int = 0) -> int:
     try:
         return int(value)  # type: ignore[arg-type]
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
@@ -65,5 +65,4 @@ def refresh_metrics() -> None:
         stream = ws_stream.streams.get(name) if getattr(ws_stream, "streams", None) else None
         subscribers = stream.get("subscribers") if isinstance(stream, dict) else None
         EDGE_API_WS_STREAM_SUBSCRIBERS.labels(name).set(len(subscribers) if isinstance(subscribers, dict) else 0)
-
 

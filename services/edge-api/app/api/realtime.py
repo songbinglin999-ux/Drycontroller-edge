@@ -103,7 +103,7 @@ async def _stream_websocket(
             await websocket.send_json(payload)
     except WebSocketDisconnect:
         logger.info("ws_client_disconnected", stream=stream_name)
-    except Exception as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         logger.exception("ws_stream_error", stream=stream_name, error=str(exc))
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
     finally:

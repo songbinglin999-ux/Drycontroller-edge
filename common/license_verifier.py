@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import datetime as dt
 import json
 from pathlib import Path
@@ -20,7 +21,7 @@ def verify_signature(payload: dict[str, Any], public_key: bytes) -> None:
         raise ValueError("public key must be 32 bytes")
     try:
         sig = base64.b64decode(str(payload.get("signature", "")), validate=True)
-    except Exception as exc:
+    except (binascii.Error, ValueError) as exc:
         raise ValueError("signature must be base64 encoded") from exc
     if len(sig) != 64:
         raise ValueError("signature must decode to 64 bytes")

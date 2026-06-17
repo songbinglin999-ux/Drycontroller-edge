@@ -9,6 +9,7 @@ from typing import Dict
 
 import httpx
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import engine
@@ -22,7 +23,7 @@ async def _check_postgres() -> Dict[str, str]:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
         return {"status": "healthy"}
-    except Exception as exc:  # pragma: no cover - 依赖外部服务
+    except SQLAlchemyError as exc:  # pragma: no cover - 依赖外部服务
         return {"status": "down", "detail": str(exc)}
 
 
@@ -40,7 +41,7 @@ async def _check_influx() -> Dict[str, str]:
             "status": "degraded",
             "detail": f"http {response.status_code}",
         }
-    except Exception as exc:  # pragma: no cover - 依赖外部服务
+    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover - 依赖外部服务
         return {"status": "down", "detail": str(exc)}
 
 
@@ -59,7 +60,7 @@ async def _check_event_bus() -> Dict[str, str]:
             "status": "healthy" if started else "down",
             "subscriptions": stats.get("subscriptions", []),
         }
-    except Exception as exc:  # pragma: no cover - 理论上不会
+    except (RuntimeError, TypeError, ValueError) as exc:  # pragma: no cover - 理论上不会
         return {"status": "down", "detail": str(exc)}
 
 
@@ -88,5 +89,4 @@ async def get_system_readiness() -> Dict[str, Dict[str, str]]:
         "event_bus": results[3],
         "ws_stream": results[4],
     }
-
 

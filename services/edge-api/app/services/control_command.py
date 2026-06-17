@@ -90,13 +90,13 @@ class ControlCommandService:
             mqtt_manager.register_callback(self._ack_pattern, self._on_ack_message)
             self._subscribed = True
             logger.info("control_ack_subscribed", pattern=self._ack_pattern)
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.error("control_ack_subscribe_failed", error=str(exc))
 
     def _on_ack_message(self, topic: str, payload: str) -> None:
         try:
             data = json.loads(payload)
-        except Exception:
+        except (TypeError, ValueError, json.JSONDecodeError):
             logger.warning("control_ack_parse_failed", topic=topic, payload=payload)
             return
 
@@ -200,7 +200,7 @@ class ControlCommandService:
             # QoS1 发布
             try:
                 mqtt_manager.publish(topic, payload, qos=1)
-            except Exception as exc:
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 if final_msg_id:
                     self._pending.pop(final_msg_id, None)
                 history_error = "control_publish_failed"
@@ -303,7 +303,7 @@ class ControlCommandService:
                     ack_detail=ack_detail,
                     error_msg=history_error,
                 )
-            except Exception:
+            except RuntimeError:
                 # write_control_history 内部已 swallow；此处兜底防御 import 期异常等极端情况
                 pass
 

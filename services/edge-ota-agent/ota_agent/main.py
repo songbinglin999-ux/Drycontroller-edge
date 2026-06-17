@@ -38,11 +38,11 @@ def _ensure_dir(path: Path, fallback: Path) -> Path:
     try:
         path.mkdir(parents=True, exist_ok=True)
         return path
-    except Exception:
+    except OSError:
         try:
             fallback.mkdir(parents=True, exist_ok=True)
             return fallback
-        except Exception:
+        except OSError:
             return path
 
 
@@ -61,7 +61,7 @@ def _split_api_keys(value: str | None) -> list[str]:
             arr = json.loads(v)
             if isinstance(arr, list):
                 return [str(x).strip() for x in arr if str(x).strip()]
-        except Exception:
+        except json.JSONDecodeError:
             pass
     return [item.strip() for item in v.split(",") if item.strip()]
 
@@ -189,7 +189,7 @@ def _operation_done_callback(op_id: str, task: asyncio.Task[None]) -> None:
                     "error": "operation_task_cancelled",
                 },
             )
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
             logger.error("ota_task_cancel_status_update_failed", operation_id=op_id, error=str(exc))
         logger.error("ota_task_cancelled", operation_id=op_id)
         return
@@ -208,7 +208,7 @@ def _operation_done_callback(op_id: str, task: asyncio.Task[None]) -> None:
                 "error": str(exc),
             },
         )
-    except Exception as update_exc:
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as update_exc:
         logger.error("ota_task_exception_status_update_failed", operation_id=op_id, error=str(update_exc))
     logger.error("ota_task_exception", operation_id=op_id, error=str(exc), exc_info=True)
 
@@ -367,7 +367,7 @@ async def _run_online(op_id: str, payload: OtaStartRequest) -> None:
     except asyncio.TimeoutError:
         _update_operation(op_id, {"status": "failed", "step": "timeout", "finished_at": _now().isoformat(), "error": "timeout"})
         logger.error("ota_timeout", operation_id=op_id)
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, yaml.YAMLError, json.JSONDecodeError) as exc:
         _update_operation(op_id, {"status": "failed", "step": "error", "finished_at": _now().isoformat(), "error": str(exc)})
         logger.error("ota_exception", operation_id=op_id, error=str(exc))
 
@@ -392,7 +392,7 @@ def _extract_images_from_compose_yaml(yaml_text: str) -> list[str]:
     """
     try:
         obj = yaml.safe_load(yaml_text) or {}
-    except Exception:
+    except yaml.YAMLError:
         return []
     if not isinstance(obj, dict):
         return []
@@ -421,7 +421,7 @@ def _parse_ts(value: Any) -> dt.datetime | None:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=dt.UTC)
         return parsed.astimezone(dt.UTC)
-    except Exception:
+    except ValueError:
         return None
 
 
@@ -444,7 +444,7 @@ def _registry_credential_check(payload: OtaStartRequest) -> dict[str, Any]:
         }
     try:
         data = json.loads(REGISTRY_CREDENTIAL_STATUS_PATH.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return {
             "ok": False,
             "reason": "registry_credential_status_invalid_json",
@@ -464,7 +464,7 @@ def _registry_credential_check(payload: OtaStartRequest) -> dict[str, Any]:
         return {"ok": False, "reason": "registry_docker_config_missing", "detail": data}
     try:
         docker_config = json.loads(docker_config_path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return {"ok": False, "reason": "registry_docker_config_invalid_json", "detail": {**data, "error": str(exc)}}
     auths = docker_config.get("auths") if isinstance(docker_config, dict) else None
     entry = auths.get(data.get("registry_host")) if isinstance(auths, dict) else None
@@ -475,7 +475,7 @@ def _registry_credential_check(payload: OtaStartRequest) -> dict[str, Any]:
     if payload.registry_credential_version is not None:
         try:
             current_version = int(data.get("version") or 0)
-        except Exception:
+        except (TypeError, ValueError):
             current_version = 0
         if current_version < int(payload.registry_credential_version):
             return {"ok": False, "reason": "registry_credential_version_stale", "detail": data}
@@ -559,7 +559,7 @@ async def ready():
         _ = WORK_DIR.exists()
         (DATA_DIR / ".write_test").write_text("ok", encoding="utf-8")
         return {"ready": True, "service": "edge-ota-agent", "work_dir": str(WORK_DIR)}
-    except Exception as exc:
+    except OSError as exc:
         raise HTTPException(status_code=503, detail=f"ota_agent_not_ready: {exc}")
 
 

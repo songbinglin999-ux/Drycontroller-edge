@@ -54,7 +54,7 @@ from pathlib import Path
 path = sys.argv[1]
 try:
     data = json.load(open(path, encoding="utf-8"))
-except Exception as exc:
+except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
     print(f"invalid registry credential status json: {exc}", file=sys.stderr)
     raise SystemExit(1)
 required = ["credential_id", "registry_host", "username", "secret_fingerprint", "version", "updated_at"]
@@ -77,7 +77,7 @@ if not config_path.is_file():
     raise SystemExit(1)
 try:
     docker_config = json.load(open(config_path, encoding="utf-8"))
-except Exception as exc:
+except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
     print(f"invalid registry docker config json: {exc}", file=sys.stderr)
     raise SystemExit(1)
 auths = docker_config.get("auths") if isinstance(docker_config, dict) else None

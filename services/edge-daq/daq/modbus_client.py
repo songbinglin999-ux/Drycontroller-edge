@@ -67,7 +67,7 @@ class ModbusClient:
                 logger.error("modbus_connection_failed")
                 self._update_failure("connection_failed")
 
-        except Exception as e:
+        except (ModbusException, OSError, RuntimeError, TypeError, ValueError) as e:
             logger.error("modbus_connect_error", error=str(e))
             self.connected = False
             self.last_error = str(e)
@@ -180,7 +180,7 @@ class ModbusClient:
                 )
                 self._update_failure(str(e))
                 MODBUS_READ_FAILURE.labels(str(function_code)).inc()
-            except Exception as e:
+            except (asyncio.TimeoutError, AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 logger.error("modbus_read_unexpected_error", address=address, error=str(e))
                 self._update_failure(str(e))
                 MODBUS_READ_FAILURE.labels(str(function_code)).inc()
@@ -248,7 +248,7 @@ class ModbusClient:
                     error=str(e),
                 )
                 self._update_failure(str(e))
-            except Exception as e:
+            except (asyncio.TimeoutError, AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 logger.error("modbus_write_unexpected_error", address=address, error=str(e))
                 self._update_failure(str(e))
 
@@ -297,7 +297,7 @@ class ModbusClient:
                 logger.error("modbus_write_exception", address=address, error=str(e))
                 self._update_failure(str(e))
                 MODBUS_WRITE_FAILURE.labels("multi").inc()
-            except Exception as e:
+            except (asyncio.TimeoutError, AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 logger.error("modbus_write_unexpected_error", address=address, error=str(e))
                 self._update_failure(str(e))
                 MODBUS_WRITE_FAILURE.labels("multi").inc()
@@ -352,4 +352,3 @@ class ModbusClient:
         fmt = f"{endian}{'i' if signed else 'I'}"
         bytes_data = struct.pack(f"{endian}HH", registers[0], registers[1])
         return struct.unpack(fmt, bytes_data)[0]
-

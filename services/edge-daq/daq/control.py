@@ -136,7 +136,7 @@ class ControlSubscriber:
             # 记录启动时的事件循环，便于从 paho 网络线程回调里调度写入
             try:
                 self._loop = asyncio.get_running_loop()
-            except Exception:
+            except RuntimeError:
                 self._loop = None
             if not self.mqtt_tls and not self.mqtt_allow_insecure:
                 raise RuntimeError("MQTT TLS is required. Set MQTT_TLS=true or explicitly allow insecure via MQTT_ALLOW_INSECURE=true.")
@@ -163,7 +163,7 @@ class ControlSubscriber:
                 broker=self.mqtt_broker,
                 port=self.mqtt_port,
             )
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             self.started = False
             self.mqtt_connected = False
             self.subscribed = False
@@ -185,7 +185,7 @@ class ControlSubscriber:
             self.subscribed = False
             self.subscribe_state = "stopped"
             logger.info("control_subscriber_stopped")
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             self.last_error = str(e)
             logger.error("control_subscriber_stop_error", error=str(e))
 
@@ -250,7 +250,7 @@ class ControlSubscriber:
                     self.subscribe_state = "failed"
                     self.last_error = f"subscribe rc={subscribe_rc}"
                     logger.error("control_mqtt_subscribe_failed", topic=self.topic, rc=subscribe_rc)
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError) as e:
                 self.subscribe_state = "failed"
                 self.last_error = str(e)
                 logger.error("control_mqtt_subscribe_error", topic=self.topic, error=str(e))
@@ -293,7 +293,7 @@ class ControlSubscriber:
             msg_id = payload.get("id")
             msg_ts = payload.get("ts")
             msg_sig = payload.get("sig")
-        except Exception as e:
+        except (AttributeError, UnicodeDecodeError, json.JSONDecodeError) as e:
             logger.error("control_payload_parse_error", error=str(e))
             return self._reject(None, "", None, "invalid_payload", {"error": str(e)}, remember=False)
 
@@ -311,7 +311,7 @@ class ControlSubscriber:
         if msg_ts is not None:
             try:
                 msg_ts_f = float(msg_ts)
-            except Exception:
+            except (TypeError, ValueError):
                 CONTROL_TS_INVALID.inc()
                 logger.warning("control_invalid_ts", ts=msg_ts)
                 return self._reject(msg_id, tag_name, value, "invalid_ts", {"ts": msg_ts}, remember=False)
@@ -453,7 +453,7 @@ class ControlSubscriber:
                         scale=scale,
                     )
                     self._ack(msg_id, tag_name, "failed", value, reason="plc_write_failed")
-            except Exception as e:
+            except (OSError, RuntimeError, TypeError, ValueError) as e:
                 CONTROL_WRITE_FAILURE.labels(tag_type).inc()
                 logger.error(
                     "control_write_error",
@@ -497,7 +497,7 @@ class ControlSubscriber:
                         exc = f.exception()
                         if exc:
                             logger.error("control_write_task_failed", error=str(exc))
-                    except Exception:
+                    except (asyncio.CancelledError, RuntimeError):
                         return
 
                 fut.add_done_callback(_log_future_result)
@@ -575,7 +575,7 @@ class ControlSubscriber:
                 self.last_ack_publish_ok = False
                 self.last_ack_error = f"publish rc={result.rc}"
                 logger.warning("control_ack_failed", id=msg_id, rc=result.rc, status=status)
-        except Exception as e:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
             self.last_ack_publish_ts = int(time.time())
             self.last_ack_publish_ok = False
             self.last_ack_error = str(e)
@@ -590,6 +590,6 @@ class ControlSubscriber:
             base = f"{msg_id}:{msg_ts}:{tag}:{value}"
             computed = hmac.new(self.signature_secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256).hexdigest()
             return hmac.compare_digest(computed, str(sig))
-        except Exception as e:
+        except (TypeError, ValueError) as e:
             logger.warning("control_signature_check_failed", error=str(e))
             return False

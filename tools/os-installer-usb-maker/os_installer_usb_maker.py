@@ -487,7 +487,7 @@ class UsbMakerApp(tk.Tk):
         try:
             AUTOINSTALL_DIR.mkdir(parents=True, exist_ok=True)
             subprocess.Popen(["open", str(AUTOINSTALL_DIR)])
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             messagebox.showerror("无法打开目录", f"请手动打开：\n{AUTOINSTALL_DIR}\n\n{exc}")
 
     def _show_factory_materials_help(self) -> None:
@@ -669,7 +669,7 @@ class UsbMakerApp(tk.Tk):
         try:
             networks = list_detected_wifi_networks()
             message = f"检测到 {len(networks)} 个 WiFi；可下拉选择，也可手动输入。" if networks else "未检测到 WiFi；可手动输入。"
-        except Exception as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             networks = []
             message = f"扫描失败，可手动输入 WiFi 名称：{exc}"
 
@@ -899,7 +899,7 @@ class UsbMakerApp(tk.Tk):
                 assert isinstance(disk, dict)
                 open_terminal_writer(self, Path(plan["output_iso"]), disk)
             self._append_log("Done.", "info")
-        except Exception as exc:
+        except (AssertionError, OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
             self._append_log(f"ERROR: {exc}", "err")
             self.after(0, lambda: messagebox.showerror("制作失败", str(exc)))
         finally:
@@ -1240,7 +1240,7 @@ def list_external_disks() -> list[dict[str, str]]:
     try:
         raw = subprocess.check_output(["diskutil", "list", "-plist", "external", "physical"])
         payload = plistlib.loads(raw)
-    except Exception:
+    except (OSError, plistlib.InvalidFileException, subprocess.SubprocessError, ValueError):
         return []
 
     rows: list[dict[str, str]] = []
@@ -1271,7 +1271,7 @@ def list_detected_wifi_networks() -> list[str]:
                 timeout=8,
             )
             networks.extend(parse_airport_scan(raw))
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
     if not networks:
         networks.extend(list_preferred_wifi_networks())
@@ -1311,7 +1311,7 @@ def list_preferred_wifi_networks() -> list[str]:
                 text=True,
                 timeout=5,
             )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             continue
         for line in raw.splitlines()[1:]:
             ssid = line.strip()
@@ -1328,7 +1328,7 @@ def list_wifi_devices() -> list[str]:
             text=True,
             timeout=5,
         )
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return []
     devices: list[str] = []
     current_is_wifi = False
@@ -1361,7 +1361,7 @@ def disk_info(identifier: str) -> dict[str, object]:
     try:
         raw = subprocess.check_output(["diskutil", "info", "-plist", f"/dev/{identifier}"])
         return plistlib.loads(raw)
-    except Exception:
+    except (OSError, plistlib.InvalidFileException, subprocess.SubprocessError, ValueError):
         return {}
 
 

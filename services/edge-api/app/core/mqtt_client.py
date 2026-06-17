@@ -86,7 +86,7 @@ class MQTTManager:
                 max_delay = int(os.getenv("MQTT_RECONNECT_MAX_DELAY", "30") or "30")
                 if hasattr(self.client, "reconnect_delay_set"):
                     self.client.reconnect_delay_set(min_delay=min_delay, max_delay=max_delay)
-            except Exception:
+            except (TypeError, ValueError):
                 # 不影响主流程
                 pass
 
@@ -109,7 +109,7 @@ class MQTTManager:
             # 尝试等待一小段时间让首次连接完成（不阻塞过久，避免启动卡死）
             try:
                 timeout = float(os.getenv("MQTT_CONNECT_TIMEOUT_SEC", "5") or "5")
-            except Exception:
+            except (TypeError, ValueError):
                 timeout = 5.0
             start = time.time()
             while not self.connected and time.time() - start < timeout:
@@ -117,7 +117,7 @@ class MQTTManager:
             if not self.connected:
                 logger.warning("mqtt_connect_timeout", timeout_sec=timeout)
         
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.error("mqtt_connect_failed", error=str(e))
             raise
     
@@ -185,14 +185,14 @@ class MQTTManager:
                     for callback in list(callbacks):
                         try:
                             callback(topic, payload)
-                        except Exception:
+                        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
                             logger.exception(
                                 "mqtt_callback_failed",
                                 pattern=pattern,
                                 topic=topic,
                             )
         
-        except Exception as e:
+        except (AttributeError, RuntimeError, TypeError, UnicodeDecodeError, ValueError) as e:
             logger.error(
                 "mqtt_message_processing_failed",
                 topic=msg.topic,
@@ -304,4 +304,3 @@ class MQTTManager:
 
 # 全局 MQTT 管理器单例
 mqtt_manager = MQTTManager()
-
