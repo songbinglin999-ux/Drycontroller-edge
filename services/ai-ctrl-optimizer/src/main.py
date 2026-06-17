@@ -128,7 +128,7 @@ async def main():
         await service.start()
         while service.running:
             await asyncio.sleep(1)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 - 故意宽捕：顶层服务韧性边界，未知异常也须记录并 graceful stop
         logger.error("optimizer_error", error=str(exc), exc_info=True)
         event_recorder.record_event(
             "service_error",

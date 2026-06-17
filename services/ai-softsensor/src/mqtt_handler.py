@@ -227,7 +227,7 @@ class MQTTHandler:
                 await asyncio.sleep(self.flush_interval_sec)
             except asyncio.CancelledError:
                 return
-            except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
+            except Exception as exc:  # noqa: BLE001 - 故意宽捕：flush 维护后台环韧性边界，未知异常也须记录并继续
                 logger.error("maintenance_loop_error", error=str(exc))
                 await asyncio.sleep(self.flush_interval_sec)
 

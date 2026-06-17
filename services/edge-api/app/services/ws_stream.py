@@ -131,7 +131,7 @@ class MQTTWebSocketRelay:
             payload = event.get("data")
             try:
                 self._handle_message(stream_name, topic, payload)
-            except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+            except Exception:  # noqa: BLE001 - 故意宽捕：见下行 7x24 韧性边界
                 # 7x24：避免单条坏消息/处理异常导致后台任务整体退出
                 logger.exception("ws_stream_handle_message_failed", stream=stream_name, topic=topic)
     

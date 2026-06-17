@@ -9,7 +9,6 @@ from typing import Any
 import httpx
 import structlog
 from sqlalchemy import or_, select, text
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -84,7 +83,7 @@ class CloudSyncOutboxDrainer:
                 await self.drain_once()
             except asyncio.CancelledError:
                 raise
-            except (RuntimeError, SQLAlchemyError, ValueError) as exc:
+            except Exception as exc:  # noqa: BLE001 - 故意宽捕：云同步积压重试环韧性边界，断网/未知异常也须记录并继续
                 logger.error("cloud_sync_outbox_drain_loop_failed", error=str(exc))
             await asyncio.sleep(max(0.2, float(settings.CLOUD_SYNC_OUTBOX_INTERVAL_SEC)))
 

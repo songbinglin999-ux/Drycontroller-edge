@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 import structlog
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -133,7 +132,7 @@ class RetentionRunner:
                 logger.info("data_retention_completed", totals=totals)
             except asyncio.CancelledError:
                 raise
-            except (RuntimeError, SQLAlchemyError, ValueError) as exc:
+            except Exception as exc:  # noqa: BLE001 - 故意宽捕：保留清理后台环韧性边界，未知异常也须记录并继续
                 logger.error("data_retention_failed", error=str(exc))
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
