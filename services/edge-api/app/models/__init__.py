@@ -117,6 +117,8 @@ class ControlCommandHistory(Base):
     command_type: Mapped[str] = mapped_column(String(32), nullable=False)  # set / batch / emergency_stop
     tag: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    previous_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    plc_readback: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, default=dict)
 
     correlation_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     idempotency_key: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

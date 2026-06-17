@@ -81,6 +81,8 @@ async def test_write_control_history_adds_history_and_outbox_in_one_commit(monke
         command_type="set",
         tag="DRYER1.FAN.SPEED",
         value=12,
+        previous_value=10,
+        plc_readback={"tag": "DRYER1.FAN.SPEED", "value": 12.0, "ok": True},
         line_id="L1",
         idempotency_key="ctl_abc",
         request_payload={"line": "L1", "tag": "DRYER1.FAN.SPEED", "value": 12},
@@ -99,6 +101,8 @@ async def test_write_control_history_adds_history_and_outbox_in_one_commit(monke
     assert history.command_type == "set"
     assert history.tag == "DRYER1.FAN.SPEED"
     assert history.value == "12"  # Text 列存字符串
+    assert history.previous_value == "10"
+    assert history.plc_readback["ok"] is True
     assert history.line_id == "L1"
     assert history.ack_status == "ok"
 
@@ -108,6 +112,8 @@ async def test_write_control_history_adds_history_and_outbox_in_one_commit(monke
     assert outbox.payload["edge_control_id"] == 7
     assert outbox.payload["command_type"] == "set"
     assert outbox.payload["value"] == "12"
+    assert outbox.payload["previous_value"] == "10"
+    assert outbox.payload["plc_readback"]["ok"] is True
     assert outbox.payload["ack_status"] == "ok"
     assert outbox.payload["ack_at"] == ack_at.isoformat()
     assert outbox.payload["idempotency_key"] == "ctl_abc"

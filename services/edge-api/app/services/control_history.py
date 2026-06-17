@@ -31,6 +31,8 @@ async def write_control_history(
     command_type: str,
     tag: str | None = None,
     value: Any = None,
+    previous_value: Any = None,
+    plc_readback: dict[str, Any] | None = None,
     line_id: str | None = None,
     tenant_id: str | None = None,
     node_id: str | None = None,
@@ -52,6 +54,8 @@ async def write_control_history(
     safe_request_payload = request_payload or {}
     safe_ack_detail = ack_detail or {}
     value_text = _stringify_value(value)
+    previous_value_text = _stringify_value(previous_value)
+    safe_plc_readback = plc_readback or {}
     requested_at = dt.datetime.now(dt.timezone.utc)
 
     try:
@@ -65,6 +69,8 @@ async def write_control_history(
                     command_type=command_type,
                     tag=tag,
                     value=value_text,
+                    previous_value=previous_value_text,
+                    plc_readback=safe_plc_readback,
                     correlation_id=correlation_id,
                     idempotency_key=idempotency_key,
                     request_payload=safe_request_payload,
@@ -91,6 +97,8 @@ async def write_control_history(
                             "command_type": command_type,
                             "tag": tag,
                             "value": value_text,
+                            "previous_value": previous_value_text,
+                            "plc_readback": safe_plc_readback,
                             "correlation_id": correlation_id,
                             "idempotency_key": idempotency_key,
                             "request_payload": safe_request_payload,

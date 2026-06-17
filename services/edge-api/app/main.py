@@ -20,6 +20,7 @@ from app.core.mqtt_client import mqtt_manager
 from app.services.event_bus import event_bus
 from app.services.health import get_system_readiness
 from app.services.outbox_drain import cloud_sync_outbox_drainer
+from app.services.retention import retention_runner
 from app.services.ws_stream import ws_stream
 from app.services.metrics import refresh_metrics
 
@@ -66,6 +67,10 @@ async def lifespan(app: FastAPI):
         await cloud_sync_outbox_drainer.start()
     except Exception as exc:
         logger.error("cloud_sync_outbox_drain_start_failed", error=str(exc))
+    try:
+        await retention_runner.start()
+    except Exception as exc:
+        logger.error("data_retention_start_failed", error=str(exc))
     
     logger.info("edge_api_started")
     event_recorder.record_event(
@@ -85,6 +90,7 @@ async def lifespan(app: FastAPI):
     )
     
     # 断开子模块
+    await retention_runner.stop()
     await cloud_sync_outbox_drainer.stop()
     await ws_stream.stop()
     await event_bus.stop()

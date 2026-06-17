@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # cloud-ops 端 header 名（默认 X-Enroll-Token，与 cloudserver settings.ENROLL_TOKEN_HEADER 对齐）
     CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER: str = "X-Enroll-Token"
 
+    # Append-only operational mirrors. Retention runs once on startup and then daily.
+    DATA_RETENTION_ENABLED: bool = True
+    DATA_RETENTION_INTERVAL_SEC: float = 24 * 60 * 60
+    DATA_RETENTION_BATCH_SIZE: int = 10_000
+
     # 云端 ops 入口与 Tailnet 身份（由 bootstrap 写入 .env）
     CLOUD_OPS_BASE_URL: str = ""
     TS_LOGIN_SERVER: str = ""
