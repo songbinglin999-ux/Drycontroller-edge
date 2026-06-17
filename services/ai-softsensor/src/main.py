@@ -76,7 +76,7 @@ class SoftSensorService:
         """
         config_path = Path("/app/configs/ai-config.yaml")
         with open(config_path, "r") as f:
-            self.config = yaml.safe_load(f)
+            self.config = yaml.safe_load(f) or {}
         
         logger.info("config_loaded")
         return self.config
@@ -97,16 +97,16 @@ class SoftSensorService:
             tags={"component": "ai-softsensor"},
         )
         
-        await self.load_config()
+        config = await self.load_config()
         await self._start_health_server()
         
         # 初始化并加载模型
-        model_config = self.config.get("softsensor", {})
+        model_config = config.get("softsensor", {})
         self.model = SoftSensorModel(model_config)
         await self.model.load()
         
         # 初始化 MQTT 处理器并连接
-        self.mqtt_handler = MQTTHandler(self.model, self.config)
+        self.mqtt_handler = MQTTHandler(self.model, config)
         await self.mqtt_handler.connect()
         
         self.running = True
@@ -265,4 +265,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

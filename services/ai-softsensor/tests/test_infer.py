@@ -6,6 +6,7 @@ import os
 import sys
 import types
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np  # type: ignore[import]
 
@@ -104,6 +105,12 @@ def test_simulate_formula_uses_canonical_48_tags():
     }
 
     assert model._simulate_formula(dry_conditions) < model._simulate_formula(wet_conditions)
+
+
+def test_simulate_formula_uses_target_when_mt1_is_none():
+    model = SoftSensorModel(_default_config())
+
+    assert model._simulate_formula(cast(Any, {"MT1": None})) == model.target_moisture
 
 
 def test_confidence_bounds():

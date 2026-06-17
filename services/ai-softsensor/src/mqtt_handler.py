@@ -511,7 +511,8 @@ class MQTTHandler:
     def _buffer_mqtt_outbox(self, topic: str, encoded_payload: str):
         if not self.enable_mqtt_outbox:
             return
-        if len(self.mqtt_outbox) >= self.mqtt_outbox.maxlen:
+        maxlen = self.mqtt_outbox.maxlen
+        if maxlen is not None and len(self.mqtt_outbox) >= maxlen:
             MQTT_OUTBOX_DROPPED_TOTAL.inc()
         self.mqtt_outbox.append((topic, encoded_payload))
         MQTT_OUTBOX_SIZE.set(len(self.mqtt_outbox))
@@ -543,7 +544,8 @@ class MQTTHandler:
     def _buffer_influx_point(self, point: Point):
         if not self.enable_influx_buffer:
             return
-        if len(self.influx_buffer) >= self.influx_buffer.maxlen:
+        maxlen = self.influx_buffer.maxlen
+        if maxlen is not None and len(self.influx_buffer) >= maxlen:
             INFLUX_BUFFER_DROPPED_TOTAL.inc()
         self.influx_buffer.append(point)
         INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
@@ -649,4 +651,3 @@ class MQTTHandler:
             if value not in (None, "", "null", "None"):
                 return str(value)
         return None
-

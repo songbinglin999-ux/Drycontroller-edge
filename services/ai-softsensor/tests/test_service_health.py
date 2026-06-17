@@ -5,9 +5,11 @@ ai-softsensor 服务健康与就绪判定测试
 import os
 import sys
 import importlib.util
+import asyncio
 import types
 from dataclasses import dataclass
 from typing import Any, cast
+from unittest.mock import mock_open, patch
 from pathlib import Path
 
 
@@ -68,6 +70,16 @@ def test_ready_payload_success():
     assert payload["reason"] is None
 
 
+def test_load_config_treats_empty_yaml_as_empty_dict():
+    service = SoftSensorService()
+
+    with patch("builtins.open", mock_open(read_data="")):
+        config = asyncio.run(service.load_config())
+
+    assert config == {}
+    assert service.config == {}
+
+
 def test_ready_payload_reason_when_not_running():
     service = SoftSensorService()
     service.running = False
@@ -114,4 +126,3 @@ def test_ready_payload_reason_when_dq_not_ready():
 
     assert payload["ready"] is False
     assert payload["reason"] == "DQ_NOT_READY"
-

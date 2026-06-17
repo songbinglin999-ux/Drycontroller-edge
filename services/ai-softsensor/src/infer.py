@@ -198,7 +198,8 @@ class SoftSensorModel:
         feed_feedback = mean_value(["VFM1", "VFM2", "VFM3"], 35.0)
         fan_feedback = mean_value(["VF1", "VF2", "VF3"], 35.0)
         main_current = mean_value(["I_M3", "I_M5", "I_M7", "I_M9"], 20.0)
-        mt1 = float(data.get("MT1", self.target_moisture))
+        mt1_raw = data.get("MT1")
+        mt1 = self.target_moisture if mt1_raw is None else float(mt1_raw)
         
         # 经验公式计算
         base = self.target_moisture

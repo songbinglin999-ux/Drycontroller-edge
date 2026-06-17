@@ -6,6 +6,7 @@ import os
 import sys
 import types
 import time
+from collections import deque
 from pathlib import Path
 
 
@@ -52,6 +53,19 @@ def test_extract_batch_id():
     assert batch_id == "1001.0"
 
 
+def test_unbounded_buffers_do_not_compare_none_maxlen():
+    handler = _make_handler()
+    handler.mqtt_outbox = deque()
+    handler.influx_buffer = deque()
+    point = object()
+
+    handler._buffer_mqtt_outbox("topic", "{}")
+    handler._buffer_influx_point(point)
+
+    assert list(handler.mqtt_outbox) == [("topic", "{}")]
+    assert list(handler.influx_buffer) == [point]
+
+
 def test_is_dq_ready_inference_age():
     handler = _make_handler()
     now = time.time()
@@ -63,4 +77,3 @@ def test_is_dq_ready_inference_age():
 
     handler.ready_max_inference_age_sec = 20
     assert handler.is_dq_ready() is True
-
