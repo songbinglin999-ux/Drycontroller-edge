@@ -262,7 +262,8 @@ class MQTTHandler:
             return
         if not await self._ensure_influx():
             return
-        if not self.write_api:
+        write_api = self.write_api
+        if not write_api:
             return
 
         # 批量写入（尽力）
@@ -270,7 +271,7 @@ class MQTTHandler:
         for _ in range(min(len(self.influx_buffer), 500)):
             points.append(self.influx_buffer.popleft())
         try:
-            self.write_api.write(
+            write_api.write(
                 bucket=self.influx_bucket,
                 org=self.influx_org,
                 record=points,
@@ -519,14 +520,15 @@ class MQTTHandler:
         MQTT_OUTBOX_SIZE.set(len(self.mqtt_outbox))
     
     def _write_influx(self, payload: dict, timestamp: float):
-        if not self.write_api:
+        write_api = self.write_api
+        if not write_api:
             INFLUX_CONNECTED.set(0)
             self._buffer_influx_point(self._build_influx_point(payload, timestamp))
             return
         
         try:
             point = self._build_influx_point(payload, timestamp)
-            self.write_api.write(bucket=self.influx_bucket, org=self.influx_org, record=point)
+            write_api.write(bucket=self.influx_bucket, org=self.influx_org, record=point)
         except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
             INFLUX_WRITE_FAILURE_TOTAL.labels(exc.__class__.__name__).inc()
             logger.error("softsensor_influx_write_failed", error=str(exc))
@@ -588,14 +590,15 @@ class MQTTHandler:
 
     def _write_training_measurement(self, payload: dict, feature_snapshot: dict, timestamp: float, result: dict):
         """将推理输入、输出写入训练数据 measurement"""
-        if not self.write_api or not self.training_measurement:
+        write_api = self.write_api
+        if not write_api or not self.training_measurement:
             # training measurement 也会跟随主写入缓冲（简单合并）
             self._buffer_influx_point(self._build_training_point(payload, feature_snapshot, timestamp, result))
             return
         
         try:
             point = self._build_training_point(payload, feature_snapshot, timestamp, result)
-            self.write_api.write(bucket=self.influx_bucket, org=self.influx_org, record=point)
+            write_api.write(bucket=self.influx_bucket, org=self.influx_org, record=point)
         except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:
             INFLUX_WRITE_FAILURE_TOTAL.labels(exc.__class__.__name__).inc()
             logger.error("softsensor_training_influx_write_failed", error=str(exc))

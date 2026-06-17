@@ -2,10 +2,11 @@
 ai-softsensor MQTTHandler 工具方法测试
 """
 
+import asyncio
 import os
 import sys
-import types
 import time
+import types
 from collections import deque
 from pathlib import Path
 
@@ -36,6 +37,19 @@ class DummyModel:
     output_unit = "%"
 
 
+class ClearingWriteApi:
+    def __init__(self, handler):
+        self.handler = handler
+        self.records = []
+
+    def __bool__(self):
+        self.handler.write_api = None
+        return True
+
+    def write(self, bucket, org, record):
+        self.records.append((bucket, org, record))
+
+
 def _make_handler():
     return MQTTHandler(DummyModel(), {"softsensor": {}})
 
@@ -64,6 +78,54 @@ def test_unbounded_buffers_do_not_compare_none_maxlen():
 
     assert list(handler.mqtt_outbox) == [("topic", "{}")]
     assert list(handler.influx_buffer) == [point]
+
+
+def test_write_influx_uses_write_api_snapshot():
+    handler = _make_handler()
+    write_api = ClearingWriteApi(handler)
+    handler.write_api = write_api
+
+    handler._write_influx(
+        {"tag": "MOISTURE.PREDICTED", "value": 12.3, "unit": "%", "confidence": 0.9},
+        time.time(),
+    )
+
+    assert len(write_api.records) == 1
+    assert not handler.influx_buffer
+
+
+def test_flush_influx_buffer_uses_write_api_snapshot():
+    handler = _make_handler()
+    write_api = ClearingWriteApi(handler)
+    handler.write_api = write_api
+    point = object()
+    handler.influx_buffer.append(point)
+
+    async def ensure_influx():
+        return True
+
+    handler._ensure_influx = ensure_influx
+
+    asyncio.run(handler._flush_influx_buffer())
+
+    assert write_api.records == [(handler.influx_bucket, handler.influx_org, [point])]
+    assert not handler.influx_buffer
+
+
+def test_write_training_measurement_uses_write_api_snapshot():
+    handler = _make_handler()
+    write_api = ClearingWriteApi(handler)
+    handler.write_api = write_api
+
+    handler._write_training_measurement(
+        {"tag": "MOISTURE.PREDICTED", "value": 12.3, "unit": "%", "confidence": 0.9},
+        {"A": 1.0, "B": 2.0},
+        time.time(),
+        {"inference_time_ms": 4.2},
+    )
+
+    assert len(write_api.records) == 1
+    assert not handler.influx_buffer
 
 
 def test_is_dq_ready_inference_age():
