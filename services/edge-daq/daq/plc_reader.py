@@ -198,7 +198,7 @@ class PLCReader:
                 logger.info("scan_loop_cancelled")
                 self.running = False
                 break
-            except (OSError, RuntimeError, TypeError, ValueError) as e:
+            except Exception as e:  # noqa: BLE001 - 故意宽捕：扫描主循环韧性边界，未知异常也须记录并继续
                 PLC_SCAN_LOOP_ERROR.inc()
                 logger.error("scan_error", error=str(e), exc_info=True)
 

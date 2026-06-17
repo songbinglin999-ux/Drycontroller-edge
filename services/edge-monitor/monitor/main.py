@@ -1192,7 +1192,7 @@ class MonitorService:
                     state=state,
                     observe_interval_sec=self.service_interval,
                 )
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:  # pragma: no cover - 保护主循环
+            except Exception as exc:  # noqa: BLE001  # pragma: no cover - 故意宽捕：保护主循环韧性边界，未知异常也须记录并继续
                 logger.error("self_heal_evaluation_failed", service=name, error=str(exc))
                 continue
 
