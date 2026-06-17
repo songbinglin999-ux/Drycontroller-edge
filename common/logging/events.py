@@ -11,7 +11,6 @@ from typing import Any, Dict, Optional
 
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
-from influxdb_client.rest import ApiException
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -60,7 +59,7 @@ class EventRecorder:
                 service=service_name,
                 measurement=self._config.measurement,
             )
-        except (ApiException, OSError, RuntimeError, ValueError) as exc:  # pragma: no cover - 网络问题
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover - 故意宽捕：事件记录器是 best-effort sink，初始化失败不能阻止服务启动
             logger.error(
                 "event_recorder_init_failed",
                 error=str(exc),
@@ -149,7 +148,7 @@ class EventRecorder:
                 record=payload,
             )
             return True
-        except (ApiException, OSError, RuntimeError, TypeError, ValueError) as exc:  # pragma: no cover - 网络问题
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover - 故意宽捕：事件写入是 best-effort sink，不能影响主流程
             logger.error(
                 "event_record_failed",
                 event_name=event,
@@ -157,4 +156,3 @@ class EventRecorder:
                 service=self.service_name,
             )
             return False
-

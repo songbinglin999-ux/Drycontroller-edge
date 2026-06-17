@@ -579,3 +579,26 @@ async def test_event_bus_mqtt_dispatch():
     assert event["topic"] == "ai/L1/predict"
     assert event["data"]["line"] == "L1"
     await bus.stop()
+
+
+def test_mqtt_manager_isolates_unexpected_callback_failures():
+    from app.core.mqtt_client import MQTTManager
+
+    manager = MQTTManager()
+    calls: List[str] = []
+
+    def bad_callback(_topic: str, _payload: str) -> None:
+        raise AssertionError("subscriber invariant failed")
+
+    def good_callback(topic: str, payload: str) -> None:
+        calls.append(f"{topic}:{payload}")
+
+    manager.message_callbacks["ai/#"].extend([bad_callback, good_callback])
+
+    class Msg:
+        topic = "ai/L1/predict"
+        payload = b'{"line":"L1"}'
+
+    manager._on_message(None, None, Msg())
+
+    assert calls == ['ai/L1/predict:{"line":"L1"}']

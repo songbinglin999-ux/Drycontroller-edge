@@ -5,7 +5,6 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -120,10 +119,10 @@ async def write_alarm_event(
                     )
                 )
                 await db.commit()
-            except (RuntimeError, OSError, SQLAlchemyError):
+            except Exception:  # noqa: BLE001 - 故意宽捕：best-effort alarm writer 失败需 rollback 后交给外层吞掉
                 await db.rollback()
                 raise
-    except (RuntimeError, OSError, SQLAlchemyError) as exc:
+    except Exception as exc:  # noqa: BLE001 - 故意宽捕：告警持久化失败不能阻塞业务流程
         logger.error(
             "edge_alarm_event_write_failed",
             alarm_key=alarm_key,
@@ -290,10 +289,10 @@ async def apply_alarm_transition(
                 )
                 await db.commit()
                 return {"action": "updated", "alarm_id": existing_row.id}
-            except (RuntimeError, OSError, SQLAlchemyError):
+            except Exception:  # noqa: BLE001 - 故意宽捕：best-effort alarm transition 失败需 rollback 后交给外层吞掉
                 await db.rollback()
                 raise
-    except (RuntimeError, OSError, SQLAlchemyError) as exc:
+    except Exception as exc:  # noqa: BLE001 - 故意宽捕：告警状态同步失败不能阻塞业务流程
         logger.error(
             "edge_alarm_transition_failed",
             alarm_key=alarm_key,
@@ -346,10 +345,10 @@ async def ack_alarm_event(
                 )
                 await db.commit()
                 return {"action": "acknowledged", "alarm_id": row.id}
-            except (RuntimeError, OSError, SQLAlchemyError):
+            except Exception:  # noqa: BLE001 - 故意宽捕：best-effort alarm ack 失败需 rollback 后交给外层吞掉
                 await db.rollback()
                 raise
-    except (RuntimeError, OSError, SQLAlchemyError) as exc:
+    except Exception as exc:  # noqa: BLE001 - 故意宽捕：告警确认持久化失败不能阻塞业务流程
         logger.error(
             "edge_alarm_ack_failed",
             alarm_id=alarm_id,

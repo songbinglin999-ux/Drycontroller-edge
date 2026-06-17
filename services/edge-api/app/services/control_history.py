@@ -4,7 +4,6 @@ import datetime as dt
 from typing import Any
 
 import structlog
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -113,10 +112,10 @@ async def write_control_history(
                     )
                 )
                 await db.commit()
-            except (RuntimeError, OSError, SQLAlchemyError):
+            except Exception:  # noqa: BLE001 - 故意宽捕：best-effort history writer 失败需 rollback 后交给外层吞掉
                 await db.rollback()
                 raise
-    except (RuntimeError, OSError, SQLAlchemyError) as exc:
+    except Exception as exc:  # noqa: BLE001 - 故意宽捕：控制响应不能被历史持久化失败阻塞
         logger.error(
             "edge_control_history_write_failed",
             command_type=command_type,

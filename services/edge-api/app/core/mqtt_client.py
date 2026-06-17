@@ -185,14 +185,14 @@ class MQTTManager:
                     for callback in list(callbacks):
                         try:
                             callback(topic, payload)
-                        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+                        except Exception:  # noqa: BLE001 - 故意宽捕：隔离单个 subscriber callback，不能影响 MQTT 网络线程/后续回调
                             logger.exception(
                                 "mqtt_callback_failed",
                                 pattern=pattern,
                                 topic=topic,
                             )
         
-        except (AttributeError, RuntimeError, TypeError, UnicodeDecodeError, ValueError) as e:
+        except Exception as e:  # noqa: BLE001 - 故意宽捕：Paho on_message 顶层边界，坏消息/回调异常只能记录不能杀网络线程
             logger.error(
                 "mqtt_message_processing_failed",
                 topic=msg.topic,
