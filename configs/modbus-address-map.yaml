@@ -1,4 +1,4 @@
-# PLC Modbus address skeleton. Values are intentionally TBD until the PLC
+# PLC Modbus address skeleton. Most values are intentionally TBD until the PLC
 # integrator confirms register addresses, scaling, and byte order.
 #
 # Two kinds of entries:
@@ -63,11 +63,12 @@ VF3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 
 # --- V1 control write soft points (6 frequency setpoints) ---
 # WRITE targets, distinct from the read-only VFM*/VF* feedback points above.
-# address/scale stay TBD until the PLC integrator signs off the SP registers;
-# until then edge-daq fail-closes every write (NAK address_not_configured).
-VFM1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: true, type: float, range: [0.0, 50.0], unit: Hz}
-VFM2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: true, type: float, range: [0.0, 50.0], unit: Hz}
-VFM3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: true, type: float, range: [0.0, 50.0], unit: Hz}
-VF1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: true, type: float, range: [0.0, 50.0], unit: Hz}
-VF2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: true, type: float, range: [0.0, 50.0], unit: Hz}
-VF3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: true, type: float, range: [0.0, 50.0], unit: Hz}
+# PLC-side V1 SP registers are D30-D35, exposed over Modbus RTU as 4x40030-4x40035.
+# scale stays TBD until PLC signs off the engineering-unit conversion; until then
+# edge-daq fail-closes every write (NAK address_not_configured).
+VFM1_FREQ_SP: {address: 40030, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
+VFM2_FREQ_SP: {address: 40031, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
+VFM3_FREQ_SP: {address: 40032, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
+VF1_FREQ_SP: {address: 40033, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
+VF2_FREQ_SP: {address: 40034, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
+VF3_FREQ_SP: {address: 40035, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
