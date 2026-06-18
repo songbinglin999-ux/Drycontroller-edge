@@ -63,7 +63,7 @@ VF3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 
 # --- V1 control write soft points (6 frequency setpoints) ---
 # WRITE targets, distinct from the read-only VFM*/VF* feedback points above.
-# PLC-side V1 SP registers are D30-D35, exposed over Modbus RTU as 4x40030-4x40035.
+# PLC-side V1 SP registers are D30-D35, exposed over Modbus TCP as 4x40030-4x40035.
 # scale stays TBD until PLC signs off the engineering-unit conversion; until then
 # edge-daq fail-closes every write (NAK address_not_configured).
 VFM1_FREQ_SP: {address: 40030, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
