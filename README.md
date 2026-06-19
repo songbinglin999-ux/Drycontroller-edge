@@ -104,7 +104,7 @@ GET  /api/v1/system/status?line=L1
 GET  /api/realtime/latest
 GET  /api/history
 GET  /api/v1/control/recommendations
-POST /api/v1/control/recommendations/manual-confirm
+POST /api/v1/control/recommendations/manual-confirm  # MANUAL / commissioning transition only
 POST /api/v1/ops/plc-config/apply
 WS   /api/ws/realtime
 WS   /api/ws/ai
@@ -113,6 +113,11 @@ WS   /api/ws/system
 
 Do not pass API tokens in WebSocket URLs. Clients must use the authenticated
 handshake implemented by `Drycontroller-frontend/packages/utils/src/websocket.ts`.
+
+Control V1 production mode is `MANUAL` / `AUTO`: `MANUAL` lets an operator set
+the six frequency targets through edge-api; `AUTO` dispatch is edge-side work
+that remains pending the AUTO state machine. Per-command confirmation endpoints
+are not the production AUTO workflow.
 
 ## Installation Media
 
