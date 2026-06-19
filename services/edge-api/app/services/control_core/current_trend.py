@@ -62,7 +62,7 @@ def _high_load_recommendation(
         snapshot=snapshot,
         softpoint=softpoint,
         delta=-2.0,
-        risk_note="Reduce upstream feed only after operator confirms blockage risk.",
+        risk_note="AUTO may reduce upstream feed only while blockage gates are clear; otherwise suspend and inspect.",
     )
     return ControlRecommendation(
         id=recommendation_id(snapshot.line_id, "current_trend_high_load", motor_tag),
@@ -79,7 +79,7 @@ def _high_load_recommendation(
             action,
             SuggestedAction(
                 action_type="inspect",
-                risk_note=f"Inspect downstream material path near {motor_tag} before changing feed.",
+                risk_note=f"Inspect downstream material path near {motor_tag} if AUTO is suspended or the trend persists.",
             ),
         ],
         actionable=True,

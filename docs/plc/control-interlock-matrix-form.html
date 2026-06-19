@@ -374,17 +374,17 @@
           <th>写入方</th>
           <th>用途</th>
           <th>硬限制</th>
-          <th>是否需要人工确认</th>
+          <th>模式授权/人工确认</th>
           <th>备注/现场填写</th>
         </tr>
       </thead>
       <tbody>
-        <tr><td>VFM1_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机1给料频率目标</td><td>0-50Hz；只允许通过软点写</td><td contenteditable="true" data-field="confirm-vfm1">V1 人工确认；V2/V3 再做自动降料</td><td contenteditable="true" data-field="write-vfm1-note"></td></tr>
-        <tr><td>VFM2_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机2给料频率目标</td><td>0-50Hz；M5 超流时只降不升</td><td contenteditable="true" data-field="confirm-vfm2">V1 人工确认；报警区人工</td><td contenteditable="true" data-field="write-vfm2-note"></td></tr>
-        <tr><td>VFM3_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机4给料频率目标</td><td>0-50Hz；M10 超流时只降不升</td><td contenteditable="true" data-field="confirm-vfm3">V1 人工确认；报警区人工</td><td contenteditable="true" data-field="write-vfm3-note"></td></tr>
-        <tr><td>VF1_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机1风机频率目标</td><td>不作为防堵主动作</td><td contenteditable="true" data-field="confirm-vf1">V1 人工确认</td><td contenteditable="true" data-field="write-vf1-note"></td></tr>
-        <tr><td>VF2_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机2风机频率目标</td><td>供热不足时禁止盲目加风</td><td contenteditable="true" data-field="confirm-vf2">V1 人工确认</td><td contenteditable="true" data-field="write-vf2-note"></td></tr>
-        <tr><td>VF3_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机4风机频率目标</td><td>供热不足时禁止盲目加风</td><td contenteditable="true" data-field="confirm-vf3">V1 人工确认</td><td contenteditable="true" data-field="write-vf3-note"></td></tr>
+        <tr><td>VFM1_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机1给料频率目标</td><td>0-50Hz；只允许通过软点写</td><td contenteditable="true" data-field="confirm-vfm1">MANUAL 人工设定；AUTO 自动目标；均过 edge-api gates</td><td contenteditable="true" data-field="write-vfm1-note"></td></tr>
+        <tr><td>VFM2_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机2给料频率目标</td><td>0-50Hz；M5 超流时只降不升</td><td contenteditable="true" data-field="confirm-vfm2">MANUAL 人工设定；AUTO 自动目标；报警区自动挂起</td><td contenteditable="true" data-field="write-vfm2-note"></td></tr>
+        <tr><td>VFM3_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机4给料频率目标</td><td>0-50Hz；M10 超流时只降不升</td><td contenteditable="true" data-field="confirm-vfm3">MANUAL 人工设定；AUTO 自动目标；报警区自动挂起</td><td contenteditable="true" data-field="write-vfm3-note"></td></tr>
+        <tr><td>VF1_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机1风机频率目标</td><td>不作为防堵主动作</td><td contenteditable="true" data-field="confirm-vf1">MANUAL 人工设定；AUTO 自动目标</td><td contenteditable="true" data-field="write-vf1-note"></td></tr>
+        <tr><td>VF2_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机2风机频率目标</td><td>供热不足时禁止盲目加风</td><td contenteditable="true" data-field="confirm-vf2">MANUAL 人工设定；AUTO 自动目标</td><td contenteditable="true" data-field="write-vf2-note"></td></tr>
+        <tr><td>VF3_FREQ_SP</td><td>V1</td><td>edge-api / HMI</td><td>主机4风机频率目标</td><td>供热不足时禁止盲目加风</td><td contenteditable="true" data-field="confirm-vf3">MANUAL 人工设定；AUTO 自动目标</td><td contenteditable="true" data-field="write-vf3-note"></td></tr>
         <tr><td>M*_RUN_CMD</td><td>V2/V3</td><td>edge / HMI</td><td>M1-M16 启停请求</td><td>必须走顺序状态机和控制权锁</td><td contenteditable="true" data-field="confirm-run-cmd">默认人工/流程确认</td><td contenteditable="true" data-field="write-run-note"></td></tr>
         <tr><td>M*_DIR_CMD</td><td>V2/V3</td><td>edge / HMI</td><td>正反转请求</td><td>只允许清堵短时反转；限次数</td><td contenteditable="true" data-field="confirm-dir-cmd">必须人工或强门控</td><td contenteditable="true" data-field="write-dir-note"></td></tr>
         <tr><td>M*_RESET_CMD</td><td>V2/V3</td><td>HMI</td><td>故障复位</td><td>不能自动复位硬故障</td><td contenteditable="true" data-field="confirm-reset-cmd">人工确认</td><td contenteditable="true" data-field="write-reset-note"></td></tr>
@@ -407,7 +407,7 @@
       </thead>
       <tbody>
         <tr><td>数据新鲜度</td><td>本次动作依赖的读点全部新鲜</td><td>禁止自动加料；关键点缺失进入 blocked</td><td>所有动作</td><td contenteditable="true" data-field="permit-fresh"></td></tr>
-        <tr><td>控制模式</td><td><code>CONTROL_MODE</code> 在允许列表</td><td>禁止写</td><td>所有写点</td><td contenteditable="true" data-field="permit-mode">填写允许模式，如 SEMI_AUTO / MANUAL_ASSIST</td></tr>
+        <tr><td>控制模式</td><td><code>CONTROL_MODE</code> 在允许列表</td><td>禁止写；AUTO 进入 AUTO_SUSPENDED</td><td>所有写点</td><td contenteditable="true" data-field="permit-mode">V1 允许 MANUAL / AUTO；失败进入 AUTO_SUSPENDED 或保持手动</td></tr>
         <tr><td>控制权</td><td><code>AUTHORITY_OWNER=EDGE</code></td><td>禁止写</td><td>所有写点</td><td contenteditable="true" data-field="permit-authority">V2/V3；V1 六频率 edge-api 写入不以 PLC authority token 为前置</td></tr>
         <tr><td>HMI 直连</td><td><code>HMI_DIRECT_ENABLE=false</code></td><td>edge 禁止写，避免双写</td><td>所有写点</td><td contenteditable="true" data-field="permit-hmi">V2/V3；V1 HMI 只走 edge-api，不直连 PLC</td></tr>
         <tr><td>维修锁</td><td><code>MAINTENANCE_LOCK=false</code></td><td>禁止写；只能人工解除</td><td>所有写点</td><td contenteditable="true" data-field="permit-maint"></td></tr>

@@ -23,7 +23,7 @@ from app.services.realtime_data import RealtimeDataService, get_realtime_data_se
 
 
 class ControlOrchestrator:
-    """Generate advisory recommendations and gate human-confirmed commands."""
+    """Generate recommendations and gate authorized six-frequency commands."""
 
     def __init__(
         self,
@@ -60,6 +60,8 @@ class ControlOrchestrator:
                 "recommendations": [item.model_dump(mode="json") for item in recommendations],
                 "allowed_targets": sorted(ALLOWED_CONTROL_SOFTPOINTS),
                 "requires_confirmation": True,
+                "production_authorization_model": "MANUAL_AUTO_MODE",
+                "auto_dispatch_status": "not_implemented",
                 "timestamp": int(datetime.now(timezone.utc).timestamp()),
             },
         }
@@ -304,7 +306,7 @@ class ControlOrchestrator:
             suggested_value=value,
             delta=round(value - current_value, 3) if current_value is not None else None,
             unit=unit,
-            risk_note=reason or "Operator-confirmed manual softpoint command.",
+            risk_note=reason or "Manual-mode softpoint command.",
         )
         recommendation = ControlRecommendation(
             id=recommendation_id(line_id, "manual_operator_setpoint", request_id or target_softpoint),
@@ -312,7 +314,7 @@ class ControlOrchestrator:
             level="info",
             diagnosis_code="manual_operator_setpoint",
             title=f"Manual confirmed softpoint command for {target_softpoint}",
-            reason=reason or "HMI/operator requested a setpoint write through the control orchestrator.",
+            reason=reason or "HMI/operator requested a manual-mode setpoint write through the control orchestrator.",
             evidence=[
                 {
                     "signal": "control_state",
@@ -339,8 +341,8 @@ class ControlOrchestrator:
         return apply_recommendation_safety_gates(
             snapshot,
             recommendation,
-            allowed_control_modes={"MANUAL_ASSIST", "SEMI_AUTO"},
-            mode_block_code="CONTROL_MODE_NOT_MANUAL_OR_SEMI_AUTO",
+            allowed_control_modes={"MANUAL"},
+            mode_block_code="CONTROL_MODE_NOT_MANUAL",
         )
 
 

@@ -101,7 +101,7 @@ optimizer:
   # 控制变量：V1 固定六频率目标；AI optimizer 仍为 V2/V3，等 EDGE-V2-P3 定义后再填。
   control_variables: []
   control_variable_notes:
-    - "V1 write targets are VFM1-3_FREQ_SP / VF1-3_FREQ_SP via edge-api manual confirmation."
+    - "V1 write targets are VFM1-3_FREQ_SP / VF1-3_FREQ_SP via MANUAL or AUTO mode authorization."
     - "TBD V2/V3: optimizer-controlled fan/feed setpoint soft points."
       
   # 约束条件

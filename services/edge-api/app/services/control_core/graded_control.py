@@ -43,7 +43,7 @@ def _l3_stop_feed(snapshot, high_currents: List[str]) -> ControlRecommendation:
         level="critical",
         diagnosis_code="graded_l3_stop_feed",
         title="L3 load condition: stop feed recommendation",
-        reason="Multiple current channels are high; first-version behavior is strong operator-confirmed advice only.",
+        reason="Multiple current channels are high; V1 AUTO should suspend before any high-risk feed stop action.",
         evidence=[{"tag": tag, "value": snapshot.tags.get(tag), "signal": "high_current"} for tag in high_currents],
         suggested_actions=[
             SuggestedAction(
@@ -53,7 +53,7 @@ def _l3_stop_feed(snapshot, high_currents: List[str]) -> ControlRecommendation:
                 suggested_value=suggested_value,
                 delta=(-current_value if current_value is not None else None),
                 unit=softpoint_unit("VFM3_FREQ_SP"),
-                risk_note="Only stop feed after operator confirms downstream inspection and PLC mode permits.",
+                risk_note="Do not auto-stop feed in V1; suspend AUTO and require downstream inspection.",
             )
         ],
         actionable=True,
@@ -95,7 +95,7 @@ def _l2_adjust_feed(
                 suggested_value=suggested_value,
                 delta=-1.0,
                 unit=softpoint_unit("VFM3_FREQ_SP"),
-                risk_note="Small feed reduction; requires operator confirmation.",
+                risk_note="Small feed reduction candidate for AUTO only while all gates are clear.",
             )
         ],
         actionable=True,

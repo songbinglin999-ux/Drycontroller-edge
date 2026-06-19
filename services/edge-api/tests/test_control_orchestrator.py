@@ -19,7 +19,7 @@ class DummyRealtimeFull:
         values = {tag: 0 for tag in REQUIRED_SNAPSHOT_TAGS}
         values.update(
             {
-                "CONTROL_MODE": "SEMI_AUTO",
+                "CONTROL_MODE": "AUTO",
                 "AUTHORITY_OWNER": "EDGE",
                 "HMI_DIRECT_ENABLE": 0,
                 "MAINTENANCE_LOCK": 0,
@@ -95,6 +95,15 @@ class DummyRealtimeNoPlcControlState(DummyRealtimeFull):
         return payload
 
 
+class DummyRealtimeManual(DummyRealtimeFull):
+    async def get_latest_payload(self, requested_tags, lookback):
+        payload = await super().get_latest_payload(requested_tags, lookback)
+        for row in payload["data"]:
+            if row["tag"] == "CONTROL_MODE":
+                row["value"] = "MANUAL"
+        return payload
+
+
 class DummyRealtimeModeChanges(DummyRealtimeFull):
     def __init__(self):
         self.latest_calls = 0
@@ -105,16 +114,16 @@ class DummyRealtimeModeChanges(DummyRealtimeFull):
         if self.latest_calls >= 2:
             for row in payload["data"]:
                 if row["tag"] == "CONTROL_MODE":
-                    row["value"] = "MANUAL_ASSIST"
+                    row["value"] = "MANUAL"
         return payload
 
 
-class DummyRealtimeAutoPilot(DummyRealtimeFull):
+class DummyRealtimeAuto(DummyRealtimeFull):
     async def get_latest_payload(self, requested_tags, lookback):
         payload = await super().get_latest_payload(requested_tags, lookback)
         for row in payload["data"]:
             if row["tag"] == "CONTROL_MODE":
-                row["value"] = "AUTO_PILOT"
+                row["value"] = "AUTO"
         return payload
 
 
@@ -199,7 +208,7 @@ async def test_orchestrator_rechecks_mode_at_confirmation(monkeypatch):
 
     assert confirmed["success"] is False
     assert confirmed["error"] == "recommendation_not_actionable"
-    assert "CONTROL_MODE_NOT_SEMI_AUTO" in confirmed["blocked_by"]
+    assert "CONTROL_MODE_NOT_AUTO" in confirmed["blocked_by"]
     assert command.calls == []
 
 
@@ -246,7 +255,7 @@ async def test_orchestrator_confirms_manual_softpoint_through_gate(monkeypatch):
     monkeypatch.setattr("app.services.control_orchestrator.write_audit", fake_write_audit)
     command = DummyCommand()
     orchestrator = ControlOrchestrator(
-        realtime_service=DummyRealtimeFull(),
+        realtime_service=DummyRealtimeManual(),
         command_service=command,
     )
 
@@ -314,14 +323,14 @@ async def test_orchestrator_confirms_manual_softpoint_without_plc_control_state(
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_blocks_manual_softpoint_in_auto_pilot_mode(monkeypatch):
+async def test_orchestrator_blocks_manual_softpoint_in_auto_mode(monkeypatch):
     async def fake_write_audit(**kwargs):
         return None
 
     monkeypatch.setattr("app.services.control_orchestrator.write_audit", fake_write_audit)
     command = DummyCommand()
     orchestrator = ControlOrchestrator(
-        realtime_service=DummyRealtimeAutoPilot(),
+        realtime_service=DummyRealtimeAuto(),
         command_service=command,
     )
 
@@ -336,7 +345,7 @@ async def test_orchestrator_blocks_manual_softpoint_in_auto_pilot_mode(monkeypat
 
     assert confirmed["success"] is False
     assert confirmed["error"] == "manual_command_not_actionable"
-    assert "CONTROL_MODE_NOT_MANUAL_OR_SEMI_AUTO" in confirmed["blocked_by"]
+    assert "CONTROL_MODE_NOT_MANUAL" in confirmed["blocked_by"]
     assert command.calls == []
 
 

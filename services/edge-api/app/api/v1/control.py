@@ -35,7 +35,7 @@ class RecommendationConfirmRequest(BaseModel):
 class ManualRecommendationConfirmRequest(BaseModel):
     line: Optional[str] = Field(None, description="产线标识，默认 L1")
     target_softpoint: str = Field(..., description="控制软点，如 VFM3_FREQ_SP / VF3_FREQ_SP")
-    value: float = Field(..., description="人工确认后的目标值")
+    value: float = Field(..., description="MANUAL 模式下的目标值")
     request_id: Optional[str] = Field(None, description="幂等 ID（可选）")
     operator_id: Optional[str] = Field(None, description="操作员 ID（用于审计）")
     reason: Optional[str] = Field(None, description="操作原因（用于审计/HMI 展示）")
@@ -114,10 +114,13 @@ async def get_control_status():
             "auto_control_enabled": False,
             "emergency_stop_active": False,
             "controllable_tags": sorted(ALLOWED_CONTROL_SOFTPOINTS),
-            "control_softpoints_status": "advisory_allowlist_only",
+            "control_softpoints_status": "six_frequency_softpoints_allowlist_only",
             "suggestion_schema": SCHEMA_VERSION,
-            "actionability": "human_confirmed_only",
+            "actionability": "manual_write_available_auto_mode_not_implemented",
+            "production_authorization_model": "MANUAL_AUTO_MODE",
+            "auto_dispatch_status": "not_implemented",
             "requires_confirmation": True,
-            "command_entrypoint": "/api/v1/control/recommendations/manual-confirm",
+            "manual_command_entrypoint": "/api/v1/control/recommendations/manual-confirm",
+            "commissioning_confirm_entrypoint": "/api/v1/control/recommendations/{id}/confirm",
         },
     }

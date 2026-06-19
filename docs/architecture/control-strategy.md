@@ -1,12 +1,12 @@
 # 🎛 控制策略说明（Control Strategy）
 
-> 版本：v1.1（2026-06-16 V1/V2/V3 标记）
+> 版本：v1.2（2026-06-19 V1 AUTO 模式授权标记）
 > 关联模块：`edge-api/control_core`、`edge-daq`、`hmi-runtime`、PLC 控制逻辑
 > 关联文档：`system-overview.md`、`data-flow.md`、`../plc/io-and-control-contract.md`
 
 ---
 
-> **当前验收边界**：V1 只做 `VFM1_FREQ_SP`、`VFM2_FREQ_SP`、`VFM3_FREQ_SP`、`VF1_FREQ_SP`、`VF2_FREQ_SP`、`VF3_FREQ_SP` 六个变频频率目标写入，替代人工设定目标频率。PLC 仍负责现场顺控、料位报警后的停/延时/恢复、联锁、设备保护和实际输出。本文中“AI 建议、链速、autopilot、完整工艺联锁、稳态优化”等内容均为 V2/V3 策略说明，不作为 V1 验收条件。
+> **当前验收边界**：V1 只做 `VFM1_FREQ_SP`、`VFM2_FREQ_SP`、`VFM3_FREQ_SP`、`VF1_FREQ_SP`、`VF2_FREQ_SP`、`VF3_FREQ_SP` 六个变频频率目标写入，替代人工设定目标频率。生产操作不是逐条点确认；操作员只选择 `MANUAL` 或 `AUTO`，`AUTO` 授权后由 edge 自动签发六频率目标，任一 gate 失败进入 `AUTO_SUSPENDED` / 退回手动。PLC 仍负责现场顺控、料位报警后的停/延时/恢复、联锁、设备保护和实际输出。本文中“完整工艺联锁、PLC authority、HMI 直连、稳态优化”等内容均为 V2/V3 策略说明，不作为 V1 验收条件。
 
 ## 1. 控制目标与边界
 
@@ -19,7 +19,7 @@
 
 ### 1.2 控制边界
 
-- **V1 当前阶段**：edge/HMI 只写六个变频频率目标，且必须经过人工确认、软点白名单、范围校验、变化率限制和审计；PLC 执行现场逻辑、安全、顺控、联锁、设备保护和最终输出。
+- **V1 当前阶段**：edge/HMI 只写六个变频频率目标。`MANUAL` 下人工设目标频率，`AUTO` 下 edge 规则/算法自动签发目标频率；两种模式都必须经过模式授权、软点白名单、范围校验、变化率/冷却限制、ACK/NAK、读回确认和审计。PLC 执行现场逻辑、安全、顺控、联锁、设备保护和最终输出。
 - **V2/V3 目标阶段**：edge 才逐步进入真正的监督控制/稳态控制，根据电流、料位事件、温度、湿度、下游能力等生成 6 个频率策略；PLC/VFD/硬接线保留最终物理安全兜底。
 
 ---
@@ -41,42 +41,60 @@ V1 只允许以下六个频率目标软点：
 
 ## 3. 控制模式
 
-### 3.1 人工模式（Manual）
+### 3.1 手动模式（MANUAL）
 
 - V1 操作员通过 HMI/edge-api 修改六个频率目标软点，PLC 继续执行现场工艺逻辑和安全保护。
+- 系统仍做白名单、范围、变化率、ACK/NAK、读回和审计；手动不是绕过安全闸门。
 - 非六频率目标的 setpoint、启停和联锁动作仍由 PLC/现场系统负责。
 - 适用场景：
   - 初次投产 / 试车
-  - AI 模型尚未充分验证
+  - 自动模式尚未充分验证
   - 故障或异常情况下的紧急接管
 
-### 3.2 AI 建议 + 人工确认模式（Semi-auto）
+### 3.2 自动模式（AUTO）
 
-- 流程：
+- 生产流程：
 
 ```text
-实时数据 + AI 含水率估计
-edge/control_core 计算六个频率目标建议
+操作员选择 AUTO
    ↓
-通过 edge-api 暴露建议与人工确认入口
+edge/control_core 基于实时数据、历史窗口、softsensor 证据计算六个频率目标
    ↓
-edge-api / 大屏展示建议值
+control_orchestrator 做 freshness / mode / whitelist / range / rate / cooldown / ACK-NAK / readback gate
    ↓
-操作员确认后 → 通过 /api/v1/control/recommendations/manual-confirm 或 /{id}/confirm 下发六个频率目标
+edge-api 自动签发 signed command
+   ↓
+edge-daq 写 PLC 六个 SP，记录 ACK/NAK 与读回结果
+   ↓
+任一 gate 失败 → AUTO_SUSPENDED，停止自动下发并展示原因
 ```
 
 - 特点：
-  - V1 控制建议可以由规则/算法生成，但执行面只允许六个频率目标软点
-  - 人工有最终决定权，减少“黑盒”风险
+  - 操作员不需要坐在控制屏前逐条点确认；人工决策点是进入/退出 `AUTO`。
+  - V1 控制目标可以由规则/算法生成，但执行面只允许六个频率目标软点。
+  - 每次自动动作必须可解释、可回放；大屏/HMI 展示当前目标、算法理由、最近动作、挂起原因和审计记录。
+  - `AUTO` 失败时不降级为盲目继续写，而是进入 `AUTO_SUSPENDED` 或转 `MANUAL`。
 
-### 3.3 全自动模式 / 监督控制（V2/V3 预留）
+### 3.3 自动挂起（AUTO_SUSPENDED）
+
+- 触发：
+  - 实时数据 stale / 缺关键 tag。
+  - 目标值越界、变化率/冷却限制不满足。
+  - PLC NAK、写入失败或读回不一致。
+  - 维护锁、急停、本地接管、edge 控制不健康。
+- 行为：
+  - 停止新的自动 command。
+  - 保留诊断、建议和可解释 evidence。
+  - HMI 只提供“转手动 / 重新授权 AUTO / 查看原因”，不要求逐条补确认。
+
+### 3.4 V2/V3 监督控制扩展
 
 - 未来可选模式：
-  - edge-api 在人工授权的 autopilot 层级下，把 suggestion 转成 signed command
+  - edge-api 在 `AUTO` 授权层级下，把 suggestion 转成 signed command
   - `edge-daq` 只消费 signed command 写 PLC，AI 不直接写 PLC
   - edge-api 仍必须执行 range guard、ramp/slew limiter、工艺联锁、签名和审计
   - PLC/VFD/硬接线保留最终物理安全兜底
-- V1 不开放 autopilot，不开放 HMI 直连 PLC，不要求 PLC authority token 作为六频率 edge-api 写入的前置条件。
+- V1 不开放 HMI 直连 PLC，不要求 PLC authority token 作为六频率 edge-api 写入的前置条件。
 - 启用前必须：
   - 在现场充分测试
   - 与工艺与安全部门共同评估后决策
@@ -96,13 +114,13 @@ edge-api / 大屏展示建议值
   - V1 只做六频率目标写入许可与降载建议；料位报警后的停转/延时开启等现场工艺逻辑仍在 PLC
   - V2/V3 才把更多工艺联锁纳入 edge 监督控制状态机
 
-V1 下发的六频率目标必须先经过 edge/HMI 侧白名单、范围、变化率和模式锁过滤，再交给 PLC 执行。PLC 仍承担现场工艺逻辑、安全联锁、设备保护和最终输出。
+V1 下发的六频率目标必须先经过 edge/HMI 侧模式授权、白名单、范围、变化率、冷却、ACK/NAK 和读回 gate，再交给 PLC 执行。PLC 仍承担现场工艺逻辑、安全联锁、设备保护和最终输出。
 
 ---
 
 ## 5. V2/V3 ai-ctrl-optimizer 策略逻辑（概述）
 
-> 本节描述后续监督控制/稳态控制方向，不作为 V1 六频率目标写入验收条件。V1 可以只用固定规则、人工设定或简单建议生成目标值。
+> 本节描述后续监督控制/稳态控制方向，不作为 V1 六频率目标写入验收条件。V1 可以只用固定规则或简单启发式生成 AUTO 目标值；复杂优化库不是 V1 前置条件。
 
 ### 5.1 输入
 
@@ -183,13 +201,13 @@ V1 下发的六频率目标必须先经过 edge/HMI 侧白名单、范围、变�
 ### 6.2 控制执行（/api/v1/control/recommendations/*）
 
 - `edge-api` 接口负责：
-  - V1 校验六软点与目标值的合法性（白名单、范围、步长/变化率、当前模式、API key、审计）
-  - V2/V3 增加 PLC 控制权、ACK/NAK、工艺联锁、autopilot 授权等完整监督控制门控
+  - V1 校验六软点与目标值的合法性（模式授权、白名单、范围、步长/变化率、冷却、ACK/NAK、读回、API key、审计）
+  - V2/V3 增加 PLC 控制权、ACK/NAK、工艺联锁、owner/token 与完整监督控制门控
   - 记录操作日志（操作者、理由、前后值）
   - 将合规命令转换为 MQTT 消息，交给 `edge-daq` 写入 PLC
-  - autopilot 属于 V2/V3，V1 不开放
+  - `/recommendations/{id}/confirm` / `/manual-confirm` 只作为 commissioning/debug/手动写入过渡入口，不是生产 AUTO 主链路
 
-### 6.3 V2/V3 AI 控制建议如何平滑下发
+### 6.3 AUTO 控制建议如何平滑下发
 
 - **防抖**：仅当连续多次建议方向一致、且偏差超过阈值时才生成控制建议
 - **缓变**：对比当前 setpoint 与 AI 建议值，按最大步长/变化率缓慢逼近，而非一次性跳变
@@ -202,7 +220,7 @@ V1 下发的六频率目标必须先经过 edge/HMI 侧白名单、范围、变�
 
 当发生以下情况时，控制策略需要自动或人工降级：
 
-- AI 推理异常或置信度持续过低 → 停止使用 AI 输出，仅采用简单规则或人工经验
+- 规则/AI 推理异常或置信度持续过低 → 进入 `AUTO_SUSPENDED`，停止自动下发，仅展示诊断或转手动
 - 通讯异常（PLC / MQTT） → 暂停下发新 setpoint，保持当前稳态
 - 发现控制策略导致工艺波动增大 → 人工切回纯手动模式，并通知算法/工艺团队
 
@@ -213,8 +231,9 @@ V1 下发的六频率目标必须先经过 edge/HMI 侧白名单、范围、变�
 ## 8. 现场应用建议
 
 - 在项目早期：
-  - 先启用“AI 建议 + 人工确认”模式，积累经验与数据
-  - 将 AI 建议与实际人工操作进行对比评估
+  - 先启用 `MANUAL` + shadow 诊断，积累经验与数据
+  - 再启用 `AUTO` 小步长、低频率、可挂起的六频率自动设定
+  - 将 AUTO 建议/动作与实际人工操作进行对比评估
 - 在策略成熟后：
   - 可在部分时段/部分工况下试点半自动控制
   - 针对每种物料类型和工况建立相应的策略参数配置

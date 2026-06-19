@@ -31,8 +31,8 @@ def build_recommendations(snapshot: ProcessSnapshot) -> List[ControlRecommendati
         apply_recommendation_safety_gates(
             snapshot,
             item,
-            allowed_control_modes={"SEMI_AUTO"},
-            mode_block_code="CONTROL_MODE_NOT_SEMI_AUTO",
+            allowed_control_modes={"AUTO"},
+            mode_block_code="CONTROL_MODE_NOT_AUTO",
         )
         for item in _dedupe(recommendations)
     ]

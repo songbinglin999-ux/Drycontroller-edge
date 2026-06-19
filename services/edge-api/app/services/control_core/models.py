@@ -25,9 +25,9 @@ CONTROL_STATE_TAGS = [
     "MAINTENANCE_LOCK",
     "EMERGENCY_STOP",
 ]
-# V1 only replaces manual writes to the six frequency setpoints. PLC authority
-# state is a V2/V3 contract, so it is sampled opportunistically but must not be
-# required for V1 recommendation/manual-confirm acceptance.
+# V1 only replaces manual writes to the six frequency setpoints. Product mode
+# is MANUAL/AUTO/AUTO_SUSPENDED; PLC authority state is a V2/V3 contract, so it
+# is sampled opportunistically but must not be required for V1 writes.
 SNAPSHOT_TAGS = PROCESS_TAGS + CONTROL_STATE_TAGS
 REQUIRED_SNAPSHOT_TAGS = PROCESS_TAGS
 

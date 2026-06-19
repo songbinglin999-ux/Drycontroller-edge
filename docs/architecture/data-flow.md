@@ -91,12 +91,12 @@ edge-api / ops-console / 大屏展示
 
 说明：
 
-- 当前 V1 只输出 **6 个变频频率目标** 的建议或人工确认写入：`VFM1-3_FREQ_SP` / `VF1-3_FREQ_SP`。
-- AI 不直接写 PLC；V1 由 edge-api 把建议或人工输入转成 signed command，再由 `edge-daq` 消费 command 写 PLC。除 6 个频率 SP 之外的控制写入保持禁用；V2/V3 才扩展为监督控制和完整稳态控制。
+- 当前 V1 只输出 **6 个变频频率目标**：`VFM1-3_FREQ_SP` / `VF1-3_FREQ_SP`。
+- AI/规则不直接写 PLC；V1 由 edge-api 在 `MANUAL` / `AUTO` 模式授权下把人工目标或 AUTO 目标转成 signed command，再由 `edge-daq` 消费 command 写 PLC。除 6 个频率 SP 之外的控制写入保持禁用；V2/V3 才扩展为监督控制和完整稳态控制。
 
 ---
 
-## 4. 控制链路：建议、确认与下发
+## 4. 控制链路：模式授权与下发
 
 ### 4.1 控制建议生成
 
@@ -108,24 +108,23 @@ edge-api / ops-console / 大屏展示
   - 建议 6 个变频频率目标（Hz）
   - 建议执行时机（立即 / 延迟）
 
-### 4.2 人工确认与下发
+### 4.2 MANUAL / AUTO 下发
 
 控制流程示意：
 
 ```text
-ai-ctrl-optimizer → MQTT（control/suggestion/#）
-   ↓ 订阅
-edge-api → WebSocket / REST → 大屏
-   ↓ 人工确认
-edge-api 签发 signed command
+MANUAL：HMI 人工输入 6 个频率目标
+AUTO：edge 规则/算法生成 6 个频率目标
+   ↓ edge-api 模式授权 / 白名单 / range / 变化率 / 冷却 / ACK-NAK / 读回
+edge-api 签发 signed command；失败则拒绝或 AUTO_SUSPENDED
    ↓
 MQTT（control/apply/#）→ edge-daq → PLC
 ```
 
 当前阶段建议：
 
-- 默认 manual：所有 suggestion 经过 **人工确认** 后由 edge-api 签发 command，再下发至 PLC。
-- autopilot 只在 `P0-SAFETY` 关闭后允许启用，且仍由 edge-api 签发 command，AI 不旁路。
+- 生产 UI 只让操作员选择 `MANUAL` 或 `AUTO`，不逐条确认。
+- `AUTO` 只在 V1 六频率 SP 的地址、倍率、反馈、ACK/NAK、读回和 safety gates 签收后允许启用，且仍由 edge-api 签发 command，AI/规则不旁路。
 - 所有控制操作必须记录在 PostgreSQL 的“控制操作日志”表中
 
 ---

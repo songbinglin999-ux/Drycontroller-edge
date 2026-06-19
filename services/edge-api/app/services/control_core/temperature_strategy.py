@@ -59,7 +59,7 @@ def _low_heat_strategy(snapshot, avg_ftt: float, avg_fan: Optional[float]) -> Co
                 suggested_value=suggested_value,
                 delta=-2.0,
                 unit=softpoint_unit("VF3_FREQ_SP"),
-                risk_note="Reduce final-stage airflow only if operator confirms temperature is being pulled down by airflow.",
+                risk_note="AUTO may reduce final-stage airflow only while temperature and airflow gates are clear.",
             ),
             SuggestedAction(
                 action_type="inspect",
@@ -92,7 +92,7 @@ def _high_moisture_strategy(snapshot, moisture: float) -> ControlRecommendation:
         level="warning",
         diagnosis_code="temperature_high_moisture",
         title="Temperature strategy: moisture is high",
-        reason="Tail moisture is high; adjust fan/feed softpoints only after confirmation.",
+        reason="Tail moisture is high; AUTO may adjust fan/feed softpoints only when gates are clear.",
         evidence=[
             {"tag": "MT1", "value": moisture, "signal": "moisture_high"},
             {"tag": "T_OUT4", "value": snapshot.tags.get("T_OUT4"), "signal": "tail_temperature"},

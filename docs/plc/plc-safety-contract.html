@@ -174,7 +174,7 @@
   <thead><tr><th>侧</th><th>状态</th></tr></thead>
   <tbody>
     <tr><td>PLC 侧</td><td><strong>待重签收</strong>：软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换、最终物理安全兜底回读</td></tr>
-    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），仍需补控制状态机、ramp/slew limiter、工艺联锁、mode/autopilot 闸、软件侧 fallback 与软点/同步/仲裁状态处理</td></tr>
+    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），仍需补控制状态机、ramp/slew limiter、工艺联锁、MANUAL/AUTO/AUTO_SUSPENDED 模式闸、软件侧 fallback 与软点/同步/仲裁状态处理</td></tr>
   </tbody>
 </table>
 
@@ -465,7 +465,7 @@
     <tr><td>V1-1</td><td>六个 SP 地址/量程/字节序签收</td><td>PLC 回填六个频率目标寄存器地址、数据类型、缩放、0-50Hz 或现场签收范围、读写权限</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>V1-2</td><td>六个实际频率反馈</td><td>edge 能读取 <code>VFM1-3</code>、<code>VF1-3</code> 实际频率或等价反馈，用于写后核对与趋势展示</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>V1-3</td><td>PLC 安全覆盖状态/报警码</td><td>PLC/VFD/硬接线触发限幅、故障、停机、料位保护时，edge/HMI 可见该写入被覆盖或不可继续调节的状态</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>V1-4</td><td>六 SP 写入 E2E</td><td>HMI/edge-api 人工确认 → edge-daq → PLC → 变频器目标变化 → 反馈回读；越界/未授权/edge 不健康时拒绝</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>V1-4</td><td>六 SP 写入 E2E</td><td>MANUAL 人工设定或 AUTO 自动目标 → edge-api 门控 → edge-daq → PLC → 变频器目标变化 → 反馈回读；越界/未授权/edge 不健康/读回异常时拒绝或挂起</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V2/V3 目标版接口能力（非 V1 blocker）</td></tr>
     <tr><td>P1</td><td>IO 采集上传</td><td>现场全部 IO（料位/温度/电流/状态/急停）稳定实时上报 edge</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P2</td><td>软点控制层执行</td><td>edge 软点命令 → PLC 正确输出到变频器/接触器/阀</td><td><span class="pill bad">❌ 未做</span></td></tr>
@@ -496,7 +496,7 @@
 <ol>
   <li>V1 关闭：六个频率目标 SP 地址/量程/字节序/写权限签收，实际频率反馈可读，PLC 安全覆盖/报警状态可见，HMI/edge-api → edge-daq → PLC → 变频器 E2E 写入与拒绝路径通过</li>
   <li>PLC 集成商签收软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换全部通过，并完成 VFD/硬接线/设备自保护的最终物理安全兜底验收</li>
-  <li>Edge 侧控制状态机、range guard、setpoint ramp/slew limiter、工艺联锁、mode/autopilot 闸、软件侧 fallback、`/control/estop`、软点/同步/仲裁状态处理全部通过</li>
+  <li>Edge 侧控制状态机、range guard、setpoint ramp/slew limiter、工艺联锁、MANUAL/AUTO/AUTO_SUSPENDED 模式闸、软件侧 fallback、`/control/estop`、软点/同步/仲裁状态处理全部通过</li>
   <li>独立复核确认失败注入验收（§6）全部通过</li>
 </ol>
 
@@ -531,8 +531,8 @@
               │
               ▼
 ┌─────────────────────────────────────────┐
-│ 阶段 4：autopilot 可选启用               │
-│ 仅在 P0-SAFETY 关闭后允许                │
+│ 阶段 4：AUTO 稳态监督可选启用            │
+│ 仅在 P0-SAFETY 关闭后扩展到 V2/V3        │
 └─────────────────────────────────────────┘</code></pre>
 
 <hr>

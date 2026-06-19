@@ -57,7 +57,7 @@ class DummyControlSvc:
                 "line_id": "L1",
                 "freshness": {"status": "fresh", "missing_tags": [], "stale_tags": []},
                 "control_state": {
-                    "CONTROL_MODE": "SEMI_AUTO",
+                    "CONTROL_MODE": "AUTO",
                     "AUTHORITY_OWNER": "EDGE",
                     "HMI_DIRECT_ENABLE": False,
                     "maintenance_lock": False,

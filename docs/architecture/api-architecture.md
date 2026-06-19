@@ -102,11 +102,11 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 当前 V1 只允许 6 个变频频率目标写入：`VFM1-3_FREQ_SP` / `VF1-3_FREQ_SP`。PLC 保留现场逻辑、安全、顺控、联锁和设备保护；除 6 个频率 SP 外，其余控制写入保持禁用。
 
 - `GET /api/v1/control/recommendations`
-  - 功能：读取 edge 生成的可解释建议，建议默认需要人工确认。
+  - 功能：读取 edge 生成的可解释建议和 AUTO 候选；生产自动下发由 `MANUAL` / `AUTO` 模式授权决定，不逐条确认。
 - `POST /api/v1/control/recommendations/{id}/confirm`
-  - 功能：确认一条建议；edge-api 复核 freshness / mode / 软点白名单 / range / 变化率后签发 command。
+  - 功能：commissioning/debug 过渡入口；edge-api 复核 freshness / mode / 软点白名单 / range / 变化率后签发 command，不作为生产 AUTO 主链路。
 - `POST /api/v1/control/recommendations/manual-confirm`
-  - 功能：人工输入 6 个频率目标之一并确认写入。
+  - 功能：`MANUAL` 模式下人工输入 6 个频率目标之一并写入。
 - `POST /api/v1/control/recommendations/{id}/dismiss`
   - 功能：驳回建议并记录审计。
 
