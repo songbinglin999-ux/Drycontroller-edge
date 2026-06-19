@@ -10,6 +10,7 @@ from daq.control import (
     ControlSubscriber,
     CONTROL_SIG_INVALID,
     CONTROL_REPLAY_DROPPED,
+    _build_tag_index,
 )
 from daq.simulator import PLCSimulator
 
@@ -119,6 +120,36 @@ def _last_ack(subscriber: ControlSubscriber) -> dict:
     assert topic == subscriber.ack_topic
     assert qos == 1
     return payload
+
+
+def test_heartbeat_entries_are_not_control_softpoints():
+    cfg = _address_map_softpoint(address=40030)
+    cfg["modbus_address_map"].update(
+        {
+            "PLC_HEARTBEAT": {
+                "address": 45000,
+                "function_code": 3,
+                "scale": 1,
+                "byte_order": "big",
+                "type": "int",
+                "diagnostic": "heartbeat",
+            },
+            "EDGE_HOST_ALIVE": {
+                "address": 45001,
+                "function_code": 6,
+                "scale": 1,
+                "byte_order": "big",
+                "writable": True,
+                "type": "int",
+                "diagnostic": "heartbeat",
+                "control_softpoint": False,
+            },
+        }
+    )
+
+    index = _build_tag_index(cfg)
+
+    assert set(index) == {CONTROL_TAG}
 
 
 @pytest.mark.asyncio

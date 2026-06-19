@@ -61,6 +61,35 @@ from daq.simulator import PLCSimulator  # noqa: E402
 from daq.control import ControlSubscriber  # noqa: E402
 
 
+def _resolved_register_address(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _derive_heartbeat_config(address_map: dict) -> dict:
+    """Build V0 heartbeat config from the PLC address SSOT when signed off."""
+    if not isinstance(address_map, dict):
+        return {}
+
+    plc_heartbeat = address_map.get("PLC_HEARTBEAT")
+    edge_alive = address_map.get("EDGE_HOST_ALIVE")
+    if not isinstance(plc_heartbeat, dict) or not isinstance(edge_alive, dict):
+        return {}
+
+    read_address = _resolved_register_address(plc_heartbeat.get("address"))
+    write_address = _resolved_register_address(edge_alive.get("address"))
+    if read_address is None or write_address is None:
+        return {}
+
+    return {
+        "read_address": read_address,
+        "write_address": write_address,
+        "function_code": int(plc_heartbeat.get("function_code", 3) or 3),
+    }
+
+
 class DAQService:
     """
     数据采集服务主类
@@ -136,6 +165,11 @@ class DAQService:
             logger.warning("modbus_address_map_not_found", path=str(address_map_path))
         if isinstance(self.config, dict):
             self.config["modbus_address_map"] = address_map
+            heartbeat_config = _derive_heartbeat_config(address_map)
+            if heartbeat_config:
+                self.config["heartbeat"] = heartbeat_config
+            else:
+                self.config.pop("heartbeat", None)
 
         logger.info("config_loaded", tags_count=len(self.config.get("tags", {})))
         return self.config

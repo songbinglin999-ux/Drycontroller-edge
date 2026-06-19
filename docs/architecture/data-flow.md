@@ -9,7 +9,7 @@
 
 本系统数据流可以拆分为四条主链路：
 
-1. **采集链路**：PLC → `edge-daq` → MQTT → InfluxDB
+1. **采集链路**：PLC → `edge-daq` → MQTT → InfluxDB；V0 还包含 `PLC_HEARTBEAT` 读取与 `EDGE_HOST_ALIVE` 写入
 2. **AI 链路**：MQTT → `ai-softsensor` → MQTT / InfluxDB → `ai-ctrl-optimizer`
 3. **控制链路**：`ai-ctrl-optimizer` → `edge-api` → （大屏 / PLC）
 4. **配置与管理链路**：`edge-api` ↔ PostgreSQL ↔ 配置文件（YAML）
@@ -48,6 +48,12 @@ ai-softsensor / ai-ctrl-optimizer / edge-api
    ↓ 写入
 InfluxDB（时序数据库）
 ```
+
+V0 接入口径：
+
+- 只读采集 52 个 I/O 位号和 `PLC_HEARTBEAT`。
+- edge 只向 PLC 写 `EDGE_HOST_ALIVE` 通讯心跳；该心跳只用于通讯/数据质量诊断，不授予控制。
+- V0 不写 6 个频率 SP，不发布 signed control command，不参与 PLC 模式/控制权仲裁。
 
 ### 2.3 采集频率与 QoS
 
@@ -91,6 +97,7 @@ edge-api / ops-console / 大屏展示
 
 说明：
 
+- V0 不启用控制优化下发；规则/AI 输出只能作为离线分析或只读建议展示。
 - 当前 V1 只输出 **6 个变频频率目标**：`VFM1-3_FREQ_SP` / `VF1-3_FREQ_SP`。
 - AI/规则不直接写 PLC；V1 由 edge-api 在 `MANUAL` / `AUTO` 模式授权下把人工目标或 AUTO 目标转成 signed command，再由 `edge-daq` 消费 command 写 PLC。除 6 个频率 SP 之外的控制写入保持禁用；V2/V3 才扩展为监督控制和完整稳态控制。
 
@@ -109,6 +116,8 @@ edge-api / ops-console / 大屏展示
   - 建议执行时机（立即 / 延迟）
 
 ### 4.2 MANUAL / AUTO 下发
+
+V0 没有 `MANUAL` / `AUTO` 下发流程；控制写入路径保持 disabled。`EDGE_HOST_ALIVE` 是通讯心跳，不走 signed control command，也不能被 PLC 当成控制授权。
 
 控制流程示意：
 

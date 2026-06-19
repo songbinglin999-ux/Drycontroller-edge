@@ -1,13 +1,18 @@
 # PLC Modbus address skeleton. Most values are intentionally TBD until the PLC
 # integrator confirms register addresses, scaling, and byte order.
 #
-# Two kinds of entries:
+# Three kinds of entries:
 #   - 52 read points below (function_code 3, read-only feedback / process I/O).
+#   - V0 diagnostic heartbeats: read PLC_HEARTBEAT and write EDGE_HOST_ALIVE.
 #   - 6 control write soft points at the bottom (writable: true, function_code 6).
 # edge-daq's control write path resolves register address/scale/byte_order from
 # the writable entries here; read points are consumed by the acquisition path.
 # Soft point range/unit mirror edge-api ALLOWED_CONTROL_SOFTPOINTS as an
 # independent edge-daq range guard (defense in depth, see P0-CTRL-NAK).
+#
+# IMPORTANT: EDGE_HOST_ALIVE is a communication/diagnostic heartbeat, not a
+# control soft point and not EDGE_CONTROL_HEALTHY. It must not grant PLC control
+# authority.
 LL1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 LL2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 LL3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
@@ -60,6 +65,13 @@ VFM3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 VF1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 VF2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 VF3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
+
+# --- V0 diagnostic heartbeat points ---
+# PLC_HEARTBEAT is read from PLC to prove PLC-side communication freshness.
+# EDGE_HOST_ALIVE is written by edge to prove edge/daq-side communication
+# freshness only. It is intentionally not an ALLOWED_CONTROL_SOFTPOINTS entry.
+PLC_HEARTBEAT: {address: TBD, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: heartbeat}
+EDGE_HOST_ALIVE: {address: TBD, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
 
 # --- V1 control write soft points (6 frequency setpoints) ---
 # WRITE targets, distinct from the read-only VFM*/VF* feedback points above.

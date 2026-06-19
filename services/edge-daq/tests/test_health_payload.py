@@ -45,6 +45,64 @@ class FakeControlSubscriber:
         return self.status
 
 
+@pytest.mark.asyncio
+async def test_load_config_derives_v0_heartbeat_from_modbus_map(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOG_ROOT", str(tmp_path))
+
+    tags_path = tmp_path / "tags.yaml"
+    address_map_path = tmp_path / "modbus-address-map.yaml"
+    tags_path.write_text("tags: {}\n", encoding="utf-8")
+    address_map_path.write_text(
+        "\n".join(
+            [
+                "PLC_HEARTBEAT: {address: 45000, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: heartbeat}",
+                "EDGE_HOST_ALIVE: {address: 45001, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TAGS_CONFIG", str(tags_path))
+    monkeypatch.setenv("MODBUS_ADDRESS_MAP", str(address_map_path))
+
+    daq_main = importlib.import_module("daq.main")
+    svc = daq_main.DAQService()
+
+    config = await svc.load_config()
+
+    assert config["heartbeat"] == {
+        "read_address": 45000,
+        "write_address": 45001,
+        "function_code": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_load_config_skips_v0_heartbeat_until_addresses_are_signed(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOG_ROOT", str(tmp_path))
+
+    tags_path = tmp_path / "tags.yaml"
+    address_map_path = tmp_path / "modbus-address-map.yaml"
+    tags_path.write_text("tags: {}\nheartbeat: {read_address: 1, write_address: 2}\n", encoding="utf-8")
+    address_map_path.write_text(
+        "\n".join(
+            [
+                "PLC_HEARTBEAT: {address: TBD, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: heartbeat}",
+                "EDGE_HOST_ALIVE: {address: TBD, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TAGS_CONFIG", str(tags_path))
+    monkeypatch.setenv("MODBUS_ADDRESS_MAP", str(address_map_path))
+
+    daq_main = importlib.import_module("daq.main")
+    svc = daq_main.DAQService()
+
+    config = await svc.load_config()
+
+    assert "heartbeat" not in config
+
+
 def test_health_payload_includes_modbus_and_scan(tmp_path, monkeypatch):
     # 避免在 /logs 下写文件，重定向日志根目录
     monkeypatch.setenv("LOG_ROOT", str(tmp_path))

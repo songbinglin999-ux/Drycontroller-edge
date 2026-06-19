@@ -9,6 +9,7 @@ import structlog
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
 from prometheus_client import Counter, Gauge
+from prometheus_client.registry import REGISTRY
 
 logger = structlog.get_logger(__name__)
 
@@ -18,7 +19,10 @@ MODBUS_WRITE_SUCCESS = Counter("modbus_write_success_total", "Modbus write succe
 MODBUS_WRITE_FAILURE = Counter("modbus_write_failure_total", "Modbus write failure", ["op"])
 MODBUS_CONNECTED = Gauge("modbus_connected", "Modbus connection state")
 MODBUS_LAST_LATENCY_MS = Gauge("modbus_last_latency_ms", "Last modbus op latency in ms", ["op"])
-PLC_HEARTBEAT_MISSING = Counter("plc_heartbeat_missing_total", "PLC heartbeat missing detected")
+if "plc_heartbeat_missing_total" in REGISTRY._names_to_collectors:
+    PLC_HEARTBEAT_MISSING = REGISTRY._names_to_collectors["plc_heartbeat_missing_total"]
+else:
+    PLC_HEARTBEAT_MISSING = Counter("plc_heartbeat_missing_total", "PLC heartbeat missing detected")
 MODBUS_CIRCUIT_OPEN = Counter("modbus_circuit_open_total", "Modbus circuit open events")
 
 
