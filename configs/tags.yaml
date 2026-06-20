@@ -40,13 +40,13 @@ tags:
       - {name: VF2_FREQ, signal_type: AI, type: int, unit: "Hz", description: "2号风机运行频率（D34）"}
       - {name: VF3_FREQ, signal_type: AI, type: int, unit: "Hz", description: "3号风机运行频率（D35）"}
     temperature:
-      - {name: FTT1_T, signal_type: AI, type: int, unit: "℃", description: "1号风机检测温度（D40）"}
-      - {name: FTT2_T, signal_type: AI, type: int, unit: "℃", description: "2号风机检测温度（D41）"}
-      - {name: FTT3_T, signal_type: AI, type: int, unit: "℃", description: "3号风机检测温度（D42）"}
-      - {name: TT1_T, signal_type: AI, type: int, unit: "℃", description: "一级烘干温度（D43）"}
-      - {name: TT2_T, signal_type: AI, type: int, unit: "℃", description: "二级烘干温度（D44）"}
+      - {name: FTT1_T, signal_type: AI, type: int, unit: "℃", description: "预烘干段蒸汽温度（1号排湿风机处）（D40）"}
+      - {name: FTT2_T, signal_type: AI, type: int, unit: "℃", description: "一级烘干段蒸汽温度（2号排湿风机处）（D41）"}
+      - {name: FTT3_T, signal_type: AI, type: int, unit: "℃", description: "二级烘干段蒸汽温度（3号排湿风机处）（D42）"}
+      - {name: TT1_T, signal_type: AI, type: int, unit: "℃", description: "锅炉1炉口温度（D43）"}
+      - {name: TT2_T, signal_type: AI, type: int, unit: "℃", description: "锅炉2炉口温度（D44）"}
     humidity:
-      - {name: MT1_H, signal_type: AI, type: int32, unit: "%", description: "实时湿度（D45）"}
+      - {name: MT1_H, signal_type: AI, type: int32, unit: "%", description: "出料口实时湿度（D45）"}
 
 mqtt:
   base_topic: "realtime"
