@@ -65,21 +65,21 @@
     <div class="flow">
     <div class="stage"><div class="left"></div><span class="node feed">进料绞龙</span><div class="right"><a class="pin drive" href="#io-M1_I">M1_I</a><a class="pin drive" href="#io-M2_I">M2_I</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node bin">料斗1</span><div class="right"><a class="pin sense" href="#io-LL1">LL1</a></div></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗1<small>满位→停 M1（绞龙1）</small></span><div class="right"><a class="pin sense" href="#io-LL1">LL1</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗2<small>满位→停 M3（预烘干主机）</small></span><div class="right"><a class="pin sense" href="#io-LL2">LL2</a></div></div>
 <div class="link"></div>
 <div class="stage"><div class="left"></div><span class="node host">预烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM1_I">VFM1_I</a><a class="pin drive" href="#io-VFM1_FREQ">VFM1_FREQ</a><a class="pin drive" href="#io-M3_I">M3_I</a><a class="pin drive" href="#io-M4_I">M4_I</a><a class="pin drive" href="#io-VF1_I">VF1_I</a><a class="pin drive" href="#io-VF1_FREQ">VF1_FREQ</a><a class="pin sense" href="#io-FTT1_T">FTT1_T</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node bin">料斗2</span><div class="right"><a class="pin sense" href="#io-LL2">LL2</a></div></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗3<small>满位→停 M4（预烘干出料）</small></span><div class="right"><a class="pin sense" href="#io-LL3">LL3</a></div></div>
 <div class="link"></div>
 <div class="stage"><div class="left"><div class="boiler-box"><span class="node boiler">锅炉1<small>供热</small></span><div class="bpins"><a class="pin drive" href="#io-M15_I">M15_I</a><a class="pin sense" href="#io-LL5">LL5</a><a class="pin sense" href="#io-TT1_T">TT1_T</a></div></div></div><span class="node host">一级烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM2_I">VFM2_I</a><a class="pin drive" href="#io-VFM2_FREQ">VFM2_FREQ</a><a class="pin drive" href="#io-M5_I">M5_I</a><a class="pin drive" href="#io-M6_I">M6_I</a><a class="pin drive" href="#io-VF2_I">VF2_I</a><a class="pin drive" href="#io-VF2_FREQ">VF2_FREQ</a><a class="pin sense" href="#io-FTT2_T">FTT2_T</a></div></div>
 <div class="link"></div>
 <div class="stage"><div class="left"></div><span class="node bin">发酵仓</span><div class="right"><a class="pin drive" href="#io-M7_I">M7_I</a><a class="pin drive" href="#io-M8_I">M8_I</a><a class="pin drive" href="#io-M9_I">M9_I</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node bin">料斗3</span><div class="right"><a class="pin sense" href="#io-LL3">LL3</a></div></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗5<small>满位→停 M9（发酵出料）</small></span><div class="right"><a class="pin sense" href="#io-LL4">LL4</a></div></div>
 <div class="link"></div>
 <div class="stage"><div class="left"><div class="boiler-box"><span class="node boiler">锅炉2<small>供热</small></span><div class="bpins"><a class="pin drive" href="#io-M16_I">M16_I</a><a class="pin sense" href="#io-LL6">LL6</a><a class="pin sense" href="#io-TT2_T">TT2_T</a></div></div></div><span class="node host">二级烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM3_I">VFM3_I</a><a class="pin drive" href="#io-VFM3_FREQ">VFM3_FREQ</a><a class="pin drive" href="#io-M10_I">M10_I</a><a class="pin drive" href="#io-M11_I">M11_I</a><a class="pin drive" href="#io-VF3_I">VF3_I</a><a class="pin drive" href="#io-VF3_FREQ">VF3_FREQ</a><a class="pin sense" href="#io-FTT3_T">FTT3_T</a></div></div>
-<div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node bin">料斗5</span><div class="right"><a class="pin sense" href="#io-LL4">LL4</a></div></div>
 <div class="link"></div>
 <div class="stage"><div class="left"></div><span class="node screen">滚筛</span><div class="right"><a class="pin drive" href="#io-M12_I">M12_I</a><a class="pin drive" href="#io-M13_I">M13_I</a></div></div>
 <div class="link"></div>
