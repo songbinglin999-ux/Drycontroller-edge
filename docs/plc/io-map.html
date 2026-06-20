@@ -24,8 +24,8 @@
   .stage .right{flex:1;display:flex;flex-wrap:wrap;gap:4px}
   .node{flex:0 0 auto;min-width:118px;color:#fff;text-align:center;padding:9px 8px;border-radius:8px;font-weight:600;font-size:13px;line-height:1.25}
   .node small{display:block;font-weight:400;font-size:10px;opacity:.82;margin-top:1px}
-  .node.feed{background:#4a5568} .node.bin{background:#37577a} .node.host{background:#34343a}
-  .node.screen{background:#3d6457} .node.out{background:#4a3a64}
+  .node.pool{background:#5b6e4a} .node.conveyor{background:#6b7785} .node.bin{background:#37577a}
+  .node.host{background:#34343a} .node.screen{background:#3d6457} .node.out{background:#4a3a64}
   .node.boiler{background:#7c2b2b;min-width:0;font-size:12px;padding:7px 9px}
   .link{display:flex;justify-content:center} .link::before{content:"↓";color:#9aa1a8;font-size:17px;line-height:1.4}
   .boiler-box{display:flex;align-items:center;gap:6px} .boiler-box::after{content:"→";color:#9aa1a8;font-weight:700}
@@ -59,31 +59,55 @@
 <div class="layout">
   <aside class="flow-pane">
     <h2>工艺流程图</h2>
-    <p class="note">进料 → 预烘干 → 一级烘干 → 发酵仓 → 二级烘干 → 滚筛 → 出料；锅炉1/2 侧挂供热。
-    <b style="color:#5a3210">棕色</b>=电气（电流/频率），<b style="color:#123a5e">蓝色</b>=检测（温度/湿度/料位限位）。点 pin 跳点表。</p>
-    <div class="legend"><span style="background:#4a5568">进料</span><span style="background:#37577a">料斗/缓冲</span><span style="background:#34343a">烘干主机</span><span style="background:#7c2b2b">锅炉</span><span style="background:#3d6457">滚筛</span><span style="background:#4a3a64">出料</span></div>
+    <p class="note">料池 → 绞龙/料斗 → 预/一级/二级烘干（中夹发酵仓）→ 滚筛 → 出料；锅炉1/2 侧挂供热。
+    绞龙与出料电机都是传送装置（独立节点）。<b style="color:#5a3210">棕色 pin</b>=电气（电流/频率），<b style="color:#123a5e">蓝色 pin</b>=检测（温度/湿度/料位限位）。点 pin 跳点表。</p>
+    <div class="legend"><span style="background:#5b6e4a">料池</span><span style="background:#6b7785">绞龙/传送</span><span style="background:#37577a">料斗</span><span style="background:#34343a">烘干主机</span><span style="background:#7c2b2b">锅炉</span><span style="background:#3d6457">滚筛</span><span style="background:#4a3a64">出料</span></div>
     <div class="flow">
-    <div class="stage"><div class="left"></div><span class="node feed">进料绞龙</span><div class="right"><a class="pin drive" href="#io-M1_I">M1_I</a><a class="pin drive" href="#io-M2_I">M2_I</a></div></div>
+    <div class="stage"><div class="left"></div><span class="node pool">料池<small>原料</small></span><div class="right"></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">绞龙1<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M1_I">M1_I</a></div></div>
 <div class="link"></div>
 <div class="stage"><div class="left"></div><span class="node bin">料斗1<small>满位→停 M1（绞龙1）</small></span><div class="right"><a class="pin sense" href="#io-LL1">LL1</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node bin">料斗2<small>满位→停 M3（预烘干主机）</small></span><div class="right"><a class="pin sense" href="#io-LL2">LL2</a></div></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">绞龙2<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M2_I">M2_I</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node host">预烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM1_I">VFM1_I</a><a class="pin drive" href="#io-VFM1_FREQ">VFM1_FREQ</a><a class="pin drive" href="#io-M3_I">M3_I</a><a class="pin drive" href="#io-M4_I">M4_I</a><a class="pin drive" href="#io-VF1_I">VF1_I</a><a class="pin drive" href="#io-VF1_FREQ">VF1_FREQ</a><a class="pin sense" href="#io-FTT1_T">FTT1_T</a></div></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗2<small>满位→停 M2（绞龙2）</small></span><div class="right"><a class="pin sense" href="#io-LL2">LL2</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">绞龙3 / 上料变频<small>变频上料 预烘干</small></span><div class="right"><a class="pin drive" href="#io-VFM1_I">VFM1_I</a><a class="pin drive" href="#io-VFM1_FREQ">VFM1_FREQ</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node host">预烘干主机<small>主机+排湿风机+蒸汽温度</small></span><div class="right"><a class="pin drive" href="#io-M3_I">M3_I</a><a class="pin drive" href="#io-VF1_I">VF1_I</a><a class="pin drive" href="#io-VF1_FREQ">VF1_FREQ</a><a class="pin sense" href="#io-FTT1_T">FTT1_T</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">预烘干出料<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M4_I">M4_I</a></div></div>
 <div class="link"></div>
 <div class="stage"><div class="left"></div><span class="node bin">料斗3<small>满位→停 M4（预烘干出料）</small></span><div class="right"><a class="pin sense" href="#io-LL3">LL3</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"><div class="boiler-box"><span class="node boiler">锅炉1<small>供热</small></span><div class="bpins"><a class="pin drive" href="#io-M15_I">M15_I</a><a class="pin sense" href="#io-LL5">LL5</a><a class="pin sense" href="#io-TT1_T">TT1_T</a></div></div></div><span class="node host">一级烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM2_I">VFM2_I</a><a class="pin drive" href="#io-VFM2_FREQ">VFM2_FREQ</a><a class="pin drive" href="#io-M5_I">M5_I</a><a class="pin drive" href="#io-M6_I">M6_I</a><a class="pin drive" href="#io-VF2_I">VF2_I</a><a class="pin drive" href="#io-VF2_FREQ">VF2_FREQ</a><a class="pin sense" href="#io-FTT2_T">FTT2_T</a></div></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">上料变频<small>变频上料 一级</small></span><div class="right"><a class="pin drive" href="#io-VFM2_I">VFM2_I</a><a class="pin drive" href="#io-VFM2_FREQ">VFM2_FREQ</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node bin">发酵仓</span><div class="right"><a class="pin drive" href="#io-M7_I">M7_I</a><a class="pin drive" href="#io-M8_I">M8_I</a><a class="pin drive" href="#io-M9_I">M9_I</a></div></div>
+<div class="stage"><div class="left"><div class="boiler-box"><span class="node boiler">锅炉1<small>供热</small></span><div class="bpins"><a class="pin drive" href="#io-M15_I">M15_I</a><a class="pin sense" href="#io-LL5">LL5</a><a class="pin sense" href="#io-TT1_T">TT1_T</a></div></div></div><span class="node host">一级烘干主机<small>主机+排湿风机+蒸汽温度</small></span><div class="right"><a class="pin drive" href="#io-M5_I">M5_I</a><a class="pin drive" href="#io-VF2_I">VF2_I</a><a class="pin drive" href="#io-VF2_FREQ">VF2_FREQ</a><a class="pin sense" href="#io-FTT2_T">FTT2_T</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">一级出料<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M6_I">M6_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">发酵进料<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M7_I">M7_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node host">发酵主机</span><div class="right"><a class="pin drive" href="#io-M8_I">M8_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">发酵出料<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M9_I">M9_I</a></div></div>
 <div class="link"></div>
 <div class="stage"><div class="left"></div><span class="node bin">料斗5<small>满位→停 M9（发酵出料）</small></span><div class="right"><a class="pin sense" href="#io-LL4">LL4</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"><div class="boiler-box"><span class="node boiler">锅炉2<small>供热</small></span><div class="bpins"><a class="pin drive" href="#io-M16_I">M16_I</a><a class="pin sense" href="#io-LL6">LL6</a><a class="pin sense" href="#io-TT2_T">TT2_T</a></div></div></div><span class="node host">二级烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM3_I">VFM3_I</a><a class="pin drive" href="#io-VFM3_FREQ">VFM3_FREQ</a><a class="pin drive" href="#io-M10_I">M10_I</a><a class="pin drive" href="#io-M11_I">M11_I</a><a class="pin drive" href="#io-VF3_I">VF3_I</a><a class="pin drive" href="#io-VF3_FREQ">VF3_FREQ</a><a class="pin sense" href="#io-FTT3_T">FTT3_T</a></div></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">上料变频 <small>变频上料 二级</small></span><div class="right"><a class="pin drive" href="#io-VFM3_I">VFM3_I</a><a class="pin drive" href="#io-VFM3_FREQ">VFM3_FREQ</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node screen">滚筛</span><div class="right"><a class="pin drive" href="#io-M12_I">M12_I</a><a class="pin drive" href="#io-M13_I">M13_I</a></div></div>
+<div class="stage"><div class="left"><div class="boiler-box"><span class="node boiler">锅炉2<small>供热</small></span><div class="bpins"><a class="pin drive" href="#io-M16_I">M16_I</a><a class="pin sense" href="#io-LL6">LL6</a><a class="pin sense" href="#io-TT2_T">TT2_T</a></div></div></div><span class="node host">二级烘干主机<small>主机+排湿风机+蒸汽温度</small></span><div class="right"><a class="pin drive" href="#io-M10_I">M10_I</a><a class="pin drive" href="#io-VF3_I">VF3_I</a><a class="pin drive" href="#io-VF3_FREQ">VF3_FREQ</a><a class="pin sense" href="#io-FTT3_T">FTT3_T</a></div></div>
 <div class="link"></div>
-<div class="stage"><div class="left"></div><span class="node out">出料</span><div class="right"><a class="pin drive" href="#io-M14_I">M14_I</a><a class="pin sense" href="#io-MT1_H">MT1_H</a></div></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">二级出料<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M11_I">M11_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">滚筛进料<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M12_I">M12_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node screen">滚筛</span><div class="right"><a class="pin drive" href="#io-M13_I">M13_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node conveyor">最终出料<small>传送</small></span><div class="right"><a class="pin drive" href="#io-M14_I">M14_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node out">出料口<small>湿度检测</small></span><div class="right"><a class="pin sense" href="#io-MT1_H">MT1_H</a></div></div>
     </div>
   </aside>
   <main class="table-pane">
