@@ -1,280 +1,52 @@
-# PLC I/O tag skeleton. Canonical tag names come from docs/plc/io-map.html.
-# Address, scale, and byte order are externalized to configs/modbus-address-map.yaml.
+# 全栈位号契约：canonical = 系统唯一编号 + 量纲后缀（_I 电流 / _FREQ 频率 / _T 温度 / _H 湿度）。
+# 2026-06-20 对账自集成商真实点表（D 元件）；系统编号对照见 ../../plc-tag-mapping/。
+# 34 个只读采集点；地址/scale/字序/类型外置在 modbus-address-map.yaml。控制软点单列、且按只读决策锁停。
 naming:
-  format: "{IO_MAP_TAG}"
+  format: "{SYSTEM_ID}_{KIND}"
   allowed_pattern: "^[A-Z0-9_]+$"
   notes:
-    - "Use io-map V2 tag names directly as the full-stack canonical IDs."
-    - "I-M* names from io-map are normalized to I_M* for identifier safety."
-    - "All 52 I/O points are read-only from edge; control soft points are separate."
-
+    - "量纲后缀解决了设备号撞车：同一设备的电流与频率（如 VFM1_I / VFM1_FREQ）不再共用一个名。"
+    - "type=int 为无符号 16-bit 单字；type=int32 为带符号双字（湿度，低字在前）。"
 tags:
-  detection:
-    DI:
-      - name: LL1
-        signal_type: DI
-        type: bool
-        unit: ""
-        description: "料斗2料位（单点）"
-      - name: LL2
-        signal_type: DI
-        type: bool
-        unit: ""
-        description: "料斗3料位（单点）"
-      - name: LL3
-        signal_type: DI
-        type: bool
-        unit: ""
-        description: "料斗4料位（单点）"
-      - name: LL4
-        signal_type: DI
-        type: bool
-        unit: ""
-        description: "料斗5料位（单点）"
-      - name: LL5
-        signal_type: DI
-        type: bool
-        unit: ""
-        description: "锅炉1燃料料位"
-      - name: LL6
-        signal_type: DI
-        type: bool
-        unit: ""
-        description: "锅炉2燃料料位"
-    AI:
-      - name: FTT1
-        signal_type: AI
-        type: float
-        unit: "℃"
-        description: "主机1风温"
-      - name: FTT2
-        signal_type: AI
-        type: float
-        unit: "℃"
-        description: "主机2风温"
-      - name: FTT3
-        signal_type: AI
-        type: float
-        unit: "℃"
-        description: "主机4风温"
-      - name: T_OUT2
-        signal_type: AI
-        type: float
-        unit: "℃"
-        description: "主机2出料口温度（蒸汽/排湿状态算法输入）"
-      - name: T_OUT4
-        signal_type: AI
-        type: float
-        unit: "℃"
-        description: "主机4出料口温度（末段蒸汽/排湿状态算法输入）"
-      - name: TT1
-        signal_type: AI
-        type: float
-        unit: "℃"
-        description: "锅炉1温度"
-      - name: TT2
-        signal_type: AI
-        type: float
-        unit: "℃"
-        description: "锅炉2温度"
-      - name: MT1
-        signal_type: AI
-        type: float
-        unit: "%"
-        description: "末端湿度"
-      - name: I_M1
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M1 电流"
-      - name: I_M2
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M2 电流"
-      - name: I_M3
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "主机1 电流"
-      - name: I_M4
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M4 电流"
-      - name: I_M5
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "主机2 电流"
-      - name: I_M6
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M6 电流"
-      - name: I_M7
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M7 电流（发酵仓进料带，与M6串联）"
-      - name: I_M8
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "发酵仓 电流"
-      - name: I_M9
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M9 电流"
-      - name: I_M10
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "主机4 电流"
-      - name: I_M11
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M11 电流"
-      - name: I_M12
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M12 电流"
-      - name: I_M13
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "滚筛 电流"
-      - name: I_M14
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M14 电流"
-      - name: I_M15
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M15 电流"
-      - name: I_M16
-        signal_type: AI
-        type: float
-        unit: "A"
-        description: "M16 电流"
-  drive_feedback:
-    DO:
-      - name: M1
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "料斗1→料斗2 输送电机运行状态"
-      - name: M2
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "料斗2→料斗3 输送电机运行状态"
-      - name: M3
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "主机1 主电机运行状态"
-      - name: M4
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "主机1→料斗4 输送电机运行状态"
-      - name: M5
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "主机2 主电机运行状态"
-      - name: M6
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "主机2→发酵仓 输送电机运行状态"
-      - name: M7
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "发酵仓 进料传送带运行状态（与M6串联）"
-      - name: M8
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "发酵仓 主电机运行状态"
-      - name: M9
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "发酵仓→料斗5 输送电机运行状态"
-      - name: M10
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "主机4 主电机运行状态"
-      - name: M11
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "主机4→料斗6 出料电机运行状态"
-      - name: M12
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "料斗6→滚筛 输送电机运行状态"
-      - name: M13
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "滚筛 电机运行状态"
-      - name: M14
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "料斗7→出料 输送电机运行状态"
-      - name: M15
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "锅炉1 上料电机运行状态"
-      - name: M16
-        signal_type: DO
-        type: bool
-        unit: ""
-        description: "锅炉2 上料电机运行状态"
-    AO:
-      - name: VFM1
-        signal_type: AO
-        type: float
-        unit: "%/Hz"
-        description: "料斗3→主机1 变频给料反馈"
-      - name: VFM2
-        signal_type: AO
-        type: float
-        unit: "%/Hz"
-        description: "料斗4→主机2 变频给料反馈"
-      - name: VFM3
-        signal_type: AO
-        type: float
-        unit: "%/Hz"
-        description: "料斗5→主机4 变频给料反馈"
-      - name: VF1
-        signal_type: AO
-        type: float
-        unit: "%/Hz"
-        description: "主机1 变频风机反馈"
-      - name: VF2
-        signal_type: AO
-        type: float
-        unit: "%/Hz"
-        description: "主机2 变频风机反馈"
-      - name: VF3
-        signal_type: AO
-        type: float
-        unit: "%/Hz"
-        description: "主机4 变频风机反馈"
+  process:
+    current:
+      - {name: M1_I, signal_type: AI, type: int, unit: "A", description: "绞龙1电机电流（D0）"}
+      - {name: M2_I, signal_type: AI, type: int, unit: "A", description: "绞龙2电机电流（D1）"}
+      - {name: VFM1_I, signal_type: AI, type: int, unit: "A", description: "预发酵进料电机电流（D2）"}
+      - {name: M4_I, signal_type: AI, type: int, unit: "A", description: "预发酵出料电机电流（D3）"}
+      - {name: M3_I, signal_type: AI, type: int, unit: "A", description: "预发酵主电机电流（D4）"}
+      - {name: VFM2_I, signal_type: AI, type: int, unit: "A", description: "一级烘干进料电机电流（D5）"}
+      - {name: M6_I, signal_type: AI, type: int, unit: "A", description: "一级烘干出料电机电流（D6）"}
+      - {name: M5_I, signal_type: AI, type: int, unit: "A", description: "一级烘干主电机电流（D7）"}
+      - {name: M7_I, signal_type: AI, type: int, unit: "A", description: "发酵进料电机电流（D8）"}
+      - {name: M8_I, signal_type: AI, type: int, unit: "A", description: "发酵电机电流（D9）"}
+      - {name: M9_I, signal_type: AI, type: int, unit: "A", description: "发酵出料电机电流（D10）"}
+      - {name: VFM3_I, signal_type: AI, type: int, unit: "A", description: "二级烘干进料电机电流（D11）"}
+      - {name: M11_I, signal_type: AI, type: int, unit: "A", description: "二级烘干出料电机电流（D12）"}
+      - {name: M10_I, signal_type: AI, type: int, unit: "A", description: "二级烘干主电机电流（D13）"}
+      - {name: M12_I, signal_type: AI, type: int, unit: "A", description: "滚筛进料电机电流（D14）"}
+      - {name: M13_I, signal_type: AI, type: int, unit: "A", description: "滚筛出料电机电流（D15）"}
+      - {name: M14_I, signal_type: AI, type: int, unit: "A", description: "最终出料电机电流（D16）"}
+      - {name: VF1_I, signal_type: AI, type: int, unit: "A", description: "1级风机电机电流（D17）"}
+      - {name: VF2_I, signal_type: AI, type: int, unit: "A", description: "2级风机电机电流（D18）"}
+      - {name: VF3_I, signal_type: AI, type: int, unit: "A", description: "3级风机电机电流（D19）"}
+      - {name: M15_I, signal_type: AI, type: int, unit: "A", description: "1级烘干上料电机电流（D20）"}
+      - {name: M16_I, signal_type: AI, type: int, unit: "A", description: "2级烘干上料电机电流（D21）"}
+    frequency:
+      - {name: VFM1_FREQ, signal_type: AI, type: int, unit: "Hz", description: "预发酵进料电机运行频率（D30）"}
+      - {name: VFM2_FREQ, signal_type: AI, type: int, unit: "Hz", description: "第一级烘干进料电机运行频率（D31）"}
+      - {name: VFM3_FREQ, signal_type: AI, type: int, unit: "Hz", description: "第二级烘干进料电机运行频率（D32）"}
+      - {name: VF1_FREQ, signal_type: AI, type: int, unit: "Hz", description: "1号风机运行频率（D33）"}
+      - {name: VF2_FREQ, signal_type: AI, type: int, unit: "Hz", description: "2号风机运行频率（D34）"}
+      - {name: VF3_FREQ, signal_type: AI, type: int, unit: "Hz", description: "3号风机运行频率（D35）"}
+    temperature:
+      - {name: FTT1_T, signal_type: AI, type: int, unit: "℃", description: "1号风机检测温度（D40）"}
+      - {name: FTT2_T, signal_type: AI, type: int, unit: "℃", description: "2号风机检测温度（D41）"}
+      - {name: FTT3_T, signal_type: AI, type: int, unit: "℃", description: "3号风机检测温度（D42）"}
+      - {name: TT1_T, signal_type: AI, type: int, unit: "℃", description: "一级烘干温度（D43）"}
+      - {name: TT2_T, signal_type: AI, type: int, unit: "℃", description: "二级烘干温度（D44）"}
+    humidity:
+      - {name: MT1_H, signal_type: AI, type: int32, unit: "%", description: "实时湿度（D45）"}
 
 mqtt:
   base_topic: "realtime"

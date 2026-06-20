@@ -1,82 +1,52 @@
-# PLC Modbus address skeleton. Most values are intentionally TBD until the PLC
-# integrator confirms register addresses, scaling, and byte order.
+# PLC Modbus 地址表。读点已按 2026-06-20 集成商真实点表 + 系统唯一编号对账回填真实地址。
 #
-# Three kinds of entries:
-#   - 52 read points below (function_code 3, read-only feedback / process I/O).
-#   - V0 diagnostic heartbeats: read PLC_HEARTBEAT and write EDGE_HOST_ALIVE.
-#   - 6 control write soft points at the bottom (writable: true, function_code 6).
-# edge-daq's control write path resolves register address/scale/byte_order from
-# the writable entries here; read points are consumed by the acquisition path.
-# Soft point range/unit mirror edge-api ALLOWED_CONTROL_SOFTPOINTS as an
-# independent edge-daq range guard (defense in depth, see P0-CTRL-NAK).
+# 通讯：Modbus RTU-over-TCP（RTU 帧 + TCP，端口 2022，站号 1），非标准 Modbus TCP/502（MODBUS_FRAMER=rtu）。
+# 读点：D 元件，Modbus 地址 = 40000 + D 序号（D0=40000）。量程/格式：
+#   电流/温度 = 无符号 16-bit，原始×10（scale 0.1）；频率 = 无符号 16-bit，1:1；
+#   湿度 = 带符号 int32（占 40045-40046），低字在前（byte_order little），scale 仍 TBD。
+# 仍需现场最终核对：地址基准（D0=原始 40000 还是 4x 参考号、差 40001）、int32 字序。
+# 位元件（料位 X / 报警 M300-M323 / 电机状态 Y）是 0x01/0x02 线圈，edge 读路径暂不支持，本期不采。
+# type/unit 以 tags.yaml 为准；本表只提供 address/function_code/scale/byte_order（read 合并用）。
 #
-# IMPORTANT: EDGE_HOST_ALIVE is a communication/diagnostic heartbeat, not a
-# control soft point and not EDGE_CONTROL_HEALTHY. It must not grant PLC control
-# authority.
-#
-# 2026-06-20 集成商真实点表（开关量点位表.csv / 数据点位表.csv）确认的约定：
-#   - 通讯：Modbus RTU-over-TCP（RTU 帧 + TCP，端口 2022，站号 1），非标准 Modbus TCP/502。
-#   - 真实读点是 D 元件，Modbus 地址 = 40000 + D 序号（D0=40000）：电流 D0-D21、
-#     频率反馈 D30-D35、温度 D40-D44、湿度 D45。
-#   - 量程/格式：电流/温度 = 无符号 16-bit，原始×10（scale 0.1）；频率 = 无符号 16-bit，1:1；
-#     湿度 D45 = 带符号 int32（占 40045-40046 两寄存器），字序=低字在前（byte_order little，
-#     集成商确认）；scale 仍 TBD。
-#   - 注意：下面的骨架位号（FTT1 / I_M* / LL* 等）尚未与集成商 D 元件命名对账，地址仍 TBD；
-#     地址基准（D0 = 原始 40000 还是 4x 参考号）需现场确认。详见根目录 architecture-audit。
-#   - 位元件（料位 X / 报警 M300-M323 / 电机状态 Y）是 0x01/0x02 线圈，edge 读路径暂不支持，本期不采。
-#   - 联调用占位点表见 configs/tags.sim.yaml + configs/modbus-address-map.sim.yaml（SIMULATOR ONLY）。
-LL1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-LL2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-LL3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-LL4: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-LL5: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-LL6: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-FTT1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-FTT2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-FTT3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-T_OUT2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-T_OUT4: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-TT1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-TT2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-MT1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M4: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M5: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M6: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M7: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M8: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M9: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M10: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M11: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M12: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M13: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M14: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M15: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-I_M16: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M4: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M5: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M6: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M7: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M8: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M9: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M10: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M11: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M12: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M13: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M14: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M15: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-M16: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-VFM1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-VFM2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-VFM3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-VF1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-VF2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
-VF3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
+# --- 读点（34，canonical = 系统编号_量纲）---
+# 电流 D0-D21（无符号16-bit ×0.1 A）
+M1_I: {address: 40000, function_code: 3, scale: 0.1, byte_order: big}
+M2_I: {address: 40001, function_code: 3, scale: 0.1, byte_order: big}
+VFM1_I: {address: 40002, function_code: 3, scale: 0.1, byte_order: big}
+M4_I: {address: 40003, function_code: 3, scale: 0.1, byte_order: big}
+M3_I: {address: 40004, function_code: 3, scale: 0.1, byte_order: big}
+VFM2_I: {address: 40005, function_code: 3, scale: 0.1, byte_order: big}
+M6_I: {address: 40006, function_code: 3, scale: 0.1, byte_order: big}
+M5_I: {address: 40007, function_code: 3, scale: 0.1, byte_order: big}
+M7_I: {address: 40008, function_code: 3, scale: 0.1, byte_order: big}
+M8_I: {address: 40009, function_code: 3, scale: 0.1, byte_order: big}
+M9_I: {address: 40010, function_code: 3, scale: 0.1, byte_order: big}
+VFM3_I: {address: 40011, function_code: 3, scale: 0.1, byte_order: big}
+M11_I: {address: 40012, function_code: 3, scale: 0.1, byte_order: big}
+M10_I: {address: 40013, function_code: 3, scale: 0.1, byte_order: big}
+M12_I: {address: 40014, function_code: 3, scale: 0.1, byte_order: big}
+M13_I: {address: 40015, function_code: 3, scale: 0.1, byte_order: big}
+M14_I: {address: 40016, function_code: 3, scale: 0.1, byte_order: big}
+VF1_I: {address: 40017, function_code: 3, scale: 0.1, byte_order: big}
+VF2_I: {address: 40018, function_code: 3, scale: 0.1, byte_order: big}
+VF3_I: {address: 40019, function_code: 3, scale: 0.1, byte_order: big}
+M15_I: {address: 40020, function_code: 3, scale: 0.1, byte_order: big}
+M16_I: {address: 40021, function_code: 3, scale: 0.1, byte_order: big}
+# 频率反馈 D30-D35（无符号16-bit 1:1 Hz）
+VFM1_FREQ: {address: 40030, function_code: 3, scale: 1.0, byte_order: big}
+VFM2_FREQ: {address: 40031, function_code: 3, scale: 1.0, byte_order: big}
+VFM3_FREQ: {address: 40032, function_code: 3, scale: 1.0, byte_order: big}
+VF1_FREQ: {address: 40033, function_code: 3, scale: 1.0, byte_order: big}
+VF2_FREQ: {address: 40034, function_code: 3, scale: 1.0, byte_order: big}
+VF3_FREQ: {address: 40035, function_code: 3, scale: 1.0, byte_order: big}
+# 温度 D40-D44（无符号16-bit ×0.1 ℃）
+FTT1_T: {address: 40040, function_code: 3, scale: 0.1, byte_order: big}
+FTT2_T: {address: 40041, function_code: 3, scale: 0.1, byte_order: big}
+FTT3_T: {address: 40042, function_code: 3, scale: 0.1, byte_order: big}
+TT1_T: {address: 40043, function_code: 3, scale: 0.1, byte_order: big}
+TT2_T: {address: 40044, function_code: 3, scale: 0.1, byte_order: big}
+# 湿度 D45（int32 低字在前，scale TBD）
+MT1_H: {address: 40045, function_code: 3, scale: TBD, byte_order: little}
 
 # --- V0 diagnostic heartbeat points ---
 # PLC_HEARTBEAT is read from PLC to prove PLC-side communication freshness.
@@ -86,10 +56,9 @@ PLC_HEARTBEAT: {address: TBD, function_code: 3, scale: 1, byte_order: big, type:
 EDGE_HOST_ALIVE: {address: TBD, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
 
 # --- V1 control write soft points (6 frequency setpoints) ---
-# WRITE targets, distinct from the read-only VFM*/VF* feedback points above.
-# PLC-side V1 SP registers are D30-D35, exposed over Modbus TCP as 4x40030-4x40035.
-# scale stays TBD until PLC signs off the engineering-unit conversion; until then
-# edge-daq fail-closes every write (NAK address_not_configured).
+# 控制写入按 2026-06-20「上位机降级全只读」决策锁停（见根目录 architecture-audit），本期不启用。
+# 冲突待重审：下列 SP 占用 4x40030-40035，与上方读点 *_FREQ（D30-D35 频率反馈）是同一寄存器；
+# 真实点表中 D30-D35 为「变频器频率输出（读）」，原“D30-D35=写 SP”假设需与集成商重新确认。
 VFM1_FREQ_SP: {address: 40030, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
 VFM2_FREQ_SP: {address: 40031, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
 VFM3_FREQ_SP: {address: 40032, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
