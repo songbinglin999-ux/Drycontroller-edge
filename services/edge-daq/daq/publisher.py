@@ -707,7 +707,7 @@ class DataPublisher:
 
         point = Point(self.measurement) \
             .tag("tag", tag_name) \
-            .field("value", value) \
+            .field("value", float(value)) \
             .field("unit", unit) \
             .time(int(ts_ns))  # 直接使用纳秒时间戳（幂等）
 
@@ -791,7 +791,7 @@ class DataPublisher:
                     ts_ns = int(ts_sec * 1_000_000_000)
                 point = Point(self.measurement) \
                     .tag("tag", item["tag"]) \
-                    .field("value", item["value"]) \
+                    .field("value", float(item["value"])) \
                     .field("unit", item["unit"]) \
                     .time(int(ts_ns))
                 self.write_api.write(

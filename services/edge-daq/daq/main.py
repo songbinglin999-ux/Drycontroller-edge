@@ -68,6 +68,48 @@ def _resolved_register_address(value) -> int | None:
         return None
 
 
+def _iter_tag_dicts(node):
+    """递归产出 tags 配置里的标签 dict。"""
+    if isinstance(node, dict):
+        if isinstance(node.get("name"), str):
+            yield node
+        for value in node.values():
+            yield from _iter_tag_dicts(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_tag_dicts(item)
+
+
+def _merge_read_addresses(tags_config: dict, address_map: dict) -> int:
+    """把 address-map 中可解析的寄存器地址按位号合并进读取标签。
+
+    真实 Modbus 读路径只认 tag['address']（plc_reader 不读 modbus_address_map）；
+    地址 SSOT 在 modbus-address-map.yaml，需在此按 name 注入，否则每个点都因
+    address is None 被跳过。仅注入地址可解析为整数的点；scale 仅在为数值时注入
+    （TBD 保持默认 1.0）。writable 条目是控制写软点，不并入读标签。
+    """
+    if not isinstance(tags_config, dict) or not isinstance(address_map, dict):
+        return 0
+    merged = 0
+    for tag in _iter_tag_dicts(tags_config):
+        spec = address_map.get(tag.get("name"))
+        if not isinstance(spec, dict) or spec.get("writable"):
+            continue
+        address = _resolved_register_address(spec.get("address"))
+        if address is None:
+            continue
+        tag["address"] = address
+        if spec.get("function_code") is not None:
+            tag["function_code"] = int(spec["function_code"])
+        if spec.get("byte_order") is not None:
+            tag["byte_order"] = spec["byte_order"]
+        scale = spec.get("scale")
+        if isinstance(scale, (int, float)):
+            tag["scale"] = float(scale)
+        merged += 1
+    return merged
+
+
 def _derive_heartbeat_config(address_map: dict) -> dict:
     """Build V0 heartbeat config from the PLC address SSOT when signed off."""
     if not isinstance(address_map, dict):
@@ -165,6 +207,8 @@ class DAQService:
             logger.warning("modbus_address_map_not_found", path=str(address_map_path))
         if isinstance(self.config, dict):
             self.config["modbus_address_map"] = address_map
+            merged = _merge_read_addresses(self.config.get("tags", {}), address_map)
+            logger.info("read_addresses_merged", count=merged)
             heartbeat_config = _derive_heartbeat_config(address_map)
             if heartbeat_config:
                 self.config["heartbeat"] = heartbeat_config

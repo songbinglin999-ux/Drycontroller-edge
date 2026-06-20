@@ -8,6 +8,7 @@ import os
 import structlog
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
+from pymodbus.transaction import ModbusRtuFramer
 from prometheus_client import Counter, Gauge
 from prometheus_client.registry import REGISTRY
 
@@ -29,10 +30,13 @@ MODBUS_CIRCUIT_OPEN = Counter("modbus_circuit_open_total", "Modbus circuit open 
 class ModbusClient:
     """Modbus TCP 客户端封装，带重试和重连"""
 
-    def __init__(self, host: str, port: int = 502, slave_id: int = 1, connect_timeout: int = 5):
+    def __init__(self, host: str, port: int = 502, slave_id: int = 1, connect_timeout: int = 5, framer=None):
         self.host = host
         self.port = port
         self.slave_id = slave_id
+        # framer：RTU-over-TCP（CRC 帧）vs 标准 Modbus TCP（MBAP）。
+        # 此 PLC 走 RTU-over-TCP，需 MODBUS_FRAMER=rtu；未设置时维持默认 socket framer。
+        self.framer = self._resolve_framer(framer if framer is not None else os.getenv("MODBUS_FRAMER", ""))
         self.client = None
         self.connected = False
         self.connect_timeout = connect_timeout
@@ -45,14 +49,20 @@ class ModbusClient:
         self.cb_cooldown = float(os.getenv("MODBUS_CB_COOLDOWN", "5") or "5")
         self.cb_open_until = 0.0
 
+    @staticmethod
+    def _resolve_framer(name):
+        """env/参数 → framer 类；rtu 系列用 ModbusRtuFramer，其余返回 None（pymodbus 默认 socket framer）。"""
+        if (name or "").strip().lower() in ("rtu", "rtu-over-tcp", "rtutcp"):
+            return ModbusRtuFramer
+        return None
+
     async def connect(self):
         """连接到 Modbus 设备"""
         try:
-            self.client = AsyncModbusTcpClient(
-                host=self.host,
-                port=self.port,
-                timeout=self.connect_timeout,
-            )
+            kwargs = dict(host=self.host, port=self.port, timeout=self.connect_timeout)
+            if self.framer is not None:
+                kwargs["framer"] = self.framer
+            self.client = AsyncModbusTcpClient(**kwargs)
 
             await self.client.connect()
             self.connected = self.client.connected
