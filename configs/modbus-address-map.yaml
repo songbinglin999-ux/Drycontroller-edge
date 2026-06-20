@@ -1,7 +1,7 @@
 # PLC Modbus 地址表。读点已按 2026-06-20 集成商真实点表 + 系统唯一编号对账回填真实地址。
 #
 # 通讯：Modbus RTU-over-TCP（端口 2022，站号 1），非标准 Modbus TCP/502（MODBUS_FRAMER=rtu）。
-# D 字读点：地址 = 40000 + D 序号；电流/温度无符号16位×0.1、频率1:1、湿度 int32 低字在前（little）。
+# D 字读点：地址 = 40000 + D 序号；电流/温度无符号16位×0.1、D30-D35 现场屏人工输入频率设定值 1:1、湿度 int32 低字在前（little）。
 # 料位/限位：X 线圈，function_code 1（0x01 读），地址 = X 偏移 0；bool。
 # 仍需现场最终核对：地址基准（D0=40000 vs 4x、X 线圈 0 vs 参考号）、int32 字序。
 # Y 运行状态 / M 报警仍未对账、本期不采。type/unit 以 tags.yaml 为准。
@@ -30,7 +30,7 @@ VF2_I: {address: 40018, function_code: 3, scale: 0.1, byte_order: big}
 VF3_I: {address: 40019, function_code: 3, scale: 0.1, byte_order: big}
 M15_I: {address: 40020, function_code: 3, scale: 0.1, byte_order: big}
 M16_I: {address: 40021, function_code: 3, scale: 0.1, byte_order: big}
-# 频率反馈 D30-D35（无符号16位 1:1 Hz）
+# 现场控制屏人工输入频率设定值 D30-D35（无符号16位 1:1 Hz；非 VFD 实际反馈）
 VFM1_FREQ: {address: 40030, function_code: 3, scale: 1.0, byte_order: big}
 VFM2_FREQ: {address: 40031, function_code: 3, scale: 1.0, byte_order: big}
 VFM3_FREQ: {address: 40032, function_code: 3, scale: 1.0, byte_order: big}
@@ -62,11 +62,11 @@ EDGE_HOST_ALIVE: {address: TBD, function_code: 6, scale: 1, byte_order: big, wri
 
 # --- V1 control write soft points (6 frequency setpoints) ---
 # 控制写入按 2026-06-20「上位机降级全只读」决策锁停（见根目录 architecture-audit），本期不启用。
-# 冲突待重审：下列 SP 占用 4x40030-40035，与上方读点 *_FREQ（D30-D35 频率反馈）是同一寄存器；
-# 真实点表中 D30-D35 为「变频器频率输出（读）」，原“D30-D35=写 SP”假设需与集成商重新确认。
-VFM1_FREQ_SP: {address: 40030, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
-VFM2_FREQ_SP: {address: 40031, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
-VFM3_FREQ_SP: {address: 40032, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
-VF1_FREQ_SP: {address: 40033, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
-VF2_FREQ_SP: {address: 40034, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
-VF3_FREQ_SP: {address: 40035, function_code: 6, scale: TBD, byte_order: big, writable: true, type: int, range: [0.0, 50.0], unit: Hz}
+# D30-D35 已确认是现场控制屏人工输入频率设定值，只能只读采集本地人工目标；
+# edge/HMI 写入 SP 必须由 PLC 新增独立寄存器和 ACK/NAK/读回状态，禁止复用 D30-D35。
+VFM1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
+VFM2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
+VFM3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
+VF1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
+VF2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
+VF3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
