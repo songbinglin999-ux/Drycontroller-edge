@@ -23,12 +23,7 @@ services:
     - name: "edge-daq"
       url: "http://edge-daq:8080/ready"
       container: "edge-daq"
-    - name: "ai-softsensor"
-      url: "http://ai-softsensor:8080/ready"
-      container: "ai-softsensor"
-    - name: "ai-ctrl-optimizer"
-      url: "http://ai-ctrl-optimizer:8080/ready"
-      container: "ai-ctrl-optimizer"
+    # ai-softsensor / ai-ctrl-optimizer：V0 只读不启用（compose profiles: ["ai"]），故不监控、不自愈；启用 AI（V2/V3）时同步加回
     - name: "license-service"
       url: "http://license-service:8000/ready"
       container: "license-service"

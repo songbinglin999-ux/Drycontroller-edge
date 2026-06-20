@@ -351,6 +351,7 @@ services:
 
   # ==================== AI 软测量服务 ====================
   ai-softsensor:
+    profiles: ["ai"]   # V0 只读不启用 AI 软测量；`--profile ai` 启用（V2/V3）
     build:
       context: .
       dockerfile: services/ai-softsensor/Dockerfile
@@ -391,6 +392,7 @@ services:
 
   # ==================== AI 控制优化服务 ====================
   ai-ctrl-optimizer:
+    profiles: ["ai"]   # V0 只读不启用 控制优化；`--profile ai` 启用（V2/V3）
     build:
       context: .
       dockerfile: services/ai-ctrl-optimizer/Dockerfile
