@@ -1,0 +1,43 @@
+# SIMULATOR ONLY —— 占位地址，对应「数据点位表.csv」D 读点，地址 = 40000 + D 序号。
+# 不是真实 PLC 地址；真机地址 SSOT 仍是 configs/modbus-address-map.yaml（全 TBD）。
+# 必须与 services/edge-daq/modbus_slave_sim.py 的 ALL_D 一一对应。
+# 工程量换算（集成商确认）：电流原始×10→scale 0.1（A）；温度原始×10→scale 0.1（℃）；
+# 频率 1:1→scale 1.0（Hz）。湿度 D45 换算 TBD，暂用 scale 1.0（原始值）。
+# --- 电机电流 D0-D21（scale 0.1 → A）---
+D0: {address: 40000, function_code: 3, scale: 0.1, byte_order: big}
+D1: {address: 40001, function_code: 3, scale: 0.1, byte_order: big}
+D2: {address: 40002, function_code: 3, scale: 0.1, byte_order: big}
+D3: {address: 40003, function_code: 3, scale: 0.1, byte_order: big}
+D4: {address: 40004, function_code: 3, scale: 0.1, byte_order: big}
+D5: {address: 40005, function_code: 3, scale: 0.1, byte_order: big}
+D6: {address: 40006, function_code: 3, scale: 0.1, byte_order: big}
+D7: {address: 40007, function_code: 3, scale: 0.1, byte_order: big}
+D8: {address: 40008, function_code: 3, scale: 0.1, byte_order: big}
+D9: {address: 40009, function_code: 3, scale: 0.1, byte_order: big}
+D10: {address: 40010, function_code: 3, scale: 0.1, byte_order: big}
+D11: {address: 40011, function_code: 3, scale: 0.1, byte_order: big}
+D12: {address: 40012, function_code: 3, scale: 0.1, byte_order: big}
+D13: {address: 40013, function_code: 3, scale: 0.1, byte_order: big}
+D14: {address: 40014, function_code: 3, scale: 0.1, byte_order: big}
+D15: {address: 40015, function_code: 3, scale: 0.1, byte_order: big}
+D16: {address: 40016, function_code: 3, scale: 0.1, byte_order: big}
+D17: {address: 40017, function_code: 3, scale: 0.1, byte_order: big}
+D18: {address: 40018, function_code: 3, scale: 0.1, byte_order: big}
+D19: {address: 40019, function_code: 3, scale: 0.1, byte_order: big}
+D20: {address: 40020, function_code: 3, scale: 0.1, byte_order: big}
+D21: {address: 40021, function_code: 3, scale: 0.1, byte_order: big}
+# --- 变频器频率反馈 D30-D35（scale 1.0 → Hz）---
+D30: {address: 40030, function_code: 3, scale: 1.0, byte_order: big}
+D31: {address: 40031, function_code: 3, scale: 1.0, byte_order: big}
+D32: {address: 40032, function_code: 3, scale: 1.0, byte_order: big}
+D33: {address: 40033, function_code: 3, scale: 1.0, byte_order: big}
+D34: {address: 40034, function_code: 3, scale: 1.0, byte_order: big}
+D35: {address: 40035, function_code: 3, scale: 1.0, byte_order: big}
+# --- 温度 D40-D44（scale 0.1 → ℃）---
+D40: {address: 40040, function_code: 3, scale: 0.1, byte_order: big}
+D41: {address: 40041, function_code: 3, scale: 0.1, byte_order: big}
+D42: {address: 40042, function_code: 3, scale: 0.1, byte_order: big}
+D43: {address: 40043, function_code: 3, scale: 0.1, byte_order: big}
+D44: {address: 40044, function_code: 3, scale: 0.1, byte_order: big}
+# --- 实时湿度 D45（scale TBD，暂 1.0）---
+D45: {address: 40045, function_code: 3, scale: 1.0, byte_order: big}

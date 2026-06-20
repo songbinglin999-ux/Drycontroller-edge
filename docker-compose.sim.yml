@@ -1,0 +1,19 @@
+# SIMULATOR ONLY —— Modbus 从站模拟器联调 override，跑完即弃，不要提交进生产。
+# 用法（模拟器跑在 mac 宿主 0.0.0.0:2022）：
+#   .venv-test/bin/python services/edge-daq/modbus_slave_sim.py &
+#   docker compose -f docker-compose.yml -f docker-compose.sim.yml up -d --build \
+#       postgres influxdb mosquitto edge-api edge-daq
+# 让 edge-daq 走真实 Modbus（USE_SIMULATOR=false）经 host.docker.internal 连宿主模拟器，
+# 用 *.sim.yaml 点表，RTU-over-TCP 帧。
+services:
+  edge-daq:
+    environment:
+      - PLC_HOST=host.docker.internal
+      - PLC_PORT=2022
+      - PLC_SLAVE_ID=1
+      - MODBUS_FRAMER=rtu
+      - USE_SIMULATOR=false
+      - TAGS_CONFIG=/app/configs/tags.sim.yaml
+      - MODBUS_ADDRESS_MAP=/app/configs/modbus-address-map.sim.yaml
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
