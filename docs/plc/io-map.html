@@ -15,16 +15,26 @@
   .note{color:var(--muted);font-size:14px} .warn{color:var(--warn)}
   code{background:#f3f5f8;padding:1px 5px;border-radius:4px;font-size:13px}
   .layout{display:flex;gap:28px;align-items:flex-start;margin-top:18px}
-  .flow-pane{flex:0 0 320px;position:sticky;top:0;align-self:flex-start;max-height:100vh;overflow:auto;padding:8px 6px 24px;border-right:1px solid var(--line)}
+  .flow-pane{flex:0 0 560px;position:sticky;top:0;align-self:flex-start;max-height:100vh;overflow:auto;padding:8px 6px 24px;border-right:1px solid var(--line)}
   .table-pane{flex:1 1 auto;min-width:0}
-  @media (max-width:980px){body{padding:0 18px 70px} .layout{flex-direction:column} .flow-pane{flex:none;position:static;max-height:none;border-right:none;border-bottom:1px solid var(--line)}}
-  .fstage{background:#37577a;color:#fff;border-radius:8px;padding:8px 10px;margin:0}
-  .fstage.side{background:#7c2b2b;margin-top:14px}
-  .fstage .sname{font-weight:700;font-size:14px;display:block;margin-bottom:5px}
-  .schips{display:flex;flex-wrap:wrap;gap:5px}
-  .farrow{text-align:center;color:#9aa1a8;font-size:18px;margin:2px 0}
-  .chip{display:inline-block;background:#123a5e;color:#cfe4f5;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;text-decoration:none}
-  .chip:hover{box-shadow:0 0 0 2px var(--accent)}
+  @media (max-width:1100px){body{padding:0 18px 70px} .layout{flex-direction:column} .flow-pane{flex:none;position:static;max-height:none;border-right:none;border-bottom:1px solid var(--line)}}
+  .flow{display:flex;flex-direction:column;align-items:stretch}
+  .stage{display:flex;align-items:center;gap:10px;justify-content:center}
+  .stage .left{flex:1;display:flex;justify-content:flex-end}
+  .stage .right{flex:1;display:flex;flex-wrap:wrap;gap:4px}
+  .node{flex:0 0 auto;min-width:118px;color:#fff;text-align:center;padding:9px 8px;border-radius:8px;font-weight:600;font-size:13px;line-height:1.25}
+  .node small{display:block;font-weight:400;font-size:10px;opacity:.82;margin-top:1px}
+  .node.feed{background:#4a5568} .node.bin{background:#37577a} .node.host{background:#34343a}
+  .node.screen{background:#3d6457} .node.out{background:#4a3a64}
+  .node.boiler{background:#7c2b2b;min-width:0;font-size:12px;padding:7px 9px}
+  .link{display:flex;justify-content:center} .link::before{content:"↓";color:#9aa1a8;font-size:17px;line-height:1.4}
+  .boiler-box{display:flex;align-items:center;gap:6px} .boiler-box::after{content:"→";color:#9aa1a8;font-weight:700}
+  .boiler-box .bpins{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+  .pin{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;text-decoration:none;white-space:nowrap}
+  .pin.drive{background:#5a3210;color:#f4dcc2} .pin.sense{background:#123a5e;color:#cfe4f5}
+  .pin:hover{box-shadow:0 0 0 2px var(--accent)}
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;font-size:12px}
+  .legend span{padding:2px 8px;border-radius:6px;color:#fff}
   table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
   th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
   th{background:var(--th);font-weight:600;color:#27344a}
@@ -42,19 +52,42 @@
     <b>位号约定</b>：canonical = 系统唯一编号 + 量纲后缀（<code>_I</code> 电流 / <code>_FREQ</code> 频率 / <code>_T</code> 温度 / <code>_H</code> 湿度）；解决设备号电流/频率撞车。<br>
     <b>通讯</b>：Modbus RTU-over-TCP（端口 2022 / 站号 1）；读点地址 = 4x(40000+D序号)。<b>关联</b>：<code>edge configs/tags.yaml</code> / <code>modbus-address-map.yaml</code>。<br>
     <b>安全/控制/报警</b>：<a href="plc-safety-contract.html">安全契约</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">报警规范</a>。<br>
-    <b class="warn">范围</b>：<span class="warn">本期 V0 只读采集下表 40 个 D 字读点；控制写入按只读决策锁停。</span>
+    <b class="warn">范围</b>：<span class="warn">本期 V0 只读采集 40 个读点（34 D 字 + 6 料位/限位线圈）；控制写入按只读决策锁停。</span>
   </div>
 </header>
 
 <div class="layout">
   <aside class="flow-pane">
-    <h2>工艺流</h2>
-    <p class="note">进料 → 三段烘干（中夹发酵仓）→ 滚筛 → 出料。点 chip 跳到点表对应行。</p>
-    <div class="fstage"><span class="sname">进料/绞龙</span><div class="schips"><a class="chip" href="#io-M1_I">M1_I</a><a class="chip" href="#io-M2_I">M2_I</a></div></div><div class="farrow">↓</div><div class="fstage"><span class="sname">预烘干</span><div class="schips"><a class="chip" href="#io-VFM1_I">VFM1_I</a><a class="chip" href="#io-M4_I">M4_I</a><a class="chip" href="#io-M3_I">M3_I</a><a class="chip" href="#io-VF1_I">VF1_I</a><a class="chip" href="#io-VFM1_FREQ">VFM1_FREQ</a><a class="chip" href="#io-VF1_FREQ">VF1_FREQ</a><a class="chip" href="#io-FTT1_T">FTT1_T</a></div></div><div class="farrow">↓</div><div class="fstage"><span class="sname">一级烘干</span><div class="schips"><a class="chip" href="#io-VFM2_I">VFM2_I</a><a class="chip" href="#io-M6_I">M6_I</a><a class="chip" href="#io-M5_I">M5_I</a><a class="chip" href="#io-VF2_I">VF2_I</a><a class="chip" href="#io-VFM2_FREQ">VFM2_FREQ</a><a class="chip" href="#io-VF2_FREQ">VF2_FREQ</a><a class="chip" href="#io-FTT2_T">FTT2_T</a></div></div><div class="farrow">↓</div><div class="fstage"><span class="sname">发酵仓</span><div class="schips"><a class="chip" href="#io-M7_I">M7_I</a><a class="chip" href="#io-M8_I">M8_I</a><a class="chip" href="#io-M9_I">M9_I</a></div></div><div class="farrow">↓</div><div class="fstage"><span class="sname">二级烘干</span><div class="schips"><a class="chip" href="#io-VFM3_I">VFM3_I</a><a class="chip" href="#io-M11_I">M11_I</a><a class="chip" href="#io-M10_I">M10_I</a><a class="chip" href="#io-VF3_I">VF3_I</a><a class="chip" href="#io-VFM3_FREQ">VFM3_FREQ</a><a class="chip" href="#io-VF3_FREQ">VF3_FREQ</a><a class="chip" href="#io-FTT3_T">FTT3_T</a></div></div><div class="farrow">↓</div><div class="fstage"><span class="sname">滚筛</span><div class="schips"><a class="chip" href="#io-M12_I">M12_I</a><a class="chip" href="#io-M13_I">M13_I</a></div></div><div class="farrow">↓</div><div class="fstage"><span class="sname">出料</span><div class="schips"><a class="chip" href="#io-M14_I">M14_I</a><a class="chip" href="#io-MT1_H">MT1_H</a></div></div>
-    <div class="fstage side"><span class="sname">锅炉（侧挂）</span><div class="schips"><a class="chip" href="#io-TT1_T">TT1_T</a><a class="chip" href="#io-TT2_T">TT2_T</a></div></div><div class="fstage side"><span class="sname">上料（侧挂）</span><div class="schips"><a class="chip" href="#io-M15_I">M15_I</a><a class="chip" href="#io-M16_I">M16_I</a></div></div><div class="fstage side"><span class="sname">料位/限位（DI 线圈）</span><div class="schips"><a class="chip" href="#io-LL1">LL1</a><a class="chip" href="#io-LL2">LL2</a><a class="chip" href="#io-LL3">LL3</a><a class="chip" href="#io-LL4">LL4</a><a class="chip" href="#io-LL5">LL5</a><a class="chip" href="#io-LL6">LL6</a></div></div>
+    <h2>工艺流程图</h2>
+    <p class="note">进料 → 预烘干 → 一级烘干 → 发酵仓 → 二级烘干 → 滚筛 → 出料；锅炉1/2 侧挂供热。
+    <b style="color:#5a3210">棕色</b>=电气（电流/频率），<b style="color:#123a5e">蓝色</b>=检测（温度/湿度/料位限位）。点 pin 跳点表。</p>
+    <div class="legend"><span style="background:#4a5568">进料</span><span style="background:#37577a">料斗/缓冲</span><span style="background:#34343a">烘干主机</span><span style="background:#7c2b2b">锅炉</span><span style="background:#3d6457">滚筛</span><span style="background:#4a3a64">出料</span></div>
+    <div class="flow">
+    <div class="stage"><div class="left"></div><span class="node feed">进料绞龙</span><div class="right"><a class="pin drive" href="#io-M1_I">M1_I</a><a class="pin drive" href="#io-M2_I">M2_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗1</span><div class="right"><a class="pin sense" href="#io-LL1">LL1</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node host">预烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM1_I">VFM1_I</a><a class="pin drive" href="#io-VFM1_FREQ">VFM1_FREQ</a><a class="pin drive" href="#io-M3_I">M3_I</a><a class="pin drive" href="#io-M4_I">M4_I</a><a class="pin drive" href="#io-VF1_I">VF1_I</a><a class="pin drive" href="#io-VF1_FREQ">VF1_FREQ</a><a class="pin sense" href="#io-FTT1_T">FTT1_T</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗2</span><div class="right"><a class="pin sense" href="#io-LL2">LL2</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"><div class="boiler-box"><span class="node boiler">锅炉1<small>供热</small></span><div class="bpins"><a class="pin drive" href="#io-M15_I">M15_I</a><a class="pin sense" href="#io-LL5">LL5</a><a class="pin sense" href="#io-TT1_T">TT1_T</a></div></div></div><span class="node host">一级烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM2_I">VFM2_I</a><a class="pin drive" href="#io-VFM2_FREQ">VFM2_FREQ</a><a class="pin drive" href="#io-M5_I">M5_I</a><a class="pin drive" href="#io-M6_I">M6_I</a><a class="pin drive" href="#io-VF2_I">VF2_I</a><a class="pin drive" href="#io-VF2_FREQ">VF2_FREQ</a><a class="pin sense" href="#io-FTT2_T">FTT2_T</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node bin">发酵仓</span><div class="right"><a class="pin drive" href="#io-M7_I">M7_I</a><a class="pin drive" href="#io-M8_I">M8_I</a><a class="pin drive" href="#io-M9_I">M9_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗3</span><div class="right"><a class="pin sense" href="#io-LL3">LL3</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"><div class="boiler-box"><span class="node boiler">锅炉2<small>供热</small></span><div class="bpins"><a class="pin drive" href="#io-M16_I">M16_I</a><a class="pin sense" href="#io-LL6">LL6</a><a class="pin sense" href="#io-TT2_T">TT2_T</a></div></div></div><span class="node host">二级烘干主机</span><div class="right"><a class="pin drive" href="#io-VFM3_I">VFM3_I</a><a class="pin drive" href="#io-VFM3_FREQ">VFM3_FREQ</a><a class="pin drive" href="#io-M10_I">M10_I</a><a class="pin drive" href="#io-M11_I">M11_I</a><a class="pin drive" href="#io-VF3_I">VF3_I</a><a class="pin drive" href="#io-VF3_FREQ">VF3_FREQ</a><a class="pin sense" href="#io-FTT3_T">FTT3_T</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node bin">料斗5</span><div class="right"><a class="pin sense" href="#io-LL4">LL4</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node screen">滚筛</span><div class="right"><a class="pin drive" href="#io-M12_I">M12_I</a><a class="pin drive" href="#io-M13_I">M13_I</a></div></div>
+<div class="link"></div>
+<div class="stage"><div class="left"></div><span class="node out">出料</span><div class="right"><a class="pin drive" href="#io-M14_I">M14_I</a><a class="pin sense" href="#io-MT1_H">MT1_H</a></div></div>
+    </div>
   </aside>
   <main class="table-pane">
-    <h2>D 字读点（40，已对账采集）</h2>
+    <h2>读点（40：34 D 字 + 6 料位/限位线圈，已对账采集）</h2>
     <p class="note">温度语义已按工艺更正（PLC CSV 误标）：<code>TT*_T</code>=锅炉炉口温度、<code>FTT*_T</code>=各段排湿风机处蒸汽温度。电流/温度 ×0.1，频率 1:1，湿度 int32 低字在前。</p>
     <table>
       <thead><tr><th>#</th><th>系统位号</th><th>PLC元件</th><th>Modbus</th><th>类型</th><th>量程</th><th>描述（工艺更正）</th></tr></thead>
