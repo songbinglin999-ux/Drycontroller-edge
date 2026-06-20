@@ -58,9 +58,10 @@ def _value(dnum: int, t: float) -> int:
 
 
 def _int32_words(value: int) -> list[int]:
-    """带符号 32-bit → [高字, 低字]（大端字序，与 plc_reader read_int32 big 一致）。"""
-    hi, lo = struct.unpack(">HH", struct.pack(">i", int(value)))
-    return [hi, lo]
+    """带符号 32-bit → [低字, 高字]（低字在前 / little word order，集成商确认；
+    与 plc_reader read_int32 byte_order=little 一致）。"""
+    lo, hi = struct.unpack("<HH", struct.pack("<i", int(value)))
+    return [lo, hi]
 
 
 def _initial_values() -> dict[int, int]:

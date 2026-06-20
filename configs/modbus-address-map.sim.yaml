@@ -39,5 +39,5 @@ D41: {address: 40041, function_code: 3, scale: 0.1, byte_order: big}
 D42: {address: 40042, function_code: 3, scale: 0.1, byte_order: big}
 D43: {address: 40043, function_code: 3, scale: 0.1, byte_order: big}
 D44: {address: 40044, function_code: 3, scale: 0.1, byte_order: big}
-# --- 实时湿度 D45（scale TBD，暂 1.0）---
-D45: {address: 40045, function_code: 3, scale: 1.0, byte_order: big}
+# --- 实时湿度 D45（int32 低字在前/little；scale TBD，暂 1.0）---
+D45: {address: 40045, function_code: 3, scale: 1.0, byte_order: little}
