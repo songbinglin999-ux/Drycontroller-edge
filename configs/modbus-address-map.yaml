@@ -13,6 +13,17 @@
 # IMPORTANT: EDGE_HOST_ALIVE is a communication/diagnostic heartbeat, not a
 # control soft point and not EDGE_CONTROL_HEALTHY. It must not grant PLC control
 # authority.
+#
+# 2026-06-20 集成商真实点表（开关量点位表.csv / 数据点位表.csv）确认的约定：
+#   - 通讯：Modbus RTU-over-TCP（RTU 帧 + TCP，端口 2022，站号 1），非标准 Modbus TCP/502。
+#   - 真实读点是 D 元件，Modbus 地址 = 40000 + D 序号（D0=40000）：电流 D0-D21、
+#     频率反馈 D30-D35、温度 D40-D44、湿度 D45。
+#   - 量程/格式：电流/温度 = 无符号 16-bit，原始×10（scale 0.1）；频率 = 无符号 16-bit，1:1；
+#     湿度 D45 = 带符号 int32（占 40045-40046 两寄存器），scale 与字序仍 TBD。
+#   - 注意：下面的骨架位号（FTT1 / I_M* / LL* 等）尚未与集成商 D 元件命名对账，地址仍 TBD；
+#     地址基准（D0 = 原始 40000 还是 4x 参考号）需现场确认。详见根目录 architecture-audit。
+#   - 位元件（料位 X / 报警 M300-M323 / 电机状态 Y）是 0x01/0x02 线圈，edge 读路径暂不支持，本期不采。
+#   - 联调用占位点表见 configs/tags.sim.yaml + configs/modbus-address-map.sim.yaml（SIMULATOR ONLY）。
 LL1: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 LL2: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
 LL3: {address: TBD, function_code: 3, scale: TBD, byte_order: big}
