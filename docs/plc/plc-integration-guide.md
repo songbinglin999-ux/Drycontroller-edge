@@ -18,7 +18,7 @@
 ## 2. 网络与基础配置
 
 1. 为 PLC 分配固定 IP（如 `192.168.10.10`）  
-2. 在 `.env` 或 `configs/tags.yaml` 中配置 PLC IP 与端口（默认 502）  
+2. 在 `.env` 或 `configs/tags.yaml` 中配置 PLC IP 与端口（本机为 Modbus RTU-over-TCP，端口 **2022**；`MODBUS_FRAMER=rtu`）  
 3. 确保工控机与 PLC 处于同一网段或通过工业交换机互通  
 4. 使用 `ping` 与 Modbus 调试工具（如 Modbus Poll）验证连通性
 
