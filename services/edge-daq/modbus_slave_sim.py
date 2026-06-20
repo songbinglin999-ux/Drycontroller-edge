@@ -42,6 +42,8 @@ WORD_D = CURRENTS + FREQS + TEMPS
 # 双字（32-bit 带符号 int32）读点：湿度 D45 = 40045+40046（集成商计划用带符号 32 位）。
 HUMIDITY = 45
 ALL_D = WORD_D + [HUMIDITY]
+# 料位/限位线圈（0x01）：X000/X001/X002/X003/X005/X006 → 线圈地址 0/1/2/3/5/6。
+COIL_ADDRS = [0, 1, 2, 3, 5, 6]
 
 
 def _value(dnum: int, t: float) -> int:
@@ -79,6 +81,9 @@ async def _updater(context: ModbusServerContext, slave_id: int, interval: float)
         for n in WORD_D:
             slave.setValues(3, D_BASE + n, [_value(n, t)])
         slave.setValues(3, D_BASE + HUMIDITY, _int32_words(_value(HUMIDITY, t)))
+        # 线圈：各料位/限位按不同周期 0/1 翻转（模拟满/未满到位状态）
+        for i, c in enumerate(COIL_ADDRS):
+            slave.setValues(1, c, [1 if int(t / 4 + i) % 2 == 0 else 0])
         await asyncio.sleep(interval)
 
 
@@ -88,15 +93,16 @@ async def main():
     slave_id = int(os.getenv("MODBUS_SIM_SLAVE", "1"))
     interval = float(os.getenv("MODBUS_SIM_INTERVAL", "1.0"))
 
-    block = ModbusSparseDataBlock(_initial_values())
-    slave_ctx = ModbusSlaveContext(hr=block, zero_mode=True)
+    hr = ModbusSparseDataBlock(_initial_values())
+    co = ModbusSparseDataBlock({c: 0 for c in COIL_ADDRS})
+    slave_ctx = ModbusSlaveContext(co=co, hr=hr, zero_mode=True)
     context = ModbusServerContext(slaves={slave_id: slave_ctx}, single=False)
 
     asyncio.create_task(_updater(context, slave_id, interval))
     print(
         f"[modbus-sim] RTU-over-TCP slave on {host}:{port} slave_id={slave_id} "
         f"D-points={len(ALL_D)} (currents={len(CURRENTS)} freq={len(FREQS)} "
-        f"temp={len(TEMPS)} humidity=1[int32])",
+        f"temp={len(TEMPS)} humidity=1[int32]) coils={len(COIL_ADDRS)}[料位/限位]",
         flush=True,
     )
     await StartAsyncTcpServer(context=context, address=(host, port), framer=ModbusRtuFramer)

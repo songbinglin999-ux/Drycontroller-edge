@@ -1,12 +1,13 @@
-# 全栈位号契约：canonical = 系统唯一编号 + 量纲后缀（_I 电流 / _FREQ 频率 / _T 温度 / _H 湿度）。
-# 2026-06-20 对账自集成商真实点表（D 元件）；系统编号对照见 ../../plc-tag-mapping/。
-# 34 个只读采集点；地址/scale/字序/类型外置在 modbus-address-map.yaml。控制软点单列、且按只读决策锁停。
+# 全栈位号契约：canonical = 系统唯一编号 + 量纲后缀（_I 电流 / _FREQ 频率 / _T 温度 / _H 湿度）；
+# 料位/限位开关用系统编号 LL*（DI bool）。2026-06-20 对账自集成商真实点表，对照见 ../../plc-tag-mapping/。
+# 地址/scale/字序/function_code 外置在 modbus-address-map.yaml。控制软点单列、按只读决策锁停。
 naming:
   format: "{SYSTEM_ID}_{KIND}"
   allowed_pattern: "^[A-Z0-9_]+$"
   notes:
-    - "量纲后缀解决了设备号撞车：同一设备的电流与频率（如 VFM1_I / VFM1_FREQ）不再共用一个名。"
-    - "type=int 为无符号 16-bit 单字；type=int32 为带符号双字（湿度，低字在前）。"
+    - "量纲后缀解决设备号撞车：同设备电流与频率（VFM1_I / VFM1_FREQ）不再同名。"
+    - "type=int 无符号16位单字；int32 带符号双字（湿度，低字在前）；bool 为线圈（料位/限位，0x01 读）。"
+    - "LL* 是满位/到位限位开关，触发=到位→对应上料电机停；非料位计、给不了连续料位与缺料。"
 tags:
   process:
     current:
@@ -47,6 +48,14 @@ tags:
       - {name: TT2_T, signal_type: AI, type: int, unit: "℃", description: "锅炉2炉口温度（D44）"}
     humidity:
       - {name: MT1_H, signal_type: AI, type: int32, unit: "%", description: "出料口实时湿度（D45）"}
+  detection:
+    limit_switch:
+      - {name: LL1, signal_type: DI, type: bool, unit: "", description: "料斗1满位限位（触发=料满→上游电机停）（X000）"}
+      - {name: LL2, signal_type: DI, type: bool, unit: "", description: "料斗2满位限位（触发→上游电机停）（X001）"}
+      - {name: LL3, signal_type: DI, type: bool, unit: "", description: "料斗3满位限位（触发→上游电机停）（X002）"}
+      - {name: LL4, signal_type: DI, type: bool, unit: "", description: "料斗5满位限位（触发→上游电机停）（X005）"}
+      - {name: LL5, signal_type: DI, type: bool, unit: "", description: "一级烘干锅炉上料限位（触发=到位→上料电机停）（X003）"}
+      - {name: LL6, signal_type: DI, type: bool, unit: "", description: "二级烘干锅炉燃料上料限位（触发→上料电机停）（X006）"}
 
 mqtt:
   base_topic: "realtime"

@@ -207,6 +207,59 @@ class ModbusClient:
         """向后兼容的保持寄存器读取封装"""
         return await self.read_registers(address=address, count=count, function_code=3, retries=retries)
 
+    async def read_bits(self, address: int, count: int = 1, function_code: int = 1, retries: int = 2):
+        """
+        读取位（线圈/离散输入）
+
+        Args:
+            function_code: 1=读线圈(0x01), 2=读离散输入(0x02)
+        Returns:
+            bool 列表（长度 count），失败返回 None
+        """
+        attempt = 0
+        while attempt <= retries:
+            attempt += 1
+            backoff = min(0.2 * (2 ** (attempt - 1)), 2.0)
+
+            if not await self.ensure_connected():
+                logger.warning("modbus_not_connected")
+                await asyncio.sleep(backoff)
+                continue
+
+            try:
+                start = time.time()
+                if function_code == 1:
+                    result = await self.client.read_coils(address=address, count=count, slave=self.slave_id)
+                elif function_code == 2:
+                    result = await self.client.read_discrete_inputs(address=address, count=count, slave=self.slave_id)
+                else:
+                    logger.error("modbus_bit_function_not_supported", function_code=function_code)
+                    return None
+
+                if result.isError():
+                    logger.error("modbus_read_error", address=address, count=count, function_code=function_code, error=str(result))
+                    self._update_failure(str(result))
+                    MODBUS_READ_FAILURE.labels(str(function_code)).inc()
+                    continue
+
+                self.last_success_ts = time.time()
+                MODBUS_READ_SUCCESS.labels(str(function_code)).inc()
+                MODBUS_LAST_LATENCY_MS.labels("read").set((time.time() - start) * 1000)
+                return [bool(b) for b in list(result.bits)[:count]]
+
+            except ModbusException as e:
+                logger.error("modbus_exception", address=address, function_code=function_code, error=str(e))
+                self._update_failure(str(e))
+                MODBUS_READ_FAILURE.labels(str(function_code)).inc()
+            except (asyncio.TimeoutError, AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+                logger.error("modbus_read_unexpected_error", address=address, error=str(e))
+                self._update_failure(str(e))
+                MODBUS_READ_FAILURE.labels(str(function_code)).inc()
+
+            await asyncio.sleep(backoff)
+
+        return None
+
     async def write_register(self, address: int, value: int, retries: int = 2):
         """
         写入单个寄存器

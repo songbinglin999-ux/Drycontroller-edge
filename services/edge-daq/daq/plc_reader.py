@@ -242,12 +242,16 @@ class PLCReader:
                 for tag_config in tags:
                     flat_tags.append(tag_config)
 
-        # 若 batch_size>1 且有标签，则批量读取，否则逐标签读取
-        if self.batch_size and self.batch_size > 1 and flat_tags:
-            await self._read_tags_batched(flat_tags, self.batch_size)
+        # 字寄存器(fc 3/4)与位(fc 1/2 线圈/离散)分开：字走批量，位逐点读
+        word_tags = [t for t in flat_tags if int(t.get("function_code", 3) or 3) in (3, 4)]
+        bit_tags = [t for t in flat_tags if int(t.get("function_code", 3) or 3) in (1, 2)]
+        if self.batch_size and self.batch_size > 1 and word_tags:
+            await self._read_tags_batched(word_tags, self.batch_size)
         else:
-            for tag_config in flat_tags:
+            for tag_config in word_tags:
                 await self._read_tag(tag_config)
+        for tag_config in bit_tags:
+            await self._read_tag(tag_config)
 
     async def _read_tags_batched(self, tags: list, batch_size: int):
         """
@@ -489,6 +493,12 @@ class PLCReader:
             return
         
         try:
+            # 位（线圈/离散输入）：fc 1/2 → 读 bool
+            if function_code in (1, 2):
+                bits = await self.modbus_client.read_bits(address, 1, function_code=function_code)
+                value = bool(bits[0]) if bits else None
+                await self._after_read_value(tag_config, value, unit)
+                return
             # 根据数据类型选择读取方式
             if tag_type == "float":
                 value = await self.modbus_client.read_float(address, byte_order=byte_order, function_code=function_code)
