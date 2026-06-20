@@ -80,7 +80,7 @@ database:
 # ==================== 缓存策略 ====================
 cache:
   enabled: true
-  backend: "redis"  # redis / memory
+  backend: "memory"
   
   strategies:
     - name: "realtime_data"
