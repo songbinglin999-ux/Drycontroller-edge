@@ -57,6 +57,9 @@ LL6: {address: 6, function_code: 1, byte_order: big}  # X006
 # PLC_HEARTBEAT is read from PLC to prove PLC-side communication freshness.
 # EDGE_HOST_ALIVE is written by edge to prove edge/daq-side communication
 # freshness only. It is intentionally not an ALLOWED_CONTROL_SOFTPOINTS entry.
+# Proposed new SamSoar program allocation: PLC_HEARTBEAT=D5290 (4x45290),
+# EDGE_HOST_ALIVE=D5291 (4x45291). Keep these as TBD until the Windows
+# SamSoar project is downloaded and the real Modbus addressing is signed off.
 PLC_HEARTBEAT: {address: TBD, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: heartbeat}
 EDGE_HOST_ALIVE: {address: TBD, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
 
