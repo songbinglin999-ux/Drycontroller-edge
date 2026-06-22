@@ -57,11 +57,15 @@ LL6: {address: 6, function_code: 1, byte_order: big}  # X006
 # PLC_HEARTBEAT is read from PLC to prove PLC-side communication freshness.
 # EDGE_HOST_ALIVE is written by edge to prove edge/daq-side communication
 # freshness only. It is intentionally not an ALLOWED_CONTROL_SOFTPOINTS entry.
+# PLC_LEGACY_HEARTBEAT_TOGGLE 对应集成商 M1001「0.5秒1/0.5秒0 心跳」。
+# 该点只作为上位机只读诊断心跳，兼容现场旧口径；地址保持 TBD，
+# 等 SamSoar/现场测试确认 M 线圈 Modbus 地址基准后再启用采集。
 # Proposed new SamSoar program allocation: PLC_HEARTBEAT=D5290 (4x45290),
 # EDGE_HOST_ALIVE=D5291 (4x45291). Keep these as TBD until the Windows
 # SamSoar project is downloaded and the real Modbus addressing is signed off.
 PLC_HEARTBEAT: {address: TBD, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: heartbeat}
 EDGE_HOST_ALIVE: {address: TBD, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
+PLC_LEGACY_HEARTBEAT_TOGGLE: {address: TBD, function_code: 1, byte_order: big, type: bool, diagnostic: heartbeat, legacy_device: M1001, control_softpoint: false}
 
 # --- V1 control write soft points (6 frequency setpoints) ---
 # 控制写入按 2026-06-20「上位机降级全只读」决策锁停（见根目录 architecture-audit），本期不启用。

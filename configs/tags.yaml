@@ -56,6 +56,9 @@ tags:
       - {name: LL4, signal_type: DI, type: bool, unit: "", description: "料斗5满位限位（触发→上游电机停）（X005）"}
       - {name: LL5, signal_type: DI, type: bool, unit: "", description: "一级烘干锅炉上料限位（触发=到位→上料电机停）（X003）"}
       - {name: LL6, signal_type: DI, type: bool, unit: "", description: "二级烘干锅炉燃料上料限位（触发→上料电机停）（X006）"}
+  diagnostic:
+    heartbeat:
+      - {name: PLC_LEGACY_HEARTBEAT_TOGGLE, signal_type: DI, type: bool, unit: "", description: "我方标记：PLC_LEGACY_HEARTBEAT_TOGGLE；集成商标记：M1001 0.5秒1/0.5秒0 心跳；上位机只读诊断心跳，不是控制授权"}
 
 mqtt:
   base_topic: "realtime"
