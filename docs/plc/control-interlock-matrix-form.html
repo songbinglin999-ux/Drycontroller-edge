@@ -347,7 +347,7 @@
             <tr><td>温度/湿度</td><td>FTT1-3, T_OUT2, T_OUT4, TT1-2, MT1</td><td>供热/排湿/质量慢判断</td><td contenteditable="true" data-field="read-temp-policy">只做诊断，不作为停主机硬联锁</td></tr>
             <tr><td>电流</td><td>I_M1-I_M16</td><td>负载、超流、自调区/报警区判断</td><td contenteditable="true" data-field="read-current-policy">关键电流缺失时相关对象进入 WATCH 或 blocked</td></tr>
             <tr><td>运行/输出状态</td><td>M1-M16</td><td>当前 PLC 输出/运行状态回读</td><td contenteditable="true" data-field="read-m-policy">未来需补真实 RUN_FB，不能只信命令状态</td></tr>
-            <tr><td>变频反馈</td><td>VFM1-3, VF1-3</td><td>给料/风机实际频率反馈</td><td contenteditable="true" data-field="read-vfd-policy">反馈异常时禁止依赖该回路继续自动调参</td></tr>
+            <tr><td>变频命令/MV</td><td>VFM1-3, VF1-3</td><td>当前只读旧程序频率命令/MV；最终 MOV 到 AO140-AO151，不是实际频率反馈</td><td contenteditable="true" data-field="read-vfd-policy">当前无 PLC-VFD 通讯/反馈线时 PV/status 必须 invalid/not-wired；不得依赖该值判断实际跟随</td></tr>
           </tbody>
         </table>
       </div>
@@ -412,7 +412,7 @@
       <tbody>
         <tr><td>数据新鲜度</td><td>本次动作依赖的读点全部新鲜</td><td>禁止自动加料；关键点缺失进入 blocked</td><td>所有动作</td><td contenteditable="true" data-field="permit-fresh"></td></tr>
         <tr><td>控制模式</td><td><code>CONTROL_MODE</code> 在允许列表</td><td>禁止写；AUTO 进入 AUTO_SUSPENDED</td><td>所有写点</td><td contenteditable="true" data-field="permit-mode">V1 允许 MANUAL / AUTO；失败进入 AUTO_SUSPENDED 或保持手动</td></tr>
-        <tr><td>控制权</td><td><code>AUTHORITY_OWNER=EDGE</code></td><td>禁止写</td><td>所有写点</td><td contenteditable="true" data-field="permit-authority">V2/V3；V1 六频率 edge-api 写入不以 PLC authority token 为前置</td></tr>
+        <tr><td>控制权</td><td><code>AUTHORITY_OWNER=EDGE</code></td><td>禁止写</td><td>所有写点</td><td contenteditable="true" data-field="permit-authority">V2/V3；V1 六频率 edge-api 写入不以 PLC authority epoch 为前置</td></tr>
         <tr><td>HMI 直连</td><td><code>HMI_DIRECT_ENABLE=false</code></td><td>edge 禁止写，避免双写</td><td>所有写点</td><td contenteditable="true" data-field="permit-hmi">V2/V3；V1 HMI 只走 edge-api，不直连 PLC</td></tr>
         <tr><td>维修锁</td><td><code>MAINTENANCE_LOCK=false</code></td><td>禁止写；只能人工解除</td><td>所有写点</td><td contenteditable="true" data-field="permit-maint"></td></tr>
         <tr><td>急停/硬安全</td><td><code>EMERGENCY_STOP=false</code> 且硬安全无触发</td><td>禁止写；实际停机由硬件/PLC/VFD</td><td>所有写点</td><td contenteditable="true" data-field="permit-estop"></td></tr>

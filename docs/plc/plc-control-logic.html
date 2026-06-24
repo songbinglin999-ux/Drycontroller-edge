@@ -172,12 +172,12 @@
 <table>
   <thead><tr><th>术语</th><th>在本系统中的含义</th><th>例子</th></tr></thead>
   <tbody>
-    <tr><td>PV</td><td>过程量 / 反馈量，主要由 PLC 采集后给 edge 使用</td><td><code>I_M5</code>、<code>FTT2</code>、<code>T_OUT2</code>、<code>MT1</code>、<code>VFM2</code> 实际反馈</td></tr>
+    <tr><td>PV</td><td>过程量 / 反馈量，主要由 PLC 采集后给 edge 使用</td><td><code>I_M5</code>、<code>FTT2</code>、<code>T_OUT2</code>、<code>MT1</code>；当前 <code>VFM/VF</code> 只有命令/MV 对账值，不是实际反馈</td></tr>
     <tr><td>SP</td><td>edge/HMI 给 PLC 的目标值；V1 仅六个频率目标</td><td><code>VFM2_FREQ_SP</code>、<code>VF2_FREQ_SP</code></td></tr>
-    <tr><td>MV</td><td>PLC / 变频器实际输出给执行机构的量</td><td>PLC 限幅和斜坡后的 VFM2/VF2 实际频率</td></tr>
+    <tr><td>MV</td><td>PLC / 变频器实际输出给执行机构的量</td><td>PLC 限幅和斜坡后的 VFM2/VF2 命令/MV；实际频率反馈需后续新增反馈线或通讯</td></tr>
   </tbody>
 </table>
-<p class="note">若 PLC 把“实际频率反馈”当 PV 去追“目标频率 SP”，这只是执行器跟随环，不是工艺闭环。工艺 PV 仍然是电流、温度、出料温度、湿度、料位、下游负载等过程量；因果消歧和目标生成必须留在 edge。</p>
+<p class="note">当前 PLC 无 VFD 通讯/反馈线，不能把 D30-D35 或 AO 命令值当实际频率 PV。若后续补真实频率反馈，再把“实际频率反馈追目标频率 SP”作为执行器跟随环处理；工艺 PV 仍然是电流、温度、出料温度、湿度、料位、下游负载等过程量，因果消歧和目标生成必须留在 edge。</p>
 
 <h3>通用电机清堵逻辑（适用于所有带 CT 的定频电机）</h3>
 <pre><code>正常运行中检测到 I_x > I_overflow（过流阈值）
@@ -288,7 +288,7 @@
 <table>
   <tbody>
     <tr><td>控制对象</td><td>VFM1 变频给料机目标频率（PLC 软点 SP）</td></tr>
-    <tr><td>主要 PV</td><td>I-M3、FTT1、VFM1/VF1 实际反馈、M3/M4 状态、LL3</td></tr>
+    <tr><td>主要 PV</td><td>I-M3、FTT1、VFM1/VF1 命令/MV 对账值、M3/M4 状态、LL3；VFD 实际反馈当前 invalid/not-wired</td></tr>
     <tr><td>控制目的</td><td>edge 根据主机1负载和风温能力生成 VFM1 目标频率；PLC 只做限幅、斜坡、联锁和频率跟随</td></tr>
   </tbody>
 </table>
@@ -329,7 +329,7 @@ PLC 执行/本地切换：
 <p>逻辑同 VFM1，但主机2要把出料口温度纳入消歧，不能只看 I-M5，也不应直接用 MT1 做快调。</p>
 <ul>
   <li>主令电流改为 <code>I-M5</code>（主机2电流）</li>
-  <li>热 / 排湿输入：<code>FTT2</code>、<code>TT1</code>、<code>T_OUT2</code>、<code>VF2</code> 实际反馈</li>
+  <li>热 / 排湿输入：<code>FTT2</code>、<code>TT1</code>、<code>T_OUT2</code>、<code>VF2</code> 命令/MV 对账值；VFD 实际反馈当前 invalid/not-wired</li>
   <li>下游联锁 / 负载输入：M5、M6、M7、M8 及对应电流趋势</li>
   <li><code>T_OUT2</code> 高通常说明主机2出料端蒸汽/热湿状态偏重，优先结合 <code>VF2</code> 与 <code>FTT2</code> 判断是排湿不足还是供热不足</li>
   <li>如果上调 <code>VF2</code> 后 <code>FTT2</code> 明显下降，且 <code>TT1</code> 不足，edge 应停止继续加风，转为“供热不足/负荷过高”诊断，并下调或保持 <code>VFM2</code> 目标</li>
@@ -340,7 +340,7 @@ PLC 执行/本地切换：
 <p>逻辑同 VFM1，但主机4靠近最终湿度点，可以把 <code>MT1</code> 放进慢修正。</p>
 <ul>
   <li>主令电流改为 <code>I-M10</code>（主机4电流）</li>
-  <li>热 / 排湿输入：<code>FTT3</code>、<code>TT2</code>、<code>T_OUT4</code>、<code>VF3</code> 实际反馈</li>
+  <li>热 / 排湿输入：<code>FTT3</code>、<code>TT2</code>、<code>T_OUT4</code>、<code>VF3</code> 命令/MV 对账值；VFD 实际反馈当前 invalid/not-wired</li>
   <li>质量输入：<code>MT1</code> 作为最终湿度慢修正，不能作为秒级快调</li>
   <li>增加 <code>LL4</code> 缓冲料位逻辑：LL4 = 0（料斗5缺料）→ 降频或停 VFM3 → 请求上游 M9 补料</li>
   <li>下游联锁 / 负载输入：M10、M11、M12、M13、M14 及对应电流趋势</li>
@@ -378,9 +378,9 @@ PLC 执行/本地切换：
 <h4>VF1 风机 + FTT1 观测</h4>
 <pre><code>控制策略：edge 风机目标频率算法
 
-  PV：FTT1、VF1 实际反馈、I-M3、VFM1 实际反馈、M3/M4 状态
+  PV：FTT1、VF1 命令/MV 对账值、I-M3、VFM1 命令/MV 对账值、M3/M4 状态；VFD 实际反馈当前 invalid/not-wired
   SP：VF1_FREQ_SP（edge 输出给 PLC 的目标频率）
-  MV：PLC 限幅/斜坡后的 VF1 实际频率
+  MV：PLC 限幅/斜坡后的 VF1 命令/MV；实际频率反馈需后续新增反馈线或通讯
 
   FTT1 只用于判断风温/供热/风量状态，不作为 PLC 温度 PID 的 PV。
 

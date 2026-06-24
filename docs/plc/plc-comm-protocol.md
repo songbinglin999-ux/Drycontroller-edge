@@ -2,14 +2,14 @@
 
 只保留 PLC 侧需要做的事情，其他上位链路细节已去掉。
 
-> 2026-06-16 边界：V1 只要求 PLC 提供六个频率目标 SP、实际频率反馈、状态/安全覆盖和报警码，用于 HMI/edge-api 替代人工设定频率；PLC 继续负责现场逻辑、安全、顺控、联锁、设备保护和实际输出。参数同步、ACK/NAK/原因码、无扰切换、控制权锁、心跳切本地、HMI 备用直连和 `HMI_DIRECT_ENABLE` 属于 V2/V3 监督控制接口，不作为 V1 blocker。
+> 2026-06-23 边界：当前 SamSoar CSV 与现场线索只证明 PLC 把六路命令值 `D30-D35` 输出到 `AO140-AO151`，没有证明 PLC 与变频器通讯或读取实际频率。V1 只要求 PLC 提供独立六个频率目标 SP、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、状态/安全覆盖和报警码，用于 HMI/edge-api 替代人工设定频率；PLC 继续负责现场逻辑、安全、顺控、联锁、设备保护和实际输出。真实 VFD 实际频率/状态要等反馈线或通讯补齐并签收后再作为 V2/V3 监督控制验收项。
 
 ## 1. 通讯参数
 - 协议：**Modbus RTU over TCP**（RTU 帧 + TCP 传输，带 CRC；**非**标准 Modbus TCP/MBAP）。2026-06-20 现场实测确认。
 - 站号：默认 1
 - 端口：**2022**（现场实测；非标准 502）
 - 功能码：读 3（保持寄存器，D 字读点）、读 1（线圈，料位/限位等位元件）、读 4（输入寄存器）；写 6/16（控制写，本期按只读决策锁停、未启用）
-- 字节序：默认 Big Endian；32 位值（如湿度 int32）字序为**低字在前**（little word order，已确认）
+- 字节序：默认 Big Endian；32 位值字序需按具体点位签收；当前 SamSoar CSV 只证明湿度 `D45` 为 WORD
 
 ## 2. 点表字段（请按表格提供）
 - 必填：`name`（唯一）、`address`、`function_code`（3/4）、`type`（float/int/int32/uint32/bool）
@@ -47,7 +47,7 @@
 - 寄存器占用：`float`/`int32`/`uint32` 用 2 个寄存器；`int`/`bool` 用 1 个寄存器（bool 写 0/1）
 - 如配置 `scale`：寄存器值 = 工程值 / scale
 - 如配置 `range`：超出范围将被拒绝下发
-- V1 至少要求写入后可读实际频率反馈、PLC 安全覆盖/报警状态；V2/V3 再要求 PLC 对每条写入返回 ACK/NAK 与原因码，不满足控制权、模式、范围、联锁或同步条件时必须 NAK，不能静默忽略
+- V1 至少要求写入后可读 PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、PLC 安全覆盖/报警状态；V2/V3 在反馈线或通讯补齐后再要求真实 VFD 实际频率/状态，并要求 PLC 对每条写入返回 ACK/NAK 与原因码，不满足控制权、模式、范围、联锁或同步条件时必须 NAK，不能静默忽略
 
 ## 5. 心跳（V2/V3，可选预留）
 - 必须提供读心跳寄存器（如 50000）和/或写心跳寄存器（如 50001），最终形式联调时确认
@@ -67,7 +67,7 @@
 - 无扰切换：edge 控制权切入/切出时，PLC 需保持当前安全输出或按约定斜坡，不允许突变。
 - 控制权锁：PLC 是最终执行仲裁点；edge 无心跳、PLC 本地模式、维护锁、联锁触发、HMI 接管时，PLC 拒绝 edge 软点并返回 NAK 原因。
 - HMI 直连通道：HMI 可以监视 edge/PLC 状态并发接管请求，但只有 `AUTHORITY_OWNER=HMI` 或 `PLC_LOCAL/LOCAL_MANUAL` 且 `HMI_DIRECT_ENABLE=1` 时，PLC 才接受 HMI 直连写入。
-- epoch/代次：edge 或 HMI 写控制软点时需携带当前 `AUTHORITY_EPOCH`（或等价代次字段）；PLC 拒绝 stale epoch，避免 edge 恢复后用旧状态抢写。该字段不是安全凭证，不加密、不保密，只是 PLC 控制权 owner 的递增世代号。
+- epoch/代次：edge 或 HMI 写控制软点时需携带当前 `AUTHORITY_EPOCH`；PLC 拒绝 stale epoch，避免 edge 恢复后用旧状态抢写。本项目现场内网不引入 token/签名租约。
 
 建议至少提供这些 authority 字段（名称可按 PLC 习惯调整，但语义需保留）：
 
@@ -100,8 +100,8 @@ V1 最小联调：
 1) 确认站号、端口、功能码、字节序。
 2) 提供完整 52 点只读点表，标明地址、类型、scale、byte_order。
 3) 提供六个频率目标 SP 的地址、类型、scale、byte_order、range。
-4) 提供六个实际频率反馈、PLC 安全覆盖状态和报警码。
-5) 验证 HMI/edge-api -> edge-daq -> PLC -> 变频器目标变化 -> 反馈回读；越界/未授权/edge 不健康时拒绝。
+4) 提供 PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、PLC 安全覆盖状态和报警码。
+5) 验证 HMI/edge-api -> edge-daq -> PLC -> 变频器命令/MV 变化；当前不验收 VFD 实际反馈回读，越界/未授权/edge 不健康时拒绝。
 
 V2/V3 监督控制联调：
 1) 确认站号、端口、功能码、字节序。

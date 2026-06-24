@@ -169,11 +169,11 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 
 | 职责 | 说明 |
 |---|---|
-| 数据采集 | Modbus TCP 读取 PLC 寄存器，发布到 MQTT + InfluxDB |
+| 数据采集 | Modbus RTU-over-TCP 读取 PLC 寄存器/线圈，发布到 MQTT + InfluxDB |
 | V0 通讯心跳 | 写 `EDGE_HOST_ALIVE`，读 `PLC_HEARTBEAT`；只用于通讯/数据质量诊断，不授权控制 |
 | command 写入 | V0 关闭；V1 起只消费 edge-api 下发的**签名 command**，Modbus 写入 PLC，回 **ACK/NAK**；拒绝或写失败 NAK 且**不重放**危险写入 |
 | 控制门控心跳写入 | V0 不启用；V1/V2/V3 见下方语义拆分，**独立进程**，采集挂了心跳进程也要继续 |
-| 模式/控制权回读 | V0 不要求；V2/V3 读取 PLC 模式、`AUTHORITY_OWNER`、`AUTHORITY_TOKEN`、`HMI_DIRECT_ENABLE` 和拒绝原因，上报到 MQTT |
+| 模式/控制权回读 | V0 不要求；V2/V3 读取 PLC 模式、`AUTHORITY_OWNER`、`AUTHORITY_EPOCH`、`HMI_DIRECT_ENABLE` 和拒绝原因，上报到 MQTT |
 
 **心跳语义拆分**（单一 `EDGE.HEARTBEAT` 不够；V0 通讯心跳不得被 PLC 当成控制授权，V1/V2/V3 控制门控心跳必须 fail-closed）：
 
@@ -190,7 +190,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | V0 通讯心跳 | PLC 递增 `PLC_HEARTBEAT` 并接收 `EDGE_HOST_ALIVE`；只用于确认通讯和采集链路，不触发模式切换 |
 | 心跳看门狗 | 监测 `EDGE_CONTROL_HEALTHY` 寄存器，M 秒未更新判定 edge 控制不可信 |
 | 模式切换 | 门控心跳正常 → `EDGE_MASTER`；超时 → `PLC_LOCAL` 或 `HMI_LOCAL`（预设安全 setpoint / 本地保守 SP） |
-| **控制权锁** | PLC 持有 `AUTHORITY_OWNER` 与 `AUTHORITY_TOKEN`；edge 和 HMI 都只能申请控制权，不能绕过 PLC 私下切换 |
+| **控制权锁** | PLC 持有 `AUTHORITY_OWNER` 与 `AUTHORITY_EPOCH`；edge 和 HMI 都只能申请控制权，不能绕过 PLC 私下切换；现场内网不引入 token/签名租约 |
 | **HMI 备用直连** | edge 健康时 HMI 处于 `HMI_STANDBY`，只监视或请求接管；edge 不可用且 PLC 置 `HMI_DIRECT_ENABLE=1` 后，HMI 才能直连写允许的本地软点；该项是 V2/V3 可选接管模型，不是当前 edge ↔ PLC 通讯冗余链路 |
 | **维护锁定（maintenance lock）** | 人为锁定本地模式，需**手动解除**后才允许 edge 重新接管；**在 PLC 侧实现**，否则维修中 edge 心跳恢复仍可能强行夺回控制权 |
 | bumpless 切换 | 模式切换时输出不能跳变，平滑过渡；正常工艺 ramp/slew 仍由 edge 控制状态机负责 |
@@ -198,7 +198,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | 急停/硬安全联锁 | 硬件级安全，edge 不介入；工艺联锁由 edge 控制状态机负责 |
 | 上电默认 | 上电后进入安全默认状态 |
 | DO 触点告警 | 心跳超时 → DO 闭合 → DTU 短信告警（**独立于 edge，独立于网络**） |
-| 模式回读寄存器 | edge 可读当前模式、控制权 owner、token、HMI 直连授权、接管/拒绝原因 |
+| 模式回读寄存器 | edge 可读当前模式、控制权 owner、epoch、HMI 直连授权、接管/拒绝原因 |
 
 ### 6.3 控制模式切换流程
 
@@ -209,7 +209,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 │ owner=EDGE        │    │ (防抖)    │    │ owner=PLC/HMI       │
 └──────────────────┘    └──────────┘    └────────────────────┘
       ↑                                               │
-      └──── edge 恢复后读取当前状态、同步 SP、申请 token ──┘
+      └──── edge 恢复后读取当前状态、同步 SP、申请 epoch ──┘
 
          HMI_STANDBY：edge 健康时 HMI 只监视/请求接管，不直接写控制 SP
          HMI_DIRECT_ENABLE：PLC 授权后，HMI 才能直连写允许的本地软点
@@ -219,7 +219,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 
 **防抖**：连续 K 次门控心跳丢失才判定故障，避免偶发丢包误切。
 
-**恢复原则**：edge 恢复后不能自动抢回控制权。它必须先读取 PLC 当前实际输出、有效 setpoint、`AUTHORITY_OWNER` 和 `AUTHORITY_TOKEN`，完成参数/状态同步后再请求 `EDGE_MASTER`。PLC 授权前，edge-api 应拒绝新 control command 或标记为 `not_actionable`。
+**恢复原则**：edge 恢复后不能自动抢回控制权。它必须先读取 PLC 当前实际输出、有效 setpoint、`AUTHORITY_OWNER` 和 `AUTHORITY_EPOCH`，完成参数/状态同步后再请求 `EDGE_MASTER`。PLC 授权前，edge-api 应拒绝新 control command 或标记为 `not_actionable`。
 
 ### 6.4 PLC → 云端告警链路
 
@@ -318,8 +318,8 @@ V0/V1 范围与 v2 目标架构分开推进：V0 交付 = PLC 采集 → 工程�
 
 | 大版本 | 定位 | PLC 边界 | Edge 边界 |
 |---|---|---|---|
-| V0：只读数据 + 通讯心跳 | PLC 接入、数据质量、大屏和告警底座；不做任何控制动作 | PLC 提供 52 位号读点、`PLC_HEARTBEAT` 和接收 `EDGE_HOST_ALIVE`；该心跳不授予控制 | edge 只读采集、工程量换算、基础统计、阈值告警、大屏和本地历史留存；只写通讯心跳 |
-| V1：6 路变频目标自动设定器 | 替代人工设定 `VFM1-3` / `VF1-3` 六个目标频率，不声称完整监督控制；人只选择 `MANUAL` / `AUTO`，不逐条确认 | PLC 保留现场逻辑、安全、顺控、联锁、设备保护和实际输出；提供 6 个 SP、实际反馈、运行/故障/料位/安全覆盖状态 | edge 管“谁能写、写多少、何时写”：模式授权、AUTO 自动签发、软点白名单、限幅、变化率、冷却、审计、可解释建议和自动挂起 |
+| V0：只读数据 + 通讯心跳 | PLC 接入、数据质量、大屏和告警底座；不做任何控制动作 | PLC 提供 34 个 D 字读点 + 6 个料位/限位线圈、`PLC_HEARTBEAT` 和接收 `EDGE_HOST_ALIVE`；该心跳不授予控制 | edge 只读采集、工程量换算、基础统计、阈值告警、大屏和本地历史留存；只写通讯心跳 |
+| V1：6 路变频目标自动设定器 | 替代人工设定 `VFM1-3` / `VF1-3` 六个目标频率，不声称完整监督控制；人只选择 `MANUAL` / `AUTO`，不逐条确认 | PLC 保留现场逻辑、安全、顺控、联锁、设备保护和实际输出；提供独立 6 个 SP、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、运行/故障/料位/安全覆盖状态；真实 VFD PV/status 待反馈线或通讯补齐后另签 | edge 管“谁能写、写多少、何时写”：模式授权、AUTO 自动签发、软点白名单、限幅、变化率、冷却、审计、可解释建议和自动挂起 |
 | V2：6 频率监督控制 | edge 接管 6 个频率的稳态策略，目标是料流更平稳 | PLC 转为执行、保护、veto、ACK/NAK、reason、本地兜底；`EDGE_MASTER` 下不再私自做恢复节奏/调频策略 | edge 根据电流、料位事件、温度、湿度、下游能力等生成 6 个频率策略 |
 | V3：完整稳态控制 | 补足过程测量后的连续稳态优化 | PLC 只做确定性执行、安全和本地降级 | edge 基于连续料位/称重/等价过程测量、softsensor 和历史窗口做全线稳态优化 |
 
@@ -329,9 +329,9 @@ V0/V1 范围与 v2 目标架构分开推进：V0 交付 = PLC 采集 → 工程�
 |---|---|---|
 | **Phase 0 / V0** | 点表 / MVP 数据链路：PLC tags、采集、工程量换算、阈值告警、大屏、`PLC_HEARTBEAT` 读取、`EDGE_HOST_ALIVE` 写入 | 现场点表落库；只读数据链路和双向通讯心跳 E2E 跑通；控制写入默认关闭 |
 | **Phase 1** | 保命层：宿主机 Tailscale + LAN SSH + host watchdog + enroll 改造 | `compose down` 后 Tailscale/LAN SSH 均可达；cloud-ops 仍能识别设备 tailnet 地址 |
-| **Phase 2** | V2/V3 PLC 软点 / 同步 / 仲裁契约：采集寄存器、控制软点、参数同步、报警同步、状态同步、ACK/NAK、心跳切本地、HMI 备用直连、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC 自动切本地；HMI 只在 PLC 授权后直连写入；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/token 状态可见；VFD/硬接线/设备保护可现场验收 |
-| **Phase 3** | V1/V2/V3 edge 控制契约：suggestion schema、signed command、ACK/NAK、range guard、setpoint ramp/slew limiter、工艺联锁、`/control/estop`、fallback 状态机、`MANUAL` / `AUTO` / `AUTO_SUSPENDED` 授权机制、owner/token gate（V2/V3） | AI 不直写 PLC；未签名/越界/变化率超限/工艺联锁不满足/本地模式/心跳异常/非 EDGE owner/stale token 下 command 被拒并审计；AUTO 可一键退回 MANUAL，gate 失败自动挂起 |
-| **Phase 4** | 监控层补齐：PLC 模式监控、控制权 owner/token、HMI 直连授权、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、HMI 接管、控制拒绝均可见且告警 |
+| **Phase 2** | V2/V3 PLC 软点 / 同步 / 仲裁契约：采集寄存器、控制软点、参数同步、报警同步、状态同步、ACK/NAK、心跳切本地、HMI 备用直连、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC 自动切本地；HMI 只在 PLC 授权后直连写入；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/epoch 状态可见；VFD/硬接线/设备保护可现场验收 |
+| **Phase 3** | V1/V2/V3 edge 控制契约：suggestion schema、signed command、ACK/NAK、range guard、setpoint ramp/slew limiter、工艺联锁、`/control/estop`、fallback 状态机、`MANUAL` / `AUTO` / `AUTO_SUSPENDED` 授权机制、owner/epoch gate（V2/V3） | AI 不直写 PLC；未签名/越界/变化率超限/工艺联锁不满足/本地模式/心跳异常/非 EDGE owner/stale epoch 下 command 被拒并审计；AUTO 可一键退回 MANUAL，gate 失败自动挂起 |
+| **Phase 4** | 监控层补齐：PLC 模式监控、控制权 owner/epoch、HMI 直连授权、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、HMI 接管、控制拒绝均可见且告警 |
 | **Phase 5** | license-service 合并 + 文档收敛 | 功能等价测试通过；旧端点/云端探测路径有兼容或迁移说明；文档与代码一致 |
 | **Phase 6** | ops-console 接入（edge-api StaticFiles 挂卷托管，见 §7）+ 鉴权整改（代码已存在，落地排期靠后） | `dist` 挂卷只读托管于 edge-api `/console`，容器数维持 15；整改 `VITE_ADMIN_API_KEY` 把长期管理员 Key 编译进前端静态产物的泄密隐患（改登录换短期 token，不再把长期 Key 打包进 JS）；维护工程师可访问，实时数据 / 告警 / 控制模式 / 授权层级 / suggestion 可见 |
 

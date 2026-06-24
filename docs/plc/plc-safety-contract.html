@@ -165,7 +165,7 @@
   <li>PLC（可编程逻辑控制器）负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换和 HMI/edge 控制权锁</li>
   <li>PLC 读取 edge 心跳；edge 心跳丢失时，PLC 必须切回 PLC 本地控制，且切换过程不能造成突变输出</li>
   <li>现场触摸屏/HMI 属于 PLC 本地备用人工入口，必须具备 HMI->PLC 备用直连能力；edge 健康时 HMI 只监视或请求接管，edge 离线、网络断开、维护锁或 PLC_LOCAL/LOCAL_MANUAL 且 PLC 授权后，HMI 才能写允许的本地/手动控制软点</li>
-  <li>PLC 必须提供 <code>AUTHORITY_OWNER</code>、<code>AUTHORITY_EPOCH</code>、<code>HMI_DIRECT_ENABLE</code>、<code>TAKEOVER_REASON</code> 与 <code>REJECT_CODE</code> 等字段；edge 与 HMI 写控制软点时必须受当前 owner/epoch 约束</li>
+  <li>PLC 必须提供 <code>AUTHORITY_OWNER</code>、<code>AUTHORITY_EPOCH</code>、<code>HMI_DIRECT_ENABLE</code>、<code>TAKEOVER_REASON</code> 与 <code>REJECT_CODE</code> 等字段；edge 与 HMI 写控制软点时必须受当前 owner/epoch 约束；现场内网不引入 token/签名租约</li>
   <li>硬件急停、热继、拉绳/跑偏等设备级保护仍属于现场硬件/PLC/VFD 执行层，edge 不直接驱动物理输出；这类硬安全不等同于 edge 的工艺联锁</li>
 </ul>
 
@@ -457,15 +457,15 @@
 <h2 id="sec7">7. 验收标准与关闭条件</h2>
 
 <h3 id="sec7-1">7.1 PLC 侧验收清单</h3>
-<p class="note"><strong>2026-06-16 V1 标记：</strong>V1 不是完整监督控制，只验收六个变频频率目标写入（<code>VFM1_FREQ_SP</code>、<code>VFM2_FREQ_SP</code>、<code>VFM3_FREQ_SP</code>、<code>VF1_FREQ_SP</code>、<code>VF2_FREQ_SP</code>、<code>VF3_FREQ_SP</code>）。PLC 继续保留现场工艺逻辑、安全、顺控、联锁、设备保护和实际输出。PLC authority、HMI 直连、owner/epoch、完整 ACK/NAK/原因码和无扰接管属于 V2/V3 目标版，不作为 V1 blocker。</p>
+<p class="note"><strong>2026-06-16 V1 标记；2026-06-24 降复杂度订正：</strong>V1 不是完整监督控制，只验收六个变频频率目标写入（<code>VFM1_FREQ_SP</code>、<code>VFM2_FREQ_SP</code>、<code>VFM3_FREQ_SP</code>、<code>VF1_FREQ_SP</code>、<code>VF2_FREQ_SP</code>、<code>VF3_FREQ_SP</code>）。PLC 继续保留现场工艺逻辑、安全、顺控、联锁、设备保护和实际输出。PLC authority、HMI 直连、owner/epoch、完整 ACK/NAK/原因码和无扰接管属于 V2/V3 目标版，不作为 V1 blocker；现场内网不引入 token/签名租约。</p>
 <table class="wrap">
   <thead><tr><th>#</th><th>验收项</th><th>验收方式</th><th>状态</th></tr></thead>
   <tbody>
     <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V1 六频率目标写入最小验收</td></tr>
     <tr><td>V1-1</td><td>六个 SP 地址/量程/字节序签收</td><td>PLC 回填六个频率目标寄存器地址、数据类型、缩放、0-50Hz 或现场签收范围、读写权限</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>V1-2</td><td>六个实际频率反馈</td><td>edge 能读取 <code>VFM1-3</code>、<code>VF1-3</code> 实际频率或等价反馈，用于写后核对与趋势展示</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>V1-2</td><td>六个输出 MV + PV/status invalid 标记</td><td>edge 能读取 PLC 接受目标、PLC 输出命令/MV；当前无 PLC-VFD 通讯/反馈线时，实际 VFD PV/status 必须明确为 invalid/not-wired，不得伪造实际频率反馈</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>V1-3</td><td>PLC 安全覆盖状态/报警码</td><td>PLC/VFD/硬接线触发限幅、故障、停机、料位保护时，edge/HMI 可见该写入被覆盖或不可继续调节的状态</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>V1-4</td><td>六 SP 写入 E2E</td><td>MANUAL 人工设定或 AUTO 自动目标 → edge-api 门控 → edge-daq → PLC → 变频器目标变化 → 反馈回读；越界/未授权/edge 不健康/读回异常时拒绝或挂起</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>V1-4</td><td>六 SP 写入 E2E</td><td>MANUAL 人工设定或 AUTO 自动目标 → edge-api 门控 → edge-daq → PLC → PLC 输出 MV 变化；越界/未授权/edge 不健康/PLC NAK 时拒绝或挂起。真实 VFD 反馈回读需后续新增反馈线或通讯后另签</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V2/V3 目标版接口能力（非 V1 blocker）</td></tr>
     <tr><td>P1</td><td>IO 采集上传</td><td>现场全部 IO（料位/温度/电流/状态/急停）稳定实时上报 edge</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P2</td><td>软点控制层执行</td><td>edge 软点命令 → PLC 正确输出到变频器/接触器/阀</td><td><span class="pill bad">❌ 未做</span></td></tr>
@@ -494,7 +494,7 @@
 <h3 id="sec7-3">7.3 关闭条件</h3>
 <p class="lead">关闭条件按版本拆分：V1 只关闭六频率目标写入能力；P0-SAFETY 全量关闭属于 V2/V3 监督控制前置条件。旧 P1-P10 表仅作历史草案，新关闭条件以 2026-06-16 版本边界为准：</p>
 <ol>
-  <li>V1 关闭：六个频率目标 SP 地址/量程/字节序/写权限签收，实际频率反馈可读，PLC 安全覆盖/报警状态可见，HMI/edge-api → edge-daq → PLC → 变频器 E2E 写入与拒绝路径通过</li>
+  <li>V1 关闭：六个频率目标 SP 地址/量程/字节序/写权限签收，PLC 接受目标/输出 MV 可读，VFD PV/status 在当前无通讯/反馈线时明确为 invalid/not-wired，PLC 安全覆盖/报警状态可见，HMI/edge-api → edge-daq → PLC → 输出 MV 的 E2E 写入与拒绝路径通过；真实 VFD 反馈需后续另签</li>
   <li>PLC 集成商签收软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换全部通过，并完成 VFD/硬接线/设备自保护的最终物理安全兜底验收</li>
   <li>Edge 侧控制状态机、range guard、setpoint ramp/slew limiter、工艺联锁、MANUAL/AUTO/AUTO_SUSPENDED 模式闸、软件侧 fallback、`/control/estop`、软点/同步/仲裁状态处理全部通过</li>
   <li>独立复核确认失败注入验收（§6）全部通过</li>

@@ -50,7 +50,7 @@
 <header class="h">
   <div class="t">产线 I/O 点表 · 真实点表对账版（V0 只读）</div>
   <div class="m">
-    <b>来源</b>：集成商真实点表《开关量点位表 / 数据点位表》（2026-06-20）+ 系统唯一编号对账（<code>plc-tag-mapping/</code>）<br>
+    <b>来源</b>：SamSoar 当前导出 <code>1.csv</code> / <code>2.csv</code> / <code>3.csv</code>（2026-06-23）+ 系统唯一编号对账（<code>plc-tag-mapping/</code>）<br>
     <b>位号约定</b>：canonical = 系统唯一编号 + 量纲后缀（<code>_I</code> 电流 / <code>_FREQ</code> 频率 / <code>_T</code> 温度 / <code>_H</code> 湿度）；解决设备号电流/频率撞车。<br>
     <b>通讯</b>：Modbus RTU-over-TCP（端口 2022 / 站号 1）；读点地址 = 4x(40000+D序号)。<b>关联</b>：<code>edge configs/tags.yaml</code> / <code>modbus-address-map.yaml</code>。<br>
     <b>安全/控制/报警</b>：<a href="plc-safety-contract.html">安全契约</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">报警规范</a>。<br>
@@ -114,7 +114,7 @@
   </aside>
   <main class="table-pane">
     <h2>读点（40：34 D 字 + 6 料位/限位线圈，已对账采集）</h2>
-    <p class="note">温度语义已按工艺更正（PLC CSV 误标）：<code>TT*_T</code>=锅炉炉口温度、<code>FTT*_T</code>=各段排湿风机处蒸汽温度。电流/温度 ×0.1，频率 1:1，湿度 int32 低字在前。</p>
+    <p class="note">温度语义已按工艺更正（PLC CSV 误标）：<code>TT*_T</code>=锅炉炉口温度、<code>FTT*_T</code>=各段排湿风机处蒸汽温度。电流/温度 ×0.1，频率 1:1；当前 SamSoar CSV 只证明湿度为 <code>D45</code> WORD。</p>
     <table>
       <thead><tr><th>#</th><th>系统位号</th><th>PLC元件</th><th>Modbus</th><th>类型</th><th>量程</th><th>描述（工艺更正）</th></tr></thead>
       <tbody>
@@ -126,16 +126,16 @@
 <tr id="io-M4_I"><td>4</td><td><span class="tag">M4_I</span></td><td>D3</td><td>4x40003</td><td>int</td><td>A（×0.1）</td><td>预发酵出料电机电流</td></tr>
 <tr id="io-M3_I"><td>5</td><td><span class="tag">M3_I</span></td><td>D4</td><td>4x40004</td><td>int</td><td>A（×0.1）</td><td>预发酵主电机电流</td></tr>
 <tr id="io-VF1_I"><td>6</td><td><span class="tag">VF1_I</span></td><td>D17</td><td>4x40017</td><td>int</td><td>A（×0.1）</td><td>1级风机电机电流</td></tr>
-<tr id="io-VFM1_FREQ"><td>7</td><td><span class="tag">VFM1_FREQ</span></td><td>D30</td><td>4x40030</td><td>int</td><td>Hz（1:1）</td><td>预发酵进料电机现场控制屏人工输入频率设定值（非VFD实际反馈）</td></tr>
-<tr id="io-VF1_FREQ"><td>8</td><td><span class="tag">VF1_FREQ</span></td><td>D33</td><td>4x40033</td><td>int</td><td>Hz（1:1）</td><td>1号风机现场控制屏人工输入频率设定值（非VFD实际反馈）</td></tr>
+<tr id="io-VFM1_FREQ"><td>7</td><td><span class="tag">VFM1_FREQ</span></td><td>D30</td><td>4x40030</td><td>int</td><td>Hz（1:1）</td><td>旧程序六路频率命令/MV 对账值，最终 MOV 到 AO140-AO151（非VFD实际反馈，非edge/HMI写入SP）</td></tr>
+<tr id="io-VF1_FREQ"><td>8</td><td><span class="tag">VF1_FREQ</span></td><td>D33</td><td>4x40033</td><td>int</td><td>Hz（1:1）</td><td>旧程序六路频率命令/MV 对账值，最终 MOV 到 AO140-AO151（非VFD实际反馈，非edge/HMI写入SP）</td></tr>
 <tr id="io-FTT1_T"><td>9</td><td><span class="tag">FTT1_T</span></td><td>D40</td><td>4x40040</td><td>int</td><td>℃（×0.1）</td><td>预烘干段蒸汽温度（1号排湿风机处）</td></tr>
 <tr class="group"><td colspan="7">一级烘干</td></tr>
 <tr id="io-VFM2_I"><td>10</td><td><span class="tag">VFM2_I</span></td><td>D5</td><td>4x40005</td><td>int</td><td>A（×0.1）</td><td>一级烘干进料电机电流</td></tr>
 <tr id="io-M6_I"><td>11</td><td><span class="tag">M6_I</span></td><td>D6</td><td>4x40006</td><td>int</td><td>A（×0.1）</td><td>一级烘干出料电机电流</td></tr>
 <tr id="io-M5_I"><td>12</td><td><span class="tag">M5_I</span></td><td>D7</td><td>4x40007</td><td>int</td><td>A（×0.1）</td><td>一级烘干主电机电流</td></tr>
 <tr id="io-VF2_I"><td>13</td><td><span class="tag">VF2_I</span></td><td>D18</td><td>4x40018</td><td>int</td><td>A（×0.1）</td><td>2级风机电机电流</td></tr>
-<tr id="io-VFM2_FREQ"><td>14</td><td><span class="tag">VFM2_FREQ</span></td><td>D31</td><td>4x40031</td><td>int</td><td>Hz（1:1）</td><td>第一级烘干进料电机现场控制屏人工输入频率设定值（非VFD实际反馈）</td></tr>
-<tr id="io-VF2_FREQ"><td>15</td><td><span class="tag">VF2_FREQ</span></td><td>D34</td><td>4x40034</td><td>int</td><td>Hz（1:1）</td><td>2号风机现场控制屏人工输入频率设定值（非VFD实际反馈）</td></tr>
+<tr id="io-VFM2_FREQ"><td>14</td><td><span class="tag">VFM2_FREQ</span></td><td>D31</td><td>4x40031</td><td>int</td><td>Hz（1:1）</td><td>旧程序六路频率命令/MV 对账值，最终 MOV 到 AO140-AO151（非VFD实际反馈，非edge/HMI写入SP）</td></tr>
+<tr id="io-VF2_FREQ"><td>15</td><td><span class="tag">VF2_FREQ</span></td><td>D34</td><td>4x40034</td><td>int</td><td>Hz（1:1）</td><td>旧程序六路频率命令/MV 对账值，最终 MOV 到 AO140-AO151（非VFD实际反馈，非edge/HMI写入SP）</td></tr>
 <tr id="io-FTT2_T"><td>16</td><td><span class="tag">FTT2_T</span></td><td>D41</td><td>4x40041</td><td>int</td><td>℃（×0.1）</td><td>一级烘干段蒸汽温度（2号排湿风机处）</td></tr>
 <tr class="group"><td colspan="7">发酵仓</td></tr>
 <tr id="io-M7_I"><td>17</td><td><span class="tag">M7_I</span></td><td>D8</td><td>4x40008</td><td>int</td><td>A（×0.1）</td><td>发酵进料电机电流</td></tr>
@@ -146,15 +146,15 @@
 <tr id="io-M11_I"><td>21</td><td><span class="tag">M11_I</span></td><td>D12</td><td>4x40012</td><td>int</td><td>A（×0.1）</td><td>二级烘干出料电机电流</td></tr>
 <tr id="io-M10_I"><td>22</td><td><span class="tag">M10_I</span></td><td>D13</td><td>4x40013</td><td>int</td><td>A（×0.1）</td><td>二级烘干主电机电流</td></tr>
 <tr id="io-VF3_I"><td>23</td><td><span class="tag">VF3_I</span></td><td>D19</td><td>4x40019</td><td>int</td><td>A（×0.1）</td><td>3级风机电机电流</td></tr>
-<tr id="io-VFM3_FREQ"><td>24</td><td><span class="tag">VFM3_FREQ</span></td><td>D32</td><td>4x40032</td><td>int</td><td>Hz（1:1）</td><td>第二级烘干进料电机现场控制屏人工输入频率设定值（非VFD实际反馈）</td></tr>
-<tr id="io-VF3_FREQ"><td>25</td><td><span class="tag">VF3_FREQ</span></td><td>D35</td><td>4x40035</td><td>int</td><td>Hz（1:1）</td><td>3号风机现场控制屏人工输入频率设定值（非VFD实际反馈）</td></tr>
+<tr id="io-VFM3_FREQ"><td>24</td><td><span class="tag">VFM3_FREQ</span></td><td>D32</td><td>4x40032</td><td>int</td><td>Hz（1:1）</td><td>旧程序六路频率命令/MV 对账值，最终 MOV 到 AO140-AO151（非VFD实际反馈，非edge/HMI写入SP）</td></tr>
+<tr id="io-VF3_FREQ"><td>25</td><td><span class="tag">VF3_FREQ</span></td><td>D35</td><td>4x40035</td><td>int</td><td>Hz（1:1）</td><td>旧程序六路频率命令/MV 对账值，最终 MOV 到 AO140-AO151（非VFD实际反馈，非edge/HMI写入SP）</td></tr>
 <tr id="io-FTT3_T"><td>26</td><td><span class="tag">FTT3_T</span></td><td>D42</td><td>4x40042</td><td>int</td><td>℃（×0.1）</td><td>二级烘干段蒸汽温度（3号排湿风机处）</td></tr>
 <tr class="group"><td colspan="7">滚筛</td></tr>
 <tr id="io-M12_I"><td>27</td><td><span class="tag">M12_I</span></td><td>D14</td><td>4x40014</td><td>int</td><td>A（×0.1）</td><td>滚筛进料电机电流</td></tr>
 <tr id="io-M13_I"><td>28</td><td><span class="tag">M13_I</span></td><td>D15</td><td>4x40015</td><td>int</td><td>A（×0.1）</td><td>滚筛出料电机电流</td></tr>
 <tr class="group"><td colspan="7">出料</td></tr>
 <tr id="io-M14_I"><td>29</td><td><span class="tag">M14_I</span></td><td>D16</td><td>4x40016</td><td>int</td><td>A（×0.1）</td><td>最终出料电机电流</td></tr>
-<tr id="io-MT1_H"><td>30</td><td><span class="tag">MT1_H</span></td><td>D45</td><td>4x40045</td><td>int32</td><td>%（scale TBD）</td><td>出料口实时湿度</td></tr>
+<tr id="io-MT1_H"><td>30</td><td><span class="tag">MT1_H</span></td><td>D45</td><td>4x40045</td><td>WORD</td><td>%（scale TBD）</td><td>出料口实时湿度</td></tr>
 <tr class="group"><td colspan="7">上料</td></tr>
 <tr id="io-M15_I"><td>31</td><td><span class="tag">M15_I</span></td><td>D20</td><td>4x40020</td><td>int</td><td>A（×0.1）</td><td>1级烘干上料电机电流</td></tr>
 <tr id="io-M16_I"><td>32</td><td><span class="tag">M16_I</span></td><td>D21</td><td>4x40021</td><td>int</td><td>A（×0.1）</td><td>2级烘干上料电机电流</td></tr>
@@ -178,8 +178,8 @@
       <tbody>
         <tr><td>急停 / 其他限位</td><td>X1102 等</td><td>DI 线圈</td><td>整线急停等安全/顺控输入。注：料位/上料限位 X000/001/002/003/005/006 已纳入采集为 <code>LL1–LL6</code>（见上表「料位/限位」组）；它们是<b>满位/到位限位开关</b>，触发=到位→停，<b>非料位计、给不了连续料位与缺料</b>。</td></tr>
         <tr><td>电机运行状态</td><td>Y000–Y033</td><td>DO 线圈</td><td>各电机/风机输出状态（运行/停）。</td></tr>
-        <tr><td>报警位</td><td>M300–M323 / M200–201 / M60–61</td><td>M 线圈</td><td>各电机过流/报警、湿度异常等；告警也可由 edge 用电流/温度+阈值自算。</td></tr>
-        <tr><td>控制写软点</td><td>需新增独立寄存器（禁止复用 D30–D35）</td><td>写入</td><td>6 路变频频率目标；按「上位机降级全只读」决策锁停。<b>D30–D35 已确认为现场控制屏人工输入频率设定值，只能只读采集，不是 VFD 实际反馈，也不是 edge/HMI 写入 SP</b>。</td></tr>
+        <tr><td>报警位</td><td>M300–M321 / M200–201 / M60–61</td><td>M 线圈</td><td>各电机过流/报警、湿度异常等；告警也可由 edge 用电流/温度+阈值自算。</td></tr>
+        <tr><td>控制写软点</td><td>需新增独立寄存器（禁止复用 D30–D35）</td><td>写入</td><td>6 路变频频率目标；按「上位机降级全只读」决策锁停。<b>D30–D35 已确认为旧程序六路频率命令/MV 对账值，最终 MOV 到 AO140-AO151，只能只读采集，不是 VFD 实际反馈，也不是 edge/HMI 写入 SP</b>。</td></tr>
       </tbody>
     </table>
     <p class="note">建议补充的安全/维护点（急停、拉绳/跑偏、热继跳闸、轴承超温、变频器故障、成品超温等）见 <a href="plc-safety-contract.html">安全契约</a> §2.6 / §2.10，点表冻结时对齐。</p>

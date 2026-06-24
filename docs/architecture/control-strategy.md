@@ -1,6 +1,6 @@
 # 🎛 控制策略说明（Control Strategy）
 
-> 版本：v1.3（2026-06-21 真实湿度控制目标与变频反馈边界）
+> 版本：v1.4（2026-06-24 SamSoar CSV 与 VFD 反馈签收边界）
 > 关联模块：`edge-api/control_core`、`edge-daq`、`hmi-runtime`、PLC 控制逻辑
 > 关联文档：`system-overview.md`、`data-flow.md`、`../plc/io-and-control-contract.md`
 
@@ -24,20 +24,20 @@ DryController 的最终控制目标是 **最终成品出料湿度 `MT1_H` 稳定
 
 ### 0.1 变频器频率必须拆分 SP / MV / PV
 
-六路变频频率不能只暴露一个现场控制屏人工输入值。一个值既不能同时作为 edge 写入目标，也不能同时代表 PLC 内部目标和变频器实际反馈。若 PLC 只把本地控制屏人工设定值暴露给上位机，而不暴露 edge 写入 SP、PLC 有效目标、PLC 输出命令和变频器现值，则 edge 无法判断 PLC 是否接受目标、斜坡后实际输出是多少、变频器是否被本地/保护覆盖，也无法做 ACK/读回闭环。
+六路变频频率不能只暴露一个旧程序命令值。一个值既不能同时作为 edge 写入目标，也不能同时代表 PLC 内部目标、PLC 输出命令和变频器实际反馈。当前 SamSoar CSV 只证明 `D30-D35` 最终 `MOV` 到 `AO140-AO151`，没有证明 PLC 与变频器通讯或读取实际频率/状态。若 PLC 只把这组六路命令/MV 暴露给上位机，而不暴露 edge 写入 SP、PLC 有效目标、PLC 输出命令、PV/status invalid/not-wired 标记和保护覆盖结果，则 edge 无法判断 PLC 是否接受目标、斜坡后输出命令是多少、变频器是否被本地/保护覆盖，也无法做 ACK/读回闭环。
 
 V1+ 最小接口应拆清以下语义，最终位号可由 PLC 点表命名，但语义不能合并：
 
 | 语义 | 方向 | 用途 |
 |---|---|---|
-| 现场控制屏人工输入频率设定值 | PLC -> edge | 当前 `D30-D35`，只读采集本地人工 SP，用于解释现场人工目标，不能作为 VFD 实际反馈 |
+| 旧程序六路频率命令/MV 对账值 | PLC -> edge | 当前 `D30-D35`，最终 `MOV` 到 `AO140-AO151`；只读对账，不能作为 VFD 实际反馈，也不能作为 edge/HMI 写入 SP |
 | Edge/HMI 目标频率 SP | edge/HMI -> PLC | `VFM*_FREQ_SP` / `VF*_FREQ_SP`，表示上位机希望 PLC 执行的目标，需新增独立寄存器 |
 | PLC 接受后的有效目标 | PLC -> edge | PLC 经模式、联锁、限幅、斜坡策略接受后的内部目标；只能用于解释 PLC 当前追哪个目标 |
 | PLC 输出给变频器的命令 MV | PLC -> edge | PLC 实际下发给变频器的输出命令，反映限幅/斜坡后的执行量 |
-| 变频器实际反馈 PV | VFD -> PLC -> edge | 变频器现值/实际运行频率；这是判断执行是否到位和做工艺闭环的关键反馈 |
-| VFD 运行/故障/本地覆盖状态 | VFD/PLC -> edge | 判断变频器是否远程可控、是否故障、是否被本地或保护逻辑覆盖 |
+| 变频器实际反馈 PV | VFD -> PLC -> edge | 当前 invalid/not-wired；后续新增反馈线或通讯后另签，用于判断执行是否到位 |
+| VFD 运行/故障/本地覆盖状态 | VFD/PLC -> edge | 当前 invalid/not-wired；后续新增反馈线、通讯或硬接点后另签，用于判断变频器是否远程可控、是否故障、是否被本地或保护逻辑覆盖 |
 
-`D30-D35` 已确认为现场控制屏人工输入频率设定值，必须标为 local manual SP，不能标为 `*_FREQ` 实际反馈，也不能作为写入 SP 地址。没有独立 edge/HMI SP、PLC 有效目标/MV、真实 VFD feedback 和 VFD 状态之前，六频率 `AUTO` 只能停留在 shadow / 诊断建议，不能作为现场闭环控制验收。
+`D30-D35` 已确认为旧程序六路频率命令/MV 对账值，必须标为只读 MV/legacy 对账，不能标为 `*_FREQ` 实际反馈，也不能作为写入 SP 地址。没有独立 edge/HMI SP、PLC 有效目标/MV、PV/status invalid/not-wired 标记、保护覆盖结果和报警码之前，六频率 `AUTO` 只能停留在 shadow / 诊断建议，不能作为现场控制验收。真实 VFD feedback 和 VFD 状态需在反馈线或通讯补齐后另行签收。
 
 ## 1. 控制目标与边界
 
@@ -233,7 +233,7 @@ V1 下发的六频率目标必须先经过 edge/HMI 侧模式授权、白名单�
 
 - `edge-api` 接口负责：
   - V1 校验六软点与目标值的合法性（模式授权、白名单、范围、步长/变化率、冷却、ACK/NAK、读回、API key、审计）
-  - V2/V3 增加 PLC 控制权、ACK/NAK、工艺联锁、owner/token 与完整监督控制门控
+  - V2/V3 增加 PLC 控制权、ACK/NAK、工艺联锁、owner/epoch 与完整监督控制门控
   - 记录操作日志（操作者、理由、前后值）
   - 将合规命令转换为 MQTT 消息，交给 `edge-daq` 写入 PLC
   - `/recommendations/{id}/confirm` / `/manual-confirm` 只作为 commissioning/debug/手动写入过渡入口，不是生产 AUTO 主链路
