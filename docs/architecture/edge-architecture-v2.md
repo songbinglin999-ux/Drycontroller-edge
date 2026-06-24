@@ -3,7 +3,7 @@
 > **版本**：v2.1-draft
 > **日期**：2026-06-01
 > **背景**：基于 5/30 级联故障复盘 + P0-SAFETY 对账结论 + 控制策略重新分层；2026-06-01 已合并 Codex / Claude 评审意见入正文。
-> **状态**：目标架构 + 分阶段验收（非一次性重写）。2026-06-19 起增加 V0：只读采集 + 通讯心跳，edge 只写 `EDGE_HOST_ALIVE`、读 `PLC_HEARTBEAT`，不做任何控制动作。V1 生产工作流为 `MANUAL` / `AUTO` 模式授权：V1 只验收六个变频频率目标写入，操作员不逐条确认；V2/V3 才验收完整监督控制、PLC authority 和 HMI 直连。
+> **状态**：目标架构 + 分阶段验收（非一次性重写）。2026-06-19 起增加 V0：只读采集 + 通讯心跳，edge 只写 `EDGE_HOST_ALIVE`、读 `PLC_HEARTBEAT`，不做任何控制动作；edge ↔ PLC 通讯不做主备/多链路冗余，保持单 Modbus RTU-over-TCP 链路 + 重连/超时/告警的最低复杂度实现。V1 生产工作流为 `MANUAL` / `AUTO` 模式授权：V1 只验收六个变频频率目标写入，操作员不逐条确认；V2/V3 才验收完整监督控制、PLC authority 和 HMI 直连。
 
 ---
 
@@ -181,6 +181,8 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 - `PLC_HEARTBEAT`：PLC 自身递增的通讯心跳，edge 读取后用于判断 PLC 通讯 freshness 和大屏/告警。
 - `EDGE_CONTROL_HEALTHY`（门控心跳）：仅当控制路径关键依赖（MQTT、edge-api、命令签名、range guard、ramp/slew limiter、工艺联锁、Modbus 写链路）全部健康、模式状态明确、最近一次写入/ACK 契约满足时才递增；任一不满足即 **fail-closed**（停止递增），让 PLC 切本地模式。PLC 的看门狗监测的是这个门控心跳。
 
+本期不做 PLC 通讯冗余链路：不引入双 PLC host、双网口、RS485 备用、第二套心跳或主备切换状态机。链路异常只通过 Modbus 重连/熔断、双向心跳超时、告警和控制 fail-closed 处理，避免过度设计。
+
 ### 6.2 PLC 本地兜底 / 最终安全（PLC / VFD / 硬接线侧实现）
 
 | 功能 | 说明 |
@@ -189,7 +191,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | 心跳看门狗 | 监测 `EDGE_CONTROL_HEALTHY` 寄存器，M 秒未更新判定 edge 控制不可信 |
 | 模式切换 | 门控心跳正常 → `EDGE_MASTER`；超时 → `PLC_LOCAL` 或 `HMI_LOCAL`（预设安全 setpoint / 本地保守 SP） |
 | **控制权锁** | PLC 持有 `AUTHORITY_OWNER` 与 `AUTHORITY_TOKEN`；edge 和 HMI 都只能申请控制权，不能绕过 PLC 私下切换 |
-| **HMI 备用直连** | edge 健康时 HMI 处于 `HMI_STANDBY`，只监视或请求接管；edge 不可用且 PLC 置 `HMI_DIRECT_ENABLE=1` 后，HMI 才能直连写允许的本地软点 |
+| **HMI 备用直连** | edge 健康时 HMI 处于 `HMI_STANDBY`，只监视或请求接管；edge 不可用且 PLC 置 `HMI_DIRECT_ENABLE=1` 后，HMI 才能直连写允许的本地软点；该项是 V2/V3 可选接管模型，不是当前 edge ↔ PLC 通讯冗余链路 |
 | **维护锁定（maintenance lock）** | 人为锁定本地模式，需**手动解除**后才允许 edge 重新接管；**在 PLC 侧实现**，否则维修中 edge 心跳恢复仍可能强行夺回控制权 |
 | bumpless 切换 | 模式切换时输出不能跳变，平滑过渡；正常工艺 ramp/slew 仍由 edge 控制状态机负责 |
 | actuator final clamp | PLC/VFD 对已收到的输出做最后物理限幅兜底；正常工艺限幅由 edge-api 签发前完成 |
