@@ -178,7 +178,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 **心跳语义拆分**（单一 `EDGE.HEARTBEAT` 不够；V0 通讯心跳不得被 PLC 当成控制授权，V1/V2/V3 控制门控心跳必须 fail-closed）：
 
 - `EDGE_HOST_ALIVE`：edge 主机/采集运行时还活着，**仅用于 V0 通讯诊断**；PLC 不得据此允许 edge 控制。
-- `PLC_HEARTBEAT`：PLC 自身递增的通讯心跳，edge 读取后用于判断 PLC 通讯 freshness 和大屏/告警。
+- `PLC_HEARTBEAT`：PLC 自身通讯心跳，可复用现有 0/1 翻转镜像；edge 只判断读值是否变化，用于 PLC 通讯 freshness 和大屏/告警。
 - `EDGE_CONTROL_HEALTHY`（门控心跳）：仅当控制路径关键依赖（MQTT、edge-api、命令签名、range guard、ramp/slew limiter、工艺联锁、Modbus 写链路）全部健康、模式状态明确、最近一次写入/ACK 契约满足时才递增；任一不满足即 **fail-closed**（停止递增），让 PLC 切本地模式。PLC 的看门狗监测的是这个门控心跳。
 
 本期不做 PLC 通讯冗余链路：不引入双 PLC host、双网口、RS485 备用、第二套心跳或主备切换状态机。链路异常只通过 Modbus 重连/熔断、双向心跳超时、告警和控制 fail-closed 处理，避免过度设计。
@@ -187,7 +187,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 
 | 功能 | 说明 |
 |---|---|
-| V0 通讯心跳 | PLC 递增 `PLC_HEARTBEAT` 并接收 `EDGE_HOST_ALIVE`；只用于确认通讯和采集链路，不触发模式切换 |
+| V0 通讯心跳 | PLC 更新/翻转 `PLC_HEARTBEAT` 并接收 edge 递增写入的 `EDGE_HOST_ALIVE`；只用于确认通讯和采集链路，不触发模式切换 |
 | 心跳看门狗 | 监测 `EDGE_CONTROL_HEALTHY` 寄存器，M 秒未更新判定 edge 控制不可信 |
 | 模式切换 | 门控心跳正常 → `EDGE_MASTER`；超时 → `PLC_LOCAL` 或 `HMI_LOCAL`（预设安全 setpoint / 本地保守 SP） |
 | **控制权锁** | PLC 持有 `AUTHORITY_OWNER` 与 `AUTHORITY_EPOCH`；edge 和 HMI 都只能申请控制权，不能绕过 PLC 私下切换；现场内网不引入 token/签名租约 |
