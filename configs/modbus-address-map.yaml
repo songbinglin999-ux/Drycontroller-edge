@@ -53,24 +53,27 @@ LL4: {address: 5, function_code: 1, byte_order: big}  # X005
 LL5: {address: 3, function_code: 1, byte_order: big}  # X003
 LL6: {address: 6, function_code: 1, byte_order: big}  # X006
 
-# --- V0 diagnostic heartbeat points ---
+# --- V0/V1 diagnostic heartbeat points ---
 # PLC_HEARTBEAT is read from PLC to prove PLC-side communication freshness.
 # EDGE_HOST_ALIVE is written by edge to prove edge/daq-side communication
 # freshness only. It is intentionally not an ALLOWED_CONTROL_SOFTPOINTS entry.
 # PLC_LEGACY_HEARTBEAT_TOGGLE 对应集成商 M1001「0.5秒1/0.5秒0 心跳」。
 # 该点只作为上位机只读诊断心跳，兼容现场旧口径；地址保持 TBD，
 # 等 SamSoar/现场测试确认 M 线圈 Modbus 地址基准后再启用采集。
-# Proposed new SamSoar program allocation: PLC_HEARTBEAT=D5290 (4x45290),
-# EDGE_HOST_ALIVE=D5291 (4x45291). Keep these as TBD until the Windows
-# SamSoar project is downloaded and the real Modbus addressing is signed off.
-PLC_HEARTBEAT: {address: TBD, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: heartbeat}
-EDGE_HOST_ALIVE: {address: TBD, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
+# PLC V1 single-heartbeat overlay 已分配：PLC_HEARTBEAT=D5290,
+# EDGE_HOST_ALIVE=D5291。按本文件 D 字约定回填为 4x45290/4x45291；
+# 现场验收仍需核对 PLC 4x 地址基准。
+PLC_HEARTBEAT: {address: 45290, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: heartbeat}
+EDGE_HOST_ALIVE: {address: 45291, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
 PLC_LEGACY_HEARTBEAT_TOGGLE: {address: TBD, function_code: 1, byte_order: big, type: bool, diagnostic: heartbeat, legacy_device: M1001, control_softpoint: false}
 
 # --- V1 control write soft points (6 frequency setpoints) ---
 # 控制写入按 2026-06-20「上位机降级全只读」决策锁停（见根目录 architecture-audit），本期不启用。
 # D30-D35 已确认是现场控制屏人工输入频率设定值，只能只读采集本地人工目标；
 # edge/HMI 写入 SP 必须由 PLC 新增独立寄存器和 ACK/NAK/读回状态，禁止复用 D30-D35。
+# PLC V1 overlay 已把 D5110-D5115 作为请求块 payload SP，但现有 edge-daq
+# 控制订阅器只支持单 tag 寄存器写；在 D5100 请求序号 + ACK/NAK 事务写路径落地前，
+# 六个 SP 必须继续保持 fail-closed，禁止直接写 D5110-D5115。
 VFM1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
 VFM2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
 VFM3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}

@@ -1,7 +1,9 @@
 import importlib
 import time
+from pathlib import Path
 
 import pytest
+import yaml
 
 
 class FakeModbus:
@@ -101,6 +103,32 @@ async def test_load_config_skips_v0_heartbeat_until_addresses_are_signed(tmp_pat
     config = await svc.load_config()
 
     assert "heartbeat" not in config
+
+
+def test_real_modbus_map_enables_v0_heartbeat_and_keeps_v1_sp_fail_closed():
+    daq_main = importlib.import_module("daq.main")
+    repo_root = Path(__file__).resolve().parents[3]
+    address_map = yaml.safe_load((repo_root / "configs/modbus-address-map.yaml").read_text(encoding="utf-8"))
+
+    assert daq_main._derive_heartbeat_config(address_map) == {
+        "read_address": 45290,
+        "write_address": 45291,
+        "function_code": 3,
+    }
+    assert address_map["PLC_HEARTBEAT"]["diagnostic"] == "heartbeat"
+    assert address_map["EDGE_HOST_ALIVE"]["diagnostic"] == "heartbeat"
+    assert address_map["EDGE_HOST_ALIVE"]["control_softpoint"] is False
+
+    for tag in (
+        "VFM1_FREQ_SP",
+        "VFM2_FREQ_SP",
+        "VFM3_FREQ_SP",
+        "VF1_FREQ_SP",
+        "VF2_FREQ_SP",
+        "VF3_FREQ_SP",
+    ):
+        assert address_map[tag]["address"] == "TBD"
+        assert address_map[tag]["writable"] is False
 
 
 def test_health_payload_includes_modbus_and_scan(tmp_path, monkeypatch):
