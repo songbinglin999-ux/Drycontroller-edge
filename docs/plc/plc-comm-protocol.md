@@ -67,7 +67,7 @@
 - 无扰切换：edge 控制权切入/切出时，PLC 需保持当前安全输出或按约定斜坡，不允许突变。
 - 控制权锁：PLC 是最终执行仲裁点；edge 无心跳、PLC 本地模式、维护锁、联锁触发、HMI 接管时，PLC 拒绝 edge 软点并返回 NAK 原因。
 - HMI 直连通道：HMI 可以监视 edge/PLC 状态并发接管请求，但只有 `AUTHORITY_OWNER=HMI` 或 `PLC_LOCAL/LOCAL_MANUAL` 且 `HMI_DIRECT_ENABLE=1` 时，PLC 才接受 HMI 直连写入。
-- token/代次：edge 或 HMI 写控制软点时需携带当前 `AUTHORITY_TOKEN`（或等价代次字段）；PLC 拒绝 stale token，避免 edge 恢复后用旧状态抢写。
+- epoch/代次：edge 或 HMI 写控制软点时需携带当前 `AUTHORITY_EPOCH`（或等价代次字段）；PLC 拒绝 stale epoch，避免 edge 恢复后用旧状态抢写。该字段不是安全凭证，不加密、不保密，只是 PLC 控制权 owner 的递增世代号。
 
 建议至少提供这些 authority 字段（名称可按 PLC 习惯调整，但语义需保留）：
 
@@ -77,7 +77,7 @@
 | CTRL.AUTHORITY_OWNER | PLC -> edge/HMI | int | authority | 当前控制权 owner：EDGE/HMI/PLC_LOCAL/MAINTENANCE/FAULT |
 | CTRL.AUTHORITY_REQUEST | edge/HMI -> PLC | int | authority | 接管/释放请求 |
 | CTRL.AUTHORITY_GRANT | PLC -> edge/HMI | int | authority | PLC 对请求的授予/拒绝结果 |
-| CTRL.AUTHORITY_TOKEN | PLC -> edge/HMI | int | authority | 控制权代次，写软点时需匹配 |
+| CTRL.AUTHORITY_EPOCH | PLC -> edge/HMI | int | authority | 控制权代次，写软点时需匹配 |
 | HMI.DIRECT_ENABLE | PLC -> HMI/edge | bool | authority | 是否允许 HMI 备用直连写控制软点 |
 | CTRL.TAKEOVER_REASON | PLC -> edge/HMI | int | authority | 最近一次接管原因 |
 | CTRL.REJECT_CODE | PLC -> edge/HMI | int | authority | 最近一次拒绝原因 |
@@ -91,7 +91,7 @@
 | FTT1       | 40010   | 3             | float | big        | 1.0   | °C   |           |           |           |            | readonly_io | 主机1风温采集         |
 | VFM1_FREQ_SP | 41020 | 3             | float | big        | 1.0   | Hz   | 0         | 50        |           |            | control_softpoint | VFM1 目标频率软点 |
 | CTRL.AUTHORITY_OWNER | 41030 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 当前控制权 owner      |
-| CTRL.AUTHORITY_TOKEN | 41031 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 控制权代次            |
+| CTRL.AUTHORITY_EPOCH | 41031 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 控制权代次            |
 | HMI.DIRECT_ENABLE | 41032 | 3          | bool  | big        | 1     |      |           |           |           |            | authority  | HMI 直连写入授权      |
 | ALARM.CODE | 42010   | 3             | int   | big        | 1     |      |           |           |           |            | alarm      | 当前 PLC 告警码       |
 
