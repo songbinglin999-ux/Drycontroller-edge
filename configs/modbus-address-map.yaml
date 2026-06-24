@@ -55,6 +55,8 @@ LL6: {address: 6, function_code: 1, byte_order: big}  # X006
 
 # --- V0/V1 diagnostic heartbeat points ---
 # PLC_HEARTBEAT is read from PLC to prove PLC-side communication freshness.
+# It may be a 0/1 mirror of the existing PLC heartbeat toggle; edge only
+# requires the value to change, not a PLC-side incrementing counter.
 # EDGE_HOST_ALIVE is written by edge to prove edge/daq-side communication
 # freshness only. It is intentionally not an ALLOWED_CONTROL_SOFTPOINTS entry.
 # PLC_LEGACY_HEARTBEAT_TOGGLE 对应集成商 M1001「0.5秒1/0.5秒0 心跳」。
