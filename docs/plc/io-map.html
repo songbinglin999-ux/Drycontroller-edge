@@ -54,7 +54,7 @@
     <b>位号约定</b>：canonical = 系统唯一编号 + 量纲后缀（<code>_I</code> 电流 / <code>_FREQ_SP</code> 频率目标 / <code>_T</code> 温度 / <code>_H</code> 湿度）；解决设备号电流/控制目标撞车。<br>
     <b>通讯</b>：Modbus RTU-over-TCP（端口 2022 / 站号 1）；读点地址 = 4x(40000+D序号)。<b>关联</b>：<code>edge configs/tags.yaml</code> / <code>modbus-address-map.yaml</code>。<br>
     <b>安全/控制/报警</b>：<a href="plc-safety-contract.html">安全契约</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">报警规范</a>。<br>
-    <b class="warn">范围</b>：<span class="warn">本期只读采集 34 个 DryController 点（28 D 字 + 6 料位/限位线圈）；控制写入按只读决策锁停，六频率后续只走 D5100-D5299。</span>
+    <b class="warn">范围</b>：<span class="warn">本期只读采集 34 个 DryController 点（28 D 字 + 6 料位/限位线圈）；控制写入按只读决策锁停，edge 六频率后续走 D5100-D5299，DryHMI edge-down direct 走 D5550-D5599。</span>
   </div>
 </header>
 
@@ -173,8 +173,8 @@
         <tr><td>急停 / 其他限位</td><td>X1102 等</td><td>DI 线圈</td><td>整线急停等安全/顺控输入。注：料位/上料限位 X000/001/002/003/005/006 已纳入采集为 <code>LL1–LL6</code>（见上表「料位/限位」组）；它们是<b>满位/到位限位开关</b>，触发=到位→停，<b>非料位计、给不了连续料位与缺料</b>。</td></tr>
         <tr><td>电机运行状态</td><td>Y000–Y033</td><td>DO 线圈</td><td>各电机/风机输出状态（运行/停）。</td></tr>
         <tr><td>报警位</td><td>M300–M321 / M200–201 / M60–61</td><td>M 线圈</td><td>各电机过流/报警、湿度异常等；告警也可由 edge 用电流/温度+阈值自算。</td></tr>
-        <tr><td>PLC 原工程频率链路</td><td>D30–D35</td><td>原工程证据</td><td>旧程序六路频率命令/MV，最终 MOV 到 AO140-AO151；DryController 不采集、不写入、不作为 D5100 读回或 VFD 实际反馈。</td></tr>
-        <tr><td>控制写软点</td><td>D5100-D5299</td><td>写入事务</td><td>6 路变频频率目标后续只走 D5100 请求/ACK/读回事务；按「上位机降级全只读」决策锁停，现场 e2e 前 disabled。</td></tr>
+        <tr><td>PLC 原工程频率链路</td><td>D30–D35</td><td>原工程证据</td><td>旧程序六路频率命令/MV，最终 MOV 到 AO140-AO151；DryController 不采集、不写入、不作为 D5100/DryHMI direct 读回或 VFD 实际反馈。</td></tr>
+        <tr><td>控制写软点</td><td>D5100-D5299 / D5550-D5599</td><td>写入事务</td><td>edge 六频率目标走 D5100 请求/ACK/读回事务；DryHMI edge-down direct 走 D5550-D5599；现场 e2e 前 disabled。</td></tr>
       </tbody>
     </table>
     <p class="note">建议补充的安全/维护点（急停、拉绳/跑偏、热继跳闸、轴承超温、变频器故障、成品超温等）见 <a href="plc-safety-contract.html">安全契约</a> §2.6 / §2.10，点表冻结时对齐。</p>

@@ -41,7 +41,7 @@
 | `TT1_T` | D43 | 4x40043 | int(×0.1) | ℃ | 锅炉1炉口温度 |
 | `MT1_H` | D45 | 4x40045 | WORD | % | 出料口实时湿度 |
 | `LL1` | X000 | 0x01 线圈#0 | bool | | 料斗1满位限位（满→停 M1） |
-| `VFM1_FREQ_SP` | D5110 payload | D5100-D5299 事务 | int | Hz | 六频率目标只走 D5100 请求/ACK/读回事务；本期只读锁停未启用，禁止复用 D30-D35 |
+| `VFM1_FREQ_SP` | D5110 payload / D5550-D5599 direct | D5100-D5299 或 D5550-D5599 事务 | int | Hz | edge 六频率目标走 D5100 请求/ACK/读回事务；DryHMI edge-down direct 走 D5550-D5599；本期只读锁停未启用，禁止复用 D30-D35 |
 
 ---
 

@@ -2,7 +2,7 @@
 
 只保留 PLC 侧需要做的事情，其他上位链路细节已去掉。
 
-> 2026-06-25 边界：当前 SamSoar CSV 只证明 PLC 原工程把 `D30-D35` 输出到 `AO140-AO151`，没有证明 PLC 与变频器通讯或读取实际频率。DryController 不采集、不写入、不读回这条旧链路；六频率目标只走 `D5100-D5299` 事务。PLC 需提供 D5100 请求/ACK/读回、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、状态/安全覆盖和报警码，用于 HMI/edge-api 替代人工设定频率；真实 VFD 实际频率/状态要等反馈线或通讯补齐并签收后再作为后续验收项。
+> 2026-06-26 边界：当前 SamSoar CSV 只证明 PLC 原工程把 `D30-D35` 输出到 `AO140-AO151`，没有证明 PLC 与变频器通讯或读取实际频率。DryController 不采集、不写入、不读回这条旧链路；edge 在线六频率目标走 `D5100-D5299` 事务，DryHMI edge-down direct 走 `D5550-D5599` 事务。PLC 需提供 D5100/D5550 请求/ACK/NAK/读回、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、状态/安全覆盖和报警码，用于 HMI/edge-api 替代人工设定频率；真实 VFD 实际频率/状态要等反馈线或通讯补齐并签收后再作为后续验收项。
 
 ## 1. 通讯参数
 - 协议：**Modbus RTU over TCP**（RTU 帧 + TCP 传输，带 CRC；**非**标准 Modbus TCP/MBAP）。2026-06-20 现场实测确认。
@@ -15,8 +15,8 @@
 - 必填：`name`（唯一）、`address`、`function_code`（3/4）、`type`（float/int/int32/uint32/bool）
 - 可选：`byte_order`(big/little)、`scale`（工程值 = 原值 * scale）、`unit`、`range[min,max]`、`alarm_low`、`alarm_high`
 - 只读 I/O 点：对应当前 DryController 28 个 D 字读点 + 6 个料位/限位线圈，edge 只读不写；`D30-D35` 不进入 DryController 点表
-- 控制写入点：六频率目标只走 `D5100-D5299` 请求/ACK/读回事务；请标明 `point_role=control_softpoint`
-- 同步与仲裁点：参数同步、报警同步、状态同步、心跳、HMI/edge 控制权锁、HMI direct 预留状态、无扰切换状态，请标明 `point_role=sync|alarm|status|heartbeat|authority`
+- 控制写入点：edge 六频率目标走 `D5100-D5299` 请求/ACK/读回事务；DryHMI direct 走 `D5550-D5599` 受控事务；请标明 `point_role=control_softpoint`
+- 同步与仲裁点：参数同步、报警同步、状态同步、心跳、HMI/edge 控制权锁、HMI direct 授权状态、无扰切换状态，请标明 `point_role=sync|alarm|status|heartbeat|authority`
 - 唯一性：同一功能码下 `(address, function_code)` 不可重复
 
 表头示例（含中文说明）：
@@ -47,7 +47,7 @@
 - 寄存器占用：`float`/`int32`/`uint32` 用 2 个寄存器；`int`/`bool` 用 1 个寄存器（bool 写 0/1）
 - 如配置 `scale`：寄存器值 = 工程值 / scale
 - 如配置 `range`：超出范围将被拒绝下发
-- D5100 单路频率事务至少要求写入后可读 PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、PLC 安全覆盖/报警状态；反馈线或通讯补齐后再要求真实 VFD 实际频率/状态，并要求 PLC 对每条写入返回 ACK/NAK 与原因码，不满足控制权、模式、范围、联锁或同步条件时必须 NAK，不能静默忽略
+- D5100 单路频率事务和 DryHMI D5550 direct 事务至少要求写入后可读 PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、PLC 安全覆盖/报警状态；反馈线或通讯补齐后再要求真实 VFD 实际频率/状态，并要求 PLC 对每条写入返回 ACK/NAK 与原因码，不满足控制权、模式、范围、联锁或同步条件时必须 NAK，不能静默忽略
 
 ## 5. 通讯心跳
 - 必须提供读心跳寄存器（如 50000）和/或写心跳寄存器（如 50001），最终形式联调时确认
@@ -61,13 +61,13 @@
 - 判定：连续 2~3 次读值不变或读/写失败，判定通讯异常
 - edge 写计数回绕：计数达上限回到 1，不写 0；0 保留给未初始化或禁用状态
 
-## 6. 同步 / 无扰切换 / 控制权锁（最终接口预留）
+## 6. 同步 / 无扰切换 / 控制权锁（最终接口）
 - 参数同步：PLC 与 edge 对关键设定值、当前生效参数、参数版本/更新时间有一致字段。
 - 报警同步：PLC 告警码、告警状态、确认/复位状态需可读；需给出报警码表。
 - 状态同步：PLC 模式、本地/远程控制权、软点执行状态、最近 ACK/NAK 原因码需可读。
 - 无扰切换：edge 控制权切入/切出时，PLC 需保持当前安全输出或按约定斜坡，不允许突变。
 - 控制权锁：PLC 是最终执行仲裁点；edge 无心跳、PLC 本地模式、维护锁、联锁触发、HMI 接管时，PLC 拒绝 edge 软点并返回 NAK 原因。
-- HMI direct：当前只保留状态预留，不作为 DryController 六频率写入路径；DryController HMI 的六频率输入仍经 edge-api / D5100 事务进入 PLC。
+- HMI direct：DryHMI edge-down direct 是最终必做能力；必须经 PLC owner/epoch/direct-enable 授权后写 `D5550-D5599` DryHMI 目标缓冲区，不能绕过 D5100/PLC 输出提交形成并行输出链路；最终 e2e 前生产 disabled。
 - epoch/代次：D5100 写控制软点时需携带当前 `AUTHORITY_EPOCH`；PLC 拒绝 stale epoch，避免 edge 恢复后用旧状态抢写。本项目现场内网不引入 token/签名租约。
 
 建议至少提供这些 authority 字段（名称可按 PLC 习惯调整，但语义需保留）：
@@ -75,11 +75,11 @@
 | name | 方向 | type | point_role | 说明 |
 |---|---|---|---|---|
 | CTRL.MODE | PLC -> edge/HMI | int | authority | 当前模式：EDGE_MASTER/HMI_STANDBY/HMI_LOCAL/PLC_LOCAL/LOCAL_MANUAL/MAINTENANCE_LOCK/FAULT_STOP |
-| CTRL.AUTHORITY_OWNER | PLC -> edge/HMI | int | authority | 当前控制权 owner：EDGE/HMI_DIRECT_RESERVED/PLC_LOCAL/MAINTENANCE/FAULT |
-| CTRL.AUTHORITY_REQUEST | edge/HMI -> PLC | int | authority | D5100 接管/释放请求；HMI direct 仅预留 |
+| CTRL.AUTHORITY_OWNER | PLC -> edge/HMI | int | authority | 当前控制权 owner：EDGE/DRY_HMI_DIRECT/PLC_LOCAL/MAINTENANCE/FAULT |
+| CTRL.AUTHORITY_REQUEST | edge/HMI -> PLC | int | authority | D5100 接管/释放请求；DryHMI direct 接管/释放请求 |
 | CTRL.AUTHORITY_GRANT | PLC -> edge/HMI | int | authority | PLC 对请求的授予/拒绝结果 |
 | CTRL.AUTHORITY_EPOCH | PLC -> edge/HMI | int | authority | 控制权代次，写软点时需匹配 |
-| HMI.DIRECT_ENABLE | PLC -> HMI/edge | bool | authority | HMI direct 预留状态；当前不允许写六频率 |
+| HMI.DIRECT_ENABLE | PLC -> HMI/edge | bool | authority | DryHMI direct 显式授权；最终 e2e 前生产 disabled |
 | CTRL.TAKEOVER_REASON | PLC -> edge/HMI | int | authority | 最近一次接管原因 |
 | CTRL.REJECT_CODE | PLC -> edge/HMI | int | authority | 最近一次拒绝原因 |
 
@@ -90,21 +90,21 @@
 | HB.READ    | 50000   | 3             | int   | big        | 1     |      |           |           |           |            | heartbeat  | 心跳读，PLC 可 0/1 翻转；edge 只判断变化 |
 | HB.WRITE   | 50001   | 6             | int   | big        | 1     |      |           |           |           |            | heartbeat  | 心跳写，edge 写递增计数 |
 | FTT1       | 40010   | 3             | float | big        | 1.0   | °C   |           |           |           |            | readonly_io | 主机1风温采集         |
-| VFM1_FREQ_SP | D5110 payload | D5100-D5299 | int | big | 1.0 | Hz | 0 | 50 | | | control_softpoint | VFM1 目标频率；只走 D5100 事务 |
+| VFM1_FREQ_SP | D5110 payload / D5550-D5599 direct | D5100-D5299 / D5550-D5599 | int | big | 1.0 | Hz | 0 | 50 | | | control_softpoint | VFM1 目标频率；edge 走 D5100，DryHMI direct 走 D5550-D5599 |
 | CTRL.AUTHORITY_OWNER | 41030 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 当前控制权 owner      |
 | CTRL.AUTHORITY_EPOCH | 41031 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 控制权代次            |
-| HMI.DIRECT_ENABLE | TBD | 3          | bool  | big        | 1     |      |           |           |           |            | authority  | HMI direct 预留状态      |
+| HMI.DIRECT_ENABLE | TBD | 3          | bool  | big        | 1     |      |           |           |           |            | authority  | DryHMI direct 授权状态      |
 | ALARM.CODE | 42010   | 3             | int   | big        | 1     |      |           |           |           |            | alarm      | 当前 PLC 告警码       |
 
 ## 7. 联调检查清单
-D5100 单路频率最小联调：
+D5100/DryHMI direct 最小联调：
 1) 确认站号、端口、功能码、字节序。
 2) 提供当前 28D + 6 线圈只读点表，标明地址、类型、scale、byte_order。
-3) 提供 D5100 请求序号、D5104 通道、D5110 单个频率值、ACK/NAK、有效目标和输出 MV 的地址、类型、scale、byte_order、range。
+3) 提供 D5100 请求序号、D5104 通道、D5110 单个频率值、D5550-D5565 DryHMI direct 请求块、ACK/NAK、有效目标和输出 MV 的地址、类型、scale、byte_order、range。
 4) 提供 PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、PLC 安全覆盖状态和报警码。
-5) 验证 HMI/edge-api -> edge-daq -> PLC -> 变频器命令/MV 变化；当前不验收 VFD 实际反馈回读，越界/未授权/edge 不健康时拒绝。
+5) 验证 HMI/edge-api -> edge-daq -> PLC -> 变频器命令/MV 变化，以及 edge down + PLC grant -> DryHMI direct -> PLC -> MV 变化；当前不验收 VFD 实际反馈回读，越界/未授权/edge 不健康时拒绝。
 
-V2/V3 监督控制联调：
+后续监督控制联调：
 1) 确认站号、端口、功能码、字节序。
 2) 提供完整点表，标明可写点。
 3) 提供心跳寄存器与心跳丢失切本地状态。

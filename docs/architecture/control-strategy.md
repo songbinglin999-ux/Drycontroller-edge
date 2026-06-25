@@ -1,12 +1,12 @@
 # 🎛 控制策略说明（Control Strategy）
 
-> 版本：v1.5（2026-06-25 只走 D5100 控制链路）
+> 版本：v1.6（2026-06-26 DryHMI PLC direct 必做）
 > 关联模块：`edge-api/control_core`、`edge-daq`、`hmi-runtime`、PLC 控制逻辑
 > 关联文档：`system-overview.md`、`data-flow.md`、`../plc/io-and-control-contract.md`
 
 ---
 
-> **当前验收边界**：V1 只做 `VFM1_FREQ_SP`、`VFM2_FREQ_SP`、`VFM3_FREQ_SP`、`VF1_FREQ_SP`、`VF2_FREQ_SP`、`VF3_FREQ_SP` 六个变频频率目标写入，替代人工设定目标频率。生产操作不是逐条点确认；操作员只选择 `MANUAL` 或 `AUTO`，`AUTO` 授权后由 edge 自动签发六频率目标，任一 gate 失败进入 `AUTO_SUSPENDED` / 退回手动。PLC 仍负责现场顺控、料位报警后的停/延时/恢复、联锁、设备保护和实际输出。本文中“完整工艺联锁、PLC authority、HMI 直连、稳态优化”等内容均为 V2/V3 策略说明，不作为 V1 验收条件。
+> **当前验收边界**：当前生产只开放 edge-api 侧六个变频频率目标写入，替代人工设定目标频率；DryHMI PLC direct 已确认为最终必做能力，但未通过真实 PLC/HMI e2e 前生产保持 disabled。生产操作不是逐条点确认；操作员只选择 `MANUAL` 或 `AUTO`，`AUTO` 授权后由 edge 自动签发六频率目标，任一 gate 失败进入 `AUTO_SUSPENDED` / 退回手动。PLC 仍负责现场顺控、料位报警后的停/延时/恢复、联锁、设备保护和实际输出。完整工艺联锁、PLC authority、DryHMI direct、稳态优化统一进入最终 e2e，不再按 V1/V2/V3 分期验收。
 
 ## 0. 真实控制问题定义
 
@@ -30,7 +30,7 @@ DryController 的最终控制目标是 **最终成品出料湿度 `MT1_H` 稳定
 
 | 语义 | 方向 | 用途 |
 |---|---|---|
-| Edge/HMI 目标频率 SP | edge/HMI -> PLC | 只通过 `D5100-D5299` 单路事务写入，`D5104` 为通道、`D5110` 为单个频率值；表示上位机希望 PLC 执行的目标 |
+| Edge/HMI 目标频率 SP | edge/HMI -> PLC | edge 在线通过 `D5100-D5299` 单路事务写入，`D5104` 为通道、`D5110` 为单个频率值；edge 不可用且 PLC 授权时 DryHMI 通过 `D5550-D5599` direct 事务写 DryHMI 目标缓冲区；表示上位机希望 PLC 执行的目标 |
 | PLC 接受后的有效目标 | PLC -> edge | PLC 经模式、联锁、限幅、斜坡策略接受后的内部目标；只能用于解释 PLC 当前追哪个目标 |
 | PLC 输出给变频器的命令 MV | PLC -> edge | PLC 实际下发给变频器的输出命令，反映限幅/斜坡后的执行量 |
 | 变频器实际反馈 PV | VFD -> PLC -> edge | 当前 invalid/not-wired；后续新增反馈线或通讯后另签，用于判断执行是否到位 |
@@ -49,8 +49,9 @@ DryController 的最终控制目标是 **最终成品出料湿度 `MT1_H` 稳定
 
 ### 1.2 控制边界
 
-- **V1 当前阶段**：edge/HMI 只写六个变频频率目标。`MANUAL` 下人工设目标频率，`AUTO` 下 edge 规则/算法自动签发目标频率；两种模式都必须经过模式授权、软点白名单、范围校验、变化率/冷却限制、ACK/NAK、读回确认和审计。PLC 执行现场逻辑、安全、顺控、联锁、设备保护和最终输出。
-- **V2/V3 目标阶段**：edge 才逐步进入真正的监督控制/稳态控制，根据电流、料位事件、温度、湿度、下游能力等生成 6 个频率策略；PLC/VFD/硬接线保留最终物理安全兜底。
+- **当前生产阶段**：edge/HMI 只通过 edge-api 写六个变频频率目标。`MANUAL` 下人工设目标频率，`AUTO` 下 edge 规则/算法自动签发目标频率；两种模式都必须经过模式授权、软点白名单、范围校验、变化率/冷却限制、ACK/NAK、读回确认和审计。PLC 执行现场逻辑、安全、顺控、联锁、设备保护和最终输出。
+- **最终必做能力**：edge 不可用且 PLC 授权时，DryHMI 通过 PLC direct 写 DryHMI 目标缓冲区；该路径必须校验 owner/epoch/direct-enable、ACK/NAK、读回和审计，不能绕过 PLC 输出提交。
+- **后续监督控制/稳态控制**：edge 根据电流、料位事件、温度、湿度、下游能力等生成 6 个频率策略；PLC/VFD/硬接线保留最终物理安全兜底。
 
 ---
 
@@ -65,7 +66,7 @@ V1 只允许以下六个频率目标软点：
 - `VF2_FREQ_SP`
 - `VF3_FREQ_SP`
 
-链速、启停命令、风门、温度设定、锅炉/燃烧控制、HMI 直连、PLC 控制权锁等都不属于 V1 验收范围，保留为 V2/V3。实际 Tag 名与含义请参照：`docs/plc/io-and-control-contract.md`。
+链速、启停命令、风门、温度设定、锅炉/燃烧控制等不属于当前六频率验收范围。DryHMI 直连和 PLC 控制权锁属于最终必做能力，但生产启用前必须完成真实 PLC/HMI e2e。实际 Tag 名与含义请参照：`docs/plc/io-and-control-contract.md`。
 
 ---
 
@@ -117,14 +118,14 @@ edge-daq 写 PLC 六个 SP，记录 ACK/NAK 与读回结果
   - 保留诊断、建议和可解释 evidence。
   - HMI 只提供“转手动 / 重新授权 AUTO / 查看原因”，不要求逐条补确认。
 
-### 3.4 V2/V3 监督控制扩展
+### 3.4 监督控制扩展
 
 - 未来可选模式：
   - edge-api 在 `AUTO` 授权层级下，把 suggestion 转成 signed command
   - `edge-daq` 只消费 signed command 写 PLC，AI 不直接写 PLC
   - edge-api 仍必须执行 range guard、ramp/slew limiter、工艺联锁、签名和审计
   - PLC/VFD/硬接线保留最终物理安全兜底
-- V1 不开放 HMI 直连 PLC，不要求 PLC authority token 作为六频率 edge-api 写入的前置条件。
+- 当前生产不开放 HMI 直连 PLC，不要求 PLC authority epoch 作为六频率 edge-api 写入的前置条件。DryHMI PLC direct 是最终必做能力，必须在 PLC owner/epoch/direct-enable 授权后才可启用。
 - 启用前必须：
   - 在现场充分测试
   - 与工艺与安全部门共同评估后决策
