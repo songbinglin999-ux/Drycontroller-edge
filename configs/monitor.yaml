@@ -23,7 +23,13 @@ services:
     - name: "edge-daq"
       url: "http://edge-daq:8080/ready"
       container: "edge-daq"
-    # ai-softsensor / ai-ctrl-optimizer：V0 只读不启用（compose profiles: ["ai"]），故不监控、不自愈；启用 AI（V2/V3）时同步加回
+    - name: "ai-softsensor"
+      url: "http://ai-softsensor:8080/ready"
+      container: "ai-softsensor"
+      # /ready 表示模型、MQTT 和数据质量都可信；缺模型或无 PLC 数据时允许 degraded，不做自动重启。
+      self_heal:
+        enabled: false
+    # ai-ctrl-optimizer：控制优化仍默认不启用（compose profile: ["ai"]），故不监控、不自愈；启用控制优化时再加回
     - name: "license-service"
       url: "http://license-service:8000/ready"
       container: "license-service"
@@ -48,4 +54,3 @@ services:
       tcp:
         host: "edge-postgres"
         port: 5432
-

@@ -351,14 +351,14 @@ services:
 
   # ==================== AI 软测量服务 ====================
   ai-softsensor:
-    profiles: ["ai"]   # V0 只读不启用 AI 软测量；`--profile ai` 启用（V2/V3）
+    # 只读软测量默认启动；模型或数据未就绪时 /ready 可降级，但容器本身不应因缺 PLC 数据重启。
     build:
       context: .
       dockerfile: services/ai-softsensor/Dockerfile
     container_name: ai-softsensor
     ulimits: *default-ulimits
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -392,7 +392,7 @@ services:
 
   # ==================== AI 控制优化服务 ====================
   ai-ctrl-optimizer:
-    profiles: ["ai"]   # V0 只读不启用 控制优化；`--profile ai` 启用（V2/V3）
+    profiles: ["ai"]   # 控制优化仍默认关闭；`--profile ai` 仅用于后续控制算法试验
     build:
       context: .
       dockerfile: services/ai-ctrl-optimizer/Dockerfile
