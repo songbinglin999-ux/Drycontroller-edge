@@ -245,8 +245,11 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 - **MANUAL（默认）**：操作员直接设六个频率目标，edge-api 只在 gate 通过后签发 command；它不是绕过安全链路。
 - **AUTO**：操作员显式授权后，edge-api 自动把规则/算法 suggestion 转签名 command 下发，由 PLC 侧 clamp / 本地模式 / 心跳门控 / 急停兜底。约束：
   - **需人工显式授权开启**，默认不开；
+  - 无人值守 AUTO 只负责自动生成单路频率任务，仍复用 edge-daq 的 D5100 队列；同一时刻只允许一个 in-flight 请求，上一条 ACK/NAK/超时处理完成后才发下一条；
   - 当前仅允许六个频率目标；6SP 地址/倍率/反馈/ACK-NAK/读回/安全覆盖状态签收前必须 fail-closed；
-  - 授权一直有效，**直到运维手动退回 MANUAL** 或 gate 失败；
+  - edge HMI 人工修改任一频率目标时，立即退回 **MANUAL**，停止 AUTO 生成新任务，并丢弃/冻结尚未下发的 AUTO 任务；该人工目标仍按 `mode=MANUAL` 走同一条 D5100 单路事务；
+  - PLC 本地屏/旧屏/维护操作接管时，PLC 必须通过 owner/state/local-manual 信号暴露；edge 读到后进入 **AUTO_SUSPENDED** 或 MANUAL 展示态，停止写 D5100，避免和现场本地操作抢控制权；
+  - 授权一直有效，**直到运维手动退回 MANUAL**、人工调频、PLC 本地接管或 gate 失败；
   - 进入本地模式 / 维护锁定 / 任一控制依赖 fail-closed 时自动进入 **AUTO_SUSPENDED**，停止新 command；恢复后需重新人工授权才能再次进入 AUTO。
 
 ---
@@ -365,6 +368,8 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 | HMI 接管 | PLC owner 切为 HMI/PLC_LOCAL 并授予直连；edge-api 拒绝控制写入；edge 恢复后只能申请接管 |
 | stale authority token | PLC NAK；edge-api 审计为控制权过期，不重放 |
 | 越界 / 变化率超限 setpoint | edge-api range guard / ramp-slew gate 拒绝或缓变；edge-daq 二次拒绝非法值；PLC/VFD final clamp 兜底 |
+| edge HMI 人工调频 | 立即退回 `MANUAL`，停止 AUTO 任务生成；人工目标按 D5100 单路队列下发 |
+| PLC 本地屏 / 旧屏人工调频 | 依赖 PLC owner/state/local-manual 信号；edge 进入 `AUTO_SUSPENDED` 或 MANUAL 展示态，停止写 D5100 |
 | 维护锁定期间 edge 恢复 | PLC 不自动接管，需手动解除 |
 | AUTO 运行中 PLC 切本地 / 依赖 fail-closed | 自动进入 `AUTO_SUSPENDED` / `MANUAL`；恢复后需重新人工授权 |
 | 宿主机重启 | Tailscale、SSH、watchdog、业务 compose 按序恢复，无需现场介入 |
