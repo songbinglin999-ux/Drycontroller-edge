@@ -6,6 +6,13 @@ Modbus RTU-over-TCP 从站模拟器（联调用，非生产服务）。
 切真实 PLC 时只需把 PLC_HOST 指到真机（MODBUS_FRAMER=rtu / PLC_PORT 保持），
 edge 侧代码路径不变。
 
+作用范围：本模拟器只跑 34 个生产读点位的最小帧重放（D0-D21 / D40-D44 /
+D45-D46 / D53 + 6 个 LL 线圈），不实现 D5100-D5299 频率事务 ACK/NAK、
+D5290-D5293 心跳、D5400-D5415 owner/epoch 授权。需要验 edge 握手契约
+完整闭环（PLC_HEARTBEAT 翻转、EDGE_HOST_ALIVE 写入、D5100 单路频率
+请求 ACK/NAK、权限申请/被抢权 suspend）请用 Drycontroller-plc/
+simulator/fas66mt_fake_plc.py，端口/帧/站号一致可直接换。
+
 点位来自集成商真实点表「数据点位表.csv」的 DryController 当前「读」点（D 字寄存器，0x03）：
   电流 D0-D21 / 温度湿度 D40-D45 / 湿度状态 D53。
 D30-D35 属于 PLC 原工程/PLC 屏侧旧频率链路，不进入 DryController 采集或控制路径。
