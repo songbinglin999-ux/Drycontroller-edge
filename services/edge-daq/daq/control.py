@@ -19,6 +19,8 @@ import paho.mqtt.client as mqtt
 import structlog
 from prometheus_client import Counter
 
+from daq.frequency_transaction import SixFrequencyTransactionWriter
+
 logger = structlog.get_logger(__name__)
 CONTROL_WRITE_SUCCESS = Counter("control_write_success_total", "Control writes success", ["type"])
 CONTROL_WRITE_FAILURE = Counter("control_write_failure_total", "Control writes failure", ["type"])
@@ -37,6 +39,7 @@ ALLOWED_CONTROL_SOFTPOINTS = {
     "VF2_FREQ_SP",
     "VF3_FREQ_SP",
 }
+SIX_FREQUENCY_TRANSACTION_TAG = "SIX_FREQUENCY_TARGETS"
 
 
 def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -98,6 +101,8 @@ class ControlSubscriber:
         allowed_tags_env = os.getenv("CONTROL_ALLOWED_TAGS", "")
         self.allowed_tags = {t.strip() for t in allowed_tags_env.split(",") if t.strip()} if allowed_tags_env else None
         self.ack_topic = os.getenv("CONTROL_ACK_TOPIC", f"control/{line_id}/acks")
+        self.enable_d5100_writer = os.getenv("CONTROL_ENABLE_D5100_WRITER", "false").lower() == "true"
+        self.frequency_writer = SixFrequencyTransactionWriter(self.modbus_client)
         self.idempotency_window_sec = float(os.getenv("CONTROL_IDEMPOTENCY_WINDOW_SEC", "30") or "30")
         self.require_timestamp = os.getenv("CONTROL_REQUIRE_TIMESTAMP", "true").lower() == "true"
         self.require_id = os.getenv("CONTROL_REQUIRE_ID", "true").lower() == "true"
@@ -288,8 +293,13 @@ class ControlSubscriber:
     def _on_message(self, client, userdata, msg):
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
-            tag_name = payload.get("tag")
-            value = payload.get("value")
+            command_type = str(payload.get("type") or "")
+            if command_type == "six_frequency_targets":
+                tag_name = SIX_FREQUENCY_TRANSACTION_TAG
+                value = payload.get("targets", payload.get("value"))
+            else:
+                tag_name = payload.get("tag")
+                value = payload.get("value")
             msg_id = payload.get("id")
             msg_ts = payload.get("ts")
             msg_sig = payload.get("sig")
@@ -347,6 +357,9 @@ class ControlSubscriber:
                 CONTROL_SIG_INVALID.inc()
                 logger.warning("control_signature_invalid", id=msg_id)
                 return self._reject(msg_id, tag_name, value, "signature_invalid", remember=False)
+
+        if command_type == "six_frequency_targets":
+            return self._handle_six_frequency_transaction(payload, msg_id, value)
 
         tag_config = self.tag_index.get(tag_name)
         if not tag_config:
@@ -470,6 +483,74 @@ class ControlSubscriber:
             CONTROL_REPLAY_DROPPED.inc()
             logger.warning("control_replay_detected", id=msg_id)
             return self._reject(msg_id, tag_name, value, "replay_detected", remember=False)
+
+        self._dispatch_write(_do_write)
+        self.last_sent_ts[tag_name] = now
+
+    def _handle_six_frequency_transaction(self, payload: dict, msg_id: Optional[str], targets: Any):
+        tag_name = SIX_FREQUENCY_TRANSACTION_TAG
+        if not self.enable_d5100_writer:
+            return self._reject(msg_id, tag_name, targets, "d5100_writer_disabled")
+        if self.allowed_tags and tag_name not in self.allowed_tags:
+            logger.warning("control_tag_not_in_acl", tag=tag_name)
+            return self._reject(msg_id, tag_name, targets, "tag_not_in_acl")
+
+        now = time.time()
+        last_ts = self.last_sent_ts.get(tag_name, 0)
+        if (now - last_ts) * 1000 < self.min_interval_ms:
+            CONTROL_RATE_LIMIT.inc()
+            logger.warning("control_rate_limited", tag=tag_name, interval_ms=self.min_interval_ms)
+            return self._reject(
+                msg_id,
+                tag_name,
+                targets,
+                "rate_limited",
+                {"interval_ms": self.min_interval_ms},
+                remember=False,
+            )
+
+        if msg_id and not self._remember_id_if_new(str(msg_id)):
+            CONTROL_REPLAY_DROPPED.inc()
+            logger.warning("control_replay_detected", id=msg_id)
+            return self._reject(msg_id, tag_name, targets, "replay_detected", remember=False)
+
+        mode = payload.get("mode", 2)
+        seq = payload.get("seq")
+        timeout_sec = float(payload.get("timeout_sec", 3.0) or 3.0)
+
+        async def _do_write():
+            result = await self.frequency_writer.write_targets(
+                targets,
+                mode=mode,
+                seq=seq,
+                timeout_sec=timeout_sec,
+                refresh_heartbeat=False,
+            )
+            detail = {
+                "seq": result.seq,
+                "ack_seq": result.ack_seq,
+                "nak_seq": result.nak_seq,
+                "nak_code": result.nak_code,
+                "active_targets": result.active_targets,
+            }
+            if result.detail:
+                detail["detail"] = result.detail
+
+            if result.ok:
+                CONTROL_WRITE_SUCCESS.labels("d5100").inc()
+                self._ack(msg_id, tag_name, "success", targets, detail=detail)
+                return
+
+            CONTROL_WRITE_FAILURE.labels("d5100").inc()
+            status = "nak" if result.status == "nak" else "failed"
+            self._ack(
+                msg_id,
+                tag_name,
+                status,
+                targets,
+                reason=result.reason or result.status,
+                detail=detail,
+            )
 
         self._dispatch_write(_do_write)
         self.last_sent_ts[tag_name] = now

@@ -10,8 +10,10 @@ from daq.control import (
     ControlSubscriber,
     CONTROL_SIG_INVALID,
     CONTROL_REPLAY_DROPPED,
+    SIX_FREQUENCY_TRANSACTION_TAG,
     _build_tag_index,
 )
+from daq.frequency_transaction import SixFrequencyTransactionResult
 from daq.simulator import PLCSimulator
 
 
@@ -54,6 +56,16 @@ class FakeMQTTClient:
                 self.rc = rc
 
         return R(self.rc)
+
+
+class FakeFrequencyWriter:
+    def __init__(self, result: SixFrequencyTransactionResult):
+        self.result = result
+        self.calls = []
+
+    async def write_targets(self, targets, **kwargs):
+        self.calls.append((list(targets), kwargs))
+        return self.result
 
 
 class FakeSubscribeClient:
@@ -150,6 +162,77 @@ def test_heartbeat_entries_are_not_control_softpoints():
     index = _build_tag_index(cfg)
 
     assert set(index) == {CONTROL_TAG}
+
+
+def test_six_frequency_transaction_command_is_disabled_by_default(monkeypatch):
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config={})
+
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": "six_frequency_targets",
+                    "targets": [31, 32, 33, 34, 35, 36],
+                    "id": "six-disabled",
+                }
+            ).encode()
+        ),
+    )
+
+    assert modbus.writes == 0
+    ack = _last_ack(cs)
+    assert ack["id"] == "six-disabled"
+    assert ack["tag"] == SIX_FREQUENCY_TRANSACTION_TAG
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "d5100_writer_disabled"
+
+
+@pytest.mark.asyncio
+async def test_six_frequency_transaction_command_uses_d5100_writer_when_enabled(monkeypatch):
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config={})
+    fake_writer = FakeFrequencyWriter(
+        SixFrequencyTransactionResult(
+            status="success",
+            seq=21,
+            ack_seq=21,
+            active_targets=[31, 32, 33, 34, 35, 36],
+        )
+    )
+    cs.frequency_writer = fake_writer
+
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": "six_frequency_targets",
+                    "targets": [31, 32, 33, 34, 35, 36],
+                    "mode": 2,
+                    "seq": 21,
+                    "id": "six-ok",
+                }
+            ).encode()
+        ),
+    )
+    await asyncio.sleep(0)
+
+    assert modbus.writes == 0
+    assert fake_writer.calls == [
+        (
+            [31, 32, 33, 34, 35, 36],
+            {"mode": 2, "seq": 21, "timeout_sec": 3.0, "refresh_heartbeat": False},
+        )
+    ]
+    ack = _last_ack(cs)
+    assert ack["id"] == "six-ok"
+    assert ack["tag"] == SIX_FREQUENCY_TRANSACTION_TAG
+    assert ack["status"] == "success"
+    assert ack["detail"]["seq"] == 21
+    assert ack["detail"]["active_targets"] == [31, 32, 33, 34, 35, 36]
 
 
 @pytest.mark.asyncio
