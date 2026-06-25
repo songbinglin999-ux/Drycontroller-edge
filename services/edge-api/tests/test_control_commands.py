@@ -88,8 +88,18 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
     payload = published["payload"]
     assert payload["tag"] == "VFM1_FREQ_SP"
     assert payload["value"] == 10
+    assert payload["type"] == "single_frequency_set"
+    assert payload["mode"] == 2
     assert "id" in payload and "ts" in payload and "sig" in payload
-    assert payload["sig"] == _hmac_sig("secret-1", payload["id"], payload["ts"], payload["tag"], payload["value"])
+    assert payload["sig"] == _hmac_sig(
+        "secret-1",
+        payload["id"],
+        payload["ts"],
+        payload["tag"],
+        payload["value"],
+        command_type="single_frequency_set",
+        mode=2,
+    )
 
 
 @pytest.mark.asyncio
@@ -297,5 +307,5 @@ async def test_emergency_stop_unavailable_until_softpoint_contract(monkeypatch):
     assert resp["success"] is False
     assert resp["status"] == "unavailable"
     assert resp["error"] == "software_estop_unavailable_pending_softpoint_contract"
-    assert resp["data"]["reason"] == "edge_v2_p3_softpoint_contract_pending"
+    assert resp["data"]["reason"] == "software_estop_softpoint_contract_pending"
     assert send_batch_called is False

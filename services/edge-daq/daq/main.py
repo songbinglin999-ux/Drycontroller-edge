@@ -111,7 +111,7 @@ def _merge_read_addresses(tags_config: dict, address_map: dict) -> int:
 
 
 def _derive_heartbeat_config(address_map: dict) -> dict:
-    """Build V0 heartbeat config from the PLC address SSOT when signed off."""
+    """Build heartbeat config from the PLC address SSOT when signed off."""
     if not isinstance(address_map, dict):
         return {}
 
@@ -197,7 +197,7 @@ class DAQService:
             self.config = yaml.safe_load(f)
 
         # 中间层：寄存器地址（位号→地址）与控制写软点从 configs/modbus-address-map.yaml 取，
-        # 不内嵌在只读 tags.yaml 里。带 writable 的条目即 V1 六个频率控制软点。
+        # 不内嵌在只读 tags.yaml 里。带 writable 的条目即 6 个频率控制软点。
         address_map_path = Path(os.getenv("MODBUS_ADDRESS_MAP", "/app/configs/modbus-address-map.yaml"))
         address_map = {}
         if address_map_path.exists():

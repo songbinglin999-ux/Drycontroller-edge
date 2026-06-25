@@ -10,10 +10,10 @@ from daq.control import (
     ControlSubscriber,
     CONTROL_SIG_INVALID,
     CONTROL_REPLAY_DROPPED,
-    SIX_FREQUENCY_TRANSACTION_TAG,
+    SINGLE_FREQUENCY_COMMAND_TYPE,
     _build_tag_index,
 )
-from daq.frequency_transaction import SixFrequencyTransactionResult
+from daq.frequency_transaction import FrequencyTransactionResult
 from daq.simulator import PLCSimulator
 
 
@@ -59,12 +59,12 @@ class FakeMQTTClient:
 
 
 class FakeFrequencyWriter:
-    def __init__(self, result: SixFrequencyTransactionResult):
+    def __init__(self, result: FrequencyTransactionResult):
         self.result = result
         self.calls = []
 
-    async def write_targets(self, targets, **kwargs):
-        self.calls.append((list(targets), kwargs))
+    async def write_one(self, channel, value, **kwargs):
+        self.calls.append((channel, value, kwargs))
         return self.result
 
 
@@ -98,8 +98,19 @@ def _address_map_softpoint(address: object, scale: object = 1.0, *, tag: str = C
     }
 
 
-def _make_sig(secret: str, msg_id: str, ts: float, tag: str, value: float) -> str:
+def _make_sig(
+    secret: str,
+    msg_id: str,
+    ts: float,
+    tag: str,
+    value: float,
+    *,
+    command_type: str = "",
+    mode: int | None = None,
+) -> str:
     base = f"{msg_id}:{ts}:{tag}:{value}"
+    if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
+        base = f"{base}:{command_type}:{mode}"
     return hmac.new(secret.encode(), base.encode(), hashlib.sha256).hexdigest()
 
 
@@ -164,7 +175,7 @@ def test_heartbeat_entries_are_not_control_softpoints():
     assert set(index) == {CONTROL_TAG}
 
 
-def test_six_frequency_transaction_command_is_disabled_by_default(monkeypatch):
+def test_single_frequency_transaction_command_is_disabled_by_default(monkeypatch):
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config={})
 
     cs._on_message(
@@ -173,9 +184,10 @@ def test_six_frequency_transaction_command_is_disabled_by_default(monkeypatch):
         FakeMQTTMsg(
             json.dumps(
                 {
-                    "type": "six_frequency_targets",
-                    "targets": [31, 32, 33, 34, 35, 36],
-                    "id": "six-disabled",
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": "VFM1_FREQ_SP",
+                    "value": 31,
+                    "id": "single-disabled",
                 }
             ).encode()
         ),
@@ -183,22 +195,24 @@ def test_six_frequency_transaction_command_is_disabled_by_default(monkeypatch):
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
-    assert ack["id"] == "six-disabled"
-    assert ack["tag"] == SIX_FREQUENCY_TRANSACTION_TAG
+    assert ack["id"] == "single-disabled"
+    assert ack["tag"] == "VFM1_FREQ_SP"
     assert ack["status"] == "nak"
     assert ack["reason"] == "d5100_writer_disabled"
 
 
 @pytest.mark.asyncio
-async def test_six_frequency_transaction_command_uses_d5100_writer_when_enabled(monkeypatch):
+async def test_single_frequency_transaction_command_uses_d5100_writer_when_enabled(monkeypatch):
     monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config={})
     fake_writer = FakeFrequencyWriter(
-        SixFrequencyTransactionResult(
+        FrequencyTransactionResult(
             status="success",
             seq=21,
+            channel=1,
+            value=31,
             ack_seq=21,
-            active_targets=[31, 32, 33, 34, 35, 36],
+            active_targets=[31, 0, 0, 0, 0, 0],
         )
     )
     cs.frequency_writer = fake_writer
@@ -209,11 +223,12 @@ async def test_six_frequency_transaction_command_uses_d5100_writer_when_enabled(
         FakeMQTTMsg(
             json.dumps(
                 {
-                    "type": "six_frequency_targets",
-                    "targets": [31, 32, 33, 34, 35, 36],
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": "VFM1_FREQ_SP",
+                    "value": 31,
                     "mode": 2,
                     "seq": 21,
-                    "id": "six-ok",
+                    "id": "single-ok",
                 }
             ).encode()
         ),
@@ -223,16 +238,83 @@ async def test_six_frequency_transaction_command_uses_d5100_writer_when_enabled(
     assert modbus.writes == 0
     assert fake_writer.calls == [
         (
-            [31, 32, 33, 34, 35, 36],
+            1,
+            31,
             {"mode": 2, "seq": 21, "timeout_sec": 3.0, "refresh_heartbeat": False},
         )
     ]
     ack = _last_ack(cs)
-    assert ack["id"] == "six-ok"
-    assert ack["tag"] == SIX_FREQUENCY_TRANSACTION_TAG
+    assert ack["id"] == "single-ok"
+    assert ack["tag"] == "VFM1_FREQ_SP"
     assert ack["status"] == "success"
     assert ack["detail"]["seq"] == 21
-    assert ack["detail"]["active_targets"] == [31, 32, 33, 34, 35, 36]
+    assert ack["detail"]["channel"] == 1
+    assert ack["detail"]["value"] == 31
+    assert ack["detail"]["active_targets"] == [31, 0, 0, 0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_single_frequency_transactions_are_queued_one_at_a_time(monkeypatch):
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config={})
+    call_order = []
+
+    class SlowFrequencyWriter:
+        async def write_one(self, channel, value, **kwargs):
+            call_order.append(("start", channel, value))
+            await asyncio.sleep(0.02)
+            call_order.append(("done", channel, value))
+            return FrequencyTransactionResult(
+                status="success",
+                seq=kwargs["seq"],
+                channel=channel,
+                value=value,
+                ack_seq=kwargs["seq"],
+                active_targets=[31 if channel == 1 else 0, 32 if channel == 2 else 0, 0, 0, 0, 0],
+            )
+
+    cs.frequency_writer = SlowFrequencyWriter()
+
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": "VFM1_FREQ_SP",
+                    "value": 31,
+                    "seq": 31,
+                    "id": "queue-1",
+                }
+            ).encode()
+        ),
+    )
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": "VFM2_FREQ_SP",
+                    "value": 32,
+                    "seq": 32,
+                    "id": "queue-2",
+                }
+            ).encode()
+        ),
+    )
+    await asyncio.sleep(0.06)
+
+    assert modbus.writes == 0
+    assert call_order == [
+        ("start", 1, 31),
+        ("done", 1, 31),
+        ("start", 2, 32),
+        ("done", 2, 32),
+    ]
+    assert [payload["id"] for _, payload, _ in cs.client.published[-2:]] == ["queue-1", "queue-2"]
 
 
 @pytest.mark.asyncio

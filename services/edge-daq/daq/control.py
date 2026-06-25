@@ -19,7 +19,7 @@ import paho.mqtt.client as mqtt
 import structlog
 from prometheus_client import Counter
 
-from daq.frequency_transaction import SixFrequencyTransactionWriter
+from daq.frequency_transaction import SingleFrequencyTransactionWriter
 
 logger = structlog.get_logger(__name__)
 CONTROL_WRITE_SUCCESS = Counter("control_write_success_total", "Control writes success", ["type"])
@@ -39,17 +39,27 @@ ALLOWED_CONTROL_SOFTPOINTS = {
     "VF2_FREQ_SP",
     "VF3_FREQ_SP",
 }
-SIX_FREQUENCY_TRANSACTION_TAG = "SIX_FREQUENCY_TARGETS"
+FREQUENCY_CHANNELS = {
+    "VFM1_FREQ_SP": 1,
+    "VFM2_FREQ_SP": 2,
+    "VFM3_FREQ_SP": 3,
+    "VF1_FREQ_SP": 4,
+    "VF2_FREQ_SP": 5,
+    "VF3_FREQ_SP": 6,
+}
+FREQUENCY_MIN_HZ = 0
+FREQUENCY_MAX_HZ = 50
+SINGLE_FREQUENCY_COMMAND_TYPE = "single_frequency_set"
 
 
 def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """
-    V1 控制写入只接受 modbus-address-map.yaml 中签收的 6 个频率软点。
+    控制写入只接受 modbus-address-map.yaml 中签收的 6 个频率软点。
     52 个 tags.yaml I/O 点均为只读，不再从 control_enabled 推导写点。
     """
     index = {}
     # 控制写软点的寄存器地址来自中间层 configs/modbus-address-map.yaml（位号→地址），
-    # 不再从只读 tags.yaml 取。带 writable=true 且在白名单中的条目即 V1 控制软点；
+    # 不再从只读 tags.yaml 取。带 writable=true 且在白名单中的条目即控制软点；
     # range/unit 与 edge-api ALLOWED_CONTROL_SOFTPOINTS 镜像，edge-daq 独立做范围兜底
     # （纵深防御，见 P0-CTRL-NAK）。address/scale 在集成商签收前为 "TBD"。
     address_map = config.get("modbus_address_map", {})
@@ -102,7 +112,10 @@ class ControlSubscriber:
         self.allowed_tags = {t.strip() for t in allowed_tags_env.split(",") if t.strip()} if allowed_tags_env else None
         self.ack_topic = os.getenv("CONTROL_ACK_TOPIC", f"control/{line_id}/acks")
         self.enable_d5100_writer = os.getenv("CONTROL_ENABLE_D5100_WRITER", "false").lower() == "true"
-        self.frequency_writer = SixFrequencyTransactionWriter(self.modbus_client)
+        self.frequency_writer = SingleFrequencyTransactionWriter(self.modbus_client)
+        self._frequency_queue = deque()
+        self._frequency_queue_draining = False
+        self._frequency_queue_lock = threading.Lock()
         self.idempotency_window_sec = float(os.getenv("CONTROL_IDEMPOTENCY_WINDOW_SEC", "30") or "30")
         self.require_timestamp = os.getenv("CONTROL_REQUIRE_TIMESTAMP", "true").lower() == "true"
         self.require_id = os.getenv("CONTROL_REQUIRE_ID", "true").lower() == "true"
@@ -294,12 +307,8 @@ class ControlSubscriber:
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
             command_type = str(payload.get("type") or "")
-            if command_type == "six_frequency_targets":
-                tag_name = SIX_FREQUENCY_TRANSACTION_TAG
-                value = payload.get("targets", payload.get("value"))
-            else:
-                tag_name = payload.get("tag")
-                value = payload.get("value")
+            tag_name = payload.get("tag")
+            value = payload.get("value")
             msg_id = payload.get("id")
             msg_ts = payload.get("ts")
             msg_sig = payload.get("sig")
@@ -353,13 +362,21 @@ class ControlSubscriber:
                 CONTROL_SIG_INVALID.inc()
                 logger.warning("control_signature_missing")
                 return self._reject(msg_id, tag_name, value, "signature_missing", remember=False)
-            if not self._verify_signature(msg_sig, msg_id, msg_ts_f, tag_name, value):
+            if not self._verify_signature(
+                msg_sig,
+                msg_id,
+                msg_ts_f,
+                tag_name,
+                value,
+                command_type=command_type,
+                mode=payload.get("mode"),
+            ):
                 CONTROL_SIG_INVALID.inc()
                 logger.warning("control_signature_invalid", id=msg_id)
                 return self._reject(msg_id, tag_name, value, "signature_invalid", remember=False)
 
-        if command_type == "six_frequency_targets":
-            return self._handle_six_frequency_transaction(payload, msg_id, value)
+        if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
+            return self._handle_single_frequency_transaction(payload, msg_id, tag_name, value)
 
         tag_config = self.tag_index.get(tag_name)
         if not tag_config:
@@ -487,13 +504,15 @@ class ControlSubscriber:
         self._dispatch_write(_do_write)
         self.last_sent_ts[tag_name] = now
 
-    def _handle_six_frequency_transaction(self, payload: dict, msg_id: Optional[str], targets: Any):
-        tag_name = SIX_FREQUENCY_TRANSACTION_TAG
+    def _handle_single_frequency_transaction(self, payload: dict, msg_id: Optional[str], tag_name: str, value: Any):
         if not self.enable_d5100_writer:
-            return self._reject(msg_id, tag_name, targets, "d5100_writer_disabled")
+            return self._reject(msg_id, tag_name, value, "d5100_writer_disabled")
+        channel = FREQUENCY_CHANNELS.get(tag_name)
+        if channel is None:
+            return self._reject(msg_id, tag_name, value, "softpoint_not_allowed")
         if self.allowed_tags and tag_name not in self.allowed_tags:
             logger.warning("control_tag_not_in_acl", tag=tag_name)
-            return self._reject(msg_id, tag_name, targets, "tag_not_in_acl")
+            return self._reject(msg_id, tag_name, value, "tag_not_in_acl")
 
         now = time.time()
         last_ts = self.last_sent_ts.get(tag_name, 0)
@@ -503,24 +522,39 @@ class ControlSubscriber:
             return self._reject(
                 msg_id,
                 tag_name,
-                targets,
+                value,
                 "rate_limited",
                 {"interval_ms": self.min_interval_ms},
                 remember=False,
             )
 
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+            logger.warning("control_value_not_numeric", tag=tag_name, value=value)
+            return self._reject(msg_id, tag_name, value, "value_not_numeric")
+        if value < FREQUENCY_MIN_HZ or value > FREQUENCY_MAX_HZ:
+            return self._reject(
+                msg_id,
+                tag_name,
+                value,
+                "value_out_of_range",
+                {"range": [FREQUENCY_MIN_HZ, FREQUENCY_MAX_HZ]},
+            )
+        if not float(value).is_integer():
+            return self._reject(msg_id, tag_name, value, "value_not_integer")
+
         if msg_id and not self._remember_id_if_new(str(msg_id)):
             CONTROL_REPLAY_DROPPED.inc()
             logger.warning("control_replay_detected", id=msg_id)
-            return self._reject(msg_id, tag_name, targets, "replay_detected", remember=False)
+            return self._reject(msg_id, tag_name, value, "replay_detected", remember=False)
 
         mode = payload.get("mode", 2)
         seq = payload.get("seq")
         timeout_sec = float(payload.get("timeout_sec", 3.0) or 3.0)
 
         async def _do_write():
-            result = await self.frequency_writer.write_targets(
-                targets,
+            result = await self.frequency_writer.write_one(
+                channel,
+                int(value),
                 mode=mode,
                 seq=seq,
                 timeout_sec=timeout_sec,
@@ -528,6 +562,8 @@ class ControlSubscriber:
             )
             detail = {
                 "seq": result.seq,
+                "channel": result.channel,
+                "value": result.value,
                 "ack_seq": result.ack_seq,
                 "nak_seq": result.nak_seq,
                 "nak_code": result.nak_code,
@@ -538,7 +574,7 @@ class ControlSubscriber:
 
             if result.ok:
                 CONTROL_WRITE_SUCCESS.labels("d5100").inc()
-                self._ack(msg_id, tag_name, "success", targets, detail=detail)
+                self._ack(msg_id, tag_name, "success", value, detail=detail)
                 return
 
             CONTROL_WRITE_FAILURE.labels("d5100").inc()
@@ -547,13 +583,30 @@ class ControlSubscriber:
                 msg_id,
                 tag_name,
                 status,
-                targets,
+                value,
                 reason=result.reason or result.status,
                 detail=detail,
             )
 
-        self._dispatch_write(_do_write)
+        self._enqueue_frequency_write(_do_write)
         self.last_sent_ts[tag_name] = now
+
+    def _enqueue_frequency_write(self, write_coro_factory):
+        with self._frequency_queue_lock:
+            self._frequency_queue.append(write_coro_factory)
+            if self._frequency_queue_draining:
+                return
+            self._frequency_queue_draining = True
+        self._dispatch_write(self._drain_frequency_queue)
+
+    async def _drain_frequency_queue(self):
+        while True:
+            with self._frequency_queue_lock:
+                if not self._frequency_queue:
+                    self._frequency_queue_draining = False
+                    return
+                write_coro_factory = self._frequency_queue.popleft()
+            await write_coro_factory()
 
     def _dispatch_write(self, write_coro_factory):
         """把写 PLC 协程投递到可用事件循环；captured loop 已关闭时走同步兜底。"""
@@ -663,12 +716,24 @@ class ControlSubscriber:
             self.last_ack_status = status
             logger.error("control_ack_error", id=msg_id, error=str(e), status=status)
 
-    def _verify_signature(self, sig: str, msg_id: Optional[str], msg_ts: Optional[float], tag: str, value: Any) -> bool:
+    def _verify_signature(
+        self,
+        sig: str,
+        msg_id: Optional[str],
+        msg_ts: Optional[float],
+        tag: str,
+        value: Any,
+        *,
+        command_type: str = "",
+        mode: Any = None,
+    ) -> bool:
         """
         基于共享密钥的 HMAC-SHA256 校验，构造串：id:ts:tag:value
         """
         try:
             base = f"{msg_id}:{msg_ts}:{tag}:{value}"
+            if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
+                base = f"{base}:{command_type}:{mode}"
             computed = hmac.new(self.signature_secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256).hexdigest()
             return hmac.compare_digest(computed, str(sig))
         except (TypeError, ValueError) as e:

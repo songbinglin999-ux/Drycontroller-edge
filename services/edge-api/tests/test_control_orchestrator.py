@@ -178,6 +178,7 @@ async def test_orchestrator_confirms_only_actionable_softpoints(monkeypatch):
     assert command.calls
     assert command.calls[0]["tag"].endswith("_FREQ_SP")
     assert command.calls[0]["tag"] in {"VFM3_FREQ_SP", "VF3_FREQ_SP"}
+    assert command.calls[0]["mode"] == 2
     assert {event["action"] for event in audit_events} >= {
         "control.recommendation.generated",
         "control.recommendation.confirmed",
@@ -277,6 +278,7 @@ async def test_orchestrator_confirms_manual_softpoint_through_gate(monkeypatch):
             "tag": "VFM1_FREQ_SP",
             "value": 20.0,
             "msg_id": "manual-1",
+            "mode": 1,
             "wait_ack": True,
             "timeout_sec": 1.0,
         }
@@ -316,6 +318,7 @@ async def test_orchestrator_confirms_manual_softpoint_without_plc_control_state(
             "tag": "VF1_FREQ_SP",
             "value": 25.0,
             "msg_id": "manual-no-plc-state",
+            "mode": 1,
             "wait_ack": True,
             "timeout_sec": 1.0,
         }

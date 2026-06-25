@@ -23,7 +23,7 @@ from app.services.realtime_data import RealtimeDataService, get_realtime_data_se
 
 
 class ControlOrchestrator:
-    """Generate recommendations and gate authorized six-frequency commands."""
+    """Generate recommendations and gate authorized frequency commands."""
 
     def __init__(
         self,
@@ -120,6 +120,7 @@ class ControlOrchestrator:
                     line=recommendation.line_id,
                     tag=action.target_softpoint,
                     value=action.suggested_value,
+                    mode=2,
                     wait_ack=True,
                     timeout_sec=timeout_sec,
                 )
@@ -188,6 +189,7 @@ class ControlOrchestrator:
             tag=action.target_softpoint,
             value=action.suggested_value,
             msg_id=request_id,
+            mode=1,
             wait_ack=True,
             timeout_sec=timeout_sec,
         )

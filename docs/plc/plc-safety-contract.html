@@ -461,12 +461,12 @@
 <table class="wrap">
   <thead><tr><th>#</th><th>验收项</th><th>验收方式</th><th>状态</th></tr></thead>
   <tbody>
-    <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V1 六频率目标写入最小验收</td></tr>
-    <tr><td>V1-1</td><td>D5100 六频率事务量程/字序签收</td><td>PLC 签收 D5110-D5115 payload、D5100 请求序号、数据类型、缩放、0-50Hz 或现场范围、读写权限</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>V1-2</td><td>六个输出 MV + PV/status invalid 标记</td><td>edge 能读取 PLC 接受目标、PLC 输出命令/MV；当前无 PLC-VFD 通讯/反馈线时，实际 VFD PV/status 必须明确为 invalid/not-wired，不得伪造实际频率反馈</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>V1-3</td><td>PLC 安全覆盖状态/报警码</td><td>PLC/VFD/硬接线触发限幅、故障、停机、料位保护时，edge/HMI 可见该写入被覆盖或不可继续调节的状态</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>V1-4</td><td>D5100 写入 E2E</td><td>MANUAL 人工设定或 AUTO 自动目标 → edge-api 门控 → edge-daq → D5100 事务 → PLC 输出 MV 变化；越界/未授权/edge 不健康/PLC NAK 时拒绝或挂起。真实 VFD 反馈回读需后续新增反馈线或通讯后另签</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V2/V3 目标版接口能力（非 V1 blocker）</td></tr>
+    <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">最终统一频率目标写入验收</td></tr>
+    <tr><td>FREQ-1</td><td>D5100 单路频率事务量程/字序签收</td><td>PLC 签收 D5104 通道、D5110 单个频率值、D5100 请求序号、数据类型、缩放、0-50Hz 或现场范围、读写权限</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>FREQ-2</td><td>六个输出 MV + PV/status invalid 标记</td><td>edge 能读取 PLC 接受目标、PLC 输出命令/MV；当前无 PLC-VFD 通讯/反馈线时，实际 VFD PV/status 必须明确为 invalid/not-wired，不得伪造实际频率反馈</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>FREQ-3</td><td>PLC 安全覆盖状态/报警码</td><td>PLC/VFD/硬接线触发限幅、故障、停机、料位保护时，edge/HMI 可见该写入被覆盖或不可继续调节的状态</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>FREQ-4</td><td>D5100 写入 E2E</td><td>MANUAL 人工设定或 AUTO 自动目标 → edge-api 门控 → edge-daq 队列 → D5100 单路事务 → PLC 输出 MV 变化；越界/未授权/edge 不健康/PLC NAK 时拒绝或挂起。真实 VFD 反馈回读需后续新增反馈线或通讯后另签</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">最终统一接口能力</td></tr>
     <tr><td>P1</td><td>IO 采集上传</td><td>现场全部 IO（料位/温度/电流/状态/急停）稳定实时上报 edge</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P2</td><td>软点控制层执行</td><td>edge 软点命令 → PLC 正确输出到变频器/接触器/阀</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P3</td><td>参数同步</td><td>edge ↔ PLC 参数读写一致</td><td><span class="pill bad">❌ 未做</span></td></tr>

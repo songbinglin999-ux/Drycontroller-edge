@@ -9,14 +9,15 @@ import pytest
 
 from daq.frequency_transaction import (
     D_MODBUS_BASE,
-    EDGE_FREQ_SP_START,
+    EDGE_FREQ_CHANNEL,
+    EDGE_FREQ_VALUE,
     EDGE_REMOTE_RUN_START,
     EDGE_REQ_CHECK,
     EDGE_REQ_SEQ,
     EDGE_REQ_TYPE,
     PLC_ACTIVE_FREQ_TARGET_START,
     PLC_LAST_ACK_SEQ,
-    SixFrequencyTransactionWriter,
+    SingleFrequencyTransactionWriter,
 )
 from daq.modbus_client import ModbusClient
 
@@ -47,7 +48,10 @@ class FakeTransactionModbus:
             self.registers[_addr(PLC_LAST_ACK_SEQ)] = int(value)
             targets = self.readback_targets
             if targets is None:
-                targets = [self.registers.get(_addr(EDGE_FREQ_SP_START) + offset, 0) for offset in range(6)]
+                targets = [self.registers.get(_addr(PLC_ACTIVE_FREQ_TARGET_START) + offset, 0) for offset in range(6)]
+                channel = self.registers.get(_addr(EDGE_FREQ_CHANNEL), 0)
+                if 1 <= channel <= 6:
+                    targets[channel - 1] = self.registers.get(_addr(EDGE_FREQ_VALUE), 0)
             for offset, target in enumerate(targets):
                 self.registers[_addr(PLC_ACTIVE_FREQ_TARGET_START) + offset] = int(target)
         return True
@@ -56,20 +60,22 @@ class FakeTransactionModbus:
 @pytest.mark.asyncio
 async def test_frequency_transaction_writes_payload_before_sequence():
     modbus = FakeTransactionModbus()
-    writer = SixFrequencyTransactionWriter(modbus)
+    writer = SingleFrequencyTransactionWriter(modbus)
 
-    result = await writer.write_targets([31, 32, 33, 34, 35, 36], seq=3, timeout_sec=0.1)
+    result = await writer.write_one(3, 34, seq=3, timeout_sec=0.1)
 
     assert result.ok is True
-    assert result.active_targets == [31, 32, 33, 34, 35, 36]
+    assert result.channel == 3
+    assert result.value == 34
+    assert result.active_targets == [0, 0, 34, 0, 0, 0]
     assert modbus.writes[-1] == ("single", _addr(EDGE_REQ_SEQ), 3)
-    assert modbus.writes[0] == ("multi", _addr(EDGE_REQ_TYPE), [1, 2, 10, 0])
-    assert modbus.writes[1] == ("multi", _addr(EDGE_FREQ_SP_START), [31, 32, 33, 34, 35, 36])
+    assert modbus.writes[0] == ("multi", _addr(EDGE_REQ_TYPE), [1, 2, 10, 3])
+    assert modbus.writes[1] == ("single", _addr(EDGE_FREQ_VALUE), 34)
     assert modbus.writes[2] == ("multi", _addr(EDGE_REMOTE_RUN_START), [0, 0])
     assert modbus.writes[3] == (
         "single",
         _addr(EDGE_REQ_CHECK),
-        sum([1, 2, 10, 0, 31, 32, 33, 34, 35, 36, 0, 0]) & 0xFFFF,
+        sum([1, 2, 10, 3, 34, 0, 0]) & 0xFFFF,
     )
 
 
@@ -77,9 +83,9 @@ async def test_frequency_transaction_writes_payload_before_sequence():
 async def test_frequency_transaction_rejects_preexisting_sequence_status():
     modbus = FakeTransactionModbus()
     modbus.registers[_addr(PLC_LAST_ACK_SEQ)] = 8
-    writer = SixFrequencyTransactionWriter(modbus)
+    writer = SingleFrequencyTransactionWriter(modbus)
 
-    result = await writer.write_targets([31, 32, 33, 34, 35, 36], seq=8, timeout_sec=0.1)
+    result = await writer.write_one(1, 31, seq=8, timeout_sec=0.1)
 
     assert result.ok is False
     assert result.reason == "duplicate_sequence"
@@ -88,14 +94,14 @@ async def test_frequency_transaction_rejects_preexisting_sequence_status():
 
 @pytest.mark.asyncio
 async def test_frequency_transaction_fails_closed_on_readback_mismatch():
-    modbus = FakeTransactionModbus(readback_targets=[35, 35, 35, 35, 35, 35])
-    writer = SixFrequencyTransactionWriter(modbus)
+    modbus = FakeTransactionModbus(readback_targets=[0, 0, 35, 0, 0, 0])
+    writer = SingleFrequencyTransactionWriter(modbus)
 
-    result = await writer.write_targets([31, 32, 33, 34, 35, 36], seq=3, timeout_sec=0.1)
+    result = await writer.write_one(3, 34, seq=3, timeout_sec=0.1)
 
     assert result.ok is False
     assert result.reason == "readback_mismatch"
-    assert result.active_targets == [35, 35, 35, 35, 35, 35]
+    assert result.active_targets == [0, 0, 35, 0, 0, 0]
 
 
 def _free_port() -> int:
@@ -168,11 +174,11 @@ async def _stop_proc(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
-async def _write_raw_payload(client: ModbusClient, seq: int, targets: list[int]) -> None:
-    head = [1, 2, 10, 0]
-    checksum = sum([*head, *targets, 0, 0]) & 0xFFFF
+async def _write_raw_payload(client: ModbusClient, seq: int, channel: int, value: int) -> None:
+    head = [1, 2, 10, channel]
+    checksum = sum([*head, value, 0, 0]) & 0xFFFF
     assert await client.write_registers(_addr(EDGE_REQ_TYPE), head)
-    assert await client.write_registers(_addr(EDGE_FREQ_SP_START), targets)
+    assert await client.write_register(_addr(EDGE_FREQ_VALUE), value)
     assert await client.write_registers(_addr(EDGE_REMOTE_RUN_START), [0, 0])
     assert await client.write_register(_addr(EDGE_REQ_CHECK), checksum)
     assert await client.write_register(_addr(EDGE_REQ_SEQ), seq)
@@ -196,43 +202,43 @@ async def test_frequency_transaction_socket_e2e_against_fas66mt_fake_plc():
     port = _free_port()
     proc = await _start_fake_plc(port)
     client = ModbusClient("127.0.0.1", port=port, slave_id=1, framer="rtu")
-    writer = SixFrequencyTransactionWriter(client, poll_interval_sec=0.05)
+    writer = SingleFrequencyTransactionWriter(client, poll_interval_sec=0.05)
 
     try:
         await writer.refresh_edge_host_alive(1)
 
-        ok = await writer.write_targets([31, 32, 33, 34, 35, 36], seq=10, timeout_sec=2.0)
+        ok = await writer.write_one(1, 31, seq=10, timeout_sec=2.0)
         assert ok.status == "success"
         assert ok.ack_seq == 10
-        assert ok.active_targets == [31, 32, 33, 34, 35, 36]
+        assert ok.active_targets == [31, 0, 0, 0, 0, 0]
 
-        out_of_range = await writer.write_targets([31, 32, 51, 34, 35, 36], seq=11, timeout_sec=2.0)
+        out_of_range = await writer.write_one(3, 51, seq=11, timeout_sec=2.0)
         assert out_of_range.status == "nak"
         assert out_of_range.nak_code == 7
-        assert out_of_range.active_targets == [31, 32, 33, 34, 35, 36]
+        assert out_of_range.active_targets == [31, 0, 0, 0, 0, 0]
 
         await asyncio.sleep(0.5)
-        stale = await writer.write_targets([30, 30, 30, 30, 30, 30], seq=12, timeout_sec=2.0)
+        stale = await writer.write_one(2, 30, seq=12, timeout_sec=2.0)
         assert stale.status == "nak"
         assert stale.nak_code == 3
 
         await writer.refresh_edge_host_alive(2)
-        recovered = await writer.write_targets([32, 33, 34, 35, 36, 37], seq=13, timeout_sec=2.0)
+        recovered = await writer.write_one(6, 37, seq=13, timeout_sec=2.0)
         assert recovered.status == "success"
-        assert recovered.active_targets == [32, 33, 34, 35, 36, 37]
+        assert recovered.active_targets == [31, 0, 0, 0, 0, 37]
 
-        backward = await writer.write_targets([30, 30, 30, 30, 30, 30], seq=9, timeout_sec=2.0)
+        backward = await writer.write_one(1, 30, seq=9, timeout_sec=2.0)
         assert backward.status == "nak"
         assert backward.nak_code == 2
 
-        repeated = await writer.write_targets([30, 30, 30, 30, 30, 30], seq=13, timeout_sec=2.0)
+        repeated = await writer.write_one(6, 30, seq=13, timeout_sec=2.0)
         assert repeated.status == "failed"
         assert repeated.reason == "duplicate_sequence"
 
         await writer.refresh_edge_host_alive(3)
-        await _write_raw_payload(client, 14, [32, 33, 34, 35, 36, 37])
+        await _write_raw_payload(client, 14, 1, 32)
         for value in (33, 34, 35):
-            assert await client.write_register(_addr(EDGE_FREQ_SP_START), value)
+            assert await client.write_register(_addr(EDGE_FREQ_VALUE), value)
             await asyncio.sleep(0.01)
         jitter = await _read_until_nak(client, 14)
         assert jitter[2] == 104

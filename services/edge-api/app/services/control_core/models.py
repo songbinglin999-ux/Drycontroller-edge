@@ -25,9 +25,9 @@ CONTROL_STATE_TAGS = [
     "MAINTENANCE_LOCK",
     "EMERGENCY_STOP",
 ]
-# V1 only replaces manual writes to the six frequency setpoints. Product mode
-# is MANUAL/AUTO/AUTO_SUSPENDED; PLC authority state is a V2/V3 contract, so it
-# is sampled opportunistically but must not be required for V1 writes.
+# DryController only replaces manual writes to the six frequency setpoints.
+# Product mode is MANUAL/AUTO/AUTO_SUSPENDED; PLC authority state is sampled
+# opportunistically until final field wiring proves it can be required.
 SNAPSHOT_TAGS = PROCESS_TAGS + CONTROL_STATE_TAGS
 REQUIRED_SNAPSHOT_TAGS = PROCESS_TAGS
 
@@ -101,8 +101,8 @@ class SuggestedAction(BaseModel):
     risk_note: str
 
     def is_executable(self) -> bool:
-        # V1 executable scope is frequency target setting only. Process actions
-        # such as stop_feed are kept as V2/V3 vocabulary but are advisory here.
+        # Executable scope is frequency target setting only. Process actions
+        # such as stop_feed remain advisory until their PLC contracts are wired.
         return self.action_type in {"setpoint_delta", "setpoint_hold"}
 
 

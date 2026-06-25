@@ -30,6 +30,16 @@ from app.services.control_core.models import ALLOWED_CONTROL_SOFTPOINTS
 
 logger = structlog.get_logger(__name__)
 
+FREQUENCY_CHANNELS = {
+    "VFM1_FREQ_SP": 1,
+    "VFM2_FREQ_SP": 2,
+    "VFM3_FREQ_SP": 3,
+    "VF1_FREQ_SP": 4,
+    "VF2_FREQ_SP": 5,
+    "VF3_FREQ_SP": 6,
+}
+SINGLE_FREQUENCY_COMMAND_TYPE = "single_frequency_set"
+
 
 def _now_ts() -> float:
     # 使用 float 秒（与 edge-daq 校验逻辑一致）
@@ -41,13 +51,37 @@ def _gen_id(prefix: str = "ctl") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
-def _hmac_sig(secret: str, msg_id: str, msg_ts: float, tag: str, value: Any) -> str:
+def _hmac_sig(
+    secret: str,
+    msg_id: str,
+    msg_ts: float,
+    tag: str,
+    value: Any,
+    *,
+    command_type: str = "",
+    mode: Any = None,
+) -> str:
     """
     与 edge-daq 的校验严格对齐：base = f"{id}:{ts}:{tag}:{value}"
     注意：ts 必须是 float；value 的类型（int/float/bool）会影响字符串化结果。
     """
     base = f"{msg_id}:{float(msg_ts)}:{tag}:{value}"
+    if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
+        base = f"{base}:{command_type}:{mode}"
     return hmac.new(secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _coerce_mode(mode: int | str) -> int:
+    if isinstance(mode, str):
+        normalized = mode.strip().upper()
+        if normalized == "MANUAL":
+            return 1
+        if normalized == "AUTO":
+            return 2
+    value = int(mode)
+    if value not in (1, 2):
+        raise ValueError("mode must be MANUAL/1 or AUTO/2")
+    return value
 
 
 @dataclass
@@ -128,7 +162,7 @@ class ControlCommandService:
     def _validate_tag(self, tag: str, value: Any) -> Tuple[bool, str]:
         """
         控制安全校验（API侧先拦截，减少无效下发）：
-        - V1 只允许 ALLOWED_CONTROL_SOFTPOINTS 中的 6 个频率软点
+        - 只允许 ALLOWED_CONTROL_SOFTPOINTS 中的 6 个频率软点
         - value 必须可转为数值并落在签收范围内
         """
         softpoint_range = ALLOWED_CONTROL_SOFTPOINTS.get(tag)
@@ -158,9 +192,10 @@ class ControlCommandService:
         msg_id: Optional[str] = None,
         wait_ack: bool = True,
         timeout_sec: float = 3.0,
+        mode: int | str = 2,
     ) -> dict:
         """
-        下发单条控制指令。默认等待 ACK（闭环）。
+        下发单路频率控制指令。默认等待 ACK（闭环）。
         """
         final_msg_id: Optional[str] = msg_id
         ack_status: str = "error"
@@ -182,13 +217,38 @@ class ControlCommandService:
                 history_error = "control_signature_secret_missing"
                 return {"success": False, "error": history_error}
 
+            try:
+                request_mode = _coerce_mode(mode)
+            except (TypeError, ValueError) as exc:
+                history_error = "invalid_mode"
+                return {"success": False, "error": history_error, "detail": str(exc)}
+            if tag not in FREQUENCY_CHANNELS:
+                history_error = "softpoint_not_allowed"
+                return {"success": False, "error": history_error}
+
             self._loop = self._loop or asyncio.get_running_loop()
             self._ensure_ack_subscription()
 
             final_msg_id = msg_id or _gen_id()
             msg_ts = _now_ts()
-            sig = _hmac_sig(self._signature_secret, final_msg_id, msg_ts, tag, value)
-            payload = {"id": final_msg_id, "ts": msg_ts, "tag": tag, "value": value, "sig": sig}
+            sig = _hmac_sig(
+                self._signature_secret,
+                final_msg_id,
+                msg_ts,
+                tag,
+                value,
+                command_type=SINGLE_FREQUENCY_COMMAND_TYPE,
+                mode=request_mode,
+            )
+            payload = {
+                "id": final_msg_id,
+                "ts": msg_ts,
+                "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                "tag": tag,
+                "value": value,
+                "mode": request_mode,
+                "sig": sig,
+            }
             topic = self._topic_for_line(line)
 
             # 注册 future（可选等待 ack）
@@ -295,6 +355,7 @@ class ControlCommandService:
                         "line": line,
                         "tag": tag,
                         "value": value,
+                        "mode": request_mode,
                         "wait_ack": wait_ack,
                         "timeout_sec": timeout_sec,
                     },
@@ -325,14 +386,15 @@ class ControlCommandService:
             tag = item.get("tag")
             value = item.get("value")
             msg_id = item.get("id")
+            mode = item.get("mode", 2)
             if not tag:
                 results.append({"success": False, "error": "missing_tag"})
                 continue
             if not wait_ack:
-                resp = await self.send_set(line, tag, value, msg_id=msg_id, wait_ack=False)
+                resp = await self.send_set(line, tag, value, msg_id=msg_id, mode=mode, wait_ack=False)
                 results.append(resp)
             else:
-                tasks.append(self.send_set(line, tag, value, msg_id=msg_id, wait_ack=True, timeout_sec=timeout_sec))
+                tasks.append(self.send_set(line, tag, value, msg_id=msg_id, mode=mode, wait_ack=True, timeout_sec=timeout_sec))
 
         if tasks:
             # 单条 send_set 已含 timeout，这里 gather 只做汇总
@@ -357,9 +419,9 @@ class ControlCommandService:
         """
         软件急停暂不可用。
 
-        V1 只开放六个频率设定软点的普通写入；52 个 I/O 点保持只读。
-        真实 /control/estop 必须等 EDGE-V2-P3 软点、authority、ACK/NAK
-        和 fallback 模型签收后重新实现。
+        只开放六个频率设定软点的普通写入；52 个 I/O 点保持只读。
+        真实 /control/estop 必须等软点、authority、ACK/NAK
+        和 fallback 模型签收后再实现。
         """
         logger.warning(
             "software_estop_unavailable_pending_softpoint_contract",
@@ -372,8 +434,8 @@ class ControlCommandService:
             "status": "unavailable",
             "error": "software_estop_unavailable_pending_softpoint_contract",
             "data": {
-                "reason": "edge_v2_p3_softpoint_contract_pending",
-                "required_contract": "EDGE-V2-P3 /control/estop",
+                "reason": "software_estop_softpoint_contract_pending",
+                "required_contract": "/control/estop softpoint contract",
             },
             "timestamp": int(time.time()),
         }

@@ -1,4 +1,4 @@
-"""D5100 six-frequency transaction writer.
+"""D5100 single-frequency transaction writer.
 
 The writer talks to the final PLC request block directly:
 payload registers first, D5100 sequence last, then D5205/D5206/D5207 and
@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import math
-from typing import Any, Sequence
+from typing import Any
 
 import structlog
 
@@ -22,8 +22,8 @@ EDGE_REQ_SEQ = 5100
 EDGE_REQ_TYPE = 5101
 EDGE_REQ_MODE = 5102
 EDGE_REQ_TIMEOUT_S = 5103
-EDGE_REQ_FLAGS = 5104
-EDGE_FREQ_SP_START = 5110
+EDGE_FREQ_CHANNEL = 5104
+EDGE_FREQ_VALUE = 5110
 EDGE_REMOTE_RUN_START = 5130
 EDGE_REQ_CHECK = 5190
 
@@ -34,7 +34,7 @@ PLC_NAK_CODE = 5207
 PLC_ACTIVE_FREQ_TARGET_START = 5210
 EDGE_HOST_ALIVE = 5291
 
-REQUEST_TYPE_SIX_FREQUENCY = 1
+REQUEST_TYPE_SINGLE_FREQUENCY = 1
 REQUEST_MODE_MANUAL = 1
 REQUEST_MODE_AUTO = 2
 
@@ -42,9 +42,11 @@ MAX_SEQUENCE = 32760
 
 
 @dataclass(frozen=True)
-class SixFrequencyTransactionResult:
+class FrequencyTransactionResult:
     status: str
     seq: int
+    channel: int = 0
+    value: int = 0
     ack_seq: int = 0
     nak_seq: int = 0
     nak_code: int = 0
@@ -57,8 +59,8 @@ class SixFrequencyTransactionResult:
         return self.status == "success"
 
 
-class SixFrequencyTransactionWriter:
-    """Write the final D5100 six-frequency PLC transaction."""
+class SingleFrequencyTransactionWriter:
+    """Write one frequency target through the final D5100 PLC transaction."""
 
     def __init__(
         self,
@@ -86,9 +88,10 @@ class SixFrequencyTransactionWriter:
             self._edge_alive_value = value
         return await self.modbus_client.write_register(self._addr(EDGE_HOST_ALIVE), value)
 
-    async def write_targets(
+    async def write_one(
         self,
-        targets: Sequence[Any],
+        channel: Any,
+        value: Any,
         *,
         mode: int = REQUEST_MODE_AUTO,
         seq: int | None = None,
@@ -97,14 +100,14 @@ class SixFrequencyTransactionWriter:
         flags: int = 0,
         checksum: bool = True,
         refresh_heartbeat: bool = False,
-    ) -> SixFrequencyTransactionResult:
+    ) -> FrequencyTransactionResult:
         try:
-            values = self._coerce_targets(targets)
+            request_channel = self._coerce_channel(channel)
+            request_value = self._coerce_value(value)
             request_mode = self._coerce_mode(mode)
             request_timeout = self._u16(request_timeout_s)
-            request_flags = self._u16(flags)
         except ValueError as exc:
-            return SixFrequencyTransactionResult(
+            return FrequencyTransactionResult(
                 status="failed",
                 seq=0,
                 reason="invalid_request",
@@ -112,17 +115,19 @@ class SixFrequencyTransactionWriter:
             )
 
         if refresh_heartbeat and not await self.refresh_edge_host_alive():
-            return SixFrequencyTransactionResult(status="failed", seq=0, reason="heartbeat_write_failed")
+            return FrequencyTransactionResult(status="failed", seq=0, channel=request_channel, value=request_value, reason="heartbeat_write_failed")
 
         chosen_seq = self._u16(seq) if seq is not None else await self._next_sequence()
         if chosen_seq == 0:
-            return SixFrequencyTransactionResult(status="failed", seq=0, reason="invalid_sequence")
+            return FrequencyTransactionResult(status="failed", seq=0, channel=request_channel, value=request_value, reason="invalid_sequence")
 
         status_before = await self._read_ack_status()
         if status_before and chosen_seq in (status_before.get("ack_seq"), status_before.get("nak_seq")):
-            return SixFrequencyTransactionResult(
+            return FrequencyTransactionResult(
                 status="failed",
                 seq=chosen_seq,
+                channel=request_channel,
+                value=request_value,
                 ack_seq=int(status_before.get("ack_seq") or 0),
                 nak_seq=int(status_before.get("nak_seq") or 0),
                 nak_code=int(status_before.get("nak_code") or 0),
@@ -130,32 +135,34 @@ class SixFrequencyTransactionWriter:
             )
 
         payload_head = [
-            REQUEST_TYPE_SIX_FREQUENCY,
+            REQUEST_TYPE_SINGLE_FREQUENCY,
             request_mode,
             request_timeout,
-            request_flags,
+            request_channel,
         ]
         remote_run = [0, 0]
         check_value = 0
         if checksum:
-            check_value = sum([*payload_head, *values, *remote_run]) & 0xFFFF
+            check_value = sum([*payload_head, request_value, *remote_run]) & 0xFFFF
 
         for writer, address, payload in (
             (self.modbus_client.write_registers, self._addr(EDGE_REQ_TYPE), payload_head),
-            (self.modbus_client.write_registers, self._addr(EDGE_FREQ_SP_START), values),
+            (self.modbus_client.write_register, self._addr(EDGE_FREQ_VALUE), request_value),
             (self.modbus_client.write_registers, self._addr(EDGE_REMOTE_RUN_START), remote_run),
             (self.modbus_client.write_register, self._addr(EDGE_REQ_CHECK), check_value),
             (self.modbus_client.write_register, self._addr(EDGE_REQ_SEQ), chosen_seq),
         ):
             if not await writer(address, payload):
-                return SixFrequencyTransactionResult(
+                return FrequencyTransactionResult(
                     status="failed",
                     seq=chosen_seq,
+                    channel=request_channel,
+                    value=request_value,
                     reason="plc_write_failed",
                 )
 
         self._last_seq = chosen_seq
-        return await self._wait_for_result(chosen_seq, values, timeout_sec)
+        return await self._wait_for_result(chosen_seq, request_channel, request_value, timeout_sec)
 
     async def read_active_targets(self) -> list[int] | None:
         registers = await self.modbus_client.read_registers(
@@ -170,9 +177,10 @@ class SixFrequencyTransactionWriter:
     async def _wait_for_result(
         self,
         seq: int,
-        requested_targets: list[int],
+        channel: int,
+        value: int,
         timeout_sec: float,
-    ) -> SixFrequencyTransactionResult:
+    ) -> FrequencyTransactionResult:
         deadline = asyncio.get_running_loop().time() + float(timeout_sec)
         last_status: dict[str, int] | None = None
 
@@ -186,28 +194,34 @@ class SixFrequencyTransactionWriter:
                 if ack_seq == seq:
                     active_targets = await self.read_active_targets()
                     if active_targets is None:
-                        return SixFrequencyTransactionResult(
+                        return FrequencyTransactionResult(
                             status="failed",
                             seq=seq,
+                            channel=channel,
+                            value=value,
                             ack_seq=ack_seq,
                             nak_seq=nak_seq,
                             nak_code=nak_code,
                             reason="readback_failed",
                         )
-                    if active_targets != requested_targets:
-                        return SixFrequencyTransactionResult(
+                    if active_targets[channel - 1] != value:
+                        return FrequencyTransactionResult(
                             status="failed",
                             seq=seq,
+                            channel=channel,
+                            value=value,
                             ack_seq=ack_seq,
                             nak_seq=nak_seq,
                             nak_code=nak_code,
                             active_targets=active_targets,
                             reason="readback_mismatch",
-                            detail={"requested_targets": requested_targets},
+                            detail={"requested_channel": channel, "requested_value": value},
                         )
-                    return SixFrequencyTransactionResult(
+                    return FrequencyTransactionResult(
                         status="success",
                         seq=seq,
+                        channel=channel,
+                        value=value,
                         ack_seq=ack_seq,
                         nak_seq=nak_seq,
                         nak_code=nak_code,
@@ -215,9 +229,11 @@ class SixFrequencyTransactionWriter:
                     )
                 if nak_seq == seq:
                     active_targets = await self.read_active_targets()
-                    return SixFrequencyTransactionResult(
+                    return FrequencyTransactionResult(
                         status="nak",
                         seq=seq,
+                        channel=channel,
+                        value=value,
                         ack_seq=ack_seq,
                         nak_seq=nak_seq,
                         nak_code=nak_code,
@@ -228,10 +244,12 @@ class SixFrequencyTransactionWriter:
             await asyncio.sleep(self.poll_interval_sec)
 
         detail = last_status or {}
-        logger.warning("six_frequency_transaction_timeout", seq=seq, detail=detail)
-        return SixFrequencyTransactionResult(
+        logger.warning("single_frequency_transaction_timeout", seq=seq, channel=channel, value=value, detail=detail)
+        return FrequencyTransactionResult(
             status="timeout",
             seq=seq,
+            channel=channel,
+            value=value,
             reason="ack_timeout",
             detail=detail,
         )
@@ -271,23 +289,24 @@ class SixFrequencyTransactionWriter:
             raise ValueError("mode must be 1 manual or 2 auto")
         return value
 
-    @classmethod
-    def _coerce_targets(cls, targets: Sequence[Any]) -> list[int]:
-        if not isinstance(targets, Sequence) or isinstance(targets, (str, bytes, bytearray)):
-            raise ValueError("targets must be a six-item sequence")
-        if len(targets) != 6:
-            raise ValueError("targets must contain exactly six values")
+    @staticmethod
+    def _coerce_channel(channel: Any) -> int:
+        if isinstance(channel, bool):
+            raise ValueError("channel must be 1..6")
+        value = int(channel)
+        if value < 1 or value > 6:
+            raise ValueError("channel must be 1..6")
+        return value
 
-        values: list[int] = []
-        for value in targets:
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-                raise ValueError("frequency target must be a finite number")
-            if float(value) < 0 or float(value) > 65535:
-                raise ValueError("frequency target must fit an unsigned 16-bit register")
-            if not float(value).is_integer():
-                raise ValueError("frequency target must be an integer Hz value")
-            values.append(cls._u16(value))
-        return values
+    @classmethod
+    def _coerce_value(cls, value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError("frequency target must be a finite number")
+        if float(value) < 0 or float(value) > 65535:
+            raise ValueError("frequency target must fit an unsigned 16-bit register")
+        if not float(value).is_integer():
+            raise ValueError("frequency target must be an integer Hz value")
+        return cls._u16(value)
 
     @staticmethod
     def _u16(value: Any) -> int:
