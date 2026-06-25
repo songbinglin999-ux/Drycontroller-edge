@@ -136,7 +136,7 @@
   <div class="title">PLC 安全契约（PLC Safety Contract）</div>
   <div class="meta">
     <b>版本</b>：v1.2-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-15 &nbsp;·&nbsp; <b>状态</b>：待按新 PLC 接口边界重签收<br>
-    <b>v1.2 改归属</b>（2026-06-15）：DryController/edge 负责工艺控制落地、控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁与软件侧安全兜底；PLC 负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地；VFD/硬接线/设备自保护保留最终物理安全兜底。现场触摸屏/HMI 必须作为备用人工入口保留；edge 健康时不争抢控制，edge 不可用且 PLC 授权后才启用 HMI->PLC 直连写入。旧 P1-P10 验收表需按该边界重拆。<strong>（claude 收尾 2026-06-15：§7.1 重拆为 P1–P16，补 §2.12 控制权仲裁、§2.13 极简-PLC 降级路径——集成商做不动目标版时降级到 4 件笨活 + 硬接线/VFD 参数。）</strong><br>
+    <b>v1.2 改归属</b>（2026-06-15；2026-06-25 D5100-only 订正）：DryController/edge 负责工艺控制落地、控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁与软件侧安全兜底；PLC 负责 D5100 事务执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地；VFD/硬接线/设备自保护保留最终物理安全兜底。现场 HMI 的六频率输入只经 edge-api / D5100 进入 PLC；HMI direct 当前仅保留预留状态，不作为六频率写入路径。旧 P1-P10 验收表需按该边界重拆。<strong>（claude 收尾 2026-06-15：§7.1 重拆为 P1–P16，补 §2.12 控制权仲裁、§2.13 极简-PLC 降级路径——集成商做不动目标版时降级到 4 件笨活 + 硬接线/VFD 参数。）</strong><br>
     <b>适用范围</b>：DryController 边缘控制系统与 PLC 侧安全责任划分<br>
     <b>关联架构</b>：<a href="../architecture/edge-architecture-v2.md">Edge 架构 v2</a><br>
     <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">超限报警规范</a>
@@ -164,8 +164,8 @@
   <li>Edge 系统（上位机）负责数据采集消费、分析、展示、工艺控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁、mode gate 和软件侧 fallback</li>
   <li>PLC（可编程逻辑控制器）负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换和 HMI/edge 控制权锁</li>
   <li>PLC 读取 edge 心跳；edge 心跳丢失时，PLC 必须切回 PLC 本地控制，且切换过程不能造成突变输出</li>
-  <li>现场触摸屏/HMI 属于 PLC 本地备用人工入口，必须具备 HMI->PLC 备用直连能力；edge 健康时 HMI 只监视或请求接管，edge 离线、网络断开、维护锁或 PLC_LOCAL/LOCAL_MANUAL 且 PLC 授权后，HMI 才能写允许的本地/手动控制软点</li>
-  <li>PLC 必须提供 <code>AUTHORITY_OWNER</code>、<code>AUTHORITY_EPOCH</code>、<code>HMI_DIRECT_ENABLE</code>、<code>TAKEOVER_REASON</code> 与 <code>REJECT_CODE</code> 等字段；edge 与 HMI 写控制软点时必须受当前 owner/epoch 约束；现场内网不引入 token/签名租约</li>
+  <li>现场 HMI 的六频率输入只经 edge-api / D5100 事务进入 PLC；HMI direct 当前仅保留预留状态，不作为 DryController 六频率写入路径</li>
+  <li>PLC 必须提供 <code>AUTHORITY_OWNER</code>、<code>AUTHORITY_EPOCH</code>、<code>HMI_DIRECT_ENABLE</code>、<code>TAKEOVER_REASON</code> 与 <code>REJECT_CODE</code> 等字段；D5100 写控制软点时必须受当前 owner/epoch 约束；现场内网不引入 token/签名租约</li>
   <li>硬件急停、热继、拉绳/跑偏等设备级保护仍属于现场硬件/PLC/VFD 执行层，edge 不直接驱动物理输出；这类硬安全不等同于 edge 的工艺联锁</li>
 </ul>
 
@@ -356,7 +356,7 @@
 <table class="wrap">
   <tbody>
     <tr><td>正常</td><td>edge 健康（心跳正常）→ <strong>edge 持锁</strong>；现场 HMI 不争抢，只读显示</td></tr>
-    <tr><td>edge 失联</td><td>心跳超时 → edge 失锁、PLC 进本地兜底；<strong>现场 HMI 仅在 PLC 显式授权后</strong>才可直连写入（备用人工入口）</td></tr>
+    <tr><td>edge 失联</td><td>心跳超时 → edge 失锁、PLC 进本地兜底；DryController HMI 不启用 PLC 直连六频率写入，现场试运行只走 edge-api / D5100</td></tr>
     <tr><td>维修</td><td>维修锁（§2.8）置入 → 强制本地手动，忽略 edge 与 HMI 远程写</td></tr>
     <tr><td>防双写</td><td>任一时刻<strong>只有一个写入源被授权</strong>；切换走无扰流程（§2.3），输出不跳变</td></tr>
     <tr><td>恢复</td><td>edge 恢复后<strong>不自动夺锁</strong>，须读当前状态、同步、确认一致后再切回 edge 持锁</td></tr>

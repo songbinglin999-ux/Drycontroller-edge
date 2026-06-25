@@ -191,7 +191,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | 心跳看门狗 | 监测 `EDGE_CONTROL_HEALTHY` 寄存器，M 秒未更新判定 edge 控制不可信 |
 | 模式切换 | 门控心跳正常 → `EDGE_MASTER`；超时 → `PLC_LOCAL` 或 `HMI_LOCAL`（预设安全 setpoint / 本地保守 SP） |
 | **控制权锁** | PLC 持有 `AUTHORITY_OWNER` 与 `AUTHORITY_EPOCH`；edge 和 HMI 都只能申请控制权，不能绕过 PLC 私下切换；现场内网不引入 token/签名租约 |
-| **HMI 备用直连** | edge 健康时 HMI 处于 `HMI_STANDBY`，只监视或请求接管；edge 不可用且 PLC 置 `HMI_DIRECT_ENABLE=1` 后，HMI 才能直连写允许的本地软点；该项是 V2/V3 可选接管模型，不是当前 edge ↔ PLC 通讯冗余链路 |
+| **HMI direct 预留** | 当前只保留状态预留，不作为 DryController 六频率写入路径；DryController HMI 的六频率输入仍经 edge-api / D5100 事务进入 PLC |
 | **维护锁定（maintenance lock）** | 人为锁定本地模式，需**手动解除**后才允许 edge 重新接管；**在 PLC 侧实现**，否则维修中 edge 心跳恢复仍可能强行夺回控制权 |
 | bumpless 切换 | 模式切换时输出不能跳变，平滑过渡；正常工艺 ramp/slew 仍由 edge 控制状态机负责 |
 | actuator final clamp | PLC/VFD 对已收到的输出做最后物理限幅兜底；正常工艺限幅由 edge-api 签发前完成 |
@@ -212,7 +212,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
       └──── edge 恢复后读取当前状态、同步 SP、申请 epoch ──┘
 
          HMI_STANDBY：edge 健康时 HMI 只监视/请求接管，不直接写控制 SP
-         HMI_DIRECT_ENABLE：PLC 授权后，HMI 才能直连写允许的本地软点
+         HMI_DIRECT_ENABLE：仅预留状态；当前不启用 HMI->PLC 六频率直连写入
          维护锁定：人为置入 → 强制本地模式 → 仅手动解除可退出
          （锁定期间忽略 edge 心跳恢复，不自动接管）
 ```
@@ -299,7 +299,7 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：V0 不进入控制闭环�
 | 控制门控心跳与心跳丢失切本地 | 6.1 `EDGE_CONTROL_HEALTHY` 门控心跳（fail-closed，V1/V2/V3 控制阶段） |
 | ACK/NAK 与原因码 | 4.1 edge-api 签发/审计 + Phase 3 ACK/NAK |
 | 无扰切换 / HMI-edge 控制权锁 | 6.2 PLC 本地闭环 + 6.3 控制模式切换流程 |
-| 现场 HMI 备用直连 | 6.2 `HMI_DIRECT_ENABLE` + 6.3 `HMI_STANDBY/HMI_LOCAL` |
+| HMI direct 预留状态 | 6.2 `HMI_DIRECT_ENABLE` + 6.3 `HMI_STANDBY/HMI_LOCAL`，当前不作为六频率写入路径 |
 | edge 侧补心跳 | 6.1 V0 通讯心跳 + V1/V2/V3 控制门控心跳（独立进程） |
 | edge 侧补 range guard / ramp / 工艺联锁 | 4.1 edge-api（签发前拒绝越界、按变化率缓变、联锁不满足时拒绝） |
 | edge 侧补控制状态机和软件侧 fallback | 4.1 edge-api + 6.3 控制模式切换流程（含维护锁定） |
@@ -319,7 +319,7 @@ V0/V1 范围与 v2 目标架构分开推进：V0 交付 = PLC 采集 → 工程�
 | 大版本 | 定位 | PLC 边界 | Edge 边界 |
 |---|---|---|---|
 | V0：只读数据 + 通讯心跳 | PLC 接入、数据质量、大屏和告警底座；不做任何控制动作 | PLC 提供 28 个 DryController D 字读点 + 6 个料位/限位线圈、`PLC_HEARTBEAT` 和接收 `EDGE_HOST_ALIVE`；`D30-D35` 原工程频率链路不进入 DryController 采集/控制路径；该心跳不授予控制 | edge 只读采集、工程量换算、基础统计、阈值告警、大屏和本地历史留存；只写通讯心跳 |
-| V1：6 路变频目标自动设定器 | 替代人工设定 `VFM1-3` / `VF1-3` 六个目标频率，不声称完整监督控制；人只选择 `MANUAL` / `AUTO`，不逐条确认 | PLC 保留现场逻辑、安全、顺控、联锁、设备保护和实际输出；提供独立 6 个 SP、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、运行/故障/料位/安全覆盖状态；真实 VFD PV/status 待反馈线或通讯补齐后另签 | edge 管“谁能写、写多少、何时写”：模式授权、AUTO 自动签发、软点白名单、限幅、变化率、冷却、审计、可解释建议和自动挂起 |
+| V1：6 路变频目标自动设定器 | 替代人工设定 `VFM1-3` / `VF1-3` 六个目标频率，不声称完整监督控制；人只选择 `MANUAL` / `AUTO`，不逐条确认 | PLC 保留现场逻辑、安全、顺控、联锁、设备保护和实际输出；提供 D5100 六频率事务、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、运行/故障/料位/安全覆盖状态；真实 VFD PV/status 待反馈线或通讯补齐后另签 | edge 管“谁能写、写多少、何时写”：模式授权、AUTO 自动签发、软点白名单、限幅、变化率、冷却、审计、可解释建议和自动挂起 |
 | V2：6 频率监督控制 | edge 接管 6 个频率的稳态策略，目标是料流更平稳 | PLC 转为执行、保护、veto、ACK/NAK、reason、本地兜底；`EDGE_MASTER` 下不再私自做恢复节奏/调频策略 | edge 根据电流、料位事件、温度、湿度、下游能力等生成 6 个频率策略 |
 | V3：完整稳态控制 | 补足过程测量后的连续稳态优化 | PLC 只做确定性执行、安全和本地降级 | edge 基于连续料位/称重/等价过程测量、softsensor 和历史窗口做全线稳态优化 |
 
@@ -329,7 +329,7 @@ V0/V1 范围与 v2 目标架构分开推进：V0 交付 = PLC 采集 → 工程�
 |---|---|---|
 | **Phase 0 / V0** | 点表 / MVP 数据链路：PLC tags、采集、工程量换算、阈值告警、大屏、`PLC_HEARTBEAT` 读取、`EDGE_HOST_ALIVE` 写入 | 现场点表落库；只读数据链路和双向通讯心跳 E2E 跑通；控制写入默认关闭 |
 | **Phase 1** | 保命层：宿主机 Tailscale + LAN SSH + host watchdog + enroll 改造 | `compose down` 后 Tailscale/LAN SSH 均可达；cloud-ops 仍能识别设备 tailnet 地址 |
-| **Phase 2** | V2/V3 PLC 软点 / 同步 / 仲裁契约：采集寄存器、控制软点、参数同步、报警同步、状态同步、ACK/NAK、心跳切本地、HMI 备用直连、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC 自动切本地；HMI 只在 PLC 授权后直连写入；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/epoch 状态可见；VFD/硬接线/设备保护可现场验收 |
+| **Phase 2** | PLC 软点 / 同步 / 仲裁契约：采集寄存器、D5100 六频率事务、参数同步、报警同步、状态同步、ACK/NAK、心跳切本地、HMI direct 预留、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC 自动切本地；六频率只走 edge-api / D5100；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/epoch 状态可见；VFD/硬接线/设备保护可现场验收 |
 | **Phase 3** | V1/V2/V3 edge 控制契约：suggestion schema、signed command、ACK/NAK、range guard、setpoint ramp/slew limiter、工艺联锁、`/control/estop`、fallback 状态机、`MANUAL` / `AUTO` / `AUTO_SUSPENDED` 授权机制、owner/epoch gate（V2/V3） | AI 不直写 PLC；未签名/越界/变化率超限/工艺联锁不满足/本地模式/心跳异常/非 EDGE owner/stale epoch 下 command 被拒并审计；AUTO 可一键退回 MANUAL，gate 失败自动挂起 |
 | **Phase 4** | 监控层补齐：PLC 模式监控、控制权 owner/epoch、HMI 直连授权、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、HMI 接管、控制拒绝均可见且告警 |
 | **Phase 5** | license-service 合并 + 文档收敛 | 功能等价测试通过；旧端点/云端探测路径有兼容或迁移说明；文档与代码一致 |
