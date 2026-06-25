@@ -11,7 +11,7 @@
 - 协议：**Modbus RTU over TCP**（RTU 帧 + TCP，带 CRC；非标准 Modbus TCP）。端口 **2022**、站号 1（2026-06-20 现场实测）。`MODBUS_FRAMER=rtu`。
 - 通信模式：`edge-daq` 为 Modbus 客户端，PLC 为服务器
 - 功能码：
-  - 读保持寄存器（功能码 3）——D 字读点（电流/频率/温度/湿度）
+  - 读保持寄存器（功能码 3）——D 字读点（电流/温度/湿度/状态）
   - 读线圈（功能码 1）——料位/限位等位元件（bool）
   - 写单/多寄存器（功能码 6/16）——控制下发，**本期按只读决策锁停、未启用**
 
@@ -31,18 +31,17 @@
 
 ## 3. 示例映射表（示意）
 
-> **SSOT** = `docs/plc/io-map.html`（点清单/工艺）+ `configs/tags.yaml`（语义）+ `configs/modbus-address-map.yaml`（地址）。canonical 位号 = 系统唯一编号 + 量纲后缀（`_I`电流/`_FREQ`频率/`_T`温度/`_H`湿度；料位/限位用 `LL*`）。下表仅举例当前命名口径，全量见 SSOT。
+> **SSOT** = `docs/plc/io-map.html`（点清单/工艺）+ `configs/tags.yaml`（语义）+ `configs/modbus-address-map.yaml`（地址）。canonical 位号 = 系统唯一编号 + 量纲后缀（`_I`电流/`_FREQ_SP`频率目标/`_T`温度/`_H`湿度；料位/限位用 `LL*`）。下表仅举例当前命名口径，全量见 SSOT。
 
 | Tag 名（举例） | PLC 元件 | Modbus 地址 | 类型 | 单位 | 说明 |
 |---|---|---|---|---|---|
 | `M3_I` | D4 | 4x40004 | int(×0.1) | A | 预烘干主电机电流，只读 |
 | `VFM1_I` | D2 | 4x40002 | int(×0.1) | A | 预烘干进料变频电机电流 |
-| `VFM1_FREQ` | D30 | 4x40030 | int(1:1) | Hz | 旧程序六路频率命令/MV 对账值，最终 MOV 到 AO140-AO151；非 VFD 实际反馈，非 edge/HMI 写入 SP |
 | `FTT1_T` | D40 | 4x40040 | int(×0.1) | ℃ | 预烘干段蒸汽温度（排湿风机处） |
 | `TT1_T` | D43 | 4x40043 | int(×0.1) | ℃ | 锅炉1炉口温度 |
 | `MT1_H` | D45 | 4x40045 | WORD | % | 出料口实时湿度 |
 | `LL1` | X000 | 0x01 线圈#0 | bool | | 料斗1满位限位（满→停 M1） |
-| `VFM1_FREQ_SP` | — | TBD，需新增独立寄存器 | int | Hz | V1 控制写软点，**本期只读锁停未启用；禁止复用 D30-D35** |
+| `VFM1_FREQ_SP` | D5110 payload | D5100-D5299 事务 | int | Hz | 六频率目标只走 D5100 请求/ACK/读回事务；本期只读锁停未启用，禁止复用 D30-D35 |
 
 ---
 

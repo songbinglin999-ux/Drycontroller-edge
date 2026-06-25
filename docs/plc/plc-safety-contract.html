@@ -457,15 +457,15 @@
 <h2 id="sec7">7. 验收标准与关闭条件</h2>
 
 <h3 id="sec7-1">7.1 PLC 侧验收清单</h3>
-<p class="note"><strong>2026-06-16 V1 标记；2026-06-24 降复杂度订正：</strong>V1 不是完整监督控制，只验收六个变频频率目标写入（<code>VFM1_FREQ_SP</code>、<code>VFM2_FREQ_SP</code>、<code>VFM3_FREQ_SP</code>、<code>VF1_FREQ_SP</code>、<code>VF2_FREQ_SP</code>、<code>VF3_FREQ_SP</code>）。PLC 继续保留现场工艺逻辑、安全、顺控、联锁、设备保护和实际输出。PLC authority、HMI 直连、owner/epoch、完整 ACK/NAK/原因码和无扰接管属于 V2/V3 目标版，不作为 V1 blocker；现场内网不引入 token/签名租约。</p>
+<p class="note"><strong>2026-06-25 统一接口订正：</strong>PLC 侧不再按 V1/V2/V3 分期验收。六个变频频率目标只走 <code>D5100-D5299</code> 事务；PLC 继续保留现场工艺逻辑、安全、顺控、联锁、设备保护和实际输出。owner/epoch、ACK/NAK/原因码、HMI direct 预留和无扰接管统一进入最终 PLC e2e；现场内网不引入 token/签名租约。</p>
 <table class="wrap">
   <thead><tr><th>#</th><th>验收项</th><th>验收方式</th><th>状态</th></tr></thead>
   <tbody>
     <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V1 六频率目标写入最小验收</td></tr>
-    <tr><td>V1-1</td><td>六个 SP 地址/量程/字节序签收</td><td>PLC 回填六个频率目标寄存器地址、数据类型、缩放、0-50Hz 或现场签收范围、读写权限</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>V1-1</td><td>D5100 六频率事务量程/字序签收</td><td>PLC 签收 D5110-D5115 payload、D5100 请求序号、数据类型、缩放、0-50Hz 或现场范围、读写权限</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>V1-2</td><td>六个输出 MV + PV/status invalid 标记</td><td>edge 能读取 PLC 接受目标、PLC 输出命令/MV；当前无 PLC-VFD 通讯/反馈线时，实际 VFD PV/status 必须明确为 invalid/not-wired，不得伪造实际频率反馈</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>V1-3</td><td>PLC 安全覆盖状态/报警码</td><td>PLC/VFD/硬接线触发限幅、故障、停机、料位保护时，edge/HMI 可见该写入被覆盖或不可继续调节的状态</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>V1-4</td><td>六 SP 写入 E2E</td><td>MANUAL 人工设定或 AUTO 自动目标 → edge-api 门控 → edge-daq → PLC → PLC 输出 MV 变化；越界/未授权/edge 不健康/PLC NAK 时拒绝或挂起。真实 VFD 反馈回读需后续新增反馈线或通讯后另签</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>V1-4</td><td>D5100 写入 E2E</td><td>MANUAL 人工设定或 AUTO 自动目标 → edge-api 门控 → edge-daq → D5100 事务 → PLC 输出 MV 变化；越界/未授权/edge 不健康/PLC NAK 时拒绝或挂起。真实 VFD 反馈回读需后续新增反馈线或通讯后另签</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">V2/V3 目标版接口能力（非 V1 blocker）</td></tr>
     <tr><td>P1</td><td>IO 采集上传</td><td>现场全部 IO（料位/温度/电流/状态/急停）稳定实时上报 edge</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P2</td><td>软点控制层执行</td><td>edge 软点命令 → PLC 正确输出到变频器/接触器/阀</td><td><span class="pill bad">❌ 未做</span></td></tr>
@@ -475,7 +475,7 @@
     <tr><td>P6</td><td>ACK/NAK/原因码</td><td>命令回 ACK/NAK + REJECT_CODE 关联 COMMAND_ID；非法参数保持旧值（§2.11）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P7</td><td>心跳切本地</td><td>edge 心跳超时 → PLC 自动切本地兜底（§2.1）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P8</td><td>无扰切换</td><td>模式/控制权切换输出不跳变（§2.3）</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>P9</td><td>控制权锁 / HMI 备用</td><td>edge 健康不争抢；edge 挂 + 授权后 HMI 直连；防双写（§2.12）</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P9</td><td>控制权锁 / HMI direct 预留</td><td>edge 健康不争抢；HMI direct 当前不作为六频率写入路径；若未来启用需重新签收防双写（§2.12）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">安全基础（目标版与降级版均须满足；降级版可由硬接线/VFD参数实现，见 §2.13）</td></tr>
     <tr><td>P10</td><td>本地安全 setpoint 兜底</td><td>切本地后设备用安全参数续跑（§2.4；降级版改固定时序安全停机）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P11</td><td>Actuator final clamp / 最终限幅</td><td>执行层收到越界指令时仍被 VFD/PLC 限幅（§2.5；正常工艺限幅在 edge；降级版由 VFD max 频率参数实现）</td><td><span class="pill bad">❌ 未做</span></td></tr>

@@ -61,13 +61,13 @@
 - 判定：连续 2~3 次读值不变或读/写失败，判定通讯异常
 - edge 写计数回绕：计数达上限回到 1，不写 0；0 保留给未初始化或禁用状态
 
-## 6. 同步 / 无扰切换 / 控制权锁（V2/V3）
+## 6. 同步 / 无扰切换 / 控制权锁（最终接口预留）
 - 参数同步：PLC 与 edge 对关键设定值、当前生效参数、参数版本/更新时间有一致字段。
 - 报警同步：PLC 告警码、告警状态、确认/复位状态需可读；需给出报警码表。
 - 状态同步：PLC 模式、本地/远程控制权、软点执行状态、最近 ACK/NAK 原因码需可读。
 - 无扰切换：edge 控制权切入/切出时，PLC 需保持当前安全输出或按约定斜坡，不允许突变。
 - 控制权锁：PLC 是最终执行仲裁点；edge 无心跳、PLC 本地模式、维护锁、联锁触发、HMI 接管时，PLC 拒绝 edge 软点并返回 NAK 原因。
-- HMI 直连通道：HMI 可以监视 edge/PLC 状态并发接管请求，但只有 `AUTHORITY_OWNER=HMI` 或 `PLC_LOCAL/LOCAL_MANUAL` 且 `HMI_DIRECT_ENABLE=1` 时，PLC 才接受 HMI 直连写入。
+- HMI direct：当前只保留状态/未来预留，不作为 DryController 六频率写入路径；DryController HMI 的六频率输入仍经 edge-api / D5100 事务进入 PLC。
 - epoch/代次：edge 或 HMI 写控制软点时需携带当前 `AUTHORITY_EPOCH`；PLC 拒绝 stale epoch，避免 edge 恢复后用旧状态抢写。本项目现场内网不引入 token/签名租约。
 
 建议至少提供这些 authority 字段（名称可按 PLC 习惯调整，但语义需保留）：
@@ -79,7 +79,7 @@
 | CTRL.AUTHORITY_REQUEST | edge/HMI -> PLC | int | authority | 接管/释放请求 |
 | CTRL.AUTHORITY_GRANT | PLC -> edge/HMI | int | authority | PLC 对请求的授予/拒绝结果 |
 | CTRL.AUTHORITY_EPOCH | PLC -> edge/HMI | int | authority | 控制权代次，写软点时需匹配 |
-| HMI.DIRECT_ENABLE | PLC -> HMI/edge | bool | authority | 是否允许 HMI 备用直连写控制软点 |
+| HMI.DIRECT_ENABLE | PLC -> HMI/edge | bool | authority | HMI direct 预留状态；当前不允许写六频率 |
 | CTRL.TAKEOVER_REASON | PLC -> edge/HMI | int | authority | 最近一次接管原因 |
 | CTRL.REJECT_CODE | PLC -> edge/HMI | int | authority | 最近一次拒绝原因 |
 
@@ -90,10 +90,10 @@
 | HB.READ    | 50000   | 3             | int   | big        | 1     |      |           |           |           |            | heartbeat  | 心跳读，PLC 可 0/1 翻转；edge 只判断变化 |
 | HB.WRITE   | 50001   | 6             | int   | big        | 1     |      |           |           |           |            | heartbeat  | 心跳写，edge 写递增计数 |
 | FTT1       | 40010   | 3             | float | big        | 1.0   | °C   |           |           |           |            | readonly_io | 主机1风温采集         |
-| VFM1_FREQ_SP | 41020 | 3             | float | big        | 1.0   | Hz   | 0         | 50        |           |            | control_softpoint | VFM1 目标频率软点 |
+| VFM1_FREQ_SP | D5110 payload | D5100-D5299 | int | big | 1.0 | Hz | 0 | 50 | | | control_softpoint | VFM1 目标频率；只走 D5100 事务 |
 | CTRL.AUTHORITY_OWNER | 41030 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 当前控制权 owner      |
 | CTRL.AUTHORITY_EPOCH | 41031 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 控制权代次            |
-| HMI.DIRECT_ENABLE | 41032 | 3          | bool  | big        | 1     |      |           |           |           |            | authority  | HMI 直连写入授权      |
+| HMI.DIRECT_ENABLE | TBD | 3          | bool  | big        | 1     |      |           |           |           |            | authority  | HMI direct 预留状态      |
 | ALARM.CODE | 42010   | 3             | int   | big        | 1     |      |           |           |           |            | alarm      | 当前 PLC 告警码       |
 
 ## 7. 联调检查清单

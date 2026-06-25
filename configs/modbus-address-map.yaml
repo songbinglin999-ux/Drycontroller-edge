@@ -1,12 +1,12 @@
 # PLC Modbus 地址表。读点已按 2026-06-20 集成商真实点表 + 系统唯一编号对账回填真实地址。
 #
 # 通讯：Modbus RTU-over-TCP（端口 2022，站号 1），非标准 Modbus TCP/502（MODBUS_FRAMER=rtu）。
-# D 字读点：地址 = 40000 + D 序号；电流/温度无符号16位×0.1、D30-D35 现场屏人工输入频率设定值 1:1、湿度 int32 低字在前（little）。
+# D 字读点：地址 = 40000 + D 序号；电流/温度无符号16位×0.1、湿度 int32 低字在前（little）。
 # 料位/限位：X 线圈，function_code 1（0x01 读），地址 = X 偏移 0；bool。
 # 仍需现场最终核对：地址基准（D0=40000 vs 4x、X 线圈 0 vs 参考号）、int32 字序。
 # Y 运行状态 / M 报警仍未对账、本期不采。type/unit 以 tags.yaml 为准。
 #
-# --- D 字读点（34）---
+# --- D 字读点（28）---
 # 电流 D0-D21（无符号16位 ×0.1 A）
 M1_I: {address: 40000, function_code: 3, scale: 0.1, byte_order: big}
 M2_I: {address: 40001, function_code: 3, scale: 0.1, byte_order: big}
@@ -30,13 +30,6 @@ VF2_I: {address: 40018, function_code: 3, scale: 0.1, byte_order: big}
 VF3_I: {address: 40019, function_code: 3, scale: 0.1, byte_order: big}
 M15_I: {address: 40020, function_code: 3, scale: 0.1, byte_order: big}
 M16_I: {address: 40021, function_code: 3, scale: 0.1, byte_order: big}
-# 现场控制屏人工输入频率设定值 D30-D35（无符号16位 1:1 Hz；非 VFD 实际反馈）
-VFM1_FREQ: {address: 40030, function_code: 3, scale: 1.0, byte_order: big}
-VFM2_FREQ: {address: 40031, function_code: 3, scale: 1.0, byte_order: big}
-VFM3_FREQ: {address: 40032, function_code: 3, scale: 1.0, byte_order: big}
-VF1_FREQ: {address: 40033, function_code: 3, scale: 1.0, byte_order: big}
-VF2_FREQ: {address: 40034, function_code: 3, scale: 1.0, byte_order: big}
-VF3_FREQ: {address: 40035, function_code: 3, scale: 1.0, byte_order: big}
 # 温度 D40-D44（无符号16位 ×0.1 ℃）
 FTT1_T: {address: 40040, function_code: 3, scale: 0.1, byte_order: big}
 FTT2_T: {address: 40041, function_code: 3, scale: 0.1, byte_order: big}
@@ -73,11 +66,9 @@ PLC_LEGACY_HEARTBEAT_TOGGLE: {address: TBD, function_code: 1, byte_order: big, t
 
 # --- V1 control write soft points (6 frequency setpoints) ---
 # 控制写入按 2026-06-20「上位机降级全只读」决策锁停（见根目录 architecture-audit），本期不启用。
-# D30-D35 已确认是现场控制屏人工输入频率设定值，只能只读采集本地人工目标；
-# edge/HMI 写入 SP 必须由 PLC 新增独立寄存器和 ACK/NAK/读回状态，禁止复用 D30-D35。
-# PLC V1 overlay 已把 D5110-D5115 作为请求块 payload SP，但现有 edge-daq
-# 控制订阅器只支持单 tag 寄存器写；在 D5100 请求序号 + ACK/NAK 事务写路径落地前，
-# 六个 SP 必须继续保持 fail-closed，禁止直接写 D5110-D5115。
+# D30-D35/M1000/M140-M173 属于 PLC 原工程/PLC 屏侧旧链路，DryController 不采集、不写入。
+# 六频率只走 D5100-D5299 事务：先写 D5110-D5115 payload，最后写 D5100 请求序号，
+# 再由 PLC ACK/NAK 与 D5210-D5225 状态读回确认；禁止单 tag 直写 D5110-D5115。
 VFM1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
 VFM2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
 VFM3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}

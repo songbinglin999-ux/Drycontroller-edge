@@ -1,11 +1,11 @@
 # 全栈位号契约：canonical = 系统唯一编号 + 量纲后缀（_I 电流 / _FREQ 频率 / _T 温度 / _H 湿度）；
 # 料位/限位开关用系统编号 LL*（DI bool）。2026-06-20 对账自集成商真实点表，对照见 ../../plc-tag-mapping/。
-# 地址/scale/字序/function_code 外置在 modbus-address-map.yaml。控制软点单列，禁止复用 D30-D35 现场屏人工设定读值。
+# 地址/scale/字序/function_code 外置在 modbus-address-map.yaml。控制软点单列；DryController 不采集、不写入 D30-D35 旧频率链路。
 naming:
   format: "{SYSTEM_ID}_{KIND}"
   allowed_pattern: "^[A-Z0-9_]+$"
   notes:
-    - "量纲后缀解决设备号撞车：同设备电流与频率（VFM1_I / VFM1_FREQ）不再同名。"
+    - "量纲后缀解决设备号撞车：同设备电流与控制目标（VFM1_I / VFM1_FREQ_SP）不再同名。"
     - "type=int 无符号16位单字；int32 带符号双字（湿度，低字在前）；bool 为线圈（料位/限位，0x01 读）。"
     - "LL* 是满位/到位限位开关，触发=到位→对应上料电机停；非料位计、给不了连续料位与缺料。"
 tags:
@@ -33,13 +33,6 @@ tags:
       - {name: VF3_I, signal_type: AI, type: int, unit: "A", description: "3级风机电机电流（D19）"}
       - {name: M15_I, signal_type: AI, type: int, unit: "A", description: "1级烘干上料电机电流（D20）"}
       - {name: M16_I, signal_type: AI, type: int, unit: "A", description: "2级烘干上料电机电流（D21）"}
-    frequency:
-      - {name: VFM1_FREQ, signal_type: AI, type: int, unit: "Hz", description: "预发酵进料电机现场控制屏人工输入频率设定值（D30，非VFD实际反馈）"}
-      - {name: VFM2_FREQ, signal_type: AI, type: int, unit: "Hz", description: "第一级烘干进料电机现场控制屏人工输入频率设定值（D31，非VFD实际反馈）"}
-      - {name: VFM3_FREQ, signal_type: AI, type: int, unit: "Hz", description: "第二级烘干进料电机现场控制屏人工输入频率设定值（D32，非VFD实际反馈）"}
-      - {name: VF1_FREQ, signal_type: AI, type: int, unit: "Hz", description: "1号风机现场控制屏人工输入频率设定值（D33，非VFD实际反馈）"}
-      - {name: VF2_FREQ, signal_type: AI, type: int, unit: "Hz", description: "2号风机现场控制屏人工输入频率设定值（D34，非VFD实际反馈）"}
-      - {name: VF3_FREQ, signal_type: AI, type: int, unit: "Hz", description: "3号风机现场控制屏人工输入频率设定值（D35，非VFD实际反馈）"}
     temperature:
       - {name: FTT1_T, signal_type: AI, type: int, unit: "℃", description: "预烘干段蒸汽温度（1号排湿风机处）（D40）"}
       - {name: FTT2_T, signal_type: AI, type: int, unit: "℃", description: "一级烘干段蒸汽温度（2号排湿风机处）（D41）"}

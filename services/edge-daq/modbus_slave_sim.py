@@ -6,15 +6,16 @@ Modbus RTU-over-TCP 从站模拟器（联调用，非生产服务）。
 切真实 PLC 时只需把 PLC_HOST 指到真机（MODBUS_FRAMER=rtu / PLC_PORT 保持），
 edge 侧代码路径不变。
 
-点位来自集成商真实点表「数据点位表.csv」的「读」点（D 字寄存器，0x03）：
-  电流 D0-D21 / 变频频率反馈 D30-D35 / 温度湿度 D40-D45。
+点位来自集成商真实点表「数据点位表.csv」的 DryController 当前「读」点（D 字寄存器，0x03）：
+  电流 D0-D21 / 温度湿度 D40-D45 / 湿度状态 D53。
+D30-D35 属于 PLC 原工程/PLC 屏侧旧频率链路，不进入 DryController 采集或控制路径。
 Modbus 地址 = D_BASE + D 序号（PLC 偏移表：D0=40000）。
 
 不含位元件（X 料位 / M 报警 / Y 输出）——它们是 0x01/0x02 线圈，edge-daq 现状
 不支持读，作为后续单独决策项。
 
 注意：D 是 16-bit 字，这里发出的是随时间变化的「原始值」。集成商确认的工程量换算：
-电流原始值×10（scale 0.1，A）、温度原始值×10（scale 0.1，℃）、频率 1:1（scale 1.0，Hz）；
+电流原始值×10（scale 0.1，A）、温度原始值×10（scale 0.1，℃）；
 湿度换算 TBD。scale 写在 modbus-address-map.sim.yaml，本模拟器只发原始值。
 真机上 D0 究竟对应原始地址 40000 还是 4x 参考号（差 40001）需现场确认；模拟器
 client/server 两端地址一致，不受该歧义影响。
@@ -34,11 +35,11 @@ from pymodbus.transaction import ModbusRtuFramer
 
 D_BASE = 40000
 
-# 单字（无符号 16-bit）读点：集成商确认电流/温度/频率无符号。
+# 单字（无符号 16-bit）读点：集成商确认电流/温度无符号。
 CURRENTS = list(range(0, 22))   # D0-D21 各电机电流
-FREQS = list(range(30, 36))     # D30-D35 变频器频率反馈
 TEMPS = list(range(40, 45))     # D40-D44 温度
-WORD_D = CURRENTS + FREQS + TEMPS
+HUMIDITY_STATUS = 53            # D53 湿度通讯/状态字
+WORD_D = CURRENTS + TEMPS + [HUMIDITY_STATUS]
 # 双字（32-bit 带符号 int32）读点：湿度 D45 = 40045+40046（集成商计划用带符号 32 位）。
 HUMIDITY = 45
 ALL_D = WORD_D + [HUMIDITY]
@@ -50,12 +51,12 @@ def _value(dnum: int, t: float) -> int:
     """按点位类别给出随时间变化的合理原始值（非工程量）。"""
     if dnum in CURRENTS:
         return int(max(0, 100 + (dnum * 7) % 80 + 15 * math.sin(t / 5.0 + dnum)))   # ×0.1=A → ~10-18A
-    if dnum in FREQS:
-        return int(max(0, 35 + 10 * math.sin(t / 8.0 + dnum)))     # 1:1=Hz → ~25-45Hz
     if dnum in TEMPS:
         return int(max(0, 650 + 80 * math.sin(t / 20.0 + dnum)))   # ×0.1=℃ → ~57-73℃
     if dnum == HUMIDITY:
         return int(250 + 60 * math.sin(t / 15.0))                  # int32，scale TBD
+    if dnum == HUMIDITY_STATUS:
+        return 0
     return 0
 
 
@@ -101,8 +102,8 @@ async def main():
     asyncio.create_task(_updater(context, slave_id, interval))
     print(
         f"[modbus-sim] RTU-over-TCP slave on {host}:{port} slave_id={slave_id} "
-        f"D-points={len(ALL_D)} (currents={len(CURRENTS)} freq={len(FREQS)} "
-        f"temp={len(TEMPS)} humidity=1[int32]) coils={len(COIL_ADDRS)}[料位/限位]",
+        f"D-points={len(ALL_D)} (currents={len(CURRENTS)} "
+        f"temp={len(TEMPS)} humidity=1[int32] humidity_status=1) coils={len(COIL_ADDRS)}[料位/限位]",
         flush=True,
     )
     await StartAsyncTcpServer(context=context, address=(host, port), framer=ModbusRtuFramer)
