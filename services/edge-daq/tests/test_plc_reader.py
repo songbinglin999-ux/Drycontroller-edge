@@ -182,6 +182,11 @@ async def test_plc_reader_batch_reduces_calls():
 @pytest.mark.asyncio
 async def test_plc_reader_heartbeat_missing(monkeypatch):
     # 模拟心跳寄存器不变化，触发缺失计数
+    async def fast_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("daq.plc_reader.asyncio.sleep", fast_sleep)
+
     class HBModbus:
         def __init__(self):
             self.counter = 0
@@ -205,3 +210,63 @@ async def test_plc_reader_heartbeat_missing(monkeypatch):
 
     assert svc_state.heartbeat_miss_count >= 2
 
+
+@pytest.mark.asyncio
+async def test_plc_reader_heartbeat_toggle_burst_avoids_aliasing(monkeypatch):
+    async def fast_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("daq.plc_reader.asyncio.sleep", fast_sleep)
+
+    class ToggleModbus:
+        def __init__(self):
+            # First cycle initializes at 0. Second cycle initially aliases at 0,
+            # then sees the PLC 0/1 toggle inside the confirmation window.
+            self.values = [0, 0, 0, 1]
+            self.writes = []
+
+        async def read_registers(self, address, count, function_code=3):
+            return [self.values.pop(0)]
+
+        async def write_register(self, address, value):
+            self.writes.append((address, value))
+            return True
+
+    modbus = ToggleModbus()
+    publisher = FakePublisher()
+    config = {
+        "heartbeat": {"read_address": 45290, "write_address": 45291, "function_code": 3},
+    }
+    svc_state = type("S", (), {"heartbeat_miss_count": 0, "heartbeat_fail_count": 0})()
+    reader = PLCReader(modbus, publisher, config, heartbeat_state=svc_state)
+
+    await reader._heartbeat_cycle()
+    await reader._heartbeat_cycle()
+
+    assert reader.last_plc_heartbeat == 1
+    assert svc_state.heartbeat_miss_count == 0
+    assert svc_state.heartbeat_fail_count == 0
+    assert modbus.writes == [(45291, 1), (45291, 2)]
+
+
+@pytest.mark.asyncio
+async def test_plc_reader_edge_host_alive_wraps_without_zero():
+    class WriteOnlyModbus:
+        def __init__(self):
+            self.writes = []
+
+        async def write_register(self, address, value):
+            self.writes.append((address, value))
+            return True
+
+    modbus = WriteOnlyModbus()
+    config = {
+        "heartbeat": {"write_address": 45291},
+    }
+    reader = PLCReader(modbus, publisher=None, config=config)
+    reader.heartbeat_write_value = 65535
+
+    await reader._heartbeat_cycle()
+
+    assert reader.heartbeat_write_value == 1
+    assert modbus.writes == [(45291, 1)]

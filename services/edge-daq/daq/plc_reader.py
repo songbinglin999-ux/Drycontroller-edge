@@ -82,6 +82,9 @@ PLC_SCAN_BACKPRESSURE_TOTAL = _get_or_create_collector(
     "PLC scan cycles delayed due to downstream backpressure",
 )
 
+PLC_HEARTBEAT_CONFIRM_READS = 3
+PLC_HEARTBEAT_CONFIRM_DELAY_SEC = 0.3
+
 
 class PLCReader:
     """
@@ -416,7 +419,7 @@ class PLCReader:
     async def _heartbeat_cycle(self):
         """
         进行一次心跳读写：
-        - 可选读：从 heartbeat.read_address 读取 PLC 心跳值，检测变化
+        - 可选读：从 heartbeat.read_address 读取 PLC 心跳值，短窗口内检测变化
         - 可选写：向 heartbeat.write_address 写入递增计数
         """
         hb_cfg = self.heartbeat_cfg or {}
@@ -426,39 +429,56 @@ class PLCReader:
 
         # 读取 PLC 心跳
         if read_addr is not None:
-            regs = await self.modbus_client.read_registers(read_addr, 1, function_code=fc)
-            if regs:
-                val = regs[0]
-                if self.last_plc_heartbeat is None:
-                    self.last_plc_heartbeat = val
-                    if self.heartbeat_state:
-                        self.heartbeat_state.heartbeat_miss_count = 0
-                else:
-                    if val == self.last_plc_heartbeat:
-                        if self.heartbeat_state:
-                            self.heartbeat_state.heartbeat_miss_count += 1
-                            if self.heartbeat_state.heartbeat_miss_count >= self.heartbeat_timeout_cycles:
-                                logger.error("plc_heartbeat_missing", read_address=read_addr)
-                                PLC_HEARTBEAT_MISSING.inc()
-                                # 心跳超时触发降级与报警
-                                await self._publish_alarm("PLC_HEARTBEAT", "missing", val, 0)
-                                if hasattr(self.heartbeat_state, "on_plc_heartbeat_timeout"):
-                                    await self.heartbeat_state.on_plc_heartbeat_timeout()
-                    else:
-                        self.last_plc_heartbeat = val
-                        if self.heartbeat_state:
-                            self.heartbeat_state.heartbeat_miss_count = 0
-            else:
+            val = await self._read_plc_heartbeat(read_addr, fc)
+            if val is None:
                 if self.heartbeat_state:
                     self.heartbeat_state.heartbeat_fail_count += 1
                 logger.error("plc_heartbeat_read_failed", read_address=read_addr)
+            else:
+                changed = self.last_plc_heartbeat is None or val != self.last_plc_heartbeat
+                latest_val = val
+                if not changed:
+                    for _ in range(PLC_HEARTBEAT_CONFIRM_READS - 1):
+                        await asyncio.sleep(PLC_HEARTBEAT_CONFIRM_DELAY_SEC)
+                        confirm_val = await self._read_plc_heartbeat(read_addr, fc)
+                        if confirm_val is None:
+                            if self.heartbeat_state:
+                                self.heartbeat_state.heartbeat_fail_count += 1
+                            logger.error("plc_heartbeat_confirm_read_failed", read_address=read_addr)
+                            break
+                        latest_val = confirm_val
+                        if confirm_val != self.last_plc_heartbeat:
+                            changed = True
+                            break
+
+                if changed:
+                    self.last_plc_heartbeat = latest_val
+                    if self.heartbeat_state:
+                        self.heartbeat_state.heartbeat_miss_count = 0
+                elif self.heartbeat_state:
+                    self.heartbeat_state.heartbeat_miss_count += 1
+                    if self.heartbeat_state.heartbeat_miss_count >= self.heartbeat_timeout_cycles:
+                        logger.error("plc_heartbeat_missing", read_address=read_addr)
+                        PLC_HEARTBEAT_MISSING.inc()
+                        # 心跳超时触发降级与报警
+                        await self._publish_alarm("PLC_HEARTBEAT", "missing", latest_val, 0)
+                        if hasattr(self.heartbeat_state, "on_plc_heartbeat_timeout"):
+                            await self.heartbeat_state.on_plc_heartbeat_timeout()
 
         # 写入我们自己的心跳
         if write_addr is not None:
-            self.heartbeat_write_value = (self.heartbeat_write_value + 1) % 65535
+            self.heartbeat_write_value += 1
+            if self.heartbeat_write_value > 65535:
+                self.heartbeat_write_value = 1
             ok = await self.modbus_client.write_register(write_addr, self.heartbeat_write_value)
             if not ok and self.heartbeat_state:
                 self.heartbeat_state.heartbeat_fail_count += 1
+
+    async def _read_plc_heartbeat(self, read_addr: int, function_code: int):
+        regs = await self.modbus_client.read_registers(read_addr, 1, function_code=function_code)
+        if not regs:
+            return None
+        return regs[0]
     
     async def _read_tag(self, tag_config: dict):
         """
