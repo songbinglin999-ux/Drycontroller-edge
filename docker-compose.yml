@@ -392,7 +392,7 @@ services:
 
   # ==================== AI 控制优化服务 ====================
   ai-ctrl-optimizer:
-    profiles: ["ai"]   # 控制优化仍默认关闭；`--profile ai` 仅用于后续控制算法试验
+    # 默认启动；当前只作为优化/suggestion 服务骨架，不直写 PLC。
     build:
       context: .
       dockerfile: services/ai-ctrl-optimizer/Dockerfile
@@ -407,8 +407,8 @@ services:
     environment:
       - MQTT_BROKER=${MQTT_BROKER}
       - MQTT_PORT=${MQTT_PORT}
-      - MQTT_USER=${MQTT_USER_AI_CTRL_OPTIMIZER}
-      - MQTT_PASSWORD=${MQTT_PASSWORD_AI_CTRL_OPTIMIZER}
+      - MQTT_USER=${MQTT_USER_AI_CTRL_OPTIMIZER:-}
+      - MQTT_PASSWORD=${MQTT_PASSWORD_AI_CTRL_OPTIMIZER:-}
       - INFLUXDB_HOST=${INFLUXDB_HOST}
       - INFLUXDB_PORT=${INFLUXDB_PORT}
       - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}
