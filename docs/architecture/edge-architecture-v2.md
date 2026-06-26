@@ -238,6 +238,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | suggestion → command | 由 **edge-api** 转为 signed control command；生产模式下不逐条人工确认，是否自动签发取决于 `MANUAL` / `AUTO` 模式授权；AI 不参与签发 |
 | command 消费 | edge-daq 只接受签名 command，Modbus 写入后回 ACK/NAK |
 | PLC 拒绝 | 拒绝原因可回读、审计、上报；NAK 不触发危险重放 |
+| runtime fail-closed 拒绝 | status/authority 快照保持未变更状态；本次拒绝原因写入 command result / audit log `detail`，不写入 `authority.reject_code` |
 | 本地模式行为 | suggestion 标记 `not_actionable` 并记录，不进入签发链路 |
 
 **授权层级**（无论哪一级，edge-api 的 range guard / ramp-slew gate / 工艺联锁 / 签名 / 审计都不被旁路，AI 始终不直接写 PLC）：
