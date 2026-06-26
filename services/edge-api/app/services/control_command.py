@@ -81,10 +81,23 @@ def _coerce_mode(mode: int | str) -> int:
             return 1
         if normalized == "AUTO":
             return 2
-    value = int(mode)
+    value = _coerce_int_field(mode, "mode")
     if value not in (1, 2):
         raise ValueError("mode must be MANUAL/1 or AUTO/2")
     return value
+
+
+def _coerce_int_field(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or not normalized.isdecimal():
+            raise ValueError(f"{field_name} must be an integer")
+        return int(normalized)
+    raise ValueError(f"{field_name} must be an integer")
 
 
 @dataclass
@@ -171,6 +184,8 @@ class ControlCommandService:
         softpoint_range = ALLOWED_CONTROL_SOFTPOINTS.get(tag)
         if softpoint_range is None:
             return False, "softpoint_not_allowed"
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False, "value_not_numeric"
         try:
             numeric_value = float(value)
         except (TypeError, ValueError):

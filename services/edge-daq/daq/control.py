@@ -57,12 +57,23 @@ SINGLE_FREQUENCY_COMMAND_TYPE = "single_frequency_set"
 
 
 def _coerce_transaction_mode(mode: Any) -> int:
-    if isinstance(mode, bool):
-        raise ValueError("mode must be 1 manual or 2 auto")
-    value = int(mode)
+    value = _coerce_int_field(mode, "mode")
     if value not in (REQUEST_MODE_MANUAL, REQUEST_MODE_AUTO):
         raise ValueError("mode must be 1 manual or 2 auto")
     return value
+
+
+def _coerce_int_field(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or not normalized.isdecimal():
+            raise ValueError(f"{field_name} must be an integer")
+        return int(normalized)
+    raise ValueError(f"{field_name} must be an integer")
 
 
 def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -530,9 +541,7 @@ class ControlSubscriber:
         if payload_channel is None:
             return self._reject(msg_id, tag_name, value, "missing_channel")
         try:
-            if isinstance(payload_channel, bool):
-                raise ValueError("channel must be 1..6")
-            payload_channel_i = int(payload_channel)
+            payload_channel_i = _coerce_int_field(payload_channel, "channel")
         except (TypeError, ValueError):
             return self._reject(
                 msg_id,

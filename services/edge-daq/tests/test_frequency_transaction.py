@@ -93,14 +93,36 @@ async def test_frequency_transaction_rejects_preexisting_sequence_status():
 
 
 @pytest.mark.asyncio
-async def test_frequency_transaction_rejects_invalid_sequence_without_write():
+@pytest.mark.parametrize("bad_seq", [True, 1.9, "1.9"])
+async def test_frequency_transaction_rejects_invalid_sequence_without_write(bad_seq):
     modbus = FakeTransactionModbus()
     writer = SingleFrequencyTransactionWriter(modbus)
 
-    result = await writer.write_one(1, 31, seq=True, timeout_sec=0.1)
+    result = await writer.write_one(1, 31, seq=bad_seq, timeout_sec=0.1)
 
     assert result.ok is False
     assert result.reason == "invalid_sequence"
+    assert modbus.writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"channel": 1.9, "value": 31, "mode": 2},
+        {"channel": "1.9", "value": 31, "mode": 2},
+        {"channel": 1, "value": 31, "mode": 1.9},
+        {"channel": 1, "value": 31, "mode": "1.9"},
+    ],
+)
+async def test_frequency_transaction_rejects_fractional_integer_fields_without_write(kwargs):
+    modbus = FakeTransactionModbus()
+    writer = SingleFrequencyTransactionWriter(modbus)
+
+    result = await writer.write_one(**kwargs, seq=3, timeout_sec=0.1)
+
+    assert result.ok is False
+    assert result.reason == "invalid_request"
     assert modbus.writes == []
 
 

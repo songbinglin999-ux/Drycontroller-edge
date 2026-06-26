@@ -292,18 +292,14 @@ class SingleFrequencyTransactionWriter:
 
     @staticmethod
     def _coerce_mode(mode: Any) -> int:
-        if isinstance(mode, bool):
-            raise ValueError("mode must be 1 manual or 2 auto")
-        value = int(mode)
+        value = _coerce_int_field(mode, "mode")
         if value not in (REQUEST_MODE_MANUAL, REQUEST_MODE_AUTO):
             raise ValueError("mode must be 1 manual or 2 auto")
         return value
 
     @staticmethod
     def _coerce_channel(channel: Any) -> int:
-        if isinstance(channel, bool):
-            raise ValueError("channel must be 1..6")
-        value = int(channel)
+        value = _coerce_int_field(channel, "channel")
         if value < 1 or value > 6:
             raise ValueError("channel must be 1..6")
         return value
@@ -320,9 +316,7 @@ class SingleFrequencyTransactionWriter:
 
     @staticmethod
     def _coerce_sequence(seq: Any) -> int:
-        if isinstance(seq, bool):
-            raise ValueError("sequence must be 1..32760")
-        value = int(seq)
+        value = _coerce_int_field(seq, "sequence")
         if value < 1 or value > MAX_SEQUENCE:
             raise ValueError("sequence must be 1..32760")
         return value
@@ -330,3 +324,16 @@ class SingleFrequencyTransactionWriter:
     @staticmethod
     def _u16(value: Any) -> int:
         return int(value) & 0xFFFF
+
+
+def _coerce_int_field(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or not normalized.isdecimal():
+            raise ValueError(f"{field_name} must be an integer")
+        return int(normalized)
+    raise ValueError(f"{field_name} must be an integer")

@@ -34,6 +34,8 @@ def test_control_command_service_accepts_allowed_control_softpoints():
     assert svc._validate_tag("VFM1_FREQ_SP", 20.0) == (True, "ok")
     assert svc._validate_tag("VFM1_FREQ_SP", 60.0) == (False, "value_out_of_range")
     assert svc._validate_tag("VFM1_FREQ_SP", 20.5) == (False, "value_not_integer")
+    assert svc._validate_tag("VFM1_FREQ_SP", "20") == (False, "value_not_numeric")
+    assert svc._validate_tag("VFM1_FREQ_SP", True) == (False, "value_not_numeric")
     assert svc._validate_tag("M1", 1.0) == (False, "softpoint_not_allowed")
 
 
@@ -106,7 +108,8 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_control_send_set_rejects_invalid_mode_before_publish(monkeypatch):
+@pytest.mark.parametrize("bad_mode", ["AUTO_SUSPENDED", 1.9, "1.9", True])
+async def test_control_send_set_rejects_invalid_mode_before_publish(monkeypatch, bad_mode):
     from app.services.control_command import ControlCommandService
 
     monkeypatch.setattr(
@@ -128,12 +131,43 @@ async def test_control_send_set_rejects_invalid_mode_before_publish(monkeypatch)
         line="L1",
         tag="VFM1_FREQ_SP",
         value=10,
-        mode="AUTO_SUSPENDED",
+        mode=bad_mode,
         wait_ack=False,
     )
 
     assert resp["success"] is False
     assert resp["error"] == "invalid_mode"
+
+
+@pytest.mark.asyncio
+async def test_control_send_set_rejects_string_value_before_publish(monkeypatch):
+    from app.services.control_command import ControlCommandService
+
+    monkeypatch.setattr(
+        "app.services.control_command.write_control_history",
+        _noop_write_control_history,
+    )
+
+    class DummyMQTT:
+        connected = True
+
+        def publish(self, topic: str, payload: dict, qos: int = 1):
+            raise AssertionError("string value must not publish")
+
+    monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
+
+    svc = ControlCommandService()
+
+    resp = await svc.send_set(
+        line="L1",
+        tag="VFM1_FREQ_SP",
+        value="10",
+        mode=2,
+        wait_ack=False,
+    )
+
+    assert resp["success"] is False
+    assert resp["error"] == "value_not_numeric"
 
 
 @pytest.mark.asyncio

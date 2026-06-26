@@ -258,8 +258,12 @@ async def test_single_frequency_transaction_command_uses_d5100_writer_when_enabl
     "payload_update,reason",
     [
         ({"channel": None}, "missing_channel"),
+        ({"channel": 1.9}, "invalid_channel"),
+        ({"channel": "1.9"}, "invalid_channel"),
         ({"channel": 2}, "channel_tag_mismatch"),
         ({"mode": None}, "missing_mode"),
+        ({"mode": 1.9}, "invalid_mode"),
+        ({"mode": "1.9"}, "invalid_mode"),
         ({"mode": 3}, "invalid_mode"),
     ],
 )
