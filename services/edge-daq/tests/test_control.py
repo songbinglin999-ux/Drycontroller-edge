@@ -14,7 +14,6 @@ from daq.control import (
     _build_tag_index,
 )
 from daq.frequency_transaction import FrequencyTransactionResult
-from daq.simulator import PLCSimulator
 
 
 class FakeModbus:
@@ -107,10 +106,11 @@ def _make_sig(
     *,
     command_type: str = "",
     mode: int | None = None,
+    channel: int | None = None,
 ) -> str:
     base = f"{msg_id}:{ts}:{tag}:{value}"
     if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
-        base = f"{base}:{command_type}:{mode}"
+        base = f"{base}:{command_type}:{mode}:{channel}"
     return hmac.new(secret.encode(), base.encode(), hashlib.sha256).hexdigest()
 
 
@@ -225,6 +225,7 @@ async def test_single_frequency_transaction_command_uses_d5100_writer_when_enabl
                 {
                     "type": SINGLE_FREQUENCY_COMMAND_TYPE,
                     "tag": "VFM1_FREQ_SP",
+                    "channel": 1,
                     "value": 31,
                     "mode": 2,
                     "seq": 21,
@@ -251,6 +252,44 @@ async def test_single_frequency_transaction_command_uses_d5100_writer_when_enabl
     assert ack["detail"]["channel"] == 1
     assert ack["detail"]["value"] == 31
     assert ack["detail"]["active_targets"] == [31, 0, 0, 0, 0, 0]
+
+
+@pytest.mark.parametrize(
+    "payload_update,reason",
+    [
+        ({"channel": None}, "missing_channel"),
+        ({"channel": 2}, "channel_tag_mismatch"),
+        ({"mode": None}, "missing_mode"),
+        ({"mode": 3}, "invalid_mode"),
+    ],
+)
+def test_single_frequency_transaction_rejects_bad_gate_fields(monkeypatch, payload_update, reason):
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
+    cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config={})
+    fake_writer = FakeFrequencyWriter(FrequencyTransactionResult(status="success", seq=1))
+    cs.frequency_writer = fake_writer
+    payload = {
+        "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+        "tag": "VFM1_FREQ_SP",
+        "channel": 1,
+        "value": 31,
+        "mode": 2,
+        "id": f"bad-{reason}",
+    }
+    for key, value in payload_update.items():
+        if value is None:
+            payload.pop(key, None)
+        else:
+            payload[key] = value
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps(payload).encode()))
+
+    assert modbus.writes == 0
+    assert fake_writer.calls == []
+    ack = _last_ack(cs)
+    assert ack["id"] == f"bad-{reason}"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == reason
 
 
 @pytest.mark.asyncio
@@ -283,7 +322,9 @@ async def test_single_frequency_transactions_are_queued_one_at_a_time(monkeypatc
                 {
                     "type": SINGLE_FREQUENCY_COMMAND_TYPE,
                     "tag": "VFM1_FREQ_SP",
+                    "channel": 1,
                     "value": 31,
+                    "mode": 2,
                     "seq": 31,
                     "id": "queue-1",
                 }
@@ -298,7 +339,9 @@ async def test_single_frequency_transactions_are_queued_one_at_a_time(monkeypatc
                 {
                     "type": SINGLE_FREQUENCY_COMMAND_TYPE,
                     "tag": "VFM2_FREQ_SP",
+                    "channel": 2,
                     "value": 32,
+                    "mode": 2,
                     "seq": 32,
                     "id": "queue-2",
                 }
@@ -319,17 +362,48 @@ async def test_single_frequency_transactions_are_queued_one_at_a_time(monkeypatc
 
 @pytest.mark.asyncio
 async def test_control_signature_valid(monkeypatch):
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     cs, modbus = _mk_sub(monkeypatch, require_sig=True, secret="secret")
+    fake_writer = FakeFrequencyWriter(
+        FrequencyTransactionResult(
+            status="success",
+            seq=1,
+            channel=1,
+            value=10,
+            ack_seq=1,
+            active_targets=[10, 0, 0, 0, 0, 0],
+        )
+    )
+    cs.frequency_writer = fake_writer
     msg_id = "abc"
     ts = time.time()
-    sig = _make_sig("secret", msg_id, ts, CONTROL_TAG, 10)
-    payload = {"tag": CONTROL_TAG, "value": 10, "id": msg_id, "ts": ts, "sig": sig}
+    sig = _make_sig(
+        "secret",
+        msg_id,
+        ts,
+        CONTROL_TAG,
+        10,
+        command_type=SINGLE_FREQUENCY_COMMAND_TYPE,
+        mode=2,
+        channel=1,
+    )
+    payload = {
+        "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+        "tag": CONTROL_TAG,
+        "channel": 1,
+        "value": 10,
+        "mode": 2,
+        "id": msg_id,
+        "ts": ts,
+        "sig": sig,
+    }
     msg = FakeMQTTMsg(json.dumps(payload).encode())
 
     cs._on_message(None, None, msg)
     await asyncio.sleep(0)
 
-    assert modbus.writes == 1
+    assert modbus.writes == 0
+    assert fake_writer.calls
     assert CONTROL_SIG_INVALID._value.get() == 0
 
 
@@ -365,6 +439,7 @@ async def test_control_signature_invalid(monkeypatch):
     ],
 )
 async def test_pre_auth_rejects_do_not_poison_id_cache(monkeypatch, poison_reason):
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     secret = None if poison_reason == "signature_secret_missing" else "secret"
     cs, modbus = _mk_sub(
         monkeypatch,
@@ -373,15 +448,38 @@ async def test_pre_auth_rejects_do_not_poison_id_cache(monkeypatch, poison_reaso
         require_id=True,
         require_ts=True,
     )
+    fake_writer = FakeFrequencyWriter(
+        FrequencyTransactionResult(
+            status="success",
+            seq=1,
+            channel=1,
+            value=10,
+            ack_seq=1,
+            active_targets=[10, 0, 0, 0, 0, 0],
+        )
+    )
+    cs.frequency_writer = fake_writer
     msg_id = f"same-id-{poison_reason}"
     value = 10
     valid_ts = time.time()
     valid_payload = {
+        "type": SINGLE_FREQUENCY_COMMAND_TYPE,
         "tag": CONTROL_TAG,
+        "channel": 1,
         "value": value,
+        "mode": 2,
         "id": msg_id,
         "ts": valid_ts,
-        "sig": _make_sig("secret", msg_id, valid_ts, CONTROL_TAG, value),
+        "sig": _make_sig(
+            "secret",
+            msg_id,
+            valid_ts,
+            CONTROL_TAG,
+            value,
+            command_type=SINGLE_FREQUENCY_COMMAND_TYPE,
+            mode=2,
+            channel=1,
+        ),
     }
 
     if poison_reason == "missing_tag":
@@ -394,10 +492,21 @@ async def test_pre_auth_rejects_do_not_poison_id_cache(monkeypatch, poison_reaso
         stale_ts = valid_ts - 3600
         bad_payload = {
             "tag": CONTROL_TAG,
+            "channel": 1,
             "value": value,
+            "mode": 2,
             "id": msg_id,
             "ts": stale_ts,
-            "sig": _make_sig("secret", msg_id, stale_ts, CONTROL_TAG, value),
+            "sig": _make_sig(
+                "secret",
+                msg_id,
+                stale_ts,
+                CONTROL_TAG,
+                value,
+                command_type=SINGLE_FREQUENCY_COMMAND_TYPE,
+                mode=2,
+                channel=1,
+            ),
         }
     elif poison_reason == "signature_secret_missing":
         bad_payload = valid_payload
@@ -422,7 +531,8 @@ async def test_pre_auth_rejects_do_not_poison_id_cache(monkeypatch, poison_reaso
     cs._on_message(None, None, FakeMQTTMsg(json.dumps(valid_payload).encode()))
     await asyncio.sleep(0)
 
-    assert modbus.writes == 1
+    assert modbus.writes == 0
+    assert fake_writer.calls
     ack = _last_ack(cs)
     assert ack["id"] == msg_id
     assert ack["status"] == "success"
@@ -431,8 +541,27 @@ async def test_pre_auth_rejects_do_not_poison_id_cache(monkeypatch, poison_reaso
 @pytest.mark.asyncio
 async def test_control_replay_dropped(monkeypatch):
     before = CONTROL_REPLAY_DROPPED._value.get()
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
-    payload = {"tag": CONTROL_TAG, "value": 10, "id": "same", "ts": time.time()}
+    cs.frequency_writer = FakeFrequencyWriter(
+        FrequencyTransactionResult(
+            status="success",
+            seq=1,
+            channel=1,
+            value=10,
+            ack_seq=1,
+            active_targets=[10, 0, 0, 0, 0, 0],
+        )
+    )
+    payload = {
+        "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+        "tag": CONTROL_TAG,
+        "channel": 1,
+        "value": 10,
+        "mode": 2,
+        "id": "same",
+        "ts": time.time(),
+    }
     msg = FakeMQTTMsg(json.dumps(payload).encode())
 
     cs._on_message(None, None, msg)
@@ -440,7 +569,7 @@ async def test_control_replay_dropped(monkeypatch):
     cs._on_message(None, None, msg)
     await asyncio.sleep(0)
 
-    assert modbus.writes == 1
+    assert modbus.writes == 0
     assert CONTROL_REPLAY_DROPPED._value.get() == before + 1
     ack = _last_ack(cs)
     assert ack["id"] == "same"
@@ -449,11 +578,20 @@ async def test_control_replay_dropped(monkeypatch):
 
 
 def test_control_replay_reservation_is_atomic(monkeypatch):
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
     assert cs._remember_id_if_new("reserved") is True
     assert cs._remember_id_if_new("reserved") is False
 
-    payload = {"tag": CONTROL_TAG, "value": 10, "id": "reserved", "ts": time.time()}
+    payload = {
+        "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+        "tag": CONTROL_TAG,
+        "channel": 1,
+        "value": 10,
+        "mode": 2,
+        "id": "reserved",
+        "ts": time.time(),
+    }
     cs._on_message(None, None, FakeMQTTMsg(json.dumps(payload).encode()))
 
     assert modbus.writes == 0
@@ -464,15 +602,34 @@ def test_control_replay_reservation_is_atomic(monkeypatch):
 
 
 def test_control_closed_captured_loop_falls_back_without_crash(monkeypatch):
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
+    cs.frequency_writer = FakeFrequencyWriter(
+        FrequencyTransactionResult(
+            status="success",
+            seq=1,
+            channel=1,
+            value=10,
+            ack_seq=1,
+            active_targets=[10, 0, 0, 0, 0, 0],
+        )
+    )
     loop = asyncio.new_event_loop()
     loop.close()
     cs._loop = loop
 
-    payload = {"tag": CONTROL_TAG, "value": 10, "id": "closed-loop", "ts": time.time()}
+    payload = {
+        "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+        "tag": CONTROL_TAG,
+        "channel": 1,
+        "value": 10,
+        "mode": 2,
+        "id": "closed-loop",
+        "ts": time.time(),
+    }
     cs._on_message(None, None, FakeMQTTMsg(json.dumps(payload).encode()))
 
-    assert modbus.writes == 1
+    assert modbus.writes == 0
     ack = _last_ack(cs)
     assert ack["id"] == "closed-loop"
     assert ack["status"] == "success"
@@ -588,10 +745,26 @@ def test_control_rejects_missing_timestamp_with_nak(monkeypatch):
 
 
 def test_control_rejects_out_of_range_with_nak(monkeypatch):
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     config = _address_map_softpoint(address=1)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": 60, "id": "oor"}).encode()))
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": CONTROL_TAG,
+                    "channel": 1,
+                    "value": 60,
+                    "mode": 2,
+                    "id": "oor",
+                }
+            ).encode()
+        ),
+    )
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -603,10 +776,26 @@ def test_control_rejects_out_of_range_with_nak(monkeypatch):
 
 def test_control_rejects_non_numeric_value_with_nak(monkeypatch):
     # 字符串 value 会绕过 isinstance 门控的范围校验，必须在写入前以 NAK 拒绝。
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     config = _address_map_softpoint(address=1)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": "999", "id": "str"}).encode()))
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": CONTROL_TAG,
+                    "channel": 1,
+                    "value": "999",
+                    "mode": 2,
+                    "id": "str",
+                }
+            ).encode()
+        ),
+    )
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -617,11 +806,27 @@ def test_control_rejects_non_numeric_value_with_nak(monkeypatch):
 
 def test_control_rejects_nan_value_with_nak(monkeypatch):
     # NaN 的比较恒为 False，会穿透范围校验；必须在写入前以 NAK 拒绝。
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     config = _address_map_softpoint(address=1)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
     # json.dumps(float("nan")) 默认输出 NaN 字面量，模拟 paho 收到的原始报文。
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": float("nan"), "id": "nan"}).encode()))
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": CONTROL_TAG,
+                    "channel": 1,
+                    "value": float("nan"),
+                    "mode": 2,
+                    "id": "nan",
+                }
+            ).encode()
+        ),
+    )
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -633,10 +838,26 @@ def test_control_rejects_nan_value_with_nak(monkeypatch):
 @pytest.mark.parametrize("bad_value", [True, float("inf"), float("-inf")])
 def test_control_rejects_bool_and_infinite_values_with_nak(monkeypatch, bad_value):
     # bool 是 int 子类、±inf 非有限数；即便 tag 无 range，也必须在写入前 NAK，把行为钉死。
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     config = _address_map_softpoint(address=1)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": bad_value, "id": "bad"}).encode()))
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": CONTROL_TAG,
+                    "channel": 1,
+                    "value": bad_value,
+                    "mode": 2,
+                    "id": "bad",
+                }
+            ).encode()
+        ),
+    )
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -647,9 +868,25 @@ def test_control_rejects_bool_and_infinite_values_with_nak(monkeypatch, bad_valu
 
 def test_control_rejects_acl_with_nak(monkeypatch):
     monkeypatch.setenv("CONTROL_ALLOWED_TAGS", "OTHER")
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": 10, "id": "acl"}).encode()))
+    cs._on_message(
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": CONTROL_TAG,
+                    "channel": 1,
+                    "value": 10,
+                    "mode": 2,
+                    "id": "acl",
+                }
+            ).encode()
+        ),
+    )
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
@@ -658,58 +895,72 @@ def test_control_rejects_acl_with_nak(monkeypatch):
     assert ack["reason"] == "tag_not_in_acl"
 
 
-def test_control_rejects_missing_address_with_nak(monkeypatch):
+def test_legacy_frequency_tag_value_command_requires_d5100_transaction(monkeypatch):
     config = _address_map_softpoint(address=None)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
-    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": 10, "id": "no-address"}).encode()))
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": CONTROL_TAG, "value": 10, "id": "legacy"}).encode()))
 
     assert modbus.writes == 0
     ack = _last_ack(cs)
-    assert ack["id"] == "no-address"
+    assert ack["id"] == "legacy"
     assert ack["status"] == "nak"
-    assert ack["reason"] == "missing_address"
+    assert ack["reason"] == "single_frequency_transaction_required"
 
 
 @pytest.mark.asyncio
-async def test_control_subscriber_writes_plc_simulator_and_acks(monkeypatch):
+async def test_control_subscriber_signed_single_frequency_transaction_acks(monkeypatch):
     monkeypatch.setenv("CONTROL_REQUIRE_SIGNATURE", "true")
     monkeypatch.setenv("CONTROL_REQUIRE_ID", "true")
     monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "true")
     monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret")
-    config = {
-        **_address_map_softpoint(address=40100),
-        "tags": {
-            "s": {
-                "c": [
-                    {
-                        "name": CONTROL_TAG,
-                        "address": 40100,
-                        "type": "float",
-                        "range": [0, 50],
-                    }
-                ]
-            }
-        },
-    }
-    simulator = PLCSimulator(config)
-    subscriber = ControlSubscriber(simulator, config, line_id="L1")
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
+    subscriber = ControlSubscriber(FakeModbus(), {}, line_id="L1")
     subscriber.client = FakeMQTTClient()
+    fake_writer = FakeFrequencyWriter(
+        FrequencyTransactionResult(
+            status="success",
+            seq=41,
+            channel=1,
+            value=12,
+            ack_seq=41,
+            active_targets=[12, 0, 0, 0, 0, 0],
+        )
+    )
+    subscriber.frequency_writer = fake_writer
 
     msg_id = "sim-ack-1"
     ts = time.time()
-    value = 12.5
+    value = 12
     payload = {
+        "type": SINGLE_FREQUENCY_COMMAND_TYPE,
         "tag": CONTROL_TAG,
+        "channel": 1,
         "value": value,
+        "mode": 2,
         "id": msg_id,
         "ts": ts,
-        "sig": _make_sig("secret", msg_id, ts, CONTROL_TAG, value),
+        "sig": _make_sig(
+            "secret",
+            msg_id,
+            ts,
+            CONTROL_TAG,
+            value,
+            command_type=SINGLE_FREQUENCY_COMMAND_TYPE,
+            mode=2,
+            channel=1,
+        ),
     }
     subscriber._on_message(None, None, FakeMQTTMsg(json.dumps(payload).encode()))
     await asyncio.sleep(0)
 
-    assert simulator.data[40100] == value
+    assert fake_writer.calls == [
+        (
+            1,
+            12,
+            {"mode": 2, "seq": None, "timeout_sec": 3.0, "refresh_heartbeat": False},
+        )
+    ]
     assert subscriber.client.published
     topic, ack, qos = subscriber.client.published[0]
     assert topic == "control/L1/acks"
@@ -724,33 +975,61 @@ class FakeMsg:
 
 
 @pytest.mark.asyncio
-async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
+async def test_control_subscriber_d5100_rate_limit_does_not_poison_id(monkeypatch):
     modbus = FakeModbus()
     monkeypatch.setenv("CONTROL_REQUIRE_ID", "false")
     monkeypatch.setenv("CONTROL_REQUIRE_TIMESTAMP", "false")
     monkeypatch.setenv("CONTROL_REQUIRE_SIGNATURE", "false")
-    config = _address_map_softpoint(address=40010, scale=0.1)
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
 
-    cs = ControlSubscriber(modbus, config, line_id="L1")
+    cs = ControlSubscriber(modbus, {}, line_id="L1")
     cs.client = FakeMQTTClient()
     cs.min_interval_ms = 200  # 加快测试
+    fake_writer = FakeFrequencyWriter(
+        FrequencyTransactionResult(
+            status="success",
+            seq=1,
+            channel=1,
+            value=50,
+            ack_seq=1,
+            active_targets=[50, 0, 0, 0, 0, 0],
+        )
+    )
+    cs.frequency_writer = fake_writer
 
     # 不启动真实 MQTT，直接调用 _on_message
-    msg = FakeMsg({"tag": CONTROL_TAG, "value": 50, "id": "i1", "ts": time.time()})
+    msg = FakeMsg(
+        {
+            "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+            "tag": CONTROL_TAG,
+            "channel": 1,
+            "value": 50,
+            "mode": 2,
+            "id": "i1",
+            "ts": time.time(),
+        }
+    )
     cs._on_message(None, None, msg)
     await asyncio.sleep(0)  # 让 create_task 执行
 
-    assert modbus.calls, "应当触发写入"
-    call = modbus.calls[0]
-    assert call[0] == "float"
-    # scale=0.1 -> 寄存器值 = 50 / 0.1 = 500
-    assert call[2] == 500
+    assert modbus.calls == []
+    assert len(fake_writer.calls) == 1
 
     # 立即再次发送，因限流不应追加调用
-    msg2 = FakeMsg({"tag": CONTROL_TAG, "value": 45, "id": "i2", "ts": time.time()})
+    msg2 = FakeMsg(
+        {
+            "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+            "tag": CONTROL_TAG,
+            "channel": 1,
+            "value": 45,
+            "mode": 2,
+            "id": "i2",
+            "ts": time.time(),
+        }
+    )
     cs._on_message(None, None, msg2)
     await asyncio.sleep(0)
-    assert len(modbus.calls) == 1, "限流应阻止第二次写入"
+    assert len(fake_writer.calls) == 1, "限流应阻止第二次写入"
     ack = _last_ack(cs)
     assert ack["id"] == "i2"
     assert ack["status"] == "nak"
@@ -760,11 +1039,11 @@ async def test_control_subscriber_scaling_and_rate_limit(monkeypatch):
     cs.last_sent_ts[CONTROL_TAG] = time.time() - 1
     cs._on_message(None, None, msg2)
     await asyncio.sleep(0)
-    assert len(modbus.calls) == 2
+    assert len(fake_writer.calls) == 2
 
 
 def test_control_softpoint_from_address_map_tbd_rejected(monkeypatch):
-    # 中间层软点地址在 PLC 集成商签收前为 "TBD"，必须 NAK，绝不把 "TBD" 当地址下发。
+    # 频率软点不再允许走中间层地址直写；必须使用 D5100 单路事务。
     config = _address_map_softpoint(address="TBD", scale="TBD")
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
@@ -776,11 +1055,11 @@ def test_control_softpoint_from_address_map_tbd_rejected(monkeypatch):
     ack = _last_ack(cs)
     assert ack["id"] == "tbd"
     assert ack["status"] == "nak"
-    assert ack["reason"] == "address_not_configured"
+    assert ack["reason"] == "single_frequency_transaction_required"
 
 
-def test_control_softpoint_from_address_map_configured_writes(monkeypatch):
-    # 集成商回填真实地址后，软点经中间层解析并写入。
+def test_control_softpoint_from_address_map_configured_still_rejects_legacy_direct_write(monkeypatch):
+    # 即使地址表误配为 writable，也不能绕过 D5100 事务直接写寄存器。
     config = _address_map_softpoint(address=40100, scale=1.0)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
@@ -788,22 +1067,33 @@ def test_control_softpoint_from_address_map_configured_writes(monkeypatch):
         None, None, FakeMQTTMsg(json.dumps({"tag": "VFM1_FREQ_SP", "value": 25.0, "id": "ok"}).encode())
     )
 
-    assert modbus.writes == 1
-    kind, address, reg_value, _ = modbus.calls[0]
-    assert kind == "float"
-    assert address == 40100
-    assert reg_value == 25.0
+    assert modbus.writes == 0
     ack = _last_ack(cs)
-    assert ack["status"] == "success"
+    assert ack["status"] == "nak"
+    assert ack["reason"] == "single_frequency_transaction_required"
 
 
 def test_control_softpoint_from_address_map_out_of_range_rejected(monkeypatch):
-    # 中间层软点仍受 edge-daq 独立 range guard（纵深防御）。
+    # D5100 事务入口仍受 edge-daq 独立 range guard（纵深防御）。
+    monkeypatch.setenv("CONTROL_ENABLE_D5100_WRITER", "true")
     config = _address_map_softpoint(address=40100, scale=1.0)
     cs, modbus = _mk_sub(monkeypatch, require_sig=False, secret=None, config=config)
 
     cs._on_message(
-        None, None, FakeMQTTMsg(json.dumps({"tag": "VFM1_FREQ_SP", "value": 75, "id": "hi"}).encode())
+        None,
+        None,
+        FakeMQTTMsg(
+            json.dumps(
+                {
+                    "type": SINGLE_FREQUENCY_COMMAND_TYPE,
+                    "tag": "VFM1_FREQ_SP",
+                    "channel": 1,
+                    "value": 75,
+                    "mode": 2,
+                    "id": "hi",
+                }
+            ).encode()
+        ),
     )
 
     assert modbus.writes == 0
@@ -828,10 +1118,10 @@ def test_control_rejects_unmapped_or_bad_tag(monkeypatch):
     assert ack["status"] == "nak"
     assert ack["reason"] == "tag_not_found"
 
-    # V1 软点未在地址表中签收，也拒绝。
+    # 频率软点必须走 D5100 事务，不允许旧 tag/value 入口。
     cs._on_message(None, None, FakeMsg({"tag": CONTROL_TAG, "value": 1, "id": "unmapped"}))
     assert not modbus.calls
     ack = _last_ack(cs)
     assert ack["id"] == "unmapped"
     assert ack["status"] == "nak"
-    assert ack["reason"] == "tag_not_found"
+    assert ack["reason"] == "single_frequency_transaction_required"

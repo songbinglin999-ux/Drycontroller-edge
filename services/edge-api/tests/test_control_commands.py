@@ -33,6 +33,7 @@ def test_control_command_service_accepts_allowed_control_softpoints():
 
     assert svc._validate_tag("VFM1_FREQ_SP", 20.0) == (True, "ok")
     assert svc._validate_tag("VFM1_FREQ_SP", 60.0) == (False, "value_out_of_range")
+    assert svc._validate_tag("VFM1_FREQ_SP", 20.5) == (False, "value_not_integer")
     assert svc._validate_tag("M1", 1.0) == (False, "softpoint_not_allowed")
 
 
@@ -87,6 +88,7 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
 
     payload = published["payload"]
     assert payload["tag"] == "VFM1_FREQ_SP"
+    assert payload["channel"] == 1
     assert payload["value"] == 10
     assert payload["type"] == "single_frequency_set"
     assert payload["mode"] == 2
@@ -99,7 +101,39 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
         payload["value"],
         command_type="single_frequency_set",
         mode=2,
+        channel=1,
     )
+
+
+@pytest.mark.asyncio
+async def test_control_send_set_rejects_invalid_mode_before_publish(monkeypatch):
+    from app.services.control_command import ControlCommandService
+
+    monkeypatch.setattr(
+        "app.services.control_command.write_control_history",
+        _noop_write_control_history,
+    )
+
+    class DummyMQTT:
+        connected = True
+
+        def publish(self, topic: str, payload: dict, qos: int = 1):
+            raise AssertionError("invalid mode must not publish")
+
+    monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
+
+    svc = ControlCommandService()
+
+    resp = await svc.send_set(
+        line="L1",
+        tag="VFM1_FREQ_SP",
+        value=10,
+        mode="AUTO_SUSPENDED",
+        wait_ack=False,
+    )
+
+    assert resp["success"] is False
+    assert resp["error"] == "invalid_mode"
 
 
 @pytest.mark.asyncio

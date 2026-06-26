@@ -117,7 +117,17 @@ class SingleFrequencyTransactionWriter:
         if refresh_heartbeat and not await self.refresh_edge_host_alive():
             return FrequencyTransactionResult(status="failed", seq=0, channel=request_channel, value=request_value, reason="heartbeat_write_failed")
 
-        chosen_seq = self._u16(seq) if seq is not None else await self._next_sequence()
+        try:
+            chosen_seq = self._coerce_sequence(seq) if seq is not None else await self._next_sequence()
+        except ValueError as exc:
+            return FrequencyTransactionResult(
+                status="failed",
+                seq=0,
+                channel=request_channel,
+                value=request_value,
+                reason="invalid_sequence",
+                detail={"error": str(exc)},
+            )
         if chosen_seq == 0:
             return FrequencyTransactionResult(status="failed", seq=0, channel=request_channel, value=request_value, reason="invalid_sequence")
 
@@ -307,6 +317,15 @@ class SingleFrequencyTransactionWriter:
         if not float(value).is_integer():
             raise ValueError("frequency target must be an integer Hz value")
         return cls._u16(value)
+
+    @staticmethod
+    def _coerce_sequence(seq: Any) -> int:
+        if isinstance(seq, bool):
+            raise ValueError("sequence must be 1..32760")
+        value = int(seq)
+        if value < 1 or value > MAX_SEQUENCE:
+            raise ValueError("sequence must be 1..32760")
+        return value
 
     @staticmethod
     def _u16(value: Any) -> int:

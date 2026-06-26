@@ -93,6 +93,18 @@ async def test_frequency_transaction_rejects_preexisting_sequence_status():
 
 
 @pytest.mark.asyncio
+async def test_frequency_transaction_rejects_invalid_sequence_without_write():
+    modbus = FakeTransactionModbus()
+    writer = SingleFrequencyTransactionWriter(modbus)
+
+    result = await writer.write_one(1, 31, seq=True, timeout_sec=0.1)
+
+    assert result.ok is False
+    assert result.reason == "invalid_sequence"
+    assert modbus.writes == []
+
+
+@pytest.mark.asyncio
 async def test_frequency_transaction_fails_closed_on_readback_mismatch():
     modbus = FakeTransactionModbus(readback_targets=[0, 0, 35, 0, 0, 0])
     writer = SingleFrequencyTransactionWriter(modbus)

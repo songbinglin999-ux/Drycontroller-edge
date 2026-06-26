@@ -60,6 +60,7 @@ def _hmac_sig(
     *,
     command_type: str = "",
     mode: Any = None,
+    channel: Any = None,
 ) -> str:
     """
     与 edge-daq 的校验严格对齐：base = f"{id}:{ts}:{tag}:{value}"
@@ -67,11 +68,13 @@ def _hmac_sig(
     """
     base = f"{msg_id}:{float(msg_ts)}:{tag}:{value}"
     if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
-        base = f"{base}:{command_type}:{mode}"
+        base = f"{base}:{command_type}:{mode}:{channel}"
     return hmac.new(secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _coerce_mode(mode: int | str) -> int:
+    if isinstance(mode, bool):
+        raise ValueError("mode must be MANUAL/1 or AUTO/2")
     if isinstance(mode, str):
         normalized = mode.strip().upper()
         if normalized == "MANUAL":
@@ -175,6 +178,8 @@ class ControlCommandService:
         lo, hi, _unit = softpoint_range
         if numeric_value < lo or numeric_value > hi:
             return False, "value_out_of_range"
+        if not numeric_value.is_integer():
+            return False, "value_not_integer"
         return True, "ok"
 
     def _topic_for_line(self, line: str) -> str:
@@ -198,11 +203,19 @@ class ControlCommandService:
         下发单路频率控制指令。默认等待 ACK（闭环）。
         """
         final_msg_id: Optional[str] = msg_id
+        request_mode: Optional[int] = None
+        channel: Optional[int] = None
         ack_status: str = "error"
         ack_at: Optional[dt.datetime] = None
         ack_detail: Dict[str, Any] = {}
         history_error: Optional[str] = None
         try:
+            try:
+                request_mode = _coerce_mode(mode)
+            except (TypeError, ValueError) as exc:
+                history_error = "invalid_mode"
+                return {"success": False, "error": history_error, "detail": str(exc)}
+
             if not mqtt_manager.connected:
                 history_error = "mqtt_not_connected"
                 return {"success": False, "error": history_error}
@@ -217,12 +230,8 @@ class ControlCommandService:
                 history_error = "control_signature_secret_missing"
                 return {"success": False, "error": history_error}
 
-            try:
-                request_mode = _coerce_mode(mode)
-            except (TypeError, ValueError) as exc:
-                history_error = "invalid_mode"
-                return {"success": False, "error": history_error, "detail": str(exc)}
-            if tag not in FREQUENCY_CHANNELS:
+            channel = FREQUENCY_CHANNELS.get(tag)
+            if channel is None:
                 history_error = "softpoint_not_allowed"
                 return {"success": False, "error": history_error}
 
@@ -239,12 +248,14 @@ class ControlCommandService:
                 value,
                 command_type=SINGLE_FREQUENCY_COMMAND_TYPE,
                 mode=request_mode,
+                channel=channel,
             )
             payload = {
                 "id": final_msg_id,
                 "ts": msg_ts,
                 "type": SINGLE_FREQUENCY_COMMAND_TYPE,
                 "tag": tag,
+                "channel": channel,
                 "value": value,
                 "mode": request_mode,
                 "sig": sig,
@@ -354,8 +365,9 @@ class ControlCommandService:
                     request_payload={
                         "line": line,
                         "tag": tag,
+                        "channel": channel,
                         "value": value,
-                        "mode": request_mode,
+                        "mode": request_mode if request_mode is not None else mode,
                         "wait_ack": wait_ack,
                         "timeout_sec": timeout_sec,
                     },

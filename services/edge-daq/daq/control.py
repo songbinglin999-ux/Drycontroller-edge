@@ -19,7 +19,11 @@ import paho.mqtt.client as mqtt
 import structlog
 from prometheus_client import Counter
 
-from daq.frequency_transaction import SingleFrequencyTransactionWriter
+from daq.frequency_transaction import (
+    REQUEST_MODE_AUTO,
+    REQUEST_MODE_MANUAL,
+    SingleFrequencyTransactionWriter,
+)
 
 logger = structlog.get_logger(__name__)
 CONTROL_WRITE_SUCCESS = Counter("control_write_success_total", "Control writes success", ["type"])
@@ -50,6 +54,15 @@ FREQUENCY_CHANNELS = {
 FREQUENCY_MIN_HZ = 0
 FREQUENCY_MAX_HZ = 50
 SINGLE_FREQUENCY_COMMAND_TYPE = "single_frequency_set"
+
+
+def _coerce_transaction_mode(mode: Any) -> int:
+    if isinstance(mode, bool):
+        raise ValueError("mode must be 1 manual or 2 auto")
+    value = int(mode)
+    if value not in (REQUEST_MODE_MANUAL, REQUEST_MODE_AUTO):
+        raise ValueError("mode must be 1 manual or 2 auto")
+    return value
 
 
 def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -370,6 +383,7 @@ class ControlSubscriber:
                 value,
                 command_type=command_type,
                 mode=payload.get("mode"),
+                channel=payload.get("channel"),
             ):
                 CONTROL_SIG_INVALID.inc()
                 logger.warning("control_signature_invalid", id=msg_id)
@@ -377,6 +391,8 @@ class ControlSubscriber:
 
         if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
             return self._handle_single_frequency_transaction(payload, msg_id, tag_name, value)
+        if tag_name in FREQUENCY_CHANNELS:
+            return self._reject(msg_id, tag_name, value, "single_frequency_transaction_required")
 
         tag_config = self.tag_index.get(tag_name)
         if not tag_config:
@@ -510,6 +526,49 @@ class ControlSubscriber:
         channel = FREQUENCY_CHANNELS.get(tag_name)
         if channel is None:
             return self._reject(msg_id, tag_name, value, "softpoint_not_allowed")
+        payload_channel = payload.get("channel")
+        if payload_channel is None:
+            return self._reject(msg_id, tag_name, value, "missing_channel")
+        try:
+            if isinstance(payload_channel, bool):
+                raise ValueError("channel must be 1..6")
+            payload_channel_i = int(payload_channel)
+        except (TypeError, ValueError):
+            return self._reject(
+                msg_id,
+                tag_name,
+                value,
+                "invalid_channel",
+                {"channel": payload_channel},
+            )
+        if payload_channel_i < 1 or payload_channel_i > 6:
+            return self._reject(
+                msg_id,
+                tag_name,
+                value,
+                "invalid_channel",
+                {"channel": payload_channel_i},
+            )
+        if payload_channel_i != channel:
+            return self._reject(
+                msg_id,
+                tag_name,
+                value,
+                "channel_tag_mismatch",
+                {"expected_channel": channel, "actual_channel": payload_channel_i},
+            )
+        if payload.get("mode") is None:
+            return self._reject(msg_id, tag_name, value, "missing_mode")
+        try:
+            mode = _coerce_transaction_mode(payload.get("mode"))
+        except (TypeError, ValueError) as exc:
+            return self._reject(
+                msg_id,
+                tag_name,
+                value,
+                "invalid_mode",
+                {"error": str(exc)},
+            )
         if self.allowed_tags and tag_name not in self.allowed_tags:
             logger.warning("control_tag_not_in_acl", tag=tag_name)
             return self._reject(msg_id, tag_name, value, "tag_not_in_acl")
@@ -547,9 +606,13 @@ class ControlSubscriber:
             logger.warning("control_replay_detected", id=msg_id)
             return self._reject(msg_id, tag_name, value, "replay_detected", remember=False)
 
-        mode = payload.get("mode", 2)
         seq = payload.get("seq")
-        timeout_sec = float(payload.get("timeout_sec", 3.0) or 3.0)
+        try:
+            timeout_sec = float(payload.get("timeout_sec", 3.0) or 3.0)
+        except (TypeError, ValueError):
+            return self._reject(msg_id, tag_name, value, "invalid_timeout")
+        if not math.isfinite(timeout_sec) or timeout_sec <= 0:
+            return self._reject(msg_id, tag_name, value, "invalid_timeout")
 
         async def _do_write():
             result = await self.frequency_writer.write_one(
@@ -726,6 +789,7 @@ class ControlSubscriber:
         *,
         command_type: str = "",
         mode: Any = None,
+        channel: Any = None,
     ) -> bool:
         """
         基于共享密钥的 HMAC-SHA256 校验，构造串：id:ts:tag:value
@@ -733,7 +797,7 @@ class ControlSubscriber:
         try:
             base = f"{msg_id}:{msg_ts}:{tag}:{value}"
             if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
-                base = f"{base}:{command_type}:{mode}"
+                base = f"{base}:{command_type}:{mode}:{channel}"
             computed = hmac.new(self.signature_secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256).hexdigest()
             return hmac.compare_digest(computed, str(sig))
         except (TypeError, ValueError) as e:
