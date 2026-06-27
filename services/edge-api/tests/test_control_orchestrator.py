@@ -99,6 +99,17 @@ class DummyRealtimeNoPlcControlState(DummyRealtimeFull):
         return payload
 
 
+class DummyRealtimeMissingTransitionState(DummyRealtimeFull):
+    async def get_latest_payload(self, requested_tags, lookback):
+        payload = await super().get_latest_payload(requested_tags, lookback)
+        payload["data"] = [
+            row for row in payload["data"]
+            if row["tag"] != "AUTH_TRANSITION_STATE"
+        ]
+        payload["missing"] = ["AUTH_TRANSITION_STATE"]
+        return payload
+
+
 class DummyRealtimeManual(DummyRealtimeFull):
     async def get_latest_payload(self, requested_tags, lookback):
         payload = await super().get_latest_payload(requested_tags, lookback)
@@ -310,6 +321,35 @@ async def test_orchestrator_rejects_manual_softpoint_without_plc_authority_state
         actor="operator:test",
         operator_id="operator-a",
         request_id="manual-no-plc-state",
+        reason="v1_frequency_target_write",
+        timeout_sec=1.0,
+    )
+
+    assert confirmed["success"] is False
+    assert confirmed["error"] == "manual_command_not_actionable"
+    assert "DATA_MISSING_OR_STALE" in confirmed["blocked_by"]
+    assert command.calls == []
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_rejects_manual_softpoint_without_transition_state(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_orchestrator.write_audit", fake_write_audit)
+    command = DummyCommand()
+    orchestrator = ControlOrchestrator(
+        realtime_service=DummyRealtimeMissingTransitionState(),
+        command_service=command,
+    )
+
+    confirmed = await orchestrator.confirm_manual_action(
+        line="L1",
+        target_softpoint="VF1_FREQ_SP",
+        value=25.0,
+        actor="operator:test",
+        operator_id="operator-a",
+        request_id="manual-no-transition-state",
         reason="v1_frequency_target_write",
         timeout_sec=1.0,
     )

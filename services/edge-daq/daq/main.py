@@ -593,7 +593,7 @@ class DAQService:
                         int(heartbeat_cfg.get(field))
                     except (TypeError, ValueError):
                         errors.append(f"invalid_heartbeat_{field}")
-        allowed_signal_types = {"DI", "AI", "DO", "AO"}
+        allowed_signal_types = {"DI", "AI", "DO", "AO", "DIAG"}
         for section, categories in tags_cfg.items():
             if not isinstance(categories, dict):
                 continue

@@ -1,4 +1,7 @@
 import importlib
+from pathlib import Path
+
+import pytest
 
 
 def test_config_validation_semantic_fields(tmp_path, monkeypatch):
@@ -33,3 +36,19 @@ def test_config_validation_semantic_fields(tmp_path, monkeypatch):
         }
     }
     assert svc._validate_config(good_config) == []
+
+
+@pytest.mark.asyncio
+async def test_real_config_authority_diagnostics_validate(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOG_ROOT", str(tmp_path))
+    repo_root = Path(__file__).resolve().parents[3]
+    monkeypatch.setenv("TAGS_CONFIG", str(repo_root / "configs/tags.yaml"))
+    monkeypatch.setenv("MODBUS_ADDRESS_MAP", str(repo_root / "configs/modbus-address-map.yaml"))
+    daq_main = importlib.import_module("daq.main")
+    svc = daq_main.DAQService()
+
+    config = await svc.load_config()
+
+    assert svc._validate_config(config) == []
+    authority_tags = config["tags"]["diagnostic"]["authority"]
+    assert {tag["signal_type"] for tag in authority_tags} == {"DIAG"}
