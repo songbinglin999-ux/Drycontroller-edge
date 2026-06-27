@@ -64,6 +64,14 @@ PLC_HEARTBEAT: {address: 45290, function_code: 3, scale: 1, byte_order: big, typ
 EDGE_HOST_ALIVE: {address: 45291, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
 PLC_LEGACY_HEARTBEAT_TOGGLE: {address: TBD, function_code: 1, byte_order: big, type: bool, diagnostic: heartbeat, legacy_device: M1001, control_softpoint: false}
 
+# --- authority status points (read-only) ---
+# These are PLC-owned state fields. They let edge-api/HMI fail closed when
+# control ownership moves away from edge, but they are not control softpoints.
+AUTHORITY_OWNER: {address: 45201, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: authority, control_softpoint: false}
+AUTHORITY_EPOCH: {address: 45414, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: authority, control_softpoint: false}
+AUTH_TRANSITION_STATE: {address: 45415, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: authority, control_softpoint: false}
+HMI_DIRECT_ENABLE: {address: 45571, function_code: 3, scale: 1, byte_order: big, type: bool, diagnostic: authority, control_softpoint: false}
+
 # --- control write soft points (6 frequency setpoints) ---
 # 控制写入按 2026-06-20「上位机降级全只读」决策锁停（见根目录 architecture-audit），本期不启用。
 # D30-D35/M1000/M140-M173 属于 PLC 原工程/PLC 屏侧旧链路，DryController 不采集、不写入。

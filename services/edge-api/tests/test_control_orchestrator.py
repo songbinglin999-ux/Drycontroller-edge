@@ -21,6 +21,8 @@ class DummyRealtimeFull:
             {
                 "CONTROL_MODE": "AUTO",
                 "AUTHORITY_OWNER": "EDGE",
+                "AUTHORITY_EPOCH": 1,
+                "AUTH_TRANSITION_STATE": 0,
                 "HMI_DIRECT_ENABLE": 0,
                 "MAINTENANCE_LOCK": 0,
                 "EMERGENCY_STOP": 0,
@@ -83,6 +85,8 @@ class DummyRealtimeNoPlcControlState(DummyRealtimeFull):
         optional_state_tags = {
             "CONTROL_MODE",
             "AUTHORITY_OWNER",
+            "AUTHORITY_EPOCH",
+            "AUTH_TRANSITION_STATE",
             "HMI_DIRECT_ENABLE",
             "MAINTENANCE_LOCK",
             "EMERGENCY_STOP",
@@ -288,7 +292,7 @@ async def test_orchestrator_confirms_manual_softpoint_through_gate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_confirms_manual_softpoint_without_plc_control_state(monkeypatch):
+async def test_orchestrator_rejects_manual_softpoint_without_plc_authority_state(monkeypatch):
     async def fake_write_audit(**kwargs):
         return None
 
@@ -310,19 +314,10 @@ async def test_orchestrator_confirms_manual_softpoint_without_plc_control_state(
         timeout_sec=1.0,
     )
 
-    assert confirmed["success"] is True
-    assert confirmed["recommendation"]["blocked_by"] == []
-    assert command.calls == [
-        {
-            "line": "L1",
-            "tag": "VF1_FREQ_SP",
-            "value": 25.0,
-            "msg_id": "manual-no-plc-state",
-            "mode": 1,
-            "wait_ack": True,
-            "timeout_sec": 1.0,
-        }
-    ]
+    assert confirmed["success"] is False
+    assert confirmed["error"] == "manual_command_not_actionable"
+    assert "DATA_MISSING_OR_STALE" in confirmed["blocked_by"]
+    assert command.calls == []
 
 
 @pytest.mark.asyncio

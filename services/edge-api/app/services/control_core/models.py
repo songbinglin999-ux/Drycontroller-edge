@@ -21,15 +21,18 @@ PROCESS_TAGS = LEVEL_TAGS + TEMPERATURE_TAGS + ["MT1"] + CURRENT_TAGS + MOTOR_TA
 CONTROL_STATE_TAGS = [
     "CONTROL_MODE",
     "AUTHORITY_OWNER",
+    "AUTHORITY_EPOCH",
+    "AUTH_TRANSITION_STATE",
     "HMI_DIRECT_ENABLE",
     "MAINTENANCE_LOCK",
     "EMERGENCY_STOP",
 ]
 # DryController only replaces manual writes to the six frequency setpoints.
-# Product mode is MANUAL/AUTO/AUTO_SUSPENDED; PLC authority state is sampled
-# opportunistically until final field wiring proves it can be required.
+# Product mode is MANUAL/AUTO/AUTO_SUSPENDED; PLC authority owner/epoch are
+# required before edge-api can ask edge-daq to issue a D5100 write.
 SNAPSHOT_TAGS = PROCESS_TAGS + CONTROL_STATE_TAGS
-REQUIRED_SNAPSHOT_TAGS = PROCESS_TAGS
+REQUIRED_CONTROL_STATE_TAGS = ["AUTHORITY_OWNER", "AUTHORITY_EPOCH", "HMI_DIRECT_ENABLE"]
+REQUIRED_SNAPSHOT_TAGS = PROCESS_TAGS + REQUIRED_CONTROL_STATE_TAGS
 
 ALLOWED_CONTROL_SOFTPOINTS = {
     "VFM1_FREQ_SP": (0.0, 50.0, "Hz"),
@@ -72,6 +75,8 @@ class SnapshotFreshness(BaseModel):
 class ControlState(BaseModel):
     CONTROL_MODE: Optional[str] = None
     AUTHORITY_OWNER: Optional[str] = None
+    AUTHORITY_EPOCH: Optional[int] = None
+    AUTH_TRANSITION_STATE: Optional[int] = None
     HMI_DIRECT_ENABLE: Optional[bool] = None
     maintenance_lock: Optional[bool] = None
     emergency_stop: Optional[bool] = None

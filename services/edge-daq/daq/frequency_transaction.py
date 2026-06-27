@@ -33,10 +33,34 @@ PLC_LAST_NAK_SEQ = 5206
 PLC_NAK_CODE = 5207
 PLC_ACTIVE_FREQ_TARGET_START = 5210
 EDGE_HOST_ALIVE = 5291
+AUTHORITY_OWNER = 5201
+
+AUTH_REQ_SEQ = 5400
+AUTH_REQ_SOURCE = 5401
+AUTH_REQ_ACTION = 5402
+AUTH_REQ_EPOCH = 5403
+AUTH_REQ_TIMEOUT_S = 5404
+AUTH_LAST_SEEN_SEQ = 5410
+AUTH_GRANT_SEQ = 5411
+AUTH_REJECT_SEQ = 5412
+AUTH_REJECT_CODE = 5413
+AUTHORITY_EPOCH = 5414
+AUTH_TRANSITION_STATE = 5415
 
 REQUEST_TYPE_SINGLE_FREQUENCY = 1
 REQUEST_MODE_MANUAL = 1
 REQUEST_MODE_AUTO = 2
+
+AUTHORITY_OWNER_PLC_LOCAL = 0
+AUTHORITY_OWNER_LOCAL_SCREEN = 1
+AUTHORITY_OWNER_EDGE = 2
+AUTHORITY_OWNER_HMI_DIRECT = 3
+AUTHORITY_OWNER_MAINTENANCE = 4
+AUTHORITY_OWNER_FAULT = 5
+
+AUTH_SOURCE_EDGE = 1
+AUTH_ACTION_REQUEST_OWNER = 1
+AUTH_TRANSITION_STABLE = 0
 
 MAX_SEQUENCE = 32760
 
@@ -59,6 +83,17 @@ class FrequencyTransactionResult:
         return self.status == "success"
 
 
+@dataclass(frozen=True)
+class AuthorityStatus:
+    owner: int
+    last_seen_seq: int
+    grant_seq: int
+    reject_seq: int
+    reject_code: int
+    epoch: int
+    transition_state: int
+
+
 class SingleFrequencyTransactionWriter:
     """Write one frequency target through the final D5100 PLC transaction."""
 
@@ -73,6 +108,7 @@ class SingleFrequencyTransactionWriter:
         self.d_modbus_base = int(d_modbus_base)
         self.poll_interval_sec = float(poll_interval_sec)
         self._last_seq = 0
+        self._last_auth_seq = 0
         self._edge_alive_value = 0
 
     def _addr(self, d_number: int) -> int:
@@ -144,6 +180,17 @@ class SingleFrequencyTransactionWriter:
                 reason="duplicate_sequence",
             )
 
+        authority = await self.ensure_edge_authority(timeout_sec=timeout_sec)
+        if not authority.ok:
+            return FrequencyTransactionResult(
+                status="failed",
+                seq=chosen_seq,
+                channel=request_channel,
+                value=request_value,
+                reason=authority.reason,
+                detail=authority.detail,
+            )
+
         payload_head = [
             REQUEST_TYPE_SINGLE_FREQUENCY,
             request_mode,
@@ -183,6 +230,94 @@ class SingleFrequencyTransactionWriter:
         if registers is None or len(registers) != 6:
             return None
         return [self._u16(value) for value in registers]
+
+    async def ensure_edge_authority(self, *, timeout_sec: float = 3.0, request_timeout_s: int = 10) -> FrequencyTransactionResult:
+        """Ensure PLC owner/epoch grants the edge lane before a D5100 write."""
+        status = await self.read_authority_status()
+        if status is None:
+            return FrequencyTransactionResult(status="failed", seq=0, reason="authority_read_failed")
+
+        if status.owner in (AUTHORITY_OWNER_HMI_DIRECT, AUTHORITY_OWNER_MAINTENANCE, AUTHORITY_OWNER_FAULT):
+            return FrequencyTransactionResult(
+                status="failed",
+                seq=0,
+                reason="authority_owner_not_edge",
+                detail={
+                    "authority_owner": status.owner,
+                    "authority_epoch": status.epoch,
+                    "transition_state": status.transition_state,
+                },
+            )
+
+        if status.epoch <= 0:
+            return FrequencyTransactionResult(
+                status="failed",
+                seq=0,
+                reason="authority_epoch_invalid",
+                detail={
+                    "authority_owner": status.owner,
+                    "authority_epoch": status.epoch,
+                    "transition_state": status.transition_state,
+                },
+            )
+
+        if status.transition_state != AUTH_TRANSITION_STABLE:
+            return FrequencyTransactionResult(
+                status="failed",
+                seq=0,
+                reason="authority_transition_not_stable",
+                detail={
+                    "authority_owner": status.owner,
+                    "authority_epoch": status.epoch,
+                    "transition_state": status.transition_state,
+                },
+            )
+
+        if status.owner == AUTHORITY_OWNER_EDGE:
+            return FrequencyTransactionResult(
+                status="success",
+                seq=0,
+                detail={"authority_owner": status.owner, "authority_epoch": status.epoch},
+            )
+
+        seq = self._next_auth_sequence(status)
+        payload = [
+            AUTH_SOURCE_EDGE,
+            AUTH_ACTION_REQUEST_OWNER,
+            self._u16(status.epoch),
+            self._u16(request_timeout_s),
+        ]
+        if not await self.modbus_client.write_registers(self._addr(AUTH_REQ_SOURCE), payload):
+            return FrequencyTransactionResult(status="failed", seq=seq, reason="authority_write_failed")
+        if not await self.modbus_client.write_register(self._addr(AUTH_REQ_SEQ), seq):
+            return FrequencyTransactionResult(status="failed", seq=seq, reason="authority_write_failed")
+
+        return await self._wait_for_authority_grant(seq, timeout_sec)
+
+    async def read_authority_status(self) -> AuthorityStatus | None:
+        owner_register = await self.modbus_client.read_registers(
+            self._addr(AUTHORITY_OWNER),
+            1,
+            function_code=3,
+        )
+        auth_registers = await self.modbus_client.read_registers(
+            self._addr(AUTH_LAST_SEEN_SEQ),
+            6,
+            function_code=3,
+        )
+        if owner_register is None or len(owner_register) != 1:
+            return None
+        if auth_registers is None or len(auth_registers) != 6:
+            return None
+        return AuthorityStatus(
+            owner=self._u16(owner_register[0]),
+            last_seen_seq=self._u16(auth_registers[0]),
+            grant_seq=self._u16(auth_registers[1]),
+            reject_seq=self._u16(auth_registers[2]),
+            reject_code=self._u16(auth_registers[3]),
+            epoch=self._u16(auth_registers[4]),
+            transition_state=self._u16(auth_registers[5]),
+        )
 
     async def _wait_for_result(
         self,
@@ -264,6 +399,87 @@ class SingleFrequencyTransactionWriter:
             detail=detail,
         )
 
+    async def _wait_for_authority_grant(self, seq: int, timeout_sec: float) -> FrequencyTransactionResult:
+        deadline = asyncio.get_running_loop().time() + float(timeout_sec)
+        last_status: AuthorityStatus | None = None
+
+        while asyncio.get_running_loop().time() <= deadline:
+            status = await self.read_authority_status()
+            if status is not None:
+                last_status = status
+                if status.grant_seq == seq:
+                    if status.owner != AUTHORITY_OWNER_EDGE:
+                        return FrequencyTransactionResult(
+                            status="failed",
+                            seq=seq,
+                            reason="authority_grant_owner_mismatch",
+                            detail={
+                                "authority_owner": status.owner,
+                                "authority_epoch": status.epoch,
+                                "transition_state": status.transition_state,
+                            },
+                        )
+                    if status.epoch <= 0:
+                        return FrequencyTransactionResult(
+                            status="failed",
+                            seq=seq,
+                            reason="authority_epoch_invalid",
+                            detail={
+                                "authority_owner": status.owner,
+                                "authority_epoch": status.epoch,
+                                "transition_state": status.transition_state,
+                            },
+                        )
+                    if status.transition_state != AUTH_TRANSITION_STABLE:
+                        return FrequencyTransactionResult(
+                            status="failed",
+                            seq=seq,
+                            reason="authority_grant_not_stable",
+                            detail={
+                                "authority_owner": status.owner,
+                                "authority_epoch": status.epoch,
+                                "transition_state": status.transition_state,
+                            },
+                        )
+                    self._last_auth_seq = max(self._last_auth_seq, seq)
+                    return FrequencyTransactionResult(
+                        status="success",
+                        seq=seq,
+                        detail={
+                            "authority_owner": status.owner,
+                            "authority_epoch": status.epoch,
+                            "transition_state": status.transition_state,
+                        },
+                    )
+                if status.reject_seq == seq:
+                    self._last_auth_seq = max(self._last_auth_seq, seq)
+                    return FrequencyTransactionResult(
+                        status="failed",
+                        seq=seq,
+                        reason=f"authority_reject_{status.reject_code}",
+                        detail={
+                            "authority_owner": status.owner,
+                            "authority_epoch": status.epoch,
+                            "auth_reject_code": status.reject_code,
+                            "transition_state": status.transition_state,
+                        },
+                    )
+
+            await asyncio.sleep(self.poll_interval_sec)
+
+        detail = {}
+        if last_status is not None:
+            detail = {
+                "authority_owner": last_status.owner,
+                "authority_epoch": last_status.epoch,
+                "auth_grant_seq": last_status.grant_seq,
+                "auth_reject_seq": last_status.reject_seq,
+                "auth_reject_code": last_status.reject_code,
+                "transition_state": last_status.transition_state,
+            }
+        logger.warning("authority_request_timeout", seq=seq, detail=detail)
+        return FrequencyTransactionResult(status="timeout", seq=seq, reason="authority_timeout", detail=detail)
+
     async def _read_ack_status(self) -> dict[str, int] | None:
         registers = await self.modbus_client.read_registers(
             self._addr(PLC_LAST_ACK_SEQ),
@@ -289,6 +505,12 @@ class SingleFrequencyTransactionWriter:
             self._last_seq = max(self._last_seq, high_water)
         self._last_seq = 1 if self._last_seq >= MAX_SEQUENCE else self._last_seq + 1
         return self._last_seq
+
+    def _next_auth_sequence(self, status: AuthorityStatus) -> int:
+        high_water = max(status.last_seen_seq, status.grant_seq, status.reject_seq)
+        self._last_auth_seq = max(self._last_auth_seq, high_water)
+        self._last_auth_seq = 1 if self._last_auth_seq >= MAX_SEQUENCE else self._last_auth_seq + 1
+        return self._last_auth_seq
 
     @staticmethod
     def _coerce_mode(mode: Any) -> int:

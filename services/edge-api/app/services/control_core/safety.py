@@ -67,13 +67,16 @@ def snapshot_blocks(
     if snapshot.freshness.is_degraded():
         blocks.append("DATA_MISSING_OR_STALE")
     state = snapshot.control_state
-    # V1 owns the practical mode lock in edge-api/HMI and only writes the six
-    # frequency setpoints. PLC authority fields become hard gates in V2/V3; in
-    # V1 they are optional status inputs and must not block acceptance if absent.
+    # D5100 writes must be behind the PLC owner/epoch contract. Missing authority
+    # tags are handled by SnapshotFreshness because they are required tags.
     if state.CONTROL_MODE is not None and state.CONTROL_MODE not in set(allowed_control_modes):
         blocks.append(mode_block_code)
     if state.AUTHORITY_OWNER is not None and state.AUTHORITY_OWNER != "EDGE":
         blocks.append("AUTHORITY_OWNER_NOT_EDGE")
+    if state.AUTHORITY_EPOCH is not None and state.AUTHORITY_EPOCH <= 0:
+        blocks.append("AUTHORITY_EPOCH_INVALID")
+    if state.AUTH_TRANSITION_STATE not in (None, 0):
+        blocks.append("AUTHORITY_TRANSITION_NOT_STABLE")
     if state.HMI_DIRECT_ENABLE is True:
         blocks.append("HMI_DIRECT_ENABLE_NOT_FALSE")
     if state.maintenance_lock is True:

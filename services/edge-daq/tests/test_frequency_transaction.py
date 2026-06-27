@@ -8,6 +8,21 @@ import sys
 import pytest
 
 from daq.frequency_transaction import (
+    AUTH_ACTION_REQUEST_OWNER,
+    AUTH_GRANT_SEQ,
+    AUTH_REJECT_CODE,
+    AUTH_REJECT_SEQ,
+    AUTH_REQ_ACTION,
+    AUTH_REQ_EPOCH,
+    AUTH_REQ_SEQ,
+    AUTH_REQ_SOURCE,
+    AUTH_SOURCE_EDGE,
+    AUTH_TRANSITION_STATE,
+    AUTHORITY_EPOCH,
+    AUTHORITY_OWNER,
+    AUTHORITY_OWNER_EDGE,
+    AUTHORITY_OWNER_HMI_DIRECT,
+    AUTHORITY_OWNER_LOCAL_SCREEN,
     D_MODBUS_BASE,
     EDGE_FREQ_CHANNEL,
     EDGE_FREQ_VALUE,
@@ -27,8 +42,12 @@ def _addr(d_number: int) -> int:
 
 
 class FakeTransactionModbus:
-    def __init__(self, *, readback_targets=None):
-        self.registers = {}
+    def __init__(self, *, readback_targets=None, authority_owner=AUTHORITY_OWNER_EDGE):
+        self.registers = {
+            _addr(AUTHORITY_OWNER): int(authority_owner),
+            _addr(AUTHORITY_EPOCH): 1,
+            _addr(AUTH_TRANSITION_STATE): 0,
+        }
         self.writes = []
         self.readback_targets = readback_targets
 
@@ -44,6 +63,23 @@ class FakeTransactionModbus:
     async def write_register(self, address: int, value: int, retries: int = 2):
         self.writes.append(("single", address, int(value)))
         self.registers[address] = int(value)
+        if address == _addr(AUTH_REQ_SEQ):
+            self.registers[_addr(AUTH_REQ_SEQ)] = int(value)
+            self.registers[_addr(AUTH_GRANT_SEQ)] = 0
+            self.registers[_addr(AUTH_REJECT_SEQ)] = 0
+            self.registers[_addr(AUTH_REJECT_CODE)] = 0
+            if (
+                self.registers.get(_addr(AUTH_REQ_SOURCE)) == AUTH_SOURCE_EDGE
+                and self.registers.get(_addr(AUTH_REQ_ACTION)) == AUTH_ACTION_REQUEST_OWNER
+                and self.registers.get(_addr(AUTH_REQ_EPOCH)) == self.registers.get(_addr(AUTHORITY_EPOCH))
+                and self.registers.get(_addr(AUTHORITY_OWNER)) == AUTHORITY_OWNER_LOCAL_SCREEN
+            ):
+                self.registers[_addr(AUTH_GRANT_SEQ)] = int(value)
+                self.registers[_addr(AUTHORITY_OWNER)] = AUTHORITY_OWNER_EDGE
+                self.registers[_addr(AUTHORITY_EPOCH)] = self.registers[_addr(AUTHORITY_EPOCH)] + 1
+            else:
+                self.registers[_addr(AUTH_REJECT_SEQ)] = int(value)
+                self.registers[_addr(AUTH_REJECT_CODE)] = 302
         if address == _addr(EDGE_REQ_SEQ):
             self.registers[_addr(PLC_LAST_ACK_SEQ)] = int(value)
             targets = self.readback_targets
@@ -77,6 +113,51 @@ async def test_frequency_transaction_writes_payload_before_sequence():
         _addr(EDGE_REQ_CHECK),
         sum([1, 2, 10, 3, 34, 0, 0]) & 0xFFFF,
     )
+
+
+@pytest.mark.asyncio
+async def test_frequency_transaction_requests_edge_authority_before_d5100_write():
+    modbus = FakeTransactionModbus(authority_owner=AUTHORITY_OWNER_LOCAL_SCREEN)
+    writer = SingleFrequencyTransactionWriter(modbus)
+
+    result = await writer.write_one(1, 31, seq=4, timeout_sec=0.1)
+
+    assert result.ok is True
+    assert modbus.writes[:2] == [
+        ("multi", _addr(AUTH_REQ_SOURCE), [AUTH_SOURCE_EDGE, AUTH_ACTION_REQUEST_OWNER, 1, 10]),
+        ("single", _addr(AUTH_REQ_SEQ), 1),
+    ]
+    assert modbus.registers[_addr(AUTHORITY_OWNER)] == AUTHORITY_OWNER_EDGE
+    assert modbus.registers[_addr(AUTHORITY_EPOCH)] == 2
+    assert ("single", _addr(EDGE_REQ_SEQ), 4) in modbus.writes
+
+
+@pytest.mark.asyncio
+async def test_frequency_transaction_fails_closed_when_hmi_direct_owns_authority():
+    modbus = FakeTransactionModbus(authority_owner=AUTHORITY_OWNER_HMI_DIRECT)
+    writer = SingleFrequencyTransactionWriter(modbus)
+
+    result = await writer.write_one(1, 31, seq=4, timeout_sec=0.1)
+
+    assert result.ok is False
+    assert result.reason == "authority_owner_not_edge"
+    assert result.detail["authority_owner"] == AUTHORITY_OWNER_HMI_DIRECT
+    assert all(write[1] != _addr(EDGE_REQ_SEQ) for write in modbus.writes)
+    assert all(write[1] != _addr(AUTH_REQ_SEQ) for write in modbus.writes)
+
+
+@pytest.mark.asyncio
+async def test_frequency_transaction_fails_closed_when_authority_epoch_is_uninitialized():
+    modbus = FakeTransactionModbus(authority_owner=AUTHORITY_OWNER_EDGE)
+    modbus.registers[_addr(AUTHORITY_EPOCH)] = 0
+    writer = SingleFrequencyTransactionWriter(modbus)
+
+    result = await writer.write_one(1, 31, seq=4, timeout_sec=0.1)
+
+    assert result.ok is False
+    assert result.reason == "authority_epoch_invalid"
+    assert all(write[1] != _addr(EDGE_REQ_SEQ) for write in modbus.writes)
+    assert all(write[1] != _addr(AUTH_REQ_SEQ) for write in modbus.writes)
 
 
 @pytest.mark.asyncio
@@ -253,8 +334,9 @@ async def test_frequency_transaction_socket_e2e_against_fas66mt_fake_plc():
 
         await asyncio.sleep(0.5)
         stale = await writer.write_one(2, 30, seq=12, timeout_sec=2.0)
-        assert stale.status == "nak"
-        assert stale.nak_code == 3
+        assert stale.status == "failed"
+        assert stale.reason == "authority_reject_303"
+        assert stale.detail["auth_reject_code"] == 303
 
         await writer.refresh_edge_host_alive(2)
         recovered = await writer.write_one(6, 37, seq=13, timeout_sec=2.0)

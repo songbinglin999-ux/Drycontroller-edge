@@ -47,7 +47,9 @@ async def build_process_snapshot(
         histories=histories,
         control_state=ControlState(
             CONTROL_MODE=_as_str(latest.get("CONTROL_MODE")),
-            AUTHORITY_OWNER=_as_str(latest.get("AUTHORITY_OWNER")),
+            AUTHORITY_OWNER=_as_authority_owner(latest.get("AUTHORITY_OWNER")),
+            AUTHORITY_EPOCH=_as_int(latest.get("AUTHORITY_EPOCH")),
+            AUTH_TRANSITION_STATE=_as_int(latest.get("AUTH_TRANSITION_STATE")),
             HMI_DIRECT_ENABLE=_as_bool(latest.get("HMI_DIRECT_ENABLE")),
             maintenance_lock=_as_bool(latest.get("MAINTENANCE_LOCK")),
             emergency_stop=_as_bool(latest.get("EMERGENCY_STOP")),
@@ -111,6 +113,45 @@ def _as_bool(value: Any) -> Optional[bool]:
     if normalized in {"0", "false", "no", "off", "disabled"}:
         return False
     return None
+
+
+def _as_authority_owner(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            return None
+        return {
+            0: "PLC_LOCAL",
+            1: "PLC_LOCAL",
+            2: "EDGE",
+            3: "DRY_HMI_DIRECT",
+            4: "MAINTENANCE",
+            5: "FAULT",
+        }.get(numeric)
+    normalized = str(value).strip().upper()
+    if normalized in {"2", "EDGE", "EDGE_D5100"}:
+        return "EDGE"
+    if normalized in {"0", "1", "PLC_LOCAL", "PLC_SCREEN", "LOCAL", "LOCAL_SCREEN"}:
+        return "PLC_LOCAL"
+    if normalized in {"3", "HMI_DIRECT", "DRY_HMI", "DRY_HMI_DIRECT"}:
+        return "DRY_HMI_DIRECT"
+    if normalized in {"4", "MAINTENANCE"}:
+        return "MAINTENANCE"
+    if normalized in {"5", "FAULT"}:
+        return "FAULT"
+    return normalized or None
+
+
+def _as_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _as_float(value: Any) -> Optional[float]:
