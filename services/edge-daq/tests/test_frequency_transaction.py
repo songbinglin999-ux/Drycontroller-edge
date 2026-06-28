@@ -265,8 +265,6 @@ async def _start_fake_plc(port: int) -> asyncio.subprocess.Process:
         "0.05",
         "--edge-comm-timeout",
         "0.35",
-        "--ramp-step",
-        "50",
         "--static-process-values",
         "--static-coils",
         cwd=str(plc_repo),
@@ -334,9 +332,10 @@ async def test_frequency_transaction_socket_e2e_against_fas66mt_fake_plc():
 
         await asyncio.sleep(0.5)
         stale = await writer.write_one(2, 30, seq=12, timeout_sec=2.0)
-        assert stale.status == "failed"
-        assert stale.reason == "authority_reject_303"
-        assert stale.detail["auth_reject_code"] == 303
+        assert stale.status == "nak"
+        assert stale.reason == "plc_nak_3"
+        assert stale.nak_code == 3
+        assert stale.active_targets == [31, 0, 0, 0, 0, 0]
 
         await writer.refresh_edge_host_alive(2)
         recovered = await writer.write_one(6, 37, seq=13, timeout_sec=2.0)
