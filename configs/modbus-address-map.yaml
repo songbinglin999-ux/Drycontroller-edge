@@ -55,14 +55,15 @@ LL6: {address: 6, function_code: 1, byte_order: big}  # X006
 # EDGE_HOST_ALIVE is written by edge to prove edge/daq-side communication
 # freshness only. It is intentionally not an ALLOWED_CONTROL_SOFTPOINTS entry.
 # PLC_LEGACY_HEARTBEAT_TOGGLE 对应集成商 M1001「0.5秒1/0.5秒0 心跳」。
-# 该点只作为上位机只读诊断心跳，兼容现场旧口径；地址保持 TBD，
-# 等 SamSoar/现场测试确认 M 线圈 Modbus 地址基准后再启用采集。
+# 该点只作为上位机只读诊断心跳，兼容现场旧口径；当前心跳主用 D5290 镜像，此点为旧口径备用。
+# 地址依据官方《Instruction Manual of vendor PLC》Table 14.1.2：M 区 offset=30000，
+# 读 0x01 → M1001 = 31001；地址基址最终 e2e 单点核对。
 # PLC single-heartbeat overlay 已分配：PLC_HEARTBEAT=D5290,
 # EDGE_HOST_ALIVE=D5291。按本文件 D 字约定回填为 4x45290/4x45291；
 # 现场验收仍需核对 PLC 4x 地址基准。
 PLC_HEARTBEAT: {address: 45290, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: heartbeat}
 EDGE_HOST_ALIVE: {address: 45291, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
-PLC_LEGACY_HEARTBEAT_TOGGLE: {address: TBD, function_code: 1, byte_order: big, type: bool, diagnostic: heartbeat, legacy_device: M1001, control_softpoint: false}
+PLC_LEGACY_HEARTBEAT_TOGGLE: {address: 31001, function_code: 1, byte_order: big, type: bool, diagnostic: heartbeat, legacy_device: M1001, control_softpoint: false}
 
 # --- authority status points (read-only) ---
 # These are PLC-owned state fields. They let edge-api/HMI fail closed when
@@ -72,15 +73,28 @@ AUTHORITY_EPOCH: {address: 45414, function_code: 3, scale: 1, byte_order: big, t
 AUTH_TRANSITION_STATE: {address: 45415, function_code: 3, scale: 1, byte_order: big, type: int, diagnostic: authority, control_softpoint: false}
 HMI_DIRECT_ENABLE: {address: 45571, function_code: 3, scale: 1, byte_order: big, type: bool, diagnostic: authority, control_softpoint: false}
 
-# --- control write soft points (6 frequency setpoints) ---
-# 控制写入按 2026-06-20「上位机降级全只读」决策锁停（见根目录 architecture-audit），本期不启用。
-# D30-D35/M1000/M140-M173 属于 PLC 原工程/PLC 屏侧旧链路，DryController 不采集、不写入。
-# 6 个频率软点只走 D5100-D5299 单路事务：先写 D5101-D5104 与 D5110 单个频率值，最后写 D5100 请求序号。
-# D5104 选择通道 1..6；PLC ACK 后更新 D5210-D5215 中对应目标并由 D5220-D5225 发布输出 MV。
+# --- 6 路频率有效目标读回点（D5210-D5215，只读）---
+# 地址依据官方《Instruction Manual of vendor PLC》Table 14.1.2：D 区 offset=40000，
+# 适用 D0~D8191，读 0x03 → Modbus 地址 = 40000 + D 编号；故 D5210-D5215 = 45210-45215。
+# 这 6 个点是 PLC 接受后的频率有效目标读回，必须用 *_ACTIVE_FREQ_TARGET 命名，不得冒充 *_FREQ_SP 写入软点。
+# 控制写入按 2026-06-20「上位机降级全只读」决策锁停，本期不启用；启用后也只走
+# D5100-D5299 单路事务：写 D5101-D5104 与 D5110 单个频率值，最后写 D5100 请求序号，
+# D5104 选通道 1..6；PLC ACK 后更新 D5210-D5215 对应目标，并由 D5220-D5225 发布输出 MV。
+# D30-D35 属于 PLC 原工程频率命令/MV 链路，DryController 不采集、不写入；M1000/M140-M173 同样不作 edge/HMI 写点。
 # 禁止绕过 D5100 对 D5110 或 D5111-D5115 保留位、D30-D35 做单 tag 直写。
-VFM1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
-VFM2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
-VFM3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
-VF1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
-VF2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
-VF3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz}
+# scale 仍 TBD：频率是整数 Hz 还是 ×10、量程需集成商/真机确认；地址基址（offset 40000 是否即协议地址）最终 e2e 单点核对。
+VFM1_ACTIVE_FREQ_TARGET: {address: 45210, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
+VFM2_ACTIVE_FREQ_TARGET: {address: 45211, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
+VFM3_ACTIVE_FREQ_TARGET: {address: 45212, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
+VF1_ACTIVE_FREQ_TARGET: {address: 45213, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
+VF2_ACTIVE_FREQ_TARGET: {address: 45214, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
+VF3_ACTIVE_FREQ_TARGET: {address: 45215, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
+
+# --- 6 路频率事务写入软点（无直接 Modbus 地址）---
+# *_FREQ_SP 是 edge/HMI 的产品软点名，只能经 D5100/D5550 事务写入；保留在 map 中是为了防止被误配为直写点。
+VFM1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
+VFM2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
+VFM3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
+VF1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
+VF2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
+VF3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}

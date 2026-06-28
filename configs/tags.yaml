@@ -57,6 +57,13 @@ tags:
       - {name: AUTHORITY_EPOCH, signal_type: DIAG, type: int, unit: "", description: "PLC 控制权代次（D5414），D5400/D5550 请求必须使用当前 epoch"}
       - {name: AUTH_TRANSITION_STATE, signal_type: DIAG, type: int, unit: "", description: "PLC 控制权迁移状态（D5415）：0=stable，其它为迁移/锁定中"}
       - {name: HMI_DIRECT_ENABLE, signal_type: DIAG, type: bool, unit: "", description: "DryHMI PLC direct 显式授权（D5571），1 表示 HMI direct owner 已被 PLC 授权"}
+    accepted_target:
+      - {name: VFM1_ACTIVE_FREQ_TARGET, signal_type: DIAG, type: int, unit: "Hz", description: "PLC 已接受的 VFM1 有效目标读回（D5210）；只读，不是写入 SP"}
+      - {name: VFM2_ACTIVE_FREQ_TARGET, signal_type: DIAG, type: int, unit: "Hz", description: "PLC 已接受的 VFM2 有效目标读回（D5211）；只读，不是写入 SP"}
+      - {name: VFM3_ACTIVE_FREQ_TARGET, signal_type: DIAG, type: int, unit: "Hz", description: "PLC 已接受的 VFM3 有效目标读回（D5212）；只读，不是写入 SP"}
+      - {name: VF1_ACTIVE_FREQ_TARGET, signal_type: DIAG, type: int, unit: "Hz", description: "PLC 已接受的 VF1 有效目标读回（D5213）；只读，不是写入 SP"}
+      - {name: VF2_ACTIVE_FREQ_TARGET, signal_type: DIAG, type: int, unit: "Hz", description: "PLC 已接受的 VF2 有效目标读回（D5214）；只读，不是写入 SP"}
+      - {name: VF3_ACTIVE_FREQ_TARGET, signal_type: DIAG, type: int, unit: "Hz", description: "PLC 已接受的 VF3 有效目标读回（D5215）；只读，不是写入 SP"}
 
 mqtt:
   base_topic: "realtime"
