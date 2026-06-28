@@ -14,7 +14,8 @@
 
 环境变量配置：
 - PLC_HOST: PLC 地址（默认 192.168.1.100）
-- PLC_PORT: Modbus 端口（默认 502）
+- PLC_PORT: Modbus RTU-over-TCP 端口（默认 2022）
+- MODBUS_FRAMER: RTU-over-TCP 帧格式（默认 rtu）
 - USE_SIMULATOR: 是否使用模拟器（默认 true）
 - HEALTH_PORT: 健康检查端口（默认 8080）
 """
@@ -247,7 +248,7 @@ class DAQService:
         
         # 读取 PLC 连接配置（工业推荐：支持云端下发 runtime 配置覆盖 env）
         plc_host = os.getenv("PLC_HOST", "192.168.1.100")
-        plc_port = int(os.getenv("PLC_PORT", "502"))
+        plc_port = int(os.getenv("PLC_PORT", "2022"))
         plc_slave_id = int(os.getenv("PLC_SLAVE_ID", "1"))
         plc_connect_timeout = int(os.getenv("PLC_CONNECT_TIMEOUT", "5"))
         use_simulator = os.getenv("USE_SIMULATOR", "false").lower() == "true"

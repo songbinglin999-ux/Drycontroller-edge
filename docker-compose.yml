@@ -311,9 +311,10 @@ services:
       start_period: 40s
     environment:
       - PLC_HOST=${PLC_HOST}
-      - PLC_PORT=${PLC_PORT}
+      - PLC_PORT=${PLC_PORT:-2022}
       - PLC_SLAVE_ID=${PLC_SLAVE_ID}
       - PLC_SCAN_INTERVAL=${PLC_SCAN_INTERVAL}
+      - MODBUS_FRAMER=${MODBUS_FRAMER:-rtu}
       - MQTT_BROKER=${MQTT_BROKER}
       - MQTT_PORT=${MQTT_PORT}
       - MQTT_USER=${MQTT_USER_EDGE_DAQ}
