@@ -65,7 +65,12 @@ class DummyControlSvc:
                 },
                 "recommendations": [],
                 "allowed_targets": ["VFM3_FREQ_SP"],
-                "requires_confirmation": True,
+                "requires_confirmation": False,
+                "production_requires_confirmation": False,
+                "operation_modes": ["MANUAL", "AUTO"],
+                "auto_suspension_state": "AUTO_SUSPENDED",
+                "auto_suspension_is_operator_mode": False,
+                "recommendation_confirmation_scope": "commissioning_only",
             },
         }
 
@@ -214,6 +219,22 @@ def test_control_recommendations_endpoint():
     body = resp.json()["data"]
     assert body["schema_version"] == "drycontroller.control_recommendation.v1"
     assert body["allowed_targets"] == ["VFM3_FREQ_SP"]
+
+
+def test_control_status_uses_mode_authorization_model():
+    resp = client.get(
+        "/api/v1/control/status",
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["operation_modes"] == ["MANUAL", "AUTO"]
+    assert body["requires_confirmation"] is False
+    assert body["production_requires_confirmation"] is False
+    assert body["auto_suspension_state"] == "AUTO_SUSPENDED"
+    assert body["auto_suspension_is_operator_mode"] is False
+    assert body["auto_dispatch_status"] == "not_implemented"
+    assert body["commissioning_requires_confirmation"] is True
 
 
 def test_control_recommendation_confirm_endpoint():

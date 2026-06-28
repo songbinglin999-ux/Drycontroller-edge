@@ -454,7 +454,12 @@ async def test_control_recommendations_use_new_diagnosis_schema(monkeypatch):
     assert payload["success"] is True
     data = payload["data"]
     assert data["schema_version"] == SCHEMA_VERSION
-    assert data["requires_confirmation"] is True
+    assert data["requires_confirmation"] is False
+    assert data["production_requires_confirmation"] is False
+    assert data["operation_modes"] == ["MANUAL", "AUTO"]
+    assert data["auto_suspension_state"] == "AUTO_SUSPENDED"
+    assert data["auto_suspension_is_operator_mode"] is False
+    assert data["recommendation_confirmation_scope"] == "commissioning_only"
     assert "recommendations" in data
     assert "diagnosis" not in data
     assert "DRYER1" not in str(data)
