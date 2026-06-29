@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import socket
 import sys
+from types import ModuleType
 
 import pytest
 
@@ -321,6 +322,165 @@ async def _read_until_nak(client: ModbusClient, seq: int, timeout_sec: float = 2
                 return registers
         await asyncio.sleep(0.05)
     pytest.fail(f"did not observe NAK for seq={seq}; last={last}")
+
+
+def _load_plc_core() -> ModuleType:
+    workspace = Path(__file__).resolve().parents[4]
+    plc_repo = workspace / "Drycontroller-plc"
+    if not (plc_repo / "simulator" / "fas66mt_core.py").exists():
+        pytest.skip("Drycontroller-plc simulator core is not available")
+    if str(plc_repo) not in sys.path:
+        sys.path.insert(0, str(plc_repo))
+
+    from simulator import fas66mt_core as core
+
+    return core
+
+
+class CoreSimulatorModbus:
+    def __init__(self, simulator, *, scan_seconds: float = 0.05):
+        self.simulator = simulator
+        self.scan_seconds = scan_seconds
+
+    def _d_number(self, address: int) -> int:
+        return int(address) - D_MODBUS_BASE
+
+    async def read_registers(self, address: int, count: int = 1, function_code: int = 3, retries: int = 2):
+        self.simulator.advance(self.scan_seconds)
+        return self.simulator.read_holding(self._d_number(address), count)
+
+    async def write_registers(self, address: int, values: list[int], retries: int = 2):
+        self.simulator.write_holdings(self._d_number(address), values)
+        self.simulator.advance(self.scan_seconds)
+        return True
+
+    async def write_register(self, address: int, value: int, retries: int = 2):
+        self.simulator.write_holding(self._d_number(address), value)
+        self.simulator.advance(self.scan_seconds)
+        return True
+
+
+def _make_core_simulator(core: ModuleType):
+    return core.Fas66mtSimulator(
+        core.SimulatorConfig(
+            dynamic_process_values=False,
+            dynamic_coils=False,
+            edge_comm_timeout_s=2.0,
+            edge_control_timeout_s=1.0,
+        )
+    )
+
+
+def _write_auth_request(core: ModuleType, simulator, *, seq: int, source: int, action: int, epoch: int) -> None:
+    simulator.write_holding(core.AUTH_REQ_SOURCE, source)
+    simulator.write_holding(core.AUTH_REQ_ACTION, action)
+    simulator.write_holding(core.AUTH_REQ_EPOCH, epoch)
+    simulator.write_holding(core.AUTH_REQ_SEQ, seq)
+    simulator.advance(0.1)
+
+
+def _write_local_screen_request(core: ModuleType, simulator, *, seq: int, epoch: int, values: list[int]) -> None:
+    simulator.write_holding(core.LOCAL_SCREEN_ACTION, core.LocalScreenAction.WRITE_FREQ_TARGETS)
+    simulator.write_holding(core.LOCAL_SCREEN_EPOCH, epoch)
+    simulator.write_holding(core.LOCAL_SCREEN_MODE, 1)
+    simulator.write_holdings(core.LOCAL_SCREEN_FREQ_SP_D[0], values)
+    simulator.write_holding(core.LOCAL_SCREEN_REQ_SEQ, seq)
+    simulator.advance(0.1)
+    simulator.advance(0.1)
+
+
+def _write_hmi_direct_request(core: ModuleType, simulator, *, seq: int, epoch: int, values: list[int]) -> None:
+    simulator.write_holding(core.HMI_DIRECT_ACTION, core.HmiDirectAction.WRITE_FREQ_TARGETS)
+    simulator.write_holding(core.HMI_DIRECT_EPOCH, epoch)
+    simulator.write_holding(core.HMI_DIRECT_MODE, 1)
+    simulator.write_holdings(core.HMI_DIRECT_FREQ_SP_D[0], values)
+    simulator.write_holding(core.HMI_DIRECT_REQ_SEQ, seq)
+    simulator.advance(0.1)
+    simulator.advance(0.1)
+
+
+@pytest.mark.asyncio
+async def test_frequency_transaction_mode_handoff_matrix_against_fas66mt_core():
+    core = _load_plc_core()
+
+    simulator = _make_core_simulator(core)
+    writer = SingleFrequencyTransactionWriter(CoreSimulatorModbus(simulator), poll_interval_sec=0.01)
+
+    await writer.refresh_edge_host_alive(1)
+    auto = await writer.write_one(1, 31, seq=10, mode=2, timeout_sec=1.0, allow_authority_request=True)
+    assert auto.status == "success"
+    assert simulator.read_holding(core.AUTHORITY_OWNER)[0] == core.AuthorityOwner.EDGE
+    assert simulator.read_holding(core.PLC_CONTROL_STATE)[0] == core.ControlState.EDGE_ACTIVE
+    assert simulator.read_holding(core.PLC_ACTIVE_FREQ_TARGET_D[0], 6) == [31, 0, 0, 0, 0, 0]
+
+    manual = await writer.write_one(2, 32, seq=11, mode=1, timeout_sec=1.0)
+    assert manual.status == "success"
+    assert manual.active_targets == [31, 32, 0, 0, 0, 0]
+
+    edge_epoch = simulator.read_holding(core.AUTHORITY_EPOCH)[0]
+    _write_auth_request(
+        core,
+        simulator,
+        seq=20,
+        source=core.AuthRequestSource.LOCAL_SCREEN,
+        action=core.AuthRequestAction.REQUEST_OWNER,
+        epoch=edge_epoch,
+    )
+    local_epoch = simulator.read_holding(core.AUTHORITY_EPOCH)[0]
+    _write_local_screen_request(core, simulator, seq=21, epoch=local_epoch, values=[11, 12, 13, 14, 15, 16])
+
+    assert simulator.read_holding(core.AUTHORITY_OWNER)[0] == core.AuthorityOwner.LOCAL_SCREEN
+    assert simulator.read_holding(core.ACTIVE_FREQ_SOURCE)[0] == core.FreqSource.LOCAL_SCREEN
+    assert simulator.read_holding(core.PLC_CONTROL_STATE)[0] == core.ControlState.LOCAL_MANUAL
+    assert simulator.read_holding(core.LOCAL_SCREEN_ACK_SEQ)[0] == 21
+    assert simulator.read_holding(core.PLC_ACTIVE_FREQ_TARGET_D[0], 6) == [11, 12, 13, 14, 15, 16]
+
+    blocked_by_local = await writer.write_one(3, 33, seq=12, mode=2, timeout_sec=1.0)
+    assert blocked_by_local.status == "failed"
+    assert blocked_by_local.reason == "authority_owner_not_edge"
+    assert blocked_by_local.detail["authority_owner"] == AUTHORITY_OWNER_LOCAL_SCREEN
+
+    hmi_simulator = _make_core_simulator(core)
+    hmi_writer = SingleFrequencyTransactionWriter(CoreSimulatorModbus(hmi_simulator), poll_interval_sec=0.01)
+    await hmi_writer.refresh_edge_host_alive(1)
+    initial = await hmi_writer.write_one(1, 31, seq=30, mode=2, timeout_sec=1.0, allow_authority_request=True)
+    assert initial.status == "success"
+    edge_epoch = hmi_simulator.read_holding(core.AUTHORITY_EPOCH)[0]
+    hmi_simulator.advance(2.5)
+    assert hmi_simulator.read_holding(core.PLC_CONTROL_STATE)[0] == core.ControlState.AUTO_SUSPENDED
+    assert hmi_simulator.read_holding(core.PLC_SUSPEND_REASON)[0] == 103
+
+    _write_auth_request(
+        core,
+        hmi_simulator,
+        seq=31,
+        source=core.AuthRequestSource.HMI_DIRECT,
+        action=core.AuthRequestAction.REQUEST_HMI_DIRECT,
+        epoch=edge_epoch,
+    )
+    hmi_epoch = hmi_simulator.read_holding(core.AUTHORITY_EPOCH)[0]
+    _write_hmi_direct_request(core, hmi_simulator, seq=32, epoch=hmi_epoch, values=[21, 22, 23, 24, 25, 26])
+
+    assert hmi_simulator.read_holding(core.AUTHORITY_OWNER)[0] == core.AuthorityOwner.HMI_DIRECT
+    assert hmi_simulator.read_holding(core.HMI_DIRECT_ENABLE)[0] == 1
+    assert hmi_simulator.read_holding(core.HMI_DIRECT_ACK_SEQ)[0] == 32
+    assert hmi_simulator.read_holding(core.ACTIVE_FREQ_SOURCE)[0] == core.FreqSource.HMI_DIRECT
+    assert hmi_simulator.read_holding(core.PLC_ACTIVE_FREQ_TARGET_D[0], 6) == [21, 22, 23, 24, 25, 26]
+
+    restore_simulator = _make_core_simulator(core)
+    restore_writer = SingleFrequencyTransactionWriter(CoreSimulatorModbus(restore_simulator), poll_interval_sec=0.01)
+    await restore_writer.refresh_edge_host_alive(1)
+    first = await restore_writer.write_one(1, 31, seq=40, mode=2, timeout_sec=1.0, allow_authority_request=True)
+    assert first.status == "success"
+    restore_simulator.advance(2.5)
+    assert restore_simulator.read_holding(core.PLC_CONTROL_STATE)[0] == core.ControlState.AUTO_SUSPENDED
+
+    await restore_writer.refresh_edge_host_alive(2)
+    no_auto_restore = await restore_writer.write_one(2, 32, seq=41, mode=2, timeout_sec=1.0)
+    assert no_auto_restore.status == "nak"
+    assert no_auto_restore.nak_code == 5
+    assert restore_simulator.read_holding(core.PLC_CONTROL_STATE)[0] == core.ControlState.AUTO_SUSPENDED
+    assert restore_simulator.read_holding(core.PLC_ACTIVE_FREQ_TARGET_D[0], 6) == [31, 0, 0, 0, 0, 0]
 
 
 @pytest.mark.asyncio
