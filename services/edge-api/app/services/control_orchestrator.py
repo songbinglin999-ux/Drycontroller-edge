@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from app.services.audit import write_audit
 from app.services.control_command import ControlCommandService, get_control_command_service
@@ -17,7 +17,7 @@ from app.services.control_core.models import (
     softpoint_unit,
     utc_now,
 )
-from app.services.control_core.safety import action_validation_error, apply_recommendation_safety_gates
+from app.services.control_core.safety import apply_recommendation_safety_gates
 from app.services.control_core.snapshot import build_process_snapshot
 from app.services.realtime_data import RealtimeDataService, get_realtime_data_service
 
@@ -67,86 +67,9 @@ class ControlOrchestrator:
                 "auto_pause_state": "AUTO_PAUSED",
                 "auto_pause_is_operator_mode": False,
                 "auto_dispatch_status": "state_service",
-                "recommendation_confirmation_scope": "commissioning_only",
+                "recommendation_confirmation_scope": "advisory_only",
                 "timestamp": int(datetime.now(timezone.utc).timestamp()),
             },
-        }
-
-    async def confirm_recommendation(
-        self,
-        *,
-        recommendation_id: str,
-        line: Optional[str],
-        actor: str,
-        timeout_sec: float = 3.0,
-    ) -> dict:
-        recommendation = await self._find_recommendation(recommendation_id, line=line)
-        if recommendation is None:
-            await self._audit_confirmation(
-                recommendation_id=recommendation_id,
-                actor=actor,
-                result="denied",
-                detail={"error": "recommendation_not_found"},
-            )
-            return {"success": False, "error": "recommendation_not_found"}
-
-        if _is_expired(recommendation):
-            await self._audit_confirmation(
-                recommendation_id=recommendation.id,
-                actor=actor,
-                result="denied",
-                detail={"error": "recommendation_expired"},
-            )
-            return {"success": False, "error": "recommendation_expired"}
-
-        if not recommendation.actionable:
-            await self._audit_confirmation(
-                recommendation_id=recommendation.id,
-                actor=actor,
-                result="denied",
-                detail={
-                    "error": "recommendation_not_actionable",
-                    "blocked_by": recommendation.blocked_by,
-                },
-            )
-            return {
-                "success": False,
-                "error": "recommendation_not_actionable",
-                "blocked_by": recommendation.blocked_by,
-                "recommendation": recommendation.model_dump(mode="json"),
-            }
-
-        command_results = []
-        for action in _executable_actions(recommendation.suggested_actions):
-            validation_error = action_validation_error(action)
-            if validation_error:
-                result = {"success": False, "error": validation_error, "action": action.model_dump(mode="json")}
-            else:
-                result = await self._command.send_set(
-                    line=recommendation.line_id,
-                    tag=action.target_softpoint,
-                    value=action.suggested_value,
-                    mode=2,
-                    wait_ack=True,
-                    timeout_sec=timeout_sec,
-                )
-            command_results.append(result)
-
-        success = all(item.get("success") is True for item in command_results)
-        await self._audit_confirmation(
-            recommendation_id=recommendation.id,
-            actor=actor,
-            result="success" if success else "failed",
-            detail={
-                "recommendation": recommendation.model_dump(mode="json"),
-                "command_results": command_results,
-            },
-        )
-        return {
-            "success": success,
-            "status": "confirmed" if success else "failed",
-            "recommendation": recommendation.model_dump(mode="json"),
-            "command_results": command_results,
         }
 
     async def confirm_manual_action(
@@ -237,19 +160,6 @@ class ControlOrchestrator:
             detail={"reason": reason} if reason else None,
         )
         return {"success": True, "status": "dismissed", "id": recommendation_id}
-
-    async def _find_recommendation(
-        self,
-        recommendation_id: str,
-        line: Optional[str],
-    ) -> Optional[ControlRecommendation]:
-        cached = self._cache.get(recommendation_id)
-        line_id = line or (cached.line_id if cached else None)
-        payload = await self.get_recommendations(line=line_id, lookback="5m")
-        for raw in payload["data"]["recommendations"]:
-            if raw["id"] == recommendation_id:
-                return self._cache.get(recommendation_id)
-        return None
 
     def _is_dismissed(self, recommendation: ControlRecommendation) -> bool:
         expires_at = self._dismissed.get(recommendation.id)
@@ -347,7 +257,7 @@ class ControlOrchestrator:
                 },
             ],
             suggested_actions=[action],
-            requires_confirmation=True,
+            requires_confirmation=False,
             actionable=True,
             blocked_by=[],
             created_at=now,
@@ -361,13 +271,6 @@ class ControlOrchestrator:
         )
 
 
-def _executable_actions(actions: List[SuggestedAction]) -> List[SuggestedAction]:
-    return [
-        action for action in actions
-        if action.is_executable() and action.target_softpoint and action.suggested_value is not None
-    ]
-
-
 def _as_float(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -375,11 +278,6 @@ def _as_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _is_expired(recommendation: ControlRecommendation) -> bool:
-    return recommendation.expires_at <= datetime.now(timezone.utc)
-
 
 @lru_cache(maxsize=1)
 def get_control_orchestrator() -> ControlOrchestrator:

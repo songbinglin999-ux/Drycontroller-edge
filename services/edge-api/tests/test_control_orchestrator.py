@@ -168,6 +168,17 @@ class DummyRealtimeOwnerChanges(DummyRealtimeFull):
         return payload
 
 
+class DummyRealtimeSnapshotBreaksAfterAuthorize(DummyRealtimeFull):
+    def __init__(self):
+        self.latest_calls = 0
+
+    async def get_latest_payload(self, requested_tags, lookback):
+        self.latest_calls += 1
+        if self.latest_calls >= 2:
+            raise TypeError("malformed realtime payload")
+        return await super().get_latest_payload(requested_tags, lookback)
+
+
 class DummyCommand:
     def __init__(self):
         self.calls = []
@@ -223,7 +234,7 @@ class DummyMismatchCommand(DummyCommand):
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_confirms_only_actionable_softpoints(monkeypatch):
+async def test_orchestrator_recommendations_are_advisory_only(monkeypatch):
     audit_events = []
 
     async def fake_write_audit(**kwargs):
@@ -240,30 +251,16 @@ async def test_orchestrator_confirms_only_actionable_softpoints(monkeypatch):
     recommendations = payload["data"]["recommendations"]
     recommendation = next(item for item in recommendations if item["actionable"])
 
-    assert recommendation["requires_confirmation"] is True
+    assert recommendation["requires_confirmation"] is False
     assert recommendation["suggested_actions"][0]["target_softpoint"].endswith("_FREQ_SP")
     assert not recommendation["suggested_actions"][0]["target_softpoint"].startswith("M")
-
-    confirmed = await orchestrator.confirm_recommendation(
-        recommendation_id=recommendation["id"],
-        line="L1",
-        actor="operator:test",
-        timeout_sec=1.0,
-    )
-
-    assert confirmed["success"] is True
-    assert command.calls
-    assert command.calls[0]["tag"].endswith("_FREQ_SP")
-    assert command.calls[0]["tag"] in {"VFM3_FREQ_SP", "VF3_FREQ_SP"}
-    assert command.calls[0]["mode"] == 2
-    assert {event["action"] for event in audit_events} >= {
-        "control.recommendation.generated",
-        "control.recommendation.confirmed",
-    }
+    assert payload["data"]["recommendation_confirmation_scope"] == "advisory_only"
+    assert command.calls == []
+    assert {event["action"] for event in audit_events} == {"control.recommendation.generated"}
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_rechecks_mode_at_confirmation(monkeypatch):
+async def test_orchestrator_marks_non_auto_recommendations_not_actionable(monkeypatch):
     async def fake_write_audit(**kwargs):
         return None
 
@@ -275,23 +272,20 @@ async def test_orchestrator_rechecks_mode_at_confirmation(monkeypatch):
     )
 
     payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
-    recommendation = next(item for item in payload["data"]["recommendations"] if item["actionable"])
-
-    confirmed = await orchestrator.confirm_recommendation(
-        recommendation_id=recommendation["id"],
-        line="L1",
-        actor="operator:test",
-        timeout_sec=1.0,
+    assert next(item for item in payload["data"]["recommendations"] if item["actionable"])
+    next_payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
+    next_recommendation = next(
+        item for item in next_payload["data"]["recommendations"]
+        if any(action.get("target_softpoint") for action in item["suggested_actions"])
     )
 
-    assert confirmed["success"] is False
-    assert confirmed["error"] == "recommendation_not_actionable"
-    assert "CONTROL_MODE_NOT_AUTO" in confirmed["blocked_by"]
+    assert next_recommendation["actionable"] is False
+    assert "CONTROL_MODE_NOT_AUTO" in next_recommendation["blocked_by"]
     assert command.calls == []
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_stops_auto_d5100_when_plc_manual_owner_is_visible(monkeypatch):
+async def test_orchestrator_marks_plc_local_owner_not_actionable(monkeypatch):
     async def fake_write_audit(**kwargs):
         return None
 
@@ -308,21 +302,13 @@ async def test_orchestrator_stops_auto_d5100_when_plc_manual_owner_is_visible(mo
         if any(action.get("target_softpoint") for action in item["suggested_actions"])
     )
 
-    confirmed = await orchestrator.confirm_recommendation(
-        recommendation_id=recommendation["id"],
-        line="L1",
-        actor="operator:test",
-        timeout_sec=1.0,
-    )
-
-    assert confirmed["success"] is False
-    assert confirmed["error"] == "recommendation_not_actionable"
-    assert "AUTHORITY_OWNER_NOT_EDGE" in confirmed["blocked_by"]
+    assert recommendation["actionable"] is False
+    assert "AUTHORITY_OWNER_NOT_EDGE" in recommendation["blocked_by"]
     assert command.calls == []
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_blocks_confirmation_when_data_missing(monkeypatch):
+async def test_orchestrator_marks_missing_data_not_actionable(monkeypatch):
     audit_events = []
 
     async def fake_write_audit(**kwargs):
@@ -339,19 +325,9 @@ async def test_orchestrator_blocks_confirmation_when_data_missing(monkeypatch):
     recommendation = payload["data"]["recommendations"][0]
     assert recommendation["diagnosis_code"] == "data_degraded"
     assert recommendation["actionable"] is False
-
-    confirmed = await orchestrator.confirm_recommendation(
-        recommendation_id=recommendation["id"],
-        line="L1",
-        actor="operator:test",
-        timeout_sec=1.0,
-    )
-
-    assert confirmed["success"] is False
-    assert confirmed["error"] == "recommendation_not_actionable"
-    assert "DATA_MISSING_OR_STALE" in confirmed["blocked_by"]
+    assert "DATA_MISSING_OR_STALE" in recommendation["blocked_by"]
     assert command.calls == []
-    assert audit_events[-1]["result"] == "denied"
+    assert audit_events[-1]["result"] == "success"
 
 
 @pytest.mark.asyncio
@@ -649,6 +625,32 @@ async def test_control_state_dependency_failure_and_recovery_do_not_auto_resume(
     assert recovered_status["mode"] == AUTO_PAUSED
     assert recovered_status["requires_reauthorization"] is True
     assert blocked_dispatch["error"] == "auto_not_authorized"
+    assert command.calls == []
+
+
+@pytest.mark.asyncio
+async def test_control_state_snapshot_exception_pauses_auto_fail_closed(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    command = DummyCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeSnapshotBreaksAfterAuthorize(),
+        command_service=command,
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    failed = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+
+    assert failed["success"] is False
+    assert failed["error"] == "auto_gate_failed"
+    assert "DATA_MISSING_OR_STALE" in failed["blocked_by"]
+    assert "SNAPSHOT_ERROR:TypeError" in failed["blocked_by"]
+    assert failed["data"]["mode"] == AUTO_PAUSED
+    assert failed["data"]["requires_reauthorization"] is True
     assert command.calls == []
 
 

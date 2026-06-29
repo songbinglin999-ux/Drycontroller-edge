@@ -27,11 +27,6 @@ async def list_control_recommendations(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-class RecommendationConfirmRequest(BaseModel):
-    line: Optional[str] = Field(None, description="产线标识，默认 L1")
-    timeout_sec: float = Field(3.0, ge=0.2, le=30.0, description="等待 ACK 超时（秒）")
-
-
 class ManualRecommendationConfirmRequest(BaseModel):
     line: Optional[str] = Field(None, description="产线标识，默认 L1")
     target_softpoint: str = Field(..., description="控制软点，如 VFM3_FREQ_SP / VF3_FREQ_SP")
@@ -83,30 +78,6 @@ async def confirm_manual_control_recommendation(
     await state_service.record_command_result(result=resp, command_scope="manual")
     if not resp.get("success") and resp.get("error") == "manual_command_not_actionable":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=resp)
-    return resp
-
-
-@router.post("/recommendations/{recommendation_id}/confirm")
-async def confirm_control_recommendation(
-    recommendation_id: str,
-    req: Optional[RecommendationConfirmRequest] = None,
-    api_key: str = Depends(require_control_api_key),
-    orchestrator: ControlOrchestrator = Depends(get_control_orchestrator),
-):
-    body = req or RecommendationConfirmRequest()
-    resp = await orchestrator.confirm_recommendation(
-        recommendation_id=recommendation_id,
-        line=body.line,
-        actor=api_key_actor(api_key, role="control"),
-        timeout_sec=body.timeout_sec,
-    )
-    if not resp.get("success"):
-        error = resp.get("error")
-        if error == "recommendation_not_found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error)
-        if error in {"recommendation_not_actionable", "recommendation_expired"}:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=resp)
-        return resp
     return resp
 
 

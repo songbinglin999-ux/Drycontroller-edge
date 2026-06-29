@@ -120,7 +120,7 @@ class ControlRecommendation(BaseModel):
     reason: str
     evidence: List[Dict[str, Any]] = Field(default_factory=list)
     suggested_actions: List[SuggestedAction] = Field(default_factory=list)
-    requires_confirmation: bool = True
+    requires_confirmation: bool = False
     actionable: bool = False
     blocked_by: List[str] = Field(default_factory=list)
     created_at: datetime

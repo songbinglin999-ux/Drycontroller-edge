@@ -55,7 +55,7 @@ def _data_degraded_recommendation(snapshot: ProcessSnapshot) -> ControlRecommend
         suggested_actions=[
             SuggestedAction(
                 action_type="inspect",
-                risk_note="Restore realtime tags/control-state signals before confirming any setpoint action.",
+                risk_note="Restore realtime tags/control-state signals before dispatching any setpoint action.",
             )
         ],
         actionable=False,

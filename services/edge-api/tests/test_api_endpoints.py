@@ -72,7 +72,7 @@ class DummyControlSvc:
                 "non_selectable_modes": ["AUTO_PAUSED"],
                 "auto_pause_state": "AUTO_PAUSED",
                 "auto_pause_is_operator_mode": False,
-                "recommendation_confirmation_scope": "commissioning_only",
+                "recommendation_confirmation_scope": "advisory_only",
             },
         }
 
@@ -80,14 +80,6 @@ class DummyControlSvc:
 class DummyControlOrchestrator:
     async def get_recommendations(self, **kwargs):
         return await DummyControlSvc().get_recommendations(**kwargs)
-
-    async def confirm_recommendation(self, **kwargs):
-        return {
-            "success": True,
-            "status": "confirmed",
-            "recommendation": {"id": kwargs["recommendation_id"]},
-            "command_results": [{"success": True, "status": "acked"}],
-        }
 
     async def confirm_manual_action(self, **kwargs):
         return {
@@ -123,7 +115,6 @@ class DummyControlState:
             "authority_snapshot": None,
             "last_command_result": self.last_manual_result,
             "controllable_tags": ["VFM1_FREQ_SP"],
-            "commissioning_requires_confirmation": True,
         }
 
     async def authorize_auto(self, **kwargs):
@@ -281,7 +272,6 @@ def test_control_status_uses_mode_authorization_model():
     assert body["auto_pause_state"] == "AUTO_PAUSED"
     assert body["auto_pause_is_operator_mode"] is False
     assert body["auto_dispatch_status"] == "manual_stopped"
-    assert body["commissioning_requires_confirmation"] is True
 
 
 def test_control_mode_auto_authorize_endpoint():
@@ -311,16 +301,6 @@ def test_control_auto_dispatch_endpoint():
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "dispatched"
-
-
-def test_control_recommendation_confirm_endpoint():
-    resp = client.post(
-        "/api/v1/control/recommendations/rec_l1_x/confirm",
-        json={"line": "L1", "timeout_sec": 1.0},
-        headers={settings.API_KEY_HEADER: "test-control"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "confirmed"
 
 
 def test_manual_control_confirm_endpoint():
@@ -355,6 +335,7 @@ def test_legacy_control_write_endpoints_removed():
         "/api/v1/control/set",
         "/api/v1/control/batch",
         "/api/v1/control/emergency-stop",
+        "/api/v1/control/recommendations/rec_l1_x/confirm",
     ):
         resp = client.post(
             path,

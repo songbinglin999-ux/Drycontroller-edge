@@ -459,7 +459,7 @@ async def test_control_recommendations_use_new_diagnosis_schema(monkeypatch):
     assert data["operation_modes"] == ["MANUAL", "AUTO"]
     assert data["auto_pause_state"] == "AUTO_PAUSED"
     assert data["auto_pause_is_operator_mode"] is False
-    assert data["recommendation_confirmation_scope"] == "commissioning_only"
+    assert data["recommendation_confirmation_scope"] == "advisory_only"
     assert "recommendations" in data
     assert "diagnosis" not in data
     assert "DRYER1" not in str(data)
@@ -470,7 +470,7 @@ async def test_control_recommendations_use_new_diagnosis_schema(monkeypatch):
     )
     assert recommendation["level"] == "warning"
     assert recommendation["evidence"][0]["tag"] == "I_M3"
-    assert recommendation["requires_confirmation"] is True
+    assert recommendation["requires_confirmation"] is False
     assert recommendation["actionable"] is False
     assert "DATA_MISSING_OR_STALE" in recommendation["blocked_by"]
 

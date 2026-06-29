@@ -109,8 +109,6 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
   - 功能：人工切回 `MANUAL` 或授权 `AUTO`；`AUTO_PAUSED` 不是操作员可选模式。
 - `POST /api/v1/control/auto/dispatch`
   - 功能：执行一次 AUTO 自动签发 tick；只选择 actionable 的六频率软点动作，经 signed command + D5100 闭环下发。
-- `POST /api/v1/control/recommendations/{id}/confirm`
-  - 功能：commissioning/debug 过渡入口；edge-api 复核 freshness / mode / 软点白名单 / range / 变化率后签发 command，不作为生产 AUTO 主链路。
 - `POST /api/v1/control/recommendations/manual-confirm`
   - 功能：`MANUAL` 模式下人工输入 6 个频率目标之一并写入。
 - `POST /api/v1/control/recommendations/{id}/dismiss`
@@ -118,10 +116,11 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 处理逻辑：
 
-1. 写入 PostgreSQL 控制操作日志。
-2. 通过 MQTT 将 signed command 发送给 `edge-daq`。
-3. `edge-daq` 按 `configs/modbus-address-map.yaml` 写 PLC 的 V1 频率 SP。
-4. PLC 执行自己的现场保护/顺控/联锁后，edge 读取实际频率反馈和覆盖状态。
+1. AUTO 只通过 `/auto/dispatch` 生成 signed command；MANUAL 人工调频只通过 `/recommendations/manual-confirm` 生成 signed command。
+2. 写入 PostgreSQL 控制操作日志。
+3. 通过 MQTT 将 signed command 发送给 `edge-daq`。
+4. `edge-daq` 按 D5100 单路事务写 PLC 的 V1 频率目标。
+5. PLC 执行自己的现场保护/顺控/联锁后，edge 读取有效目标、ACK/NAK 和覆盖状态。
 
 ### 4.3 AI 接口
 

@@ -240,7 +240,7 @@ V1 下发的六频率目标必须先经过 edge/HMI 侧模式授权、白名单�
   - 校验六软点与目标值的合法性（模式授权、白名单、范围、最小变化率/冷却、ACK/NAK、读回、API key、审计）
   - 记录操作日志（操作者、理由、前后值）
   - 将合规命令转换为 MQTT 消息，交给 `edge-daq` 写入 PLC
-  - `/recommendations/{id}/confirm` / `/manual-confirm` 只作为 commissioning/debug/手动写入过渡入口，不是生产 AUTO 主链路
+  - `GET /recommendations` 只展示 advisory；不提供逐条确认下发入口。`/manual-confirm` 仅是 MANUAL 人工调频入口，AUTO 写 PLC 的唯一入口是 `/auto/dispatch`
 
 ### 6.3 AUTO 控制建议如何平滑下发
 

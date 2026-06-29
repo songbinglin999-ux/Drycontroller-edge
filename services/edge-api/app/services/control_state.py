@@ -388,7 +388,7 @@ class ControlStateService:
                 ),
                 None,
             )
-        except (RuntimeError, OSError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 - malformed realtime payloads must fail closed.
             return None, f"SNAPSHOT_ERROR:{type(exc).__name__}"
 
     def _transport_status(self) -> dict:
@@ -460,8 +460,6 @@ class ControlStateService:
             "manual_command_entrypoint": "/api/v1/control/recommendations/manual-confirm",
             "auto_authorize_entrypoint": "/api/v1/control/mode",
             "auto_dispatch_entrypoint": "/api/v1/control/auto/dispatch",
-            "commissioning_confirm_entrypoint": "/api/v1/control/recommendations/{id}/confirm",
-            "commissioning_requires_confirmation": True,
             "cooldown_policy": {
                 "per_softpoint_cooldown_sec": self._cooldown_sec,
                 "max_delta_hz_per_command": self._max_delta_hz,

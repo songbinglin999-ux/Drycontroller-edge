@@ -52,7 +52,7 @@ def apply_recommendation_safety_gates(
         update={
             "actionable": actionable,
             "blocked_by": blocked_by,
-            "requires_confirmation": True,
+            "requires_confirmation": False,
         }
     )
 
