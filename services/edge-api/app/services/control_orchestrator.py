@@ -306,6 +306,7 @@ class ControlOrchestrator:
         feedback_tag = softpoint_feedback_tag(target_softpoint)
         current_value = _as_float(snapshot.tags.get(feedback_tag)) if feedback_tag else None
         unit = softpoint_unit(target_softpoint) if target_softpoint in ALLOWED_CONTROL_SOFTPOINTS else None
+        manual_interrupts_auto = snapshot.control_state.CONTROL_MODE == "AUTO"
         action = SuggestedAction(
             target_softpoint=target_softpoint,
             action_type="setpoint_hold",
@@ -313,7 +314,11 @@ class ControlOrchestrator:
             suggested_value=value,
             delta=round(value - current_value, 3) if current_value is not None else None,
             unit=unit,
-            risk_note=reason or "Manual-mode softpoint command.",
+            risk_note=reason or (
+                "Manual intervention exits AUTO and sends this D5100 request as MANUAL."
+                if manual_interrupts_auto
+                else "Manual-mode softpoint command."
+            ),
         )
         recommendation = ControlRecommendation(
             id=recommendation_id(line_id, "manual_operator_setpoint", request_id or target_softpoint),
@@ -331,6 +336,8 @@ class ControlOrchestrator:
                     "signal": "operator_request",
                     "operator_id": operator_id,
                     "request_id": request_id,
+                    "effective_control_mode": "MANUAL",
+                    "auto_reauthorization_required": manual_interrupts_auto,
                 },
                 {
                     "tag": feedback_tag,
@@ -348,8 +355,8 @@ class ControlOrchestrator:
         return apply_recommendation_safety_gates(
             snapshot,
             recommendation,
-            allowed_control_modes={"MANUAL"},
-            mode_block_code="CONTROL_MODE_NOT_MANUAL",
+            allowed_control_modes={"MANUAL", "AUTO"},
+            mode_block_code="CONTROL_MODE_NOT_MANUAL_OR_AUTO",
         )
 
 

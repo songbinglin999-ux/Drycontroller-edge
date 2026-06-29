@@ -142,6 +142,17 @@ class DummyRealtimeAuto(DummyRealtimeFull):
         return payload
 
 
+class DummyRealtimeLocalOwner(DummyRealtimeFull):
+    async def get_latest_payload(self, requested_tags, lookback):
+        payload = await super().get_latest_payload(requested_tags, lookback)
+        for row in payload["data"]:
+            if row["tag"] == "CONTROL_MODE":
+                row["value"] = "AUTO"
+            if row["tag"] == "AUTHORITY_OWNER":
+                row["value"] = "LOCAL_SCREEN"
+        return payload
+
+
 class DummyCommand:
     def __init__(self):
         self.calls = []
@@ -225,6 +236,37 @@ async def test_orchestrator_rechecks_mode_at_confirmation(monkeypatch):
     assert confirmed["success"] is False
     assert confirmed["error"] == "recommendation_not_actionable"
     assert "CONTROL_MODE_NOT_AUTO" in confirmed["blocked_by"]
+    assert command.calls == []
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stops_auto_d5100_when_plc_manual_owner_is_visible(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_orchestrator.write_audit", fake_write_audit)
+    command = DummyCommand()
+    orchestrator = ControlOrchestrator(
+        realtime_service=DummyRealtimeLocalOwner(),
+        command_service=command,
+    )
+
+    payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
+    recommendation = next(
+        item for item in payload["data"]["recommendations"]
+        if any(action.get("target_softpoint") for action in item["suggested_actions"])
+    )
+
+    confirmed = await orchestrator.confirm_recommendation(
+        recommendation_id=recommendation["id"],
+        line="L1",
+        actor="operator:test",
+        timeout_sec=1.0,
+    )
+
+    assert confirmed["success"] is False
+    assert confirmed["error"] == "recommendation_not_actionable"
+    assert "AUTHORITY_OWNER_NOT_EDGE" in confirmed["blocked_by"]
     assert command.calls == []
 
 
@@ -361,7 +403,7 @@ async def test_orchestrator_rejects_manual_softpoint_without_transition_state(mo
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_blocks_manual_softpoint_in_auto_mode(monkeypatch):
+async def test_orchestrator_manual_softpoint_interrupts_auto_with_manual_d5100(monkeypatch):
     async def fake_write_audit(**kwargs):
         return None
 
@@ -381,10 +423,24 @@ async def test_orchestrator_blocks_manual_softpoint_in_auto_mode(monkeypatch):
         request_id="manual-1",
     )
 
-    assert confirmed["success"] is False
-    assert confirmed["error"] == "manual_command_not_actionable"
-    assert "CONTROL_MODE_NOT_MANUAL" in confirmed["blocked_by"]
-    assert command.calls == []
+    assert confirmed["success"] is True
+    assert command.calls == [
+        {
+            "line": "L1",
+            "tag": "VFM1_FREQ_SP",
+            "value": 20.0,
+            "msg_id": "manual-1",
+            "mode": 1,
+            "wait_ack": True,
+            "timeout_sec": 3.0,
+        }
+    ]
+    operator_request = next(
+        item for item in confirmed["recommendation"]["evidence"]
+        if item.get("signal") == "operator_request"
+    )
+    assert operator_request["effective_control_mode"] == "MANUAL"
+    assert operator_request["auto_reauthorization_required"] is True
 
 
 @pytest.mark.asyncio

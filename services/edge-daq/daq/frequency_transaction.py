@@ -136,6 +136,7 @@ class SingleFrequencyTransactionWriter:
         flags: int = 0,
         checksum: bool = True,
         refresh_heartbeat: bool = False,
+        allow_authority_request: bool = False,
     ) -> FrequencyTransactionResult:
         try:
             request_channel = self._coerce_channel(channel)
@@ -180,7 +181,11 @@ class SingleFrequencyTransactionWriter:
                 reason="duplicate_sequence",
             )
 
-        authority = await self.ensure_edge_authority(timeout_sec=timeout_sec)
+        authority = await self.ensure_edge_authority(
+            timeout_sec=timeout_sec,
+            request_timeout_s=request_timeout_s,
+            allow_request=allow_authority_request,
+        )
         if not authority.ok:
             return FrequencyTransactionResult(
                 status="failed",
@@ -231,7 +236,13 @@ class SingleFrequencyTransactionWriter:
             return None
         return [self._u16(value) for value in registers]
 
-    async def ensure_edge_authority(self, *, timeout_sec: float = 3.0, request_timeout_s: int = 10) -> FrequencyTransactionResult:
+    async def ensure_edge_authority(
+        self,
+        *,
+        timeout_sec: float = 3.0,
+        request_timeout_s: int = 10,
+        allow_request: bool = False,
+    ) -> FrequencyTransactionResult:
         """Ensure PLC owner/epoch grants the edge lane before a D5100 write."""
         status = await self.read_authority_status()
         if status is None:
@@ -273,11 +284,27 @@ class SingleFrequencyTransactionWriter:
                 },
             )
 
-        if status.owner == AUTHORITY_OWNER_EDGE:
+        if status.owner == AUTHORITY_OWNER_EDGE and not allow_request:
             return FrequencyTransactionResult(
                 status="success",
                 seq=0,
                 detail={"authority_owner": status.owner, "authority_epoch": status.epoch},
+            )
+
+        if not allow_request or status.owner not in (
+            AUTHORITY_OWNER_PLC_LOCAL,
+            AUTHORITY_OWNER_LOCAL_SCREEN,
+            AUTHORITY_OWNER_EDGE,
+        ):
+            return FrequencyTransactionResult(
+                status="failed",
+                seq=0,
+                reason="authority_owner_not_edge",
+                detail={
+                    "authority_owner": status.owner,
+                    "authority_epoch": status.epoch,
+                    "transition_state": status.transition_state,
+                },
             )
 
         seq = self._next_auth_sequence(status)

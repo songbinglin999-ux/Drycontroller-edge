@@ -72,7 +72,7 @@ class FakeTransactionModbus:
                 self.registers.get(_addr(AUTH_REQ_SOURCE)) == AUTH_SOURCE_EDGE
                 and self.registers.get(_addr(AUTH_REQ_ACTION)) == AUTH_ACTION_REQUEST_OWNER
                 and self.registers.get(_addr(AUTH_REQ_EPOCH)) == self.registers.get(_addr(AUTHORITY_EPOCH))
-                and self.registers.get(_addr(AUTHORITY_OWNER)) == AUTHORITY_OWNER_LOCAL_SCREEN
+                and self.registers.get(_addr(AUTHORITY_OWNER)) in {AUTHORITY_OWNER_EDGE, AUTHORITY_OWNER_LOCAL_SCREEN}
             ):
                 self.registers[_addr(AUTH_GRANT_SEQ)] = int(value)
                 self.registers[_addr(AUTHORITY_OWNER)] = AUTHORITY_OWNER_EDGE
@@ -116,11 +116,24 @@ async def test_frequency_transaction_writes_payload_before_sequence():
 
 
 @pytest.mark.asyncio
-async def test_frequency_transaction_requests_edge_authority_before_d5100_write():
+async def test_frequency_transaction_fails_closed_when_local_screen_owns_authority():
     modbus = FakeTransactionModbus(authority_owner=AUTHORITY_OWNER_LOCAL_SCREEN)
     writer = SingleFrequencyTransactionWriter(modbus)
 
     result = await writer.write_one(1, 31, seq=4, timeout_sec=0.1)
+
+    assert result.ok is False
+    assert result.reason == "authority_owner_not_edge"
+    assert result.detail["authority_owner"] == AUTHORITY_OWNER_LOCAL_SCREEN
+    assert modbus.writes == []
+
+
+@pytest.mark.asyncio
+async def test_frequency_transaction_explicit_reauthorization_can_request_edge_authority():
+    modbus = FakeTransactionModbus(authority_owner=AUTHORITY_OWNER_LOCAL_SCREEN)
+    writer = SingleFrequencyTransactionWriter(modbus)
+
+    result = await writer.write_one(1, 31, seq=4, timeout_sec=0.1, allow_authority_request=True)
 
     assert result.ok is True
     assert modbus.writes[:2] == [
@@ -320,7 +333,7 @@ async def test_frequency_transaction_socket_e2e_against_fas66mt_fake_plc():
     try:
         await writer.refresh_edge_host_alive(1)
 
-        ok = await writer.write_one(1, 31, seq=10, timeout_sec=2.0)
+        ok = await writer.write_one(1, 31, seq=10, timeout_sec=2.0, allow_authority_request=True)
         assert ok.status == "success"
         assert ok.ack_seq == 10
         assert ok.active_targets == [31, 0, 0, 0, 0, 0]
@@ -338,7 +351,13 @@ async def test_frequency_transaction_socket_e2e_against_fas66mt_fake_plc():
         assert stale.active_targets == [31, 0, 0, 0, 0, 0]
 
         await writer.refresh_edge_host_alive(2)
-        recovered = await writer.write_one(6, 37, seq=13, timeout_sec=2.0)
+        recovered_without_reauth = await writer.write_one(6, 37, seq=13, timeout_sec=2.0)
+        assert recovered_without_reauth.status == "nak"
+        assert recovered_without_reauth.reason == "plc_nak_5"
+        assert recovered_without_reauth.nak_code == 5
+        assert recovered_without_reauth.active_targets == [31, 0, 0, 0, 0, 0]
+
+        recovered = await writer.write_one(6, 37, seq=14, timeout_sec=2.0, allow_authority_request=True)
         assert recovered.status == "success"
         assert recovered.active_targets == [31, 0, 0, 0, 0, 37]
 
@@ -346,16 +365,16 @@ async def test_frequency_transaction_socket_e2e_against_fas66mt_fake_plc():
         assert backward.status == "nak"
         assert backward.nak_code == 2
 
-        repeated = await writer.write_one(6, 30, seq=13, timeout_sec=2.0)
+        repeated = await writer.write_one(6, 30, seq=14, timeout_sec=2.0)
         assert repeated.status == "failed"
         assert repeated.reason == "duplicate_sequence"
 
         await writer.refresh_edge_host_alive(3)
-        await _write_raw_payload(client, 14, 1, 32)
+        await _write_raw_payload(client, 15, 1, 32)
         for value in (33, 34, 35):
             assert await client.write_register(_addr(EDGE_FREQ_VALUE), value)
             await asyncio.sleep(0.01)
-        jitter = await _read_until_nak(client, 14)
+        jitter = await _read_until_nak(client, 15)
         assert jitter[2] == 104
 
     finally:
