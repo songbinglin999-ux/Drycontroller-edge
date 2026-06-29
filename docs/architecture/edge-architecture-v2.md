@@ -136,13 +136,13 @@ tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都�
 | 组件 | 职责 |
 |---|---|
 | edge-monitor | 服务探活（HTTP/TCP/容器状态）、自愈（阈值重启 + 熔断冷却）、PLC 模式状态监控、心跳健康监控、控制拒绝（NAK）可见、MQTT 状态发布、Alertmanager 集成 |
-| ops-console | 本地运维大屏（Svelte SPA），展示实时数据、告警、系统状态、当前控制模式、授权层级（MANUAL/AUTO/AUTO_SUSPENDED）与 suggestion |
+| ops-console | 本地运维大屏（Svelte SPA），展示实时数据、告警、系统状态、当前控制模式、授权层级（MANUAL/AUTO/AUTO_PAUSED）与 suggestion |
 
 **edge-monitor 职责（相对 v1 新增）**：
 - 监控 PLC 模式状态（edge 模式 vs 本地模式 vs 维护锁定），切换时触发告警。
-- 监控 edge-daq 心跳：通讯心跳（`EDGE_HOST_ALIVE` / `PLC_HEARTBEAT`）和控制门控心跳（`EDGE_CONTROL_HEALTHY`，见 §6.1）。
+- 监控 edge-daq 心跳：通讯心跳（`EDGE_HOST_ALIVE` / `PLC_HEARTBEAT`）。当前 PLC gate 只使用 `D5291 EDGE_HOST_ALIVE`，不启用独立 `D5105` 控制健康 gate。
 - 控制命令被 PLC 拒绝（NAK）时可见并告警。
-- 监控 AUTO 授权状态，AUTO 被自动挂起回 `AUTO_SUSPENDED` / `MANUAL` 时告警。
+- 监控 AUTO 授权状态，AUTO 被自动挂起回 `AUTO_PAUSED` / `MANUAL` 时告警。
 
 ### 5.1 对外只读面鉴权分层
 
@@ -172,14 +172,14 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | 数据采集 | Modbus RTU-over-TCP 读取 PLC 寄存器/线圈，发布到 MQTT + InfluxDB |
 | 通讯心跳 | 写 `EDGE_HOST_ALIVE`，读 `PLC_HEARTBEAT`；只用于通讯/数据质量诊断，不授权控制 |
 | command 写入 | 只消费 edge-api 下发的**签名 command**，Modbus 写入 PLC，回 **ACK/NAK**；拒绝或写失败 NAK 且**不重放**危险写入 |
-| 控制门控心跳写入 | **独立进程**，采集挂了心跳进程也要继续；控制路径不健康时 fail-closed |
+| 控制依赖 fail-closed | 本期不启用独立 D5105 控制健康心跳；edge-api 发现 MQTT、签名、authority snapshot、ACK/NAK 或读回 gate 失败时停止新 D5100 command，并进入 `AUTO_PAUSED` |
 | 模式/控制权回读 | 读取 PLC 模式、`AUTHORITY_OWNER`、`AUTHORITY_EPOCH`、`HMI_DIRECT_ENABLE` 和拒绝原因，上报到 MQTT |
 
-**心跳语义拆分**（单一 `EDGE.HEARTBEAT` 不够；通讯心跳不得被 PLC 当成控制授权，控制门控心跳必须 fail-closed）：
+**心跳语义**（按当前 PLC 实现收窄，避免过度设计）：
 
-- `EDGE_HOST_ALIVE`：edge 主机/采集运行时还活着，**仅用于通讯诊断**；PLC 不得据此允许 edge 控制。
+- `EDGE_HOST_ALIVE`：edge 主机/采集运行时还活着；当前 PLC 用 `D5291` freshness gate 拒绝 stale edge 的 D5100/D5400 请求，并在 stale 后进入 hold-last + `AUTO_PAUSED` 展示口径。它不是 edge-api 自动恢复 AUTO 的依据。
 - `PLC_HEARTBEAT`：PLC 自身通讯心跳，可复用现有 0/1 翻转镜像；edge 用短窗口确认读值是否变化，用于 PLC 通讯 freshness 和大屏/告警，避免 5s 单点采样与 1s 翻转周期同相。
-- `EDGE_CONTROL_HEALTHY`（门控心跳）：仅当控制路径关键依赖（MQTT、edge-api、命令签名、range guard、ramp/slew limiter、工艺联锁、Modbus 写链路）全部健康、模式状态明确、最近一次写入/ACK 契约满足时才递增；任一不满足即 **fail-closed**（停止递增），让 PLC 切本地模式。PLC 的看门狗监测的是这个门控心跳。
+- `D5105` / 独立控制健康 gate：本期预留，不参与当前 `EDGE_ACTIVE` 判定。控制依赖失败由 edge-api 停止签发新 command，并由 PLC 的 D5100 ACK/NAK/owner/heartbeat 规则 fail-closed。
 
 本期不做 PLC 通讯冗余链路：不引入双 PLC host、双网口、RS485 备用、第二套心跳或主备切换状态机。链路异常只通过 Modbus 重连/熔断、双向心跳超时、告警和控制 fail-closed 处理，避免过度设计。
 
@@ -188,8 +188,8 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | 功能 | 说明 |
 |---|---|
 | 通讯心跳 | PLC 更新/翻转 `PLC_HEARTBEAT` 并接收 edge 递增写入的 `EDGE_HOST_ALIVE`；edge 对 PLC 翻转心跳做短窗口确认采样，只用于确认通讯和采集链路，不触发模式切换 |
-| 心跳看门狗 | 监测 `EDGE_CONTROL_HEALTHY` 寄存器，M 秒未更新判定 edge 控制不可信 |
-| 模式切换 | 门控心跳正常 → `EDGE_MASTER`；超时 → `PLC_LOCAL` 或 `HMI_LOCAL`（预设安全 setpoint / 本地保守 SP） |
+| 心跳看门狗 | 当前监测 `D5291 EDGE_HOST_ALIVE` 是否在超时时间内变化；stale 时拒绝新 edge 请求 |
+| 模式切换 | 当前 Fork B：edge stale → PLC hold-last 最后 ACK 的 edge 目标并拒绝新 D5100；本地屏或 DryHMI direct 需经 owner/epoch 显式接管 |
 | **控制权锁** | PLC 持有 `AUTHORITY_OWNER` 与 `AUTHORITY_EPOCH`；edge 和 HMI 都只能申请控制权，不能绕过 PLC 私下切换；现场内网不引入 token/签名租约 |
 | **DryHMI direct** | 最终必做的 edge-down 人工保底路径；必须经 PLC owner/epoch/direct-enable、ACK/NAK、读回和审计，写 `D5550-D5599` DryHMI 目标缓冲区，不得绕过 edge-api/D5100 或 `P90_OUTPUT_COMMIT` 形成并行输出链路 |
 | **维护锁定（maintenance lock）** | 人为锁定本地模式，需**手动解除**后才允许 edge 重新接管；**在 PLC 侧实现**，否则维修中 edge 心跳恢复仍可能强行夺回控制权 |
@@ -203,13 +203,13 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 ### 6.3 控制模式切换流程
 
 ```
-          门控心跳正常                         门控心跳超时 / edge 不可用
+          D5291 fresh + owner=EDGE              D5291 stale / owner 被本地接管
 ┌──────────────────┐    ┌──────────┐    ┌────────────────────┐
-│ EDGE_MASTER       │ →  │ 等待确认  │ →  │ PLC_LOCAL/HMI_LOCAL │
+│ EDGE_ACTIVE       │ →  │ AUTO_PAUSED│ →  │ LOCAL_SCREEN/HMI_DIRECT │
 │ owner=EDGE        │    │ (防抖)    │    │ owner=PLC/HMI       │
 └──────────────────┘    └──────────┘    └────────────────────┘
       ↑                                               │
-      └──── edge 恢复后读取当前状态、同步 SP、申请 epoch ──┘
+      └──── edge 恢复后保持 MANUAL/AUTO_PAUSED，等待人工重新授权 ──┘
 
          HMI_STANDBY：edge 健康时 HMI 只监视/请求接管，不直接写控制 SP
          HMI_DIRECT_ENABLE：DryHMI direct 显式授权；最终 e2e 前生产 disabled
@@ -217,9 +217,9 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
          （锁定期间忽略 edge 心跳恢复，不自动接管）
 ```
 
-**防抖**：连续 K 次门控心跳丢失才判定故障，避免偶发丢包误切。
+**防抖**：当前由 PLC D5291 freshness timeout 和 D5100 事务 ACK/NAK 规则承担；edge-api 不另建 PLC gate。
 
-**恢复原则**：edge 恢复后不能自动抢回控制权。它必须先读取 PLC 当前实际输出、有效 setpoint、`AUTHORITY_OWNER` 和 `AUTHORITY_EPOCH`，完成参数/状态同步后再请求 `EDGE_MASTER`。PLC 授权前，edge-api 应拒绝新 control command 或标记为 `not_actionable`。
+**恢复原则**：edge 恢复后不能自动恢复 AUTO。edge-api 保持 `MANUAL` / `AUTO_PAUSED`，先读取 PLC 当前有效目标、`AUTHORITY_OWNER` 和 `AUTHORITY_EPOCH`；只有操作员重新授权 AUTO 且 gate 通过，edge-api 才能继续生成新的 D5100 command。
 
 ### 6.4 PLC → 云端告警链路
 
@@ -249,9 +249,9 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
   - 无人值守 AUTO 只负责自动生成单路频率任务，仍复用 edge-daq 的 D5100 队列；同一时刻只允许一个 in-flight 请求，上一条 ACK/NAK/超时处理完成后才发下一条；
   - 当前仅允许六个频率目标；6SP 地址/倍率/反馈/ACK-NAK/读回/安全覆盖状态签收前必须 fail-closed；
   - edge HMI 人工修改任一频率目标时，立即退回 **MANUAL**，停止 AUTO 生成新任务，并丢弃/冻结尚未下发的 AUTO 任务；该人工目标仍按 `mode=MANUAL` 走同一条 D5100 单路事务；
-  - PLC 本地屏/旧屏/维护操作接管时，PLC 必须通过 owner/state/local-manual 信号暴露；edge 读到后进入 **AUTO_SUSPENDED** 或 MANUAL 展示态，停止写 D5100，避免和现场本地操作抢控制权；
+  - PLC 本地屏/旧屏/维护操作接管时，PLC 必须通过 owner/state/local-manual 信号暴露；edge 读到后进入 **AUTO_PAUSED** 或 MANUAL 展示态，停止写 D5100，避免和现场本地操作抢控制权；
   - 授权一直有效，**直到运维手动退回 MANUAL**、人工调频、PLC 本地接管或 gate 失败；
-  - 进入本地模式 / 维护锁定 / 任一控制依赖 fail-closed 时自动进入 **AUTO_SUSPENDED**，停止新 command；恢复后需重新人工授权才能再次进入 AUTO。
+  - 进入本地模式 / 维护锁定 / 任一控制依赖 fail-closed 时自动进入 **AUTO_PAUSED**，停止新 command；恢复后需重新人工授权才能再次进入 AUTO。
 
 ---
 
@@ -260,7 +260,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | 服务 | v1（当前） | v2（新架构） | 变更 |
 |---|---|---|---|
 | edge-api | ✓ | ✓ | 合并 license-service，成为唯一 command issuer |
-| edge-daq | ✓ | ✓ | 新增通讯心跳、控制门控心跳、模式回读和签名 command/ACK |
+| edge-daq | ✓ | ✓ | 新增通讯心跳、authority 回读和签名 command/ACK；D5100 writer 仍由开关 fail-closed |
 | ai-softsensor | ✓ | ✓ | 不变 |
 | ai-ctrl-optimizer | ✓ | ✓ | 输出从"命令"改"建议"，不直写 PLC |
 | license-service | ✓ | ✗ | 合并进 edge-api |
@@ -291,7 +291,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 
 ## 8. 与 P0-SAFETY 的对齐
 
-P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制落地、控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁和软件侧安全兜底；PLC 负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地；VFD/硬接线/设备自保护保留最终物理安全兜底。本架构直接覆盖：
+P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制落地、控制状态机、软点策略、range guard、最小变化率/冷却、工艺联锁和依赖失败停发；PLC 负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和 D5291 stale 后的 hold-last/本地接管边界；VFD/硬接线/设备自保护保留最终物理安全兜底。本架构直接覆盖：
 
 > **最终统一口径**：只读采集寄存器、`PLC_HEARTBEAT`、`EDGE_HOST_ALIVE`、六个频率目标软点的地址/量程/写入/反馈/PLC 安全覆盖状态，以及 edge-api 的 `MANUAL` / `AUTO` 模式授权、白名单、范围、变化率、冷却、ACK/NAK、读回和审计链路，统一进入最终 e2e；未签收的控制写入保持 disabled。
 
@@ -300,13 +300,13 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 | PLC 软点控制层 | 6.2 PLC 本地控制兜底 + 6.3 控制模式切换流程 |
 | 参数同步 / 报警同步 / 状态同步 | 6.3 控制模式切换流程 + Phase 2 接口签收 |
 | 通讯心跳 | 6.1 `EDGE_HOST_ALIVE` + `PLC_HEARTBEAT`，只用于通讯诊断 |
-| 控制门控心跳与心跳丢失切本地 | 6.1 `EDGE_CONTROL_HEALTHY` 门控心跳（fail-closed） |
+| 心跳丢失处理 | 6.1 当前只用 `D5291 EDGE_HOST_ALIVE`；PLC stale 后 hold-last 并拒绝新 edge 请求 |
 | ACK/NAK 与原因码 | 4.1 edge-api 签发/审计 + Phase 3 ACK/NAK |
 | 无扰切换 / HMI-edge 控制权锁 | 6.2 PLC 本地闭环 + 6.3 控制模式切换流程 |
 | DryHMI direct | 6.2 `HMI_DIRECT_ENABLE` + 6.3 `HMI_STANDBY/HMI_LOCAL`，edge 不可用且 PLC 授权时写 `D5550-D5599` DryHMI 目标缓冲区；最终 e2e 前生产 disabled |
-| edge 侧补心跳 | 6.1 通讯心跳 + 控制门控心跳（独立进程） |
+| edge 侧补心跳 | 6.1 通讯心跳；独立控制健康 gate 本期不启用 |
 | edge 侧补 range guard / ramp / 工艺联锁 | 4.1 edge-api（签发前拒绝越界、按变化率缓变、联锁不满足时拒绝） |
-| edge 侧补控制状态机和软件侧 fallback | 4.1 edge-api + 6.3 控制模式切换流程（含维护锁定） |
+| edge 侧补控制状态机 | 4.1 edge-api `MANUAL` / `AUTO` / `AUTO_PAUSED` 产品态；依赖失败只停发，不伪造 PLC fallback |
 | edge 侧补 `/control/estop` | §9 Phase 3（edge 控制契约）落位 |
 | AUTO 启用门槛 | §6.5：6SP 地址/倍率/反馈/ACK-NAK/读回/安全覆盖状态签收前 fail-closed；完整监督控制统一进入最终 e2e 验收 |
 
@@ -328,8 +328,8 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 |---|---|---|
 | 数据链路 | PLC tags、采集、工程量换算、阈值告警、大屏、`PLC_HEARTBEAT` 读取、`EDGE_HOST_ALIVE` 写入 | 现场点表落库；只读数据链路和双向通讯心跳 E2E 跑通 |
 | 保命层 | 宿主机 Tailscale + LAN SSH + host watchdog + enroll 改造 | `compose down` 后 Tailscale/LAN SSH 均可达；cloud-ops 仍能识别设备 tailnet 地址 |
-| PLC 统一接口 | 采集寄存器、D5100 单路频率事务、DryHMI direct 事务、参数同步、报警同步、状态同步、ACK/NAK、心跳切本地、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC 自动切本地；edge 在线频率写入走 edge-api / D5100；edge 不可用且 PLC 授权时 DryHMI direct 走 D5550-D5599；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/epoch 状态可见；VFD/硬接线/设备保护可现场验收 |
-| edge 控制契约 | suggestion schema、signed command、ACK/NAK、range guard、setpoint ramp/slew limiter、工艺联锁、`/control/estop`、fallback 状态机、`MANUAL` / `AUTO` / `AUTO_SUSPENDED` 授权机制、owner/epoch gate | AI 不直写 PLC；未签名/越界/变化率超限/工艺联锁不满足/本地模式/心跳异常/非 EDGE owner/stale epoch 下 command 被拒并审计；AUTO 可一键退回 MANUAL，gate 失败自动挂起 |
+| PLC 统一接口 | 采集寄存器、D5100 单路频率事务、DryHMI direct 事务、参数同步、报警同步、状态同步、ACK/NAK、D5291 stale 后 hold-last/本地接管、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC hold-last 并拒绝新 edge 请求；edge 在线频率写入走 edge-api / D5100；edge 不可用且 PLC 授权时 DryHMI direct 走 D5550-D5599；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/epoch 状态可见；VFD/硬接线/设备保护可现场验收 |
+| edge 控制契约 | suggestion schema、signed command、ACK/NAK、range guard、最小变化率/冷却 gate、`MANUAL` / `AUTO` / `AUTO_PAUSED` 授权机制、owner/epoch gate | AI 不直写 PLC；未签名/越界/变化率超限/本地模式/心跳异常/非 EDGE owner/stale epoch 下 command 被拒并审计；AUTO 可一键退回 MANUAL，gate 失败自动挂起；PLC 负责 D5100 事务、hold-last 和最终输出 |
 | 监控层 | PLC 模式监控、控制权 owner/epoch、HMI 直连授权、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、HMI 接管、控制拒绝均可见且告警 |
 | license-service 合并 + 文档收敛 | 功能等价测试通过；旧端点/云端探测路径有兼容或迁移说明；文档与代码一致 | 功能等价测试通过，文档与代码一致 |
 | ops-console 接入 | edge-api StaticFiles 挂卷托管（见 §7）+ 鉴权整改（代码已存在，落地排期靠后） | `dist` 挂卷只读托管于 edge-api `/console`，容器数维持 15；整改 `VITE_ADMIN_API_KEY` 把长期管理员 Key 编译进前端静态产物的泄密隐患（改登录换短期 token，不再把长期 Key 打包进 JS）；维护工程师可访问，实时数据 / 告警 / 控制模式 / 授权层级 / suggestion 可见 |
@@ -358,21 +358,21 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 
 | 场景 | 预期 |
 |---|---|
-| `docker compose down` | Tailscale/LAN SSH 仍可达；PLC 切本地或保持安全状态；云端显示业务离线但主机可达 |
-| kill `edge-daq` 主进程 | 门控心跳停止；PLC 防抖后切本地；edge-monitor/Alertmanager 告警 |
-| kill 心跳进程 | PLC 防抖后切本地；采集即使还在也不能保持 edge 模式 |
-| MQTT 不可用 | 门控心跳 fail-closed；不产生新可执行 command；状态可审计 |
+| `docker compose down` | Tailscale/LAN SSH 仍可达；PLC D5291 stale 后 hold-last / 拒绝新 edge 请求；云端显示业务离线但主机可达 |
+| kill `edge-daq` 主进程 | `D5291` 不再 fresh；PLC hold-last/拒绝新 edge 请求；edge-monitor/Alertmanager 告警 |
+| kill 心跳进程 | PLC D5291 freshness 超时；edge 恢复后仍需人工重新授权 AUTO |
+| MQTT 不可用 | edge-api 进入 `AUTO_PAUSED` 或保持 MANUAL；不产生新可执行 command；状态可审计 |
 | InfluxDB 不可用 | 采集链路降级缓存；控制路径不因时序库异常失控 |
 | edge-api 不可用 | 无新 command 下发；PLC 不依赖 edge-api 维持安全 |
 | Modbus 写失败 | command NAK；不重放危险写入；告警可见 |
-| PLC 切本地模式 | suggestion 标 `not_actionable`；edge-api 拒绝控制写入 |
-| HMI 接管 | PLC owner 切为 HMI/PLC_LOCAL 并授予直连；edge-api 拒绝控制写入；edge 恢复后只能申请接管 |
+| PLC 本地屏接管 | suggestion 标 `not_actionable`；edge-api 进入 `AUTO_PAUSED` 或保持 MANUAL，停止新 D5100 command |
+| HMI direct 接管 | PLC owner 切为 HMI_DIRECT 并授予直连；edge-api 拒绝控制写入；edge 恢复后等待人工重新授权 |
 | stale authority epoch | PLC NAK；edge-api/HMI 审计为控制权过期，不重放 |
 | 越界 / 变化率超限 setpoint | edge-api range guard / ramp-slew gate 拒绝或缓变；edge-daq 二次拒绝非法值；PLC/VFD final clamp 兜底 |
 | edge HMI 人工调频 | 立即退回 `MANUAL`，停止 AUTO 任务生成；人工目标按 D5100 单路队列下发 |
-| PLC 本地屏 / 旧屏人工调频 | 依赖 PLC owner/state/local-manual 信号；edge 进入 `AUTO_SUSPENDED` 或 MANUAL 展示态，停止写 D5100 |
+| PLC 本地屏 / 旧屏人工调频 | 依赖 PLC owner/state/local-manual 信号；edge 进入 `AUTO_PAUSED` 或 MANUAL 展示态，停止写 D5100 |
 | 维护锁定期间 edge 恢复 | PLC 不自动接管，需手动解除 |
-| AUTO 运行中 PLC 切本地 / 依赖 fail-closed | 自动进入 `AUTO_SUSPENDED` / `MANUAL`；恢复后需重新人工授权 |
+| AUTO 运行中 PLC 本地屏接管 / 依赖 fail-closed | 自动进入 `AUTO_PAUSED` / `MANUAL`；恢复后需重新人工授权 |
 | 宿主机重启 | Tailscale、SSH、watchdog、业务 compose 按序恢复，无需现场介入 |
 
 ---

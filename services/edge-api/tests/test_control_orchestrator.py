@@ -12,6 +12,7 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
 
 from app.services.control_core.models import REQUIRED_SNAPSHOT_TAGS  # noqa: E402
 from app.services.control_orchestrator import ControlOrchestrator  # noqa: E402
+from app.services.control_state import AUTO_PAUSED, ControlStateService  # noqa: E402
 
 
 class DummyRealtimeFull:
@@ -153,9 +154,25 @@ class DummyRealtimeLocalOwner(DummyRealtimeFull):
         return payload
 
 
+class DummyRealtimeOwnerChanges(DummyRealtimeFull):
+    def __init__(self):
+        self.latest_calls = 0
+
+    async def get_latest_payload(self, requested_tags, lookback):
+        self.latest_calls += 1
+        payload = await super().get_latest_payload(requested_tags, lookback)
+        if self.latest_calls >= 2:
+            for row in payload["data"]:
+                if row["tag"] == "AUTHORITY_OWNER":
+                    row["value"] = "LOCAL_SCREEN"
+        return payload
+
+
 class DummyCommand:
     def __init__(self):
         self.calls = []
+        self.mqtt_connected = True
+        self.signature_configured = True
 
     async def send_set(self, **kwargs):
         self.calls.append(kwargs)
@@ -167,6 +184,40 @@ class DummyCommand:
                 "tag": kwargs["tag"],
                 "ack_status": "success",
                 "value": kwargs["value"],
+            },
+        }
+
+    def transport_status(self):
+        return {
+            "ready": self.mqtt_connected and self.signature_configured,
+            "mqtt_connected": self.mqtt_connected,
+            "signature_configured": self.signature_configured,
+        }
+
+
+class DummyNakCommand(DummyCommand):
+    async def send_set(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "success": False,
+            "status": "nak",
+            "error": "control_nak",
+            "data": {"reason": "plc_nak_5"},
+        }
+
+
+class DummyMismatchCommand(DummyCommand):
+    async def send_set(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "success": True,
+            "status": "acked",
+            "data": {
+                "id": "ctl_1",
+                "tag": kwargs["tag"],
+                "ack_status": "success",
+                "value": kwargs["value"],
+                "detail": {"active_targets": [0, 0, 0, 0, 0, 0]},
             },
         }
 
@@ -468,3 +519,206 @@ async def test_orchestrator_blocks_manual_motor_feedback_write(monkeypatch):
     assert confirmed["error"] == "manual_command_not_actionable"
     assert "MOTOR_FEEDBACK_WRITE_FORBIDDEN" in confirmed["blocked_by"]
     assert command.calls == []
+
+
+@pytest.mark.asyncio
+async def test_control_state_authorized_auto_dispatches_single_d5100_command(monkeypatch):
+    audit_events = []
+
+    async def fake_write_audit(**kwargs):
+        audit_events.append(kwargs)
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    command = DummyCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeFull(),
+        command_service=command,
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    authorized = await service.authorize_auto(line="L1", actor="operator:test", reason="shift_start")
+    dispatched = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+
+    assert authorized["success"] is True
+    assert dispatched["success"] is True
+    assert dispatched["status"] == "dispatched"
+    assert command.calls
+    assert command.calls[0]["mode"] == 2
+    assert command.calls[0]["wait_ack"] is True
+    assert command.calls[0]["tag"] in {"VFM3_FREQ_SP", "VF3_FREQ_SP"}
+    assert {event["action"] for event in audit_events} >= {
+        "control.mode.auto_authorize",
+        "control.auto.dispatch",
+    }
+
+
+@pytest.mark.asyncio
+async def test_control_state_manual_frequency_intervention_requires_reauthorization(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    monkeypatch.setattr("app.services.control_orchestrator.write_audit", fake_write_audit)
+    command = DummyCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeFull(),
+        command_service=command,
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+    orchestrator = ControlOrchestrator(
+        realtime_service=DummyRealtimeAuto(),
+        command_service=command,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    await service.note_manual_intervention(
+        line="L1",
+        actor="operator:test",
+        target_softpoint="VFM1_FREQ_SP",
+        value=20.0,
+        reason="hmi_panel_submit",
+    )
+    confirmed = await orchestrator.confirm_manual_action(
+        line="L1",
+        target_softpoint="VFM1_FREQ_SP",
+        value=20.0,
+        actor="operator:test",
+        operator_id="operator-a",
+        request_id="manual-1",
+    )
+    await service.record_command_result(result=confirmed, command_scope="manual")
+    status = await service.get_status(line="L1")
+
+    assert confirmed["success"] is True
+    assert command.calls[-1]["mode"] == 1
+    assert status["mode"] == "MANUAL"
+    assert status["requires_reauthorization"] is True
+    assert status["last_command_result"]["scope"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_control_state_pauses_when_plc_local_screen_takes_owner(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    command = DummyCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeOwnerChanges(),
+        command_service=command,
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    dispatched = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+
+    assert dispatched["success"] is False
+    assert dispatched["error"] == "auto_gate_failed"
+    assert "AUTHORITY_OWNER_NOT_EDGE" in dispatched["blocked_by"]
+    assert dispatched["data"]["mode"] == AUTO_PAUSED
+    assert dispatched["data"]["requires_reauthorization"] is True
+    assert command.calls == []
+
+
+@pytest.mark.asyncio
+async def test_control_state_dependency_failure_and_recovery_do_not_auto_resume(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    command = DummyCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeFull(),
+        command_service=command,
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    command.mqtt_connected = False
+    failed = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+    command.mqtt_connected = True
+    recovered_status = await service.get_status(line="L1")
+    blocked_dispatch = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+
+    assert failed["success"] is False
+    assert "MQTT_NOT_CONNECTED" in failed["blocked_by"]
+    assert recovered_status["mode"] == AUTO_PAUSED
+    assert recovered_status["requires_reauthorization"] is True
+    assert blocked_dispatch["error"] == "auto_not_authorized"
+    assert command.calls == []
+
+
+@pytest.mark.asyncio
+async def test_control_state_nak_pauses_auto_and_records_command(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    command = DummyNakCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeFull(),
+        command_service=command,
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    dispatched = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+
+    assert dispatched["success"] is False
+    assert dispatched["error"] == "auto_command_failed"
+    assert "control_nak" in dispatched["blocked_by"]
+    assert dispatched["data"]["mode"] == AUTO_PAUSED
+    assert dispatched["data"]["last_command_result"]["scope"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_control_state_cooldown_rejects_next_auto_command(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    command = DummyCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeFull(),
+        command_service=command,
+        cooldown_sec=60,
+        max_delta_hz=10,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    first = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+    second = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+
+    assert first["success"] is True
+    assert second["success"] is False
+    assert second["error"] == "auto_rate_gate_failed"
+    assert "AUTO_COOLDOWN_ACTIVE" in second["blocked_by"]
+    assert second["data"]["mode"] == AUTO_PAUSED
+    assert len(command.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_control_state_active_target_mismatch_pauses_auto(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    command = DummyMismatchCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeFull(),
+        command_service=command,
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    dispatched = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+
+    assert dispatched["success"] is False
+    assert "active_targets_mismatch" in dispatched["blocked_by"]
+    assert dispatched["data"]["mode"] == AUTO_PAUSED

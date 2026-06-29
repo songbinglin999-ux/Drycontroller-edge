@@ -457,8 +457,8 @@ async def test_control_recommendations_use_new_diagnosis_schema(monkeypatch):
     assert data["requires_confirmation"] is False
     assert data["production_requires_confirmation"] is False
     assert data["operation_modes"] == ["MANUAL", "AUTO"]
-    assert data["auto_suspension_state"] == "AUTO_SUSPENDED"
-    assert data["auto_suspension_is_operator_mode"] is False
+    assert data["auto_pause_state"] == "AUTO_PAUSED"
+    assert data["auto_pause_is_operator_mode"] is False
     assert data["recommendation_confirmation_scope"] == "commissioning_only"
     assert "recommendations" in data
     assert "diagnosis" not in data

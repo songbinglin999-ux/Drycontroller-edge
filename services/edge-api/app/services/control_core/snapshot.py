@@ -125,7 +125,7 @@ def _as_authority_owner(value: Any) -> Optional[str]:
             return None
         return {
             0: "PLC_LOCAL",
-            1: "PLC_LOCAL",
+            1: "LOCAL_SCREEN",
             2: "EDGE",
             3: "DRY_HMI_DIRECT",
             4: "MAINTENANCE",
@@ -134,7 +134,9 @@ def _as_authority_owner(value: Any) -> Optional[str]:
     normalized = str(value).strip().upper()
     if normalized in {"2", "EDGE", "EDGE_D5100"}:
         return "EDGE"
-    if normalized in {"0", "1", "PLC_LOCAL", "PLC_SCREEN", "LOCAL", "LOCAL_SCREEN"}:
+    if normalized in {"1", "PLC_SCREEN", "LOCAL", "LOCAL_SCREEN"}:
+        return "LOCAL_SCREEN"
+    if normalized in {"0", "PLC_LOCAL"}:
         return "PLC_LOCAL"
     if normalized in {"3", "HMI_DIRECT", "DRY_HMI", "DRY_HMI_DIRECT"}:
         return "DRY_HMI_DIRECT"

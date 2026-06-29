@@ -125,7 +125,7 @@ V0 没有 `MANUAL` / `AUTO` 下发流程；控制写入路径保持 disabled。`
 MANUAL：HMI 人工输入 6 个频率目标
 AUTO：edge 规则/算法生成 6 个频率目标
    ↓ edge-api 模式授权 / 白名单 / range / 变化率 / 冷却 / ACK-NAK / 读回
-edge-api 签发 signed command；失败则拒绝或 AUTO_SUSPENDED
+edge-api 签发 signed command；失败则拒绝或 AUTO_PAUSED
    ↓
 MQTT（control/apply/#）→ edge-daq → PLC
 ```

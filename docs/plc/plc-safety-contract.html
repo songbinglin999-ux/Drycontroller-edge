@@ -104,7 +104,7 @@
     </li>
     <li><a href="#sec2">2. PLC 侧安全要求</a>
       <ul>
-        <li><a href="#sec2-1">2.1 门控心跳看门狗</a></li>
+        <li><a href="#sec2-1">2.1 D5291 freshness 边界</a></li>
         <li><a href="#sec2-2">2.2 模式寄存器</a></li>
         <li><a href="#sec2-3">2.3 控制模式切换流程</a></li>
         <li><a href="#sec2-4">2.4 本地安全 Setpoint</a></li>
@@ -136,7 +136,7 @@
   <div class="title">PLC 安全契约（PLC Safety Contract）</div>
   <div class="meta">
     <b>版本</b>：v1.2-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-15 &nbsp;·&nbsp; <b>状态</b>：待按新 PLC 接口边界重签收<br>
-    <b>v1.2 改归属</b>（2026-06-15；2026-06-26 HMI direct 必做订正）：DryController/edge 负责工艺控制落地、控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁与软件侧安全兜底；PLC 负责 D5100 事务执行接口、DryHMI direct 事务、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和心跳丢失切本地；VFD/硬接线/设备自保护保留最终物理安全兜底。现场 HMI edge 在线经 edge-api / D5100 进入 PLC，edge 不可用且 PLC 授权时经 D5550-D5599 HMI direct 写 DryHMI 目标缓冲区。旧 P1-P10 验收表需按该边界重拆。<strong>（claude 收尾 2026-06-15：§7.1 重拆为 P1–P16，补 §2.12 控制权仲裁、§2.13 极简-PLC 降级路径——集成商做不动目标版时降级到 4 件笨活 + 硬接线/VFD 参数。）</strong><br>
+    <b>v1.2 改归属</b>（2026-06-15；2026-06-29 EDGE-V2-P3 订正）：DryController/edge 负责工艺控制落地、控制状态机、软点策略、range guard、最小变化率/冷却、工艺联锁与依赖失败停发；PLC 负责 D5100 事务执行接口、DryHMI direct 事务、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换、HMI/edge 控制权锁和 D5291 stale 后 hold-last/本地接管边界；VFD/硬接线/设备自保护保留最终物理安全兜底。现场 HMI edge 在线经 edge-api / D5100 进入 PLC，edge 不可用且 PLC 授权时经 D5550-D5599 HMI direct 写 DryHMI 目标缓冲区。旧 P1-P10 验收表需按该边界重拆。<strong>（claude 收尾 2026-06-15：§7.1 重拆为 P1–P16，补 §2.12 控制权仲裁、§2.13 极简-PLC 降级路径——集成商做不动目标版时降级到 4 件笨活 + 硬接线/VFD 参数。）</strong><br>
     <b>适用范围</b>：DryController 边缘控制系统与 PLC 侧安全责任划分<br>
     <b>关联架构</b>：<a href="../architecture/edge-architecture-v2.md">Edge 架构 v2</a><br>
     <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">超限报警规范</a>
@@ -159,11 +159,11 @@
 <h2 id="sec1">1. 总则</h2>
 
 <h3 id="sec1-1">1.1 核心原则</h3>
-<p class="lead">edge 承担正常工艺控制、限幅、斜坡、工艺联锁与软件侧安全兜底；PLC 承担确定性执行、同步、仲裁和心跳丢失后的本地控制兜底；VFD/硬接线/设备自保护承担最终物理安全兜底。</p>
+<p class="lead">edge 承担正常工艺控制、限幅、最小变化率/冷却、工艺联锁与依赖失败停发；PLC 承担确定性执行、同步、仲裁和 D5291 stale 后 hold-last/本地接管边界；VFD/硬接线/设备自保护承担最终物理安全兜底。</p>
 <ul>
-  <li>Edge 系统（上位机）负责数据采集消费、分析、展示、工艺控制状态机、软点策略、range guard、setpoint ramp/slew limiter、工艺联锁、mode gate 和软件侧 fallback</li>
+  <li>Edge 系统（上位机）负责数据采集消费、分析、展示、工艺控制状态机、软点策略、range guard、最小变化率/冷却、工艺联锁、mode gate 和依赖失败停发</li>
   <li>PLC（可编程逻辑控制器）负责软点寄存器/执行接口、参数同步、报警同步、状态同步、执行、采集、ACK/NAK/原因码、无扰切换和 HMI/edge 控制权锁</li>
-  <li>PLC 读取 edge 心跳；edge 心跳丢失时，PLC 必须切回 PLC 本地控制，且切换过程不能造成突变输出</li>
+  <li>PLC 读取 <code>D5291 EDGE_HOST_ALIVE</code> freshness；D5291 stale 后 PLC hold-last 并拒绝新 edge 请求，恢复后不得让 edge 自动抢回控制权</li>
   <li>现场 HMI edge 在线经 edge-api / D5100 事务进入 PLC；edge 不可用且 PLC 授权时经 HMI direct / D5550-D5599 写 DryHMI 目标缓冲区</li>
   <li>PLC 必须提供 <code>AUTHORITY_OWNER</code>、<code>AUTHORITY_EPOCH</code>、<code>HMI_DIRECT_ENABLE</code>、<code>TAKEOVER_REASON</code> 与 <code>REJECT_CODE</code> 等字段；D5100 写控制软点时必须受当前 owner/epoch 约束；现场内网不引入 token/签名租约</li>
   <li>硬件急停、热继、拉绳/跑偏等设备级保护仍属于现场硬件/PLC/VFD 执行层，edge 不直接驱动物理输出；这类硬安全不等同于 edge 的工艺联锁</li>
@@ -173,8 +173,8 @@
 <table>
   <thead><tr><th>侧</th><th>状态</th></tr></thead>
   <tbody>
-    <tr><td>PLC 侧</td><td><strong>待重签收</strong>：软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换、最终物理安全兜底回读</td></tr>
-    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），仍需补控制状态机、ramp/slew limiter、工艺联锁、MANUAL/AUTO/AUTO_SUSPENDED 模式闸、软件侧 fallback 与软点/同步/仲裁状态处理</td></tr>
+    <tr><td>PLC 侧</td><td><strong>待重签收</strong>：软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、D5291 stale 后 hold-last/本地接管、无扰切换、最终物理安全兜底回读</td></tr>
+    <tr><td>Edge 侧</td><td>部分已做（心跳、range guard 代码框架），仍需补控制状态机、最小变化率/冷却、工艺联锁、MANUAL/AUTO/AUTO_PAUSED 模式闸与软点/同步/仲裁状态处理；依赖失败时停发，不伪造 PLC fallback</td></tr>
   </tbody>
 </table>
 
@@ -216,18 +216,18 @@
 
 <h2 id="sec2">2. PLC 侧安全要求（集成商必须实现）</h2>
 
-<h3 id="sec2-1">2.1 门控心跳看门狗</h3>
+<h3 id="sec2-1">2.1 D5291 freshness 边界</h3>
 <table>
   <tbody>
-    <tr><td>寄存器</td><td><code>EDGE_CONTROL_HEALTHY</code>（地址待分配）</td></tr>
-    <tr><td>语义</td><td>Edge 系统递增计数器，每秒 +1；仅当整条控制链路健康时才递增</td></tr>
-    <tr><td>PLC 行为</td><td>心跳计数器在「看门狗超时窗口」内无变化 → 判定 edge 控制不可信 → 自动切手动模式</td></tr>
+    <tr><td>寄存器</td><td><code>D5105</code> 独立控制健康 gate 预留；当前 PLC gate 使用 <code>D5291 EDGE_HOST_ALIVE</code></td></tr>
+    <tr><td>语义</td><td>Edge host alive 递增计数器，每秒 +1；本期只以 D5291 判断 edge 主机 freshness，D5105 不作为 gate</td></tr>
+    <tr><td>PLC 行为</td><td>D5291 在「看门狗超时窗口」内无变化 → 判定 edge 控制不可信 → hold-last 并拒绝新 edge 请求</td></tr>
     <tr><td>超时窗口</td><td><code>看门狗超时 = 心跳周期 × 容忍丢拍数 + 余量</code>，默认 <code>1s × 3 + 1s ≈ 4s</code>（唯一可调量是容忍丢拍数；<strong>不要再单独设一个独立的超时秒数与本式并存</strong>，见 §5）</td></tr>
     <tr><td>判据</td><td>看门狗监测「计数器值是否<strong>发生变化</strong>」（含溢出回绕 65535→0），<strong>不是</strong>「值是否递增」，否则回绕瞬间会误判超时</td></tr>
-    <tr><td>Fail-closed</td><td>Edge 侧任一依赖异常（MQTT 断、API 挂、签名失败、range guard 失败）→ 心跳停止递增 → PLC 切手动</td></tr>
+    <tr><td>Fail-closed</td><td>Edge 侧任一控制依赖异常（MQTT 断、API 挂、签名失败、range guard 失败）→ edge 停发新 D5100 command；AUTO 恢复必须人工重新授权</td></tr>
   </tbody>
 </table>
-<p><strong>通俗说</strong>：PLC 每隔几秒看 edge 的心跳计数器有没有在变；如果在「超时窗口」内一直没变（连续丢够约定的拍数），就自己接管控制。</p>
+<p><strong>通俗说</strong>：PLC 每隔几秒看 D5291 有没有在变；如果在「超时窗口」内一直没变（连续丢够约定的拍数），PLC 保持当前安全边界并拒绝新的 edge 控制请求，edge 恢复后也必须等人工重新授权。</p>
 
 <h3 id="sec2-2">2.2 模式寄存器</h3>
 <table>
@@ -240,13 +240,13 @@
 </table>
 
 <h3 id="sec2-3">2.3 控制模式切换流程</h3>
-<pre><code>          门控心跳正常                门控心跳超时
+<pre><code>          D5291 fresh                D5291 stale
 ┌──────────┐    ┌──────────┐    ┌──────────┐
 │  自动模式  │ →  │  等待确认  │ →  │  手动模式  │
 │ (MODE=1)  │    │  (防抖)    │    │ (MODE=0)  │
 └──────────┘    └──────────┘    └──────────┘
       ↑                                │
-      └────────── 心跳恢复 ────────────┘
+      └──── freshness 恢复后仍需人工授权 ───┘
 
          维修锁：人为置入 → 强制手动模式(MODE=2) → 仅手动解除可退出
          （锁定期间忽略 edge 心跳恢复，不自动接管）</code></pre>
@@ -317,7 +317,7 @@
 <table>
   <tbody>
     <tr><td>用途</td><td>独立于 edge、独立于网络的最后一道告警通道</td></tr>
-    <tr><td>触发条件</td><td>门控心跳超时（edge 挂了）</td></tr>
+    <tr><td>触发条件</td><td>D5291 freshness 超时（edge 掉线或主机不可用）</td></tr>
     <tr><td>实现方式</td><td>PLC 的一个数字输出(DO) → 接 4G DTU → 发短信到运维手机</td></tr>
     <tr><td>独立性</td><td>即使 edge 全挂 + 网络全断，这条通道仍能工作</td></tr>
     <tr><td>周期性自检</td><td>这条平时不动的链路会静默失效（DO 触点氧化 / DTU 欠费 / SIM 失效）；需周期性自检（如每周自动触发一次测试短信），自检本身失败也要告警</td></tr>
@@ -355,8 +355,8 @@
 <p>多个写入源（edge 远程、现场 HMI、本地手动）不能同时写 PLC，否则冲突。PLC 持有<strong>控制权锁</strong>，任一时刻只授权一个写入源：</p>
 <table class="wrap">
   <tbody>
-    <tr><td>正常</td><td>edge 健康（心跳正常）→ <strong>edge 持锁</strong>；现场 HMI 不争抢，只读显示</td></tr>
-    <tr><td>edge 失联</td><td>心跳超时 → edge 失锁、PLC 进本地兜底；DryController HMI 必须可申请 PLC direct，授权后写 DryHMI 目标缓冲区；未通过最终 e2e 前生产 disabled</td></tr>
+    <tr><td>正常</td><td>edge 已获 owner 且 D5291 fresh → <strong>edge 持锁</strong>；现场 HMI 不争抢，只读显示</td></tr>
+    <tr><td>edge 失联</td><td>D5291 freshness 超时 → PLC hold-last 并拒绝新 edge 请求；DryController HMI 必须可申请 PLC direct，授权后写 DryHMI 目标缓冲区；未通过最终 e2e 前生产 disabled</td></tr>
     <tr><td>维修</td><td>维修锁（§2.8）置入 → 强制本地手动，忽略 edge 与 HMI 远程写</td></tr>
     <tr><td>防双写</td><td>任一时刻<strong>只有一个写入源被授权</strong>；切换走无扰流程（§2.3），输出不跳变</td></tr>
     <tr><td>恢复</td><td>edge 恢复后<strong>不自动夺锁</strong>，须读当前状态、同步、确认一致后再切回 edge 持锁</td></tr>
@@ -368,7 +368,7 @@
 <table class="wrap">
   <thead><tr><th>项</th><th>目标版（§2.1–2.12）</th><th>降级版（极简-PLC）</th></tr></thead>
   <tbody>
-    <tr><td>PLC 只做</td><td>软点控制层 + 同步 + ACK/NAK + 无扰切换 + 控制权锁 + 心跳切本地</td><td><strong>①透传命令→输出 ②IO 采集上传 ③心跳判掉线 ④掉线→固定时序安全停机</strong>（其余全砍）</td></tr>
+    <tr><td>PLC 只做</td><td>软点控制层 + 同步 + ACK/NAK + 无扰切换 + 控制权锁 + D5291 freshness 边界</td><td><strong>①透传命令→输出 ②IO 采集上传 ③D5291 判掉线 ④掉线→固定时序安全停机</strong>（其余全砍）</td></tr>
     <tr><td>最终限幅</td><td>PLC/VFD Actuator Final Clamp（§2.5；正常工艺限幅在 edge）</td><td>移到<strong>变频器参数</strong>（每台 drive 设 max 频率）</td></tr>
     <tr><td>急停 / 硬防损联锁 / 坏值</td><td>PLC/VFD/硬接线联锁（§2.6 / §2.10；正常工艺联锁在 edge）</td><td>移到<strong>硬接线 + 设备自带</strong>：急停继电器、下游→上游 permissive、热继串接、VFD / 锅炉 / 断路器自保护</td></tr>
     <tr><td>命令拒绝 / 仲裁</td><td>§2.11 / §2.12</td><td><strong>砍掉</strong>（PLC 纯透传不判断）</td></tr>
@@ -386,7 +386,7 @@
 <table class="wrap">
   <thead><tr><th>寄存器名</th><th>方向</th><th>数据类型</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td><code>EDGE_CONTROL_HEALTHY</code></td><td>Edge → PLC</td><td>UINT16 递增计数</td><td>门控心跳，PLC 看门狗监测</td></tr>
+    <tr><td><code>D5291 EDGE_HOST_ALIVE</code></td><td>Edge → PLC</td><td>UINT16 递增计数</td><td>当前 edge freshness gate；<code>D5105</code> 独立控制健康 gate 预留</td></tr>
     <tr><td><code>HOST_ALIVE</code></td><td>Edge → PLC</td><td>UINT16 递增计数</td><td>主机存活心跳，诊断用</td></tr>
     <tr><td><code>CONTROL_MODE</code></td><td>PLC → Edge</td><td>UINT8 (0/1/2)</td><td>当前控制模式：手动/自动/维修锁</td></tr>
     <tr><td><code>CLAMP_ACTIVE</code></td><td>PLC → Edge</td><td>BOOL</td><td>final clamp 最终限幅触发标志</td></tr>
@@ -413,8 +413,8 @@
   <tbody>
     <tr><td>心跳周期</td><td>1 秒</td><td>Edge 每秒递增一次心跳计数器</td></tr>
     <tr><td>容忍丢拍数</td><td>3 拍</td><td>允许偶发丢包的最大连续丢拍数（<strong>唯一可调量</strong>）</td></tr>
-    <tr><td>看门狗超时</td><td>≈ 4 秒</td><td>派生量：<code>心跳周期 × 容忍丢拍数 + 1s 余量</code>；PLC 在此窗口内计数器无变化即切手动。不要再单独定义一个独立的超时秒数与本式并存</td></tr>
-    <tr><td>模式切换防抖</td><td>2 秒</td><td>心跳恢复后等待 2 秒才允许切回自动模式</td></tr>
+    <tr><td>看门狗超时</td><td>≈ 4 秒</td><td>派生量：<code>心跳周期 × 容忍丢拍数 + 1s 余量</code>；PLC 在此窗口内计数器无变化即 hold-last / 拒绝新 edge 请求。不要再单独定义一个独立的超时秒数与本式并存</td></tr>
+    <tr><td>模式切换防抖</td><td>2 秒</td><td>freshness 恢复后等待 2 秒才允许人工重新授权 AUTO；不得自动切回 AUTO</td></tr>
     <tr><td>bumpless 过渡时间</td><td>≤ 5 秒</td><td>模式切换时输出平滑过渡的最大时间</td></tr>
     <tr><td>命令响应超时</td><td>5 秒</td><td>Edge 发出命令后等待 ACK/NAK 的最大时间</td></tr>
   </tbody>
@@ -431,10 +431,10 @@
 <table class="wrap">
   <thead><tr><th>#</th><th>场景</th><th>预期行为</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td>Edge 系统关机（<code>docker compose down</code>）</td><td>PLC 自动切手动模式，用安全 setpoint 继续运行</td></tr>
-    <tr><td>2</td><td>Edge 进程崩溃（kill edge-daq）</td><td>门控心跳停止，PLC 防抖后切手动</td></tr>
-    <tr><td>3</td><td>心跳进程单独崩溃</td><td>PLC 防抖后切手动；采集即使还在也不能保持自动模式</td></tr>
-    <tr><td>4</td><td>MQTT 不可用</td><td>门控心跳 fail-closed，PLC 切手动</td></tr>
+    <tr><td>1</td><td>Edge 系统关机（<code>docker compose down</code>）</td><td>D5291 freshness 超时，PLC hold-last 并拒绝新 edge 请求；后续由本地屏或 DryHMI direct 显式接管</td></tr>
+    <tr><td>2</td><td>Edge 进程崩溃（kill edge-daq）</td><td>D5291 freshness 超时，PLC hold-last 并拒绝新 edge 请求</td></tr>
+    <tr><td>3</td><td>D5291 更新进程单独崩溃</td><td>PLC 判 stale；edge 侧进入 AUTO_PAUSED 或保持 MANUAL，采集即使还在也不能继续 AUTO 写入</td></tr>
+    <tr><td>4</td><td>MQTT 不可用</td><td>edge-api 进入 AUTO_PAUSED 或保持 MANUAL，不产生新 D5100 command</td></tr>
     <tr><td>5</td><td>Edge API 不可用</td><td>无新 command 下发，PLC 不依赖 edge-api 维持安全</td></tr>
     <tr><td>6</td><td>Modbus 写失败</td><td>Command NAK，不重放危险写入，告警可见</td></tr>
     <tr><td>7</td><td>Edge 发越界指令</td><td>Edge range guard 拒绝 → 不发到 PLC；万一到了执行层 → PLC/VFD final clamp 兜底</td></tr>
@@ -442,9 +442,9 @@
     <tr><td>9</td><td>模式切换时输出跳变</td><td>bumpless 过渡，输出平滑</td></tr>
     <tr><td>10</td><td>上电重启</td><td>PLC 进入安全默认状态，不记忆上次状态</td></tr>
     <tr><td>11</td><td>硬件急停触发</td><td>所有输出安全化，不经过任何软件</td></tr>
-    <tr><td>12</td><td>边缘设备重启</td><td>Tailscale/SSH/watchdog/compose 按序恢复，PLC 期间保持手动</td></tr>
+    <tr><td>12</td><td>边缘设备重启</td><td>Tailscale/SSH/watchdog/compose 按序恢复，PLC 期间不接受新 edge 请求；edge 恢复后等待人工重新授权</td></tr>
     <tr><td>13</td><td>温度/反馈传感器坏值（断线/超量程/冻结）</td><td>PLC 检测到坏值 → 该回路进入安全状态，不拿坏值继续 PID（§2.10）</td></tr>
-    <tr><td>14</td><td>心跳计数器溢出回绕（65535→0）</td><td>PLC 视为正常更新，不误判超时切手动（§2.1 判据）</td></tr>
+    <tr><td>14</td><td>D5291 计数器溢出回绕（65535→0）</td><td>PLC 视为正常更新，不误判 stale（§2.1 判据）</td></tr>
     <tr><td>15</td><td>DO→DTU 告警链路自检</td><td>周期性测试短信能收到；链路坏（DTU 欠费/SIM 失效）时自检失败并告警（§2.9）</td></tr>
     <tr><td>16</td><td>掉电后重新上电</td><td>PLC 回溯补报锁存的掉电/上电告警，且产线不自动启动、停在本地安全模式待人工（§2.7）</td></tr>
     <tr><td>17</td><td>工艺温度低温</td><td>触发低温报警（本地声光 + 大屏），<strong>不自动停任何设备</strong>，由人工判断处置（§1.5）</td></tr>
@@ -473,11 +473,11 @@
     <tr><td>P4</td><td>报警同步</td><td>PLC 故障/报警码实时 → edge</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P5</td><td>状态同步</td><td>PLC 运行/反馈状态 → edge</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P6</td><td>ACK/NAK/原因码</td><td>命令回 ACK/NAK + REJECT_CODE 关联 COMMAND_ID；非法参数保持旧值（§2.11）</td><td><span class="pill bad">❌ 未做</span></td></tr>
-    <tr><td>P7</td><td>心跳切本地</td><td>edge 心跳超时 → PLC 自动切本地兜底（§2.1）</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P7</td><td>心跳失效边界</td><td>D5291 freshness 超时 → PLC hold-last/拒绝新 edge 请求，等待本地或 DryHMI direct 显式接管（§2.1）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P8</td><td>无扰切换</td><td>模式/控制权切换输出不跳变（§2.3）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P9</td><td>控制权锁 / HMI direct</td><td>edge 健康不争抢；edge 不可用且 PLC 授权时 HMI direct 可写 DryHMI 目标缓冲区；必须签收 owner/epoch/direct-enable/ACK-NAK/readback 防双写（§2.12）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td colspan="4" style="background:var(--th-bg);font-weight:600">安全基础（目标版与降级版均须满足；降级版可由硬接线/VFD参数实现，见 §2.13）</td></tr>
-    <tr><td>P10</td><td>本地安全 setpoint 兜底</td><td>切本地后设备用安全参数续跑（§2.4；降级版改固定时序安全停机）</td><td><span class="pill bad">❌ 未做</span></td></tr>
+    <tr><td>P10</td><td>本地安全 setpoint 兜底</td><td>本地接管后设备用安全参数续跑（§2.4；降级版改固定时序安全停机）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P11</td><td>Actuator final clamp / 最终限幅</td><td>执行层收到越界指令时仍被 VFD/PLC 限幅（§2.5；正常工艺限幅在 edge；降级版由 VFD max 频率参数实现）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P12</td><td>急停 / 硬防损联锁</td><td>硬件急停输出安全化；硬件/设备级下游 permissive、热继、VFD 故障等可独立保护（§2.6；正常工艺联锁在 edge；降级版由硬接线实现）</td><td><span class="pill bad">❌ 未做</span></td></tr>
     <tr><td>P13</td><td>上电默认安全</td><td>上电进安全态，不记忆旧状态、不自动带载（§2.7）</td><td><span class="pill bad">❌ 未做</span></td></tr>
@@ -495,8 +495,8 @@
 <p class="lead">关闭条件按版本拆分：V1 只关闭六频率目标写入能力；P0-SAFETY 全量关闭属于 V2/V3 监督控制前置条件。旧 P1-P10 表仅作历史草案，新关闭条件以 2026-06-16 版本边界为准：</p>
 <ol>
   <li>V1 关闭：六个频率目标 SP 地址/量程/字节序/写权限签收，PLC 接受目标/输出 MV 可读，VFD PV/status 在当前无通讯/反馈线时明确为 invalid/not-wired，PLC 安全覆盖/报警状态可见，HMI/edge-api → edge-daq → PLC → 输出 MV 的 E2E 写入与拒绝路径通过；真实 VFD 反馈需后续另签</li>
-  <li>PLC 集成商签收软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、心跳切本地、无扰切换全部通过，并完成 VFD/硬接线/设备自保护的最终物理安全兜底验收</li>
-  <li>Edge 侧控制状态机、range guard、setpoint ramp/slew limiter、工艺联锁、MANUAL/AUTO/AUTO_SUSPENDED 模式闸、软件侧 fallback、`/control/estop`、软点/同步/仲裁状态处理全部通过</li>
+  <li>PLC 集成商签收软点寄存器/执行接口、现场 HMI 备用直连通道、HMI/edge 控制权锁、参数同步、报警同步、状态同步、ACK/NAK/原因码、D5291 stale 后 hold-last / 拒绝新 edge 请求、无扰切换全部通过，并完成 VFD/硬接线/设备自保护的最终物理安全兜底验收</li>
+  <li>Edge 侧控制状态机、range guard、最小变化率/冷却、工艺联锁、MANUAL/AUTO/AUTO_PAUSED 模式闸、`/control/estop`、软点/同步/仲裁状态处理全部通过；依赖失败时停发，不伪造 PLC fallback</li>
   <li>独立复核确认失败注入验收（§6）全部通过</li>
 </ol>
 
@@ -514,8 +514,8 @@
               │
               ▼
 ┌─────────────────────────────────────────┐
-│ 阶段 2：Edge 控制与软件兜底实现           │
-│ 我方完成状态机/range/mode/fallback        │
+│ 阶段 2：Edge 控制与自动暂停实现           │
+│ 我方完成状态机/range/mode/AUTO_PAUSED     │
 │ 交付物：代码 + 测试 + 联调记录            │
 └─────────────┬───────────────────────────┘
               │
@@ -561,14 +561,14 @@
 <hr>
 
 <h2 id="secA">附录 A：与 P0-SAFETY 审计条目的对应</h2>
-<p>本契约是 <code>architecture-audit-2026-05-06.md</code> 中 <code>P0-SAFETY</code> 条目的详细展开。2026-06-15 后，P0-SAFETY 的 PLC 侧主责从“工艺控制/上层安全策略”重定为“软点接口、现场 HMI 备用直连通道、同步、执行、心跳本地兜底、无扰切换与 HMI/edge 控制权锁”。</p>
+<p>本契约是 <code>architecture-audit-2026-05-06.md</code> 中 <code>P0-SAFETY</code> 条目的详细展开。2026-06-29 后，P0-SAFETY 的 PLC 侧主责从“工艺控制/上层安全策略”重定为“软点接口、现场 HMI 备用直连通道、同步、执行、D5291 stale 后 hold-last/本地接管、无扰切换与 HMI/edge 控制权锁”。</p>
 <table class="wrap">
   <thead><tr><th>审计条目要求</th><th>本契约对应章节</th></tr></thead>
   <tbody>
     <tr><td>PLC 侧软点控制层</td><td>§4 寄存器规划 / 待重拆</td></tr>
     <tr><td>现场 HMI 备用直连与授权启用</td><td>§1.1 / §7.3 关闭条件</td></tr>
     <tr><td>参数同步 / 报警同步 / 状态同步</td><td>§4 寄存器规划 / 待重拆</td></tr>
-    <tr><td><code>EDGE.HEARTBEAT</code> 与心跳丢失切本地</td><td>§2.1 门控心跳看门狗</td></tr>
+    <tr><td><code>D5291 EDGE_HOST_ALIVE</code> freshness 边界</td><td>§2.1 D5291 freshness 边界</td></tr>
     <tr><td>ACK/NAK 与原因码</td><td>§2.11 命令拒绝与原因码</td></tr>
     <tr><td>无扰切换 / HMI-edge 控制权锁</td><td>§4 寄存器规划 / 待重拆</td></tr>
     <tr><td>报警输出与同步</td><td>§1.5 / §2.9 / 待重拆</td></tr>

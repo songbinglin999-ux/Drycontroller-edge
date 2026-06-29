@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from app.core.security import require_control_api_key
 from app.services.audit import api_key_actor
 from app.services.control_orchestrator import ControlOrchestrator, get_control_orchestrator
-from app.services.control_core.models import ALLOWED_CONTROL_SOFTPOINTS, SCHEMA_VERSION
+from app.services.control_state import ControlStateService, get_control_state_service
 
 router = APIRouter(dependencies=[Depends(require_control_api_key)])
 logger = structlog.get_logger(__name__)
@@ -42,22 +42,45 @@ class ManualRecommendationConfirmRequest(BaseModel):
     timeout_sec: float = Field(3.0, ge=0.2, le=30.0, description="等待 ACK 超时（秒）")
 
 
+class ControlModeRequest(BaseModel):
+    line: Optional[str] = Field(None, description="产线标识，默认 L1")
+    mode: str = Field(..., description="MANUAL 或 AUTO；AUTO_PAUSED 不是操作员可选模式")
+    operator_id: Optional[str] = Field(None, description="操作员 ID（用于审计）")
+    reason: Optional[str] = Field(None, description="授权/切换原因（用于审计）")
+
+
+class AutoDispatchRequest(BaseModel):
+    line: Optional[str] = Field(None, description="产线标识，默认 L1")
+    lookback: str = Field("5m", description="分析窗口，如 5m/10m")
+    timeout_sec: float = Field(3.0, ge=0.2, le=30.0, description="等待 ACK 超时（秒）")
+
+
 @router.post("/recommendations/manual-confirm")
 async def confirm_manual_control_recommendation(
     req: ManualRecommendationConfirmRequest,
     api_key: str = Depends(require_control_api_key),
     orchestrator: ControlOrchestrator = Depends(get_control_orchestrator),
+    state_service: ControlStateService = Depends(get_control_state_service),
 ):
+    actor = api_key_actor(api_key, role="control")
+    await state_service.note_manual_intervention(
+        line=req.line,
+        actor=actor,
+        target_softpoint=req.target_softpoint,
+        value=req.value,
+        reason=req.reason,
+    )
     resp = await orchestrator.confirm_manual_action(
         line=req.line,
         target_softpoint=req.target_softpoint,
         value=req.value,
-        actor=api_key_actor(api_key, role="control"),
+        actor=actor,
         operator_id=req.operator_id,
         request_id=req.request_id,
         reason=req.reason,
         timeout_sec=req.timeout_sec,
     )
+    await state_service.record_command_result(result=resp, command_scope="manual")
     if not resp.get("success") and resp.get("error") == "manual_command_not_actionable":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=resp)
     return resp
@@ -106,26 +129,46 @@ async def dismiss_control_recommendation(
 
 
 @router.get("/status")
-async def get_control_status():
-    return {
-        "success": True,
-        "data": {
-            "mode": "manual",
-            "auto_control_enabled": False,
-            "emergency_stop_active": False,
-            "controllable_tags": sorted(ALLOWED_CONTROL_SOFTPOINTS),
-            "control_softpoints_status": "frequency_softpoints_allowlist_only",
-            "suggestion_schema": SCHEMA_VERSION,
-            "actionability": "mode_authorized_manual_auto",
-            "production_authorization_model": "MANUAL_AUTO_MODE",
-            "operation_modes": ["MANUAL", "AUTO"],
-            "auto_suspension_state": "AUTO_SUSPENDED",
-            "auto_suspension_is_operator_mode": False,
-            "auto_dispatch_status": "not_implemented",
-            "requires_confirmation": False,
-            "production_requires_confirmation": False,
-            "manual_command_entrypoint": "/api/v1/control/recommendations/manual-confirm",
-            "commissioning_confirm_entrypoint": "/api/v1/control/recommendations/{id}/confirm",
-            "commissioning_requires_confirmation": True,
-        },
-    }
+async def get_control_status(
+    line: Optional[str] = Query(None, description="可选：按产线过滤"),
+    state_service: ControlStateService = Depends(get_control_state_service),
+):
+    return {"success": True, "data": await state_service.get_status(line=line)}
+
+
+@router.post("/mode")
+async def set_control_mode(
+    req: ControlModeRequest,
+    api_key: str = Depends(require_control_api_key),
+    state_service: ControlStateService = Depends(get_control_state_service),
+):
+    actor = api_key_actor(api_key, role="control")
+    requested_mode = req.mode.strip().upper()
+    if requested_mode == "AUTO_PAUSED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="AUTO_PAUSED is not operator-selectable; authorize AUTO again after clearing the cause.",
+        )
+    if requested_mode == "AUTO":
+        resp = await state_service.authorize_auto(line=req.line, actor=actor, reason=req.reason)
+        if not resp.get("success"):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=resp)
+        return resp
+    if requested_mode == "MANUAL":
+        return await state_service.switch_manual(line=req.line, actor=actor, reason=req.reason)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mode must be MANUAL or AUTO")
+
+
+@router.post("/auto/dispatch")
+async def dispatch_auto_control(
+    req: Optional[AutoDispatchRequest] = None,
+    api_key: str = Depends(require_control_api_key),
+    state_service: ControlStateService = Depends(get_control_state_service),
+):
+    body = req or AutoDispatchRequest()
+    return await state_service.dispatch_auto(
+        line=body.line,
+        actor=api_key_actor(api_key, role="control"),
+        lookback=body.lookback,
+        timeout_sec=body.timeout_sec,
+    )

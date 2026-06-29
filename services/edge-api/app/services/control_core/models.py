@@ -28,7 +28,7 @@ CONTROL_STATE_TAGS = [
     "EMERGENCY_STOP",
 ]
 # DryController only replaces manual writes to the six frequency setpoints.
-# Product mode is MANUAL/AUTO/AUTO_SUSPENDED; PLC authority owner/epoch are
+# Product mode is MANUAL/AUTO/AUTO_PAUSED; PLC authority owner/epoch are
 # required before edge-api can ask edge-daq to issue a D5100 write.
 SNAPSHOT_TAGS = PROCESS_TAGS + CONTROL_STATE_TAGS
 REQUIRED_CONTROL_STATE_TAGS = ["AUTHORITY_OWNER", "AUTHORITY_EPOCH", "AUTH_TRANSITION_STATE", "HMI_DIRECT_ENABLE"]

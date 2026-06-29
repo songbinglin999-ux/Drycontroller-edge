@@ -1,12 +1,12 @@
 # 🎛 控制策略说明（Control Strategy）
 
-> 版本：v1.6（2026-06-26 DryHMI PLC direct 必做）
+> 版本：v1.7（2026-06-29 EDGE-V2-P3 简化 AUTO 状态机）
 > 关联模块：`edge-api/control_core`、`edge-daq`、`hmi-runtime`、PLC 控制逻辑
 > 关联文档：`system-overview.md`、`data-flow.md`、`../plc/io-and-control-contract.md`
 
 ---
 
-> **当前验收边界**：当前生产只开放 edge-api 侧六个变频频率目标写入，替代人工设定目标频率；DryHMI PLC direct 已确认为最终必做能力，但未通过真实 PLC/HMI e2e 前生产保持 disabled。生产操作不是逐条点确认；操作员只选择 `MANUAL` 或 `AUTO`，`AUTO` 授权后由 edge 自动签发六频率目标，任一 gate 失败进入 `AUTO_SUSPENDED` / 退回手动。PLC 仍负责现场顺控、料位报警后的停/延时/恢复、联锁、设备保护和实际输出。完整工艺联锁、PLC authority、DryHMI direct、稳态优化统一进入最终 e2e，不再按 V1/V2/V3 分期验收。
+> **当前验收边界**：当前生产只开放 edge-api 侧六个变频频率目标写入，替代人工设定目标频率；DryHMI PLC direct 已确认为最终必做能力，但未通过真实 PLC/HMI e2e 前生产保持 disabled。生产操作不是逐条点确认；操作员只选择 `MANUAL` 或 `AUTO`，`AUTO` 授权后由 edge 自动签发六频率目标，任一 gate 失败进入 `AUTO_PAUSED`（自动暂停（需重新授权））/ 退回手动。PLC 仍负责现场顺控、料位报警后的停/延时/恢复、联锁、设备保护和实际输出。完整工艺联锁、PLC authority、DryHMI direct、稳态优化统一进入最终 e2e，不再按 V1/V2/V3 分期验收。
 
 ## 0. 真实控制问题定义
 
@@ -20,7 +20,7 @@ DryController 的最终控制目标是 **最终成品出料湿度 `MT1_H` 稳定
 - 风机不是普通冷却风机，而是从烘干机内抽走蒸汽的排湿风机；风机变大会改变排湿、热量抽吸和锅炉侧火/热进入烘干机的平衡，不能简单按“湿度高就加风”处理。
 - `AUTO` 必须按慢周期、小步、限幅、冷却、等待响应和可挂起的方式运行；任何策略都必须能解释“为什么调、调哪一路、等多久看响应、什么条件下停止继续调”。
 
-因此，后续 `control_core` / `ai-ctrl-optimizer` 的关闭条件不能写成“多级防堵规则已完成”。可接受的关闭口径必须至少证明：控制逻辑以 `MT1_H` 为主目标，能区分给料偏重、供热不足、排湿不足、风机抽火/热平衡风险、主机负载异常和下游不畅，并在数据不足或响应不符合预期时进入 `AUTO_SUSPENDED`。
+因此，后续 `control_core` / `ai-ctrl-optimizer` 的关闭条件不能写成“多级防堵规则已完成”。可接受的关闭口径必须至少证明：控制逻辑以 `MT1_H` 为主目标，能区分给料偏重、供热不足、排湿不足、风机抽火/热平衡风险、主机负载异常和下游不畅，并在数据不足或响应不符合预期时进入 `AUTO_PAUSED`。
 
 ### 0.1 变频器频率必须拆分 SP / MV / PV
 
@@ -97,16 +97,18 @@ edge-api 自动签发 signed command
    ↓
 edge-daq 写 PLC 六个 SP，记录 ACK/NAK 与读回结果
    ↓
-任一 gate 失败 → AUTO_SUSPENDED，停止自动下发并展示原因
+任一 gate 失败 → AUTO_PAUSED，停止自动下发并展示原因
 ```
 
 - 特点：
   - 操作员不需要坐在控制屏前逐条点确认；人工决策点是进入/退出 `AUTO`。
   - V1 控制目标可以由规则/算法生成，但执行面只允许六个频率目标软点。
   - 每次自动动作必须可解释、可回放；大屏/HMI 展示当前目标、算法理由、最近动作、挂起原因和审计记录。
-  - `AUTO` 失败时不降级为盲目继续写，而是进入 `AUTO_SUSPENDED` 或转 `MANUAL`。
+  - `AUTO` 失败时不降级为盲目继续写，而是进入 `AUTO_PAUSED` 或转 `MANUAL`。
 
-### 3.3 自动挂起（AUTO_SUSPENDED）
+### 3.3 自动暂停（AUTO_PAUSED）
+
+`AUTO_PAUSED` 中文显示为“自动暂停（需重新授权）”。它不是操作员可选模式，也不是停机/故障；它表示 AUTO 被 gate 失败、PLC 本地接管、手动调频、NAK/timeout、edge 恢复等事件打断。条件恢复后不能自动回 AUTO，必须人工重新授权。
 
 - 触发：
   - 实时数据 stale / 缺关键 tag。
@@ -125,7 +127,7 @@ edge-daq 写 PLC 六个 SP，记录 ACK/NAK 与读回结果
   - `edge-daq` 只消费 signed command 写 PLC，AI 不直接写 PLC
   - edge-api 仍必须执行 range guard、ramp/slew limiter、工艺联锁、签名和审计
   - PLC/VFD/硬接线保留最终物理安全兜底
-- 当前生产不开放 HMI 直连 PLC，不要求 PLC authority epoch 作为六频率 edge-api 写入的前置条件。DryHMI PLC direct 是最终必做能力，必须在 PLC owner/epoch/direct-enable 授权后才可启用。
+- 当前生产不开放 HMI 直连 PLC；edge-api 授权 AUTO 前必须看到实时数据 fresh、`AUTHORITY_OWNER=EDGE`、`AUTHORITY_EPOCH>0`、`AUTH_TRANSITION_STATE=0`、`HMI_DIRECT_ENABLE=false`，且 MQTT 与命令签名配置可用。edge-api 不在 AUTO dispatch 中自动申请/抢回 owner。
 - 启用前必须：
   - 在现场充分测试
   - 与工艺与安全部门共同评估后决策
@@ -232,8 +234,10 @@ V1 下发的六频率目标必须先经过 edge/HMI 侧模式授权、白名单�
 ### 6.2 控制执行（/api/v1/control/recommendations/*）
 
 - `edge-api` 接口负责：
-  - V1 校验六软点与目标值的合法性（模式授权、白名单、范围、步长/变化率、冷却、ACK/NAK、读回、API key、审计）
-  - V2/V3 增加 PLC 控制权、ACK/NAK、工艺联锁、owner/epoch 与完整监督控制门控
+  - `GET /api/v1/control/status` 返回当前 `MANUAL` / `AUTO` / `AUTO_PAUSED` 产品态、暂停原因、重授权要求、最近 authority snapshot 和最近 command/ACK 结果
+  - `POST /api/v1/control/mode` 人工切 `MANUAL` 或授权 `AUTO`；`AUTO_PAUSED` 不是可选 mode
+  - `POST /api/v1/control/auto/dispatch` 执行一次 AUTO tick：选取一个 actionable 六频率 action，经 `ControlCommandService.send_set(..., mode=2, wait_ack=True)` 下发
+  - 校验六软点与目标值的合法性（模式授权、白名单、范围、最小变化率/冷却、ACK/NAK、读回、API key、审计）
   - 记录操作日志（操作者、理由、前后值）
   - 将合规命令转换为 MQTT 消息，交给 `edge-daq` 写入 PLC
   - `/recommendations/{id}/confirm` / `/manual-confirm` 只作为 commissioning/debug/手动写入过渡入口，不是生产 AUTO 主链路
@@ -251,7 +255,7 @@ V1 下发的六频率目标必须先经过 edge/HMI 侧模式授权、白名单�
 
 当发生以下情况时，控制策略需要自动或人工降级：
 
-- 规则/AI 推理异常或置信度持续过低 → 进入 `AUTO_SUSPENDED`，停止自动下发，仅展示诊断或转手动
+- 规则/AI 推理异常或置信度持续过低 → 进入 `AUTO_PAUSED`，停止自动下发，仅展示诊断或转手动
 - 通讯异常（PLC / MQTT） → 暂停下发新 setpoint，保持当前稳态
 - 发现控制策略导致工艺波动增大 → 人工切回纯手动模式，并通知算法/工艺团队
 

@@ -53,7 +53,7 @@ tags:
     heartbeat:
       - {name: PLC_LEGACY_HEARTBEAT_TOGGLE, signal_type: DI, type: bool, unit: "", description: "我方标记：PLC_LEGACY_HEARTBEAT_TOGGLE；集成商标记：M1001 0.5秒1/0.5秒0 心跳；上位机只读诊断心跳，不是控制授权"}
     authority:
-      - {name: AUTHORITY_OWNER, signal_type: DIAG, type: int, unit: "", description: "PLC 当前控制权 owner（D5201）：1=PLC_LOCAL/旧屏，2=EDGE，3=DRY_HMI_DIRECT，4=MAINTENANCE，5=FAULT"}
+      - {name: AUTHORITY_OWNER, signal_type: DIAG, type: int, unit: "", description: "PLC 当前控制权 owner（D5201）：0=PLC_LOCAL，1=LOCAL_SCREEN，2=EDGE，3=DRY_HMI_DIRECT，4=保留/不支持，5=FAULT"}
       - {name: AUTHORITY_EPOCH, signal_type: DIAG, type: int, unit: "", description: "PLC 控制权代次（D5414），D5400/D5550 请求必须使用当前 epoch"}
       - {name: AUTH_TRANSITION_STATE, signal_type: DIAG, type: int, unit: "", description: "PLC 控制权迁移状态（D5415）：0=stable，其它为迁移/锁定中"}
       - {name: HMI_DIRECT_ENABLE, signal_type: DIAG, type: bool, unit: "", description: "DryHMI PLC direct 显式授权（D5571），1 表示 HMI direct owner 已被 PLC 授权"}

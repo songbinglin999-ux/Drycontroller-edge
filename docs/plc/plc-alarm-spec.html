@@ -352,7 +352,7 @@
 <table class="wrap">
   <thead><tr><th>报警项</th><th>等级</th><th>触发条件</th><th>动作</th><th>备注</th></tr></thead>
   <tbody>
-    <tr><td>Edge 心跳超时</td><td><span class="lvl-emer">联锁</span></td><td>EDGE_CONTROL_HEALTHY 看门狗超时（≈4s）</td><td>PLC 自动切手动模式（DO→DTU 短信<span class="tbd">暂缓</span>，§2.9）</td><td>安全契约 §2.1</td></tr>
+    <tr><td>D5291 freshness 超时</td><td><span class="lvl-emer">联锁</span></td><td>D5291 EDGE_HOST_ALIVE freshness 超时；D5105 独立控制健康 gate 本期预留</td><td>PLC hold-last 并拒绝新 edge 请求；DO→DTU 短信<span class="tbd">暂缓</span>，§2.9</td><td>安全契约 §2.1</td></tr>
     <tr><td>Modbus 通信中断</td><td><span class="lvl-hi">报警</span></td><td>连续 <span class="tbd">3次</span> Modbus 读/写失败</td><td>记录日志 + 上报</td><td>Edge 侧检测</td></tr>
     <tr><td>传感器坏值</td><td><span class="lvl-hi">报警</span></td><td>断线/超量程/长时间冻结</td><td>该回路切安全模式 + 报警</td><td>安全契约 §2.10</td></tr>
     <tr><td>变频器故障</td><td><span class="lvl-emer">联锁</span></td><td>变频器故障 DI 触发</td><td>停对应设备 + 报警</td><td>io-map 建议补充</td></tr>
@@ -373,7 +373,7 @@
   <tbody>
     <tr><td>声光报警器（DO）</td><td>所有 <span class="lvl-hi">报警</span> + <span class="lvl-emer">联锁</span></td><td>现场级</td><td>控制柜/操作台声光，PLC DO 直接驱动</td></tr>
     <tr><td>Edge 日志 + cloud-ops</td><td>所有等级</td><td>网络依赖</td><td>edge-daq 审计日志 → cloud-ops 上报</td></tr>
-    <tr><td>DO→DTU 短信 <span class="tbd">（暂缓）</span></td><td>Edge 心跳超时</td><td>独立于 edge/网络</td><td>安全契约 §2.9，最后一道告警（有人值守，暂缓）</td></tr>
+    <tr><td>DO→DTU 短信 <span class="tbd">（暂缓）</span></td><td>D5291 freshness 超时</td><td>独立于 edge/网络</td><td>安全契约 §2.9，最后一道告警（有人值守，暂缓）</td></tr>
     <tr><td>大屏弹窗</td><td>所有等级</td><td>网络依赖</td><td>前端 dashboard 实时弹窗</td></tr>
   </tbody>
 </table>
@@ -431,7 +431,7 @@
 <table class="wrap">
   <thead><tr><th>报警项</th><th>安全契约章节</th><th>关系</th></tr></thead>
   <tbody>
-    <tr><td>Edge 心跳超时 → PLC 切本地</td><td>§2.1 门控心跳看门狗</td><td>报警即触发联锁动作</td></tr>
+    <tr><td>D5291 freshness 超时 → PLC hold-last / 拒绝新 edge 请求</td><td>§2.1 D5291 freshness 边界</td><td>edge 侧停发；恢复后需人工重新授权</td></tr>
     <tr><td>传感器坏值 → 回路安全模式</td><td>§2.10 坏值 fail-safe</td><td>坏值检测独立于过程报警</td></tr>
     <tr><td>温度/电流超限 → PLC clamp</td><td>§2.5 Actuator Clamp</td><td>PLC 硬限幅兜底 edge 越界指令</td></tr>
     <tr><td>急停/跑偏/热继</td><td>§2.6 急停/联锁</td><td>硬件级安全，不经过软件</td></tr>

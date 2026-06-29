@@ -203,6 +203,14 @@ class ControlCommandService:
     def _ack_topic_for_line(self, line: str) -> str:
         return self._ack_tpl.format(line=line)
 
+    def transport_status(self) -> dict:
+        return {
+            "ready": bool(mqtt_manager.connected and self._signature_secret),
+            "mqtt_connected": bool(mqtt_manager.connected),
+            "signature_configured": bool(self._signature_secret),
+            "ack_pattern": self._ack_pattern,
+        }
+
     async def send_set(
         self,
         line: str,
@@ -448,7 +456,7 @@ class ControlCommandService:
 
         只开放六个频率设定软点的普通写入；52 个 I/O 点保持只读。
         真实 /control/estop 必须等软点、authority、ACK/NAK
-        和 fallback 模型签收后再实现。
+        和真实 PLC e2e 签收后再实现。
         """
         logger.warning(
             "software_estop_unavailable_pending_softpoint_contract",

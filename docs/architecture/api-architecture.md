@@ -103,6 +103,12 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 - `GET /api/v1/control/recommendations`
   - 功能：读取 edge 生成的可解释建议和 AUTO 候选；生产自动下发由 `MANUAL` / `AUTO` 模式授权决定，不逐条确认。
+- `GET /api/v1/control/status`
+  - 功能：读取 edge-api 当前 `MANUAL` / `AUTO` / `AUTO_PAUSED` 产品态、暂停原因、重授权要求、最近 authority snapshot 和最近 command/ACK 结果。
+- `POST /api/v1/control/mode`
+  - 功能：人工切回 `MANUAL` 或授权 `AUTO`；`AUTO_PAUSED` 不是操作员可选模式。
+- `POST /api/v1/control/auto/dispatch`
+  - 功能：执行一次 AUTO 自动签发 tick；只选择 actionable 的六频率软点动作，经 signed command + D5100 闭环下发。
 - `POST /api/v1/control/recommendations/{id}/confirm`
   - 功能：commissioning/debug 过渡入口；edge-api 复核 freshness / mode / 软点白名单 / range / 变化率后签发 command，不作为生产 AUTO 主链路。
 - `POST /api/v1/control/recommendations/manual-confirm`

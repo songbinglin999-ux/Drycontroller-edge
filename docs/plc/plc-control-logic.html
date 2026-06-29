@@ -143,13 +143,13 @@
   <div class="meta">
     <b>版本</b>：v0.4-draft &nbsp;·&nbsp; <b>日期</b>：2026-06-16 &nbsp;·&nbsp; <b>状态</b>：V2/V3 工艺控制设计草案，非 V1 验收清单<br>
     <b>v0.4 版本标记</b>（2026-06-16）：V1 只做六个变频频率目标写入，替代人工设定目标频率；料位报警后的停转/延时开启、顺控、联锁、设备保护和实际输出仍由 PLC 负责。本文描述的多变量消歧、完整工艺控制状态机、启停/反转/复位编排和监督控制逻辑属于 V2/V3。<br>
-    <b>v0.3 改归属</b>（2026-06-15）：本文从「PLC 交付物」改为<strong>上位机（edge）工艺控制设计</strong>——工艺控制落地、控制状态机、软点策略与软件侧安全兜底由 edge 负责。PLC 提供软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK、无扰切换、HMI/edge 控制权锁和心跳丢失切本地。<br>
+    <b>v0.3 改归属</b>（2026-06-15）：本文从「PLC 交付物」改为<strong>上位机（edge）工艺控制设计</strong>——工艺控制落地、控制状态机、软点策略与 AUTO_PAUSED 由 edge 负责。PLC 提供软点控制层、参数同步、报警同步、状态同步、执行、采集、ACK/NAK、无扰切换、HMI/edge 控制权锁和 D5291 stale 后 hold-last / 拒绝新 edge 请求。<br>
     <b>关联文档</b>：<a href="io-map.html">I/O 点表</a> · <a href="plc-alarm-spec.html">超限报警规范</a> · <a href="plc-safety-contract.html">安全契约（PLC 交付）</a><br>
     <b>说明</b>：本文定义每台设备的控制方法与编排逻辑。<span class="tbd">橙色斜体</span>为待工艺确认的占位值。
   </div>
 </header>
 
-<blockquote><p><strong>本文归属：上位机（edge）工艺设计，<u>非集成商 / PLC 交付物</u>。</strong> 但它是 V2/V3 监督控制设计，不是当前 V1 交付边界。V1 只要求 edge/HMI 经 edge-api 写六个频率目标，并做白名单、范围、变化率、MANUAL/AUTO/AUTO_SUSPENDED 模式锁和审计；PLC 继续执行现场工艺逻辑、安全、顺控、联锁、设备保护和实际输出。V2/V3 才按本文把工艺控制智能（状态机、配方、模式、给料/风机目标、过程判断）逐步放到 edge。</p></blockquote>
+<blockquote><p><strong>本文归属：上位机（edge）工艺设计，<u>非集成商 / PLC 交付物</u>。</strong> 但它是 V2/V3 监督控制设计，不是当前 V1 交付边界。V1 只要求 edge/HMI 经 edge-api 写六个频率目标，并做白名单、范围、变化率、MANUAL/AUTO/AUTO_PAUSED 模式锁和审计；PLC 继续执行现场工艺逻辑、安全、顺控、联锁、设备保护和实际输出。V2/V3 才按本文把工艺控制智能（状态机、配方、模式、给料/风机目标、过程判断）逐步放到 edge。</p></blockquote>
 
 <hr>
 
@@ -391,7 +391,7 @@ PLC 执行/本地切换：
 
 PLC 执行/本地切换：
   M3 未运行 → VF1 降速到安全低值或停机
-  FTT1 坏值（断线/超量程/冻结）→ PLC 拒绝依赖该值的自动目标，切手动/安全模式（见安全契约 §2.10）</code></pre>
+  FTT1 坏值（断线/超量程/冻结）→ PLC 拒绝依赖该值的自动目标，该回路进入安全模式（见安全契约 §2.10）</code></pre>
 
 <table>
   <thead><tr><th>参数</th><th>符号</th><th>占位值</th><th>说明</th></tr></thead>

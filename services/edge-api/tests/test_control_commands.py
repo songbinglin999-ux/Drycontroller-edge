@@ -108,7 +108,7 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_mode", ["AUTO_SUSPENDED", 1.9, "1.9", True])
+@pytest.mark.parametrize("bad_mode", ["AUTO_PAUSED", 1.9, "1.9", True])
 async def test_control_send_set_rejects_invalid_mode_before_publish(monkeypatch, bad_mode):
     from app.services.control_command import ControlCommandService
 

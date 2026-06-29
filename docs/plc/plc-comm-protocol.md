@@ -75,7 +75,7 @@
 | name | 方向 | type | point_role | 说明 |
 |---|---|---|---|---|
 | CTRL.MODE | PLC -> edge/HMI | int | authority | 当前模式：EDGE_MASTER/HMI_STANDBY/HMI_LOCAL/PLC_LOCAL/LOCAL_MANUAL/MAINTENANCE_LOCK/FAULT_STOP |
-| CTRL.AUTHORITY_OWNER | PLC -> edge/HMI | int | authority | 当前控制权 owner：EDGE/DRY_HMI_DIRECT/PLC_LOCAL/MAINTENANCE/FAULT |
+| CTRL.AUTHORITY_OWNER | PLC -> edge/HMI | int | authority | 当前控制权 owner：PLC_LOCAL/LOCAL_SCREEN/EDGE/DRY_HMI_DIRECT/FAULT；MAINTENANCE 为保留/不支持码，edge fail-closed |
 | CTRL.AUTHORITY_REQUEST | edge/HMI -> PLC | int | authority | D5100 接管/释放请求；DryHMI direct 接管/释放请求 |
 | CTRL.AUTHORITY_GRANT | PLC -> edge/HMI | int | authority | PLC 对请求的授予/拒绝结果 |
 | CTRL.AUTHORITY_EPOCH | PLC -> edge/HMI | int | authority | 控制权代次，写软点时需匹配 |
@@ -107,6 +107,6 @@ D5100/DryHMI direct 最小联调：
 后续监督控制联调：
 1) 确认站号、端口、功能码、字节序。
 2) 提供完整点表，标明可写点。
-3) 提供心跳寄存器与心跳丢失切本地状态。
+3) 提供 D5291 EDGE_HOST_ALIVE freshness 寄存器与 stale 后 hold-last / 拒绝新 edge 请求状态。
 4) 提供参数同步、报警同步、状态同步、无扰切换、HMI/edge 控制权锁和 HMI 直连启用字段。
 5) 联调前用测试 PLC/模拟器自查：无重复地址、功能码正确、字节序与类型匹配，ACK/NAK/原因码可复现。

@@ -19,6 +19,7 @@ from app.api.v1.ai import router as ai_router, get_ai_softsensor_service
 from app.api.v1.system import _bootstrap_summary, router as system_router, get_system_status_service
 from app.api.v1.control import (
     get_control_orchestrator,
+    get_control_state_service,
     router as control_router,
 )
 from app.api.v1.alarms import router as alarm_router
@@ -68,8 +69,9 @@ class DummyControlSvc:
                 "requires_confirmation": False,
                 "production_requires_confirmation": False,
                 "operation_modes": ["MANUAL", "AUTO"],
-                "auto_suspension_state": "AUTO_SUSPENDED",
-                "auto_suspension_is_operator_mode": False,
+                "non_selectable_modes": ["AUTO_PAUSED"],
+                "auto_pause_state": "AUTO_PAUSED",
+                "auto_pause_is_operator_mode": False,
                 "recommendation_confirmation_scope": "commissioning_only",
             },
         }
@@ -98,6 +100,49 @@ class DummyControlOrchestrator:
     async def dismiss_recommendation(self, **kwargs):
         return {"success": True, "status": "dismissed", "id": kwargs["recommendation_id"]}
 
+
+class DummyControlState:
+    def __init__(self):
+        self.mode = "MANUAL"
+        self.last_manual_result = None
+
+    async def get_status(self, **kwargs):
+        return {
+            "mode": self.mode,
+            "operation_modes": ["MANUAL", "AUTO"],
+            "non_selectable_modes": ["AUTO_PAUSED"],
+            "auto_pause_state": "AUTO_PAUSED",
+            "auto_paused_display": "自动暂停（需重新授权）",
+            "auto_pause_is_operator_mode": False,
+            "auto_dispatch_status": "manual_stopped" if self.mode == "MANUAL" else "ready",
+            "requires_confirmation": False,
+            "production_requires_confirmation": False,
+            "requires_reauthorization": False,
+            "pause_reason": None,
+            "last_transition": {"from": None, "to": self.mode, "reason": "test"},
+            "authority_snapshot": None,
+            "last_command_result": self.last_manual_result,
+            "controllable_tags": ["VFM1_FREQ_SP"],
+            "commissioning_requires_confirmation": True,
+        }
+
+    async def authorize_auto(self, **kwargs):
+        self.mode = "AUTO"
+        return {"success": True, "status": "AUTO", "data": await self.get_status()}
+
+    async def switch_manual(self, **kwargs):
+        self.mode = "MANUAL"
+        return {"success": True, "status": "MANUAL", "data": await self.get_status()}
+
+    async def dispatch_auto(self, **kwargs):
+        return {"success": True, "status": "dispatched", "data": await self.get_status()}
+
+    async def note_manual_intervention(self, **kwargs):
+        self.mode = "MANUAL"
+        return {"previous_mode": "AUTO", "current_mode": "MANUAL"}
+
+    async def record_command_result(self, **kwargs):
+        self.last_manual_result = {"scope": kwargs["command_scope"], "result": kwargs["result"]}
 
 class _DummyScalars:
     def __init__(self, rows):
@@ -136,6 +181,7 @@ app.include_router(alarm_router, prefix="/api/v1/alarms")
 app.dependency_overrides[get_ai_softsensor_service] = lambda: DummyAISvc()
 app.dependency_overrides[get_system_status_service] = lambda: DummySystemSvc()
 app.dependency_overrides[get_control_orchestrator] = lambda: DummyControlOrchestrator()
+app.dependency_overrides[get_control_state_service] = lambda: DummyControlState()
 app.dependency_overrides[get_db] = _override_get_db
 client = TestClient(app)
 
@@ -229,12 +275,42 @@ def test_control_status_uses_mode_authorization_model():
     assert resp.status_code == 200
     body = resp.json()["data"]
     assert body["operation_modes"] == ["MANUAL", "AUTO"]
+    assert body["non_selectable_modes"] == ["AUTO_PAUSED"]
     assert body["requires_confirmation"] is False
     assert body["production_requires_confirmation"] is False
-    assert body["auto_suspension_state"] == "AUTO_SUSPENDED"
-    assert body["auto_suspension_is_operator_mode"] is False
-    assert body["auto_dispatch_status"] == "not_implemented"
+    assert body["auto_pause_state"] == "AUTO_PAUSED"
+    assert body["auto_pause_is_operator_mode"] is False
+    assert body["auto_dispatch_status"] == "manual_stopped"
     assert body["commissioning_requires_confirmation"] is True
+
+
+def test_control_mode_auto_authorize_endpoint():
+    resp = client.post(
+        "/api/v1/control/mode",
+        json={"line": "L1", "mode": "AUTO", "operator_id": "operator-a", "reason": "shift_start"},
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "AUTO"
+
+
+def test_control_mode_rejects_auto_paused_as_operator_mode():
+    resp = client.post(
+        "/api/v1/control/mode",
+        json={"line": "L1", "mode": "AUTO_PAUSED"},
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
+    assert resp.status_code == 400
+
+
+def test_control_auto_dispatch_endpoint():
+    resp = client.post(
+        "/api/v1/control/auto/dispatch",
+        json={"line": "L1", "timeout_sec": 1.0},
+        headers={settings.API_KEY_HEADER: "test-control"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dispatched"
 
 
 def test_control_recommendation_confirm_endpoint():

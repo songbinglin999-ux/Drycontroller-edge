@@ -79,7 +79,7 @@ def _high_load_recommendation(
             action,
             SuggestedAction(
                 action_type="inspect",
-                risk_note=f"Inspect downstream material path near {motor_tag} if AUTO is suspended or the trend persists.",
+                risk_note=f"Inspect downstream material path near {motor_tag} if AUTO is paused or the trend persists.",
             ),
         ],
         actionable=True,
