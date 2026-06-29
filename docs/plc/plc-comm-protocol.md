@@ -91,9 +91,9 @@
 | HB.WRITE   | 50001   | 6             | int   | big        | 1     |      |           |           |           |            | heartbeat  | 心跳写，edge 写递增计数 |
 | FTT1       | 40010   | 3             | float | big        | 1.0   | °C   |           |           |           |            | readonly_io | 主机1风温采集         |
 | VFM1_FREQ_SP | D5110 payload / D5550-D5599 direct | D5100-D5299 / D5550-D5599 | int | big | 1.0 | Hz | 0 | 50 | | | control_softpoint | VFM1 目标频率；edge 走 D5100，DryHMI direct 走 D5550-D5599 |
-| CTRL.AUTHORITY_OWNER | 41030 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 当前控制权 owner      |
-| CTRL.AUTHORITY_EPOCH | 41031 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 控制权代次            |
-| HMI.DIRECT_ENABLE | TBD | 3          | bool  | big        | 1     |      |           |           |           |            | authority  | DryHMI direct 授权状态      |
+| CTRL.AUTHORITY_OWNER | 45201 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 当前控制权 owner；PLC D5201      |
+| CTRL.AUTHORITY_EPOCH | 45414 | 3       | int   | big        | 1     |      |           |           |           |            | authority  | 控制权代次；PLC D5414            |
+| HMI.DIRECT_ENABLE | 45571 | 3          | bool  | big        | 1     |      |           |           |           |            | authority  | DryHMI direct 授权状态；PLC D5571      |
 | ALARM.CODE | 42010   | 3             | int   | big        | 1     |      |           |           |           |            | alarm      | 当前 PLC 告警码       |
 
 ## 7. 联调检查清单
