@@ -121,9 +121,13 @@ class DummyControlState:
             "requires_reauthorization": False,
             "pause_reason": None,
             "last_transition": {"from": None, "to": self.mode, "reason": "test"},
-            "authority_snapshot": None,
+            "authority_snapshot": {"AUTHORITY_OWNER": "EDGE", "AUTHORITY_EPOCH": 1},
+            "transport": {"ready": True, "mqtt_connected": True, "signature_configured": True},
             "last_command_result": self.last_manual_result,
+            "last_auto_action": None,
             "controllable_tags": ["VFM1_FREQ_SP"],
+            "manual_command_entrypoint": "/api/v1/control/manual/set",
+            "auto_dispatch_entrypoint": "/api/v1/control/auto/dispatch",
         }
 
     async def authorize_auto(self, **kwargs):
@@ -281,6 +285,14 @@ def test_control_status_uses_mode_authorization_model():
     assert body["auto_pause_state"] == "AUTO_PAUSED"
     assert body["auto_pause_is_operator_mode"] is False
     assert body["auto_dispatch_status"] == "manual_stopped"
+    assert body["pause_reason"] is None
+    assert body["requires_reauthorization"] is False
+    assert body["authority_snapshot"]["AUTHORITY_OWNER"] == "EDGE"
+    assert body["transport"]["mqtt_connected"] is True
+    assert body["last_command_result"] is None
+    assert body["last_auto_action"] is None
+    assert body["manual_command_entrypoint"] == "/api/v1/control/manual/set"
+    assert body["auto_dispatch_entrypoint"] == "/api/v1/control/auto/dispatch"
 
 
 def test_control_mode_auto_authorize_endpoint():

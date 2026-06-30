@@ -264,6 +264,16 @@ class MonitorService:
         # 缓存的监控数据
         self.system_metrics: Dict[str, Any] = {}
         self.service_status: Dict[str, Any] = {}
+
+        control_cfg = self.config.get("control", {}) if isinstance(self.config, dict) else {}
+        self.control_status_target: Dict[str, Any] = (control_cfg.get("status") or {}) if isinstance(control_cfg, dict) else {}
+        self.control_status_enabled = bool(self.control_status_target.get("enabled", False))
+        self.control_status: Dict[str, Any] = {
+            "enabled": self.control_status_enabled,
+            "status": "unknown",
+            "self_heal": {"enabled": False, "reason": "control_visibility_probe_only"},
+        }
+        self.control_visibility_state: Dict[str, Any] = {}
         
         # 预热 CPU 使用率采集（首次调用会阻塞）
         psutil.cpu_percent(interval=None)
@@ -621,6 +631,12 @@ class MonitorService:
             for name, state in state_snapshot.items():
                 aggregated[name]["self_heal"] = {"state": state}
 
+            if self.control_status_enabled:
+                control_record = await self._check_control_status()
+                control_transition = self._update_control_visibility_state(control_record)
+                if control_transition is not None:
+                    alarm_transitions.append(control_transition)
+
             await self._emit_alarm_transitions(alarm_transitions)
             await self._process_self_heal(aggregated)
             
@@ -757,6 +773,213 @@ class MonitorService:
             "latency_ms": checks.get("http", {}).get("latency_ms"),
             "container_state": checks.get("container", {}).get("state", ""),
         }
+
+    async def _check_control_status(self) -> Dict[str, Any]:
+        """
+        拉取 edge-api 的只读控制状态快照。
+
+        这是控制可见性探测，不是服务健康探测：结果进入 status payload 和 alarm ingest，
+        但不进入 service_targets，也不参与 self-heal。
+        """
+        name = str(self.control_status_target.get("name") or "control-status")
+        url = str(self.control_status_target.get("url") or "").strip()
+        timestamp = int(time.time())
+        base: Dict[str, Any] = {
+            "name": name,
+            "enabled": self.control_status_enabled,
+            "status": "unknown",
+            "timestamp": timestamp,
+            "self_heal": {"enabled": False, "reason": "control_visibility_probe_only"},
+        }
+
+        if not self.control_status_enabled:
+            base["status"] = "healthy"
+            base["detail"] = "control_status_probe_disabled"
+            return base
+        if not url:
+            base["status"] = "degraded"
+            base["detail"] = "control_status_url_missing"
+            return base
+        if not self.http_client:
+            base["status"] = "degraded"
+            base["detail"] = "http_client_not_ready"
+            return base
+
+        timeout = float(self.control_status_target.get("timeout", self.http_timeout) or self.http_timeout)
+        headers = self._control_status_headers()
+        try:
+            start = time.perf_counter()
+            response = await self.http_client.get(url, headers=headers, timeout=timeout)
+            latency_ms = (time.perf_counter() - start) * 1000
+        except httpx.HTTPError as exc:
+            base["status"] = "down"
+            base["detail"] = "control_status_unreachable"
+            base["error"] = str(exc)
+            base["checks"] = {
+                "http": {
+                    "status": "down",
+                    "url": url,
+                    "detail": str(exc),
+                }
+            }
+            return base
+
+        base["latency_ms"] = round(latency_ms, 2)
+        base["checks"] = {
+            "http": {
+                "status": "healthy" if 200 <= response.status_code < 300 else "degraded",
+                "url": url,
+                "status_code": response.status_code,
+                "latency_ms": round(latency_ms, 2),
+            }
+        }
+        if response.status_code < 200 or response.status_code >= 300:
+            base["status"] = "degraded"
+            base["detail"] = f"control_status_http_{response.status_code}"
+            return base
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            base["status"] = "degraded"
+            base["detail"] = "control_status_invalid_json"
+            base["error"] = str(exc)
+            return base
+
+        if not isinstance(body, dict) or body.get("success") is not True or not isinstance(body.get("data"), dict):
+            base["status"] = "degraded"
+            base["detail"] = "control_status_payload_invalid"
+            return base
+
+        data = body["data"]
+        analysis = self._analyze_control_status_payload(data)
+        base.update(analysis)
+        base["raw"] = data
+        return base
+
+    def _control_status_headers(self) -> Dict[str, str]:
+        key = self._resolve_control_status_api_key()
+        header = str(
+            self.control_status_target.get("api_key_header")
+            or os.getenv("MONITOR_API_KEY_HEADER", "X-API-Key")
+            or "X-API-Key"
+        ).strip()
+        if not key or not header:
+            return {}
+        return {header: key}
+
+    def _resolve_control_status_api_key(self) -> Optional[str]:
+        explicit = str(self.control_status_target.get("api_key") or "").strip()
+        if explicit:
+            return explicit
+
+        env_cfg = self.control_status_target.get("api_key_env") or "ADMIN_API_KEYS"
+        if isinstance(env_cfg, str):
+            env_names = [item.strip() for item in env_cfg.split(",") if item.strip()]
+        elif isinstance(env_cfg, list):
+            env_names = [str(item).strip() for item in env_cfg if str(item).strip()]
+        else:
+            env_names = ["ADMIN_API_KEYS"]
+
+        for env_name in env_names:
+            keys = _split_api_keys(os.getenv(env_name))
+            if keys:
+                return keys[0]
+        return None
+
+    def _analyze_control_status_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        mode = str(data.get("mode") or "unknown")
+        authority = data.get("authority_snapshot") if isinstance(data.get("authority_snapshot"), dict) else {}
+        transport = data.get("transport") if isinstance(data.get("transport"), dict) else {}
+        owner = authority.get("AUTHORITY_OWNER") or authority.get("owner")
+        last_command = self._last_command_result_summary(data.get("last_command_result"))
+
+        reasons: list[str] = []
+        if mode == "AUTO_PAUSED":
+            reasons.append(str(data.get("pause_reason") or "AUTO_PAUSED"))
+        if owner and owner != "EDGE":
+            reasons.append(f"AUTHORITY_OWNER_NOT_EDGE:{owner}")
+        if transport:
+            if transport.get("mqtt_connected") is False:
+                reasons.append("MQTT_NOT_CONNECTED")
+            if transport.get("signature_configured") is False:
+                reasons.append("CONTROL_SIGNATURE_SECRET_MISSING")
+            if transport.get("ready") is False and not any(
+                reason in {"MQTT_NOT_CONNECTED", "CONTROL_SIGNATURE_SECRET_MISSING"}
+                for reason in reasons
+            ):
+                reasons.append("CONTROL_TRANSPORT_NOT_READY")
+        if last_command.get("problem"):
+            reasons.append(str(last_command.get("reason") or "CONTROL_COMMAND_ERROR"))
+
+        status = "degraded" if reasons else "healthy"
+        return {
+            "status": status,
+            "mode": mode,
+            "auto_dispatch_status": data.get("auto_dispatch_status"),
+            "pause_reason": data.get("pause_reason"),
+            "requires_reauthorization": data.get("requires_reauthorization"),
+            "authority_owner": owner,
+            "authority_snapshot": authority or None,
+            "transport": transport or None,
+            "last_command_result": last_command,
+            "last_auto_action": data.get("last_auto_action"),
+            "manual_command_entrypoint": data.get("manual_command_entrypoint"),
+            "auto_dispatch_entrypoint": data.get("auto_dispatch_entrypoint"),
+            "reasons": reasons,
+            "detail": "; ".join(reasons) if reasons else "control_status_ok",
+        }
+
+    def _last_command_result_summary(self, payload: Any) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {"present": False, "problem": False}
+
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+        values = [
+            str(item).lower()
+            for item in self._scalar_values(result)
+            if item is not None and not isinstance(item, bool)
+        ]
+        value_text = " ".join(values)
+        error_value = result.get("error") if isinstance(result, dict) else None
+        status_value = str(result.get("status") or "").lower() if isinstance(result, dict) else ""
+        success_value = result.get("success") if isinstance(result, dict) else None
+
+        reason: Optional[str] = None
+        if "timeout" in value_text or "timed_out" in value_text:
+            reason = "CONTROL_COMMAND_TIMEOUT"
+        elif "nak" in value_text or "nack" in value_text or "rejected" in value_text:
+            reason = "CONTROL_COMMAND_NAK"
+        elif error_value:
+            reason = "CONTROL_COMMAND_ERROR"
+        elif status_value in {"error", "failed", "failure"}:
+            reason = "CONTROL_COMMAND_ERROR"
+        elif success_value is False:
+            reason = "CONTROL_COMMAND_FAILED"
+
+        return {
+            "present": True,
+            "problem": reason is not None,
+            "reason": reason,
+            "scope": payload.get("scope"),
+            "recorded_at": payload.get("recorded_at"),
+            "status": result.get("status") if isinstance(result, dict) else None,
+            "success": result.get("success") if isinstance(result, dict) else None,
+            "error": error_value,
+        }
+
+    def _scalar_values(self, value: Any) -> list[Any]:
+        if isinstance(value, dict):
+            values: list[Any] = []
+            for item in value.values():
+                values.extend(self._scalar_values(item))
+            return values
+        if isinstance(value, list):
+            values = []
+            for item in value:
+                values.extend(self._scalar_values(item))
+            return values
+        return [value]
     
     async def _http_health_check(self, url: str) -> Dict[str, Any]:
         """
@@ -1094,6 +1317,80 @@ class MonitorService:
             "current_status": curr,
         }
 
+    def _update_control_visibility_state(self, record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        previous_status = self.control_visibility_state.get("status")
+        status = str(record.get("status") or "unknown").lower()
+        transition = self._build_control_visibility_transition(previous_status, status, record)
+
+        now = int(time.time())
+        self.control_visibility_state.update(
+            {
+                "status": status,
+                "updated_at": now,
+                "last_success": now if status == "healthy" else self.control_visibility_state.get("last_success"),
+                "last_failure": now if status in ("degraded", "down") else self.control_visibility_state.get("last_failure"),
+                "self_heal_enabled": False,
+            }
+        )
+        record["self_heal"] = {
+            "enabled": False,
+            "state": dict(self.control_visibility_state),
+            "reason": "control_visibility_probe_only",
+        }
+        self.control_status = record
+        return transition
+
+    def _build_control_visibility_transition(
+        self,
+        previous_raw: str | None,
+        current_raw: str,
+        record: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        prev = _normalize_health_status(previous_raw)
+        curr = _normalize_health_status(current_raw)
+        if prev == curr:
+            return None
+
+        alarm_key = f"{self.line_id}:control:visibility"
+        mode = record.get("mode") or "unknown"
+        reasons = record.get("reasons") if isinstance(record.get("reasons"), list) else []
+        detail = record.get("detail")
+        message = str(detail or f"control visibility changed from {prev} to {curr}")[:512]
+        meta = {
+            "previous_status": prev,
+            "current_status": curr,
+            "mode": mode,
+            "auto_dispatch_status": record.get("auto_dispatch_status"),
+            "pause_reason": record.get("pause_reason"),
+            "requires_reauthorization": record.get("requires_reauthorization"),
+            "authority_owner": record.get("authority_owner"),
+            "transport": record.get("transport"),
+            "last_command_result": record.get("last_command_result"),
+            "reasons": reasons,
+            "self_heal_enabled": False,
+        }
+        if curr in ("degraded", "down"):
+            return {
+                "service": "control-status",
+                "alarm_key": alarm_key,
+                "state": "firing",
+                "severity": _STATUS_TO_SEVERITY.get(curr, "warning"),
+                "message": message,
+                "previous_status": prev,
+                "current_status": curr,
+                "meta": meta,
+            }
+        return {
+            "service": "control-status",
+            "alarm_key": alarm_key,
+            "state": "resolved",
+            "severity": None,
+            "message": message if message != "control_status_ok" else None,
+            "previous_status": prev,
+            "current_status": curr,
+            "meta": meta,
+        }
+
     async def _emit_alarm_transitions(self, transitions: List[Dict[str, Any]]) -> None:
         """
         把本轮 transitions POST 到 edge-api /api/v1/alarms/internal/ingest。
@@ -1112,16 +1409,20 @@ class MonitorService:
 
         headers = {self.alarm_ingest_header: self.alarm_ingest_token}
         for t in transitions:
+            meta = {
+                "service": t["service"],
+                "previous_status": t["previous_status"],
+                "current_status": t["current_status"],
+            }
+            extra_meta = t.get("meta")
+            if isinstance(extra_meta, dict):
+                meta.update(extra_meta)
             body = {
                 "alarm_key": t["alarm_key"],
                 "source_service": "edge-monitor",
                 "state": t["state"],
                 "line_id": self.line_id,
-                "meta": {
-                    "service": t["service"],
-                    "previous_status": t["previous_status"],
-                    "current_status": t["current_status"],
-                },
+                "meta": meta,
             }
             if t.get("severity"):
                 body["severity"] = t["severity"]
@@ -1415,6 +1716,21 @@ class MonitorService:
                     )
             except (AttributeError, TypeError):
                 continue
+
+        control_status = self.control_status or {
+            "enabled": self.control_status_enabled,
+            "status": "unknown",
+            "self_heal": {"enabled": False, "reason": "control_visibility_probe_only"},
+        }
+        if control_status.get("status") in ("degraded", "down"):
+            warnings.append(
+                {
+                    "type": "CONTROL_VISIBILITY_DEGRADED",
+                    "service": control_status.get("name") or "control-status",
+                    "mode": control_status.get("mode"),
+                    "reason": control_status.get("detail"),
+                }
+            )
         
         # 组装完整消息
         return {
@@ -1422,6 +1738,7 @@ class MonitorService:
             "line": self.line_id,           # 产线标识
             "timestamp": int(time.time()),  # 消息时间戳
             "services": services,           # 服务状态列表
+            "control": control_status,
             "warnings": warnings,
             "system": {
                 "metrics": self.system_metrics,

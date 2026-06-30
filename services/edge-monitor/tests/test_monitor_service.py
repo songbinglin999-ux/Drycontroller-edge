@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from docker.client import DockerClient
+import httpx
 from httpx import AsyncClient
 from typing import cast
 
@@ -27,6 +28,30 @@ def _new_service():
     svc = MonitorService()
     svc.line_id = "L-test"
     return svc
+
+
+def _enable_control_probe(service):
+    service.control_status_enabled = True
+    service.control_status_target = {
+        "enabled": True,
+        "url": "http://edge-api:8000/api/v1/control/status",
+        "api_key_env": "ADMIN_API_KEYS",
+        "api_key_header": "X-API-Key",
+    }
+    service.control_status = {
+        "enabled": True,
+        "status": "unknown",
+        "self_heal": {"enabled": False, "reason": "control_visibility_probe_only"},
+    }
+
+
+class _ControlStatusResponse:
+    def __init__(self, body, status_code=200):
+        self._body = body
+        self.status_code = status_code
+
+    def json(self):
+        return self._body
 
 
 def test_build_status_payload_schema_and_services_sorted():
@@ -67,6 +92,7 @@ def test_build_status_payload_schema_and_services_sorted():
     assert payload["services"][1]["name"] == "edge-mosquitto"
     assert payload["services"][0]["status"] == "degraded"
     assert payload["services"][1]["status"] == "healthy"
+    assert payload["control"]["self_heal"]["enabled"] is False
 
 
 def test_merge_status_priority():
@@ -346,6 +372,166 @@ def test_update_service_states_does_not_touch_self_heal_fields():
     state = service.service_health_state["edge-api"]
     # consecutive_failures 由现有逻辑（不是 alarm hook）维护
     assert state["consecutive_failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_control_status_auto_paused_emits_visibility_alarm(monkeypatch):
+    service = _new_service()
+    _enable_control_probe(service)
+    monkeypatch.setenv("ADMIN_API_KEYS", "admin-1")
+
+    captured = {}
+
+    class DummyClient:
+        async def get(self, url, headers=None, timeout=None):
+            captured["url"] = url
+            captured["headers"] = dict(headers or {})
+            return _ControlStatusResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "mode": "AUTO_PAUSED",
+                        "auto_dispatch_status": "paused_requires_reauthorization",
+                        "pause_reason": "PLC_NAK",
+                        "requires_reauthorization": True,
+                        "authority_snapshot": {"AUTHORITY_OWNER": "EDGE", "AUTHORITY_EPOCH": 3},
+                        "transport": {"ready": True, "mqtt_connected": True, "signature_configured": True},
+                        "last_command_result": None,
+                        "last_auto_action": None,
+                        "manual_command_entrypoint": "/api/v1/control/manual/set",
+                        "auto_dispatch_entrypoint": "/api/v1/control/auto/dispatch",
+                    },
+                }
+            )
+
+    service.http_client = cast(AsyncClient, DummyClient())
+
+    record = await service._check_control_status()
+    transition = service._update_control_visibility_state(record)
+    payload = service._build_status_payload()
+
+    assert captured["url"].endswith("/api/v1/control/status")
+    assert captured["headers"]["X-API-Key"] == "admin-1"
+    assert record["status"] == "degraded"
+    assert record["mode"] == "AUTO_PAUSED"
+    assert record["pause_reason"] == "PLC_NAK"
+    assert record["self_heal"]["enabled"] is False
+    assert transition["state"] == "firing"
+    assert transition["severity"] == "warning"
+    assert transition["alarm_key"] == "L-test:control:visibility"
+    assert transition["meta"]["mode"] == "AUTO_PAUSED"
+    assert transition["meta"]["pause_reason"] == "PLC_NAK"
+    assert payload["control"]["mode"] == "AUTO_PAUSED"
+    assert payload["warnings"][0]["type"] == "CONTROL_VISIBILITY_DEGRADED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_result", "expected_reason"),
+    [
+        (
+            {"scope": "auto", "result": {"success": False, "status": "nak", "error": "control_nak"}},
+            "CONTROL_COMMAND_NAK",
+        ),
+        (
+            {"scope": "auto", "result": {"success": False, "status": "timeout", "error": "ack_timeout"}},
+            "CONTROL_COMMAND_TIMEOUT",
+        ),
+        (
+            {"scope": "manual", "result": {"success": False, "status": "error", "error": "mqtt_publish_failed"}},
+            "CONTROL_COMMAND_ERROR",
+        ),
+    ],
+)
+async def test_control_status_command_failures_are_degraded(command_result, expected_reason):
+    service = _new_service()
+    _enable_control_probe(service)
+
+    class DummyClient:
+        async def get(self, url, headers=None, timeout=None):
+            return _ControlStatusResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "mode": "AUTO",
+                        "auto_dispatch_status": "ready",
+                        "pause_reason": None,
+                        "requires_reauthorization": False,
+                        "authority_snapshot": {"AUTHORITY_OWNER": "EDGE", "AUTHORITY_EPOCH": 3},
+                        "transport": {"ready": True, "mqtt_connected": True, "signature_configured": True},
+                        "last_command_result": command_result,
+                    },
+                }
+            )
+
+    service.http_client = cast(AsyncClient, DummyClient())
+
+    record = await service._check_control_status()
+
+    assert record["status"] == "degraded"
+    assert expected_reason in record["reasons"]
+    assert record["last_command_result"]["problem"] is True
+    assert record["self_heal"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_control_status_normal_manual_resolves_without_self_heal():
+    service = _new_service()
+    _enable_control_probe(service)
+    service.control_visibility_state = {"status": "degraded"}
+    service.service_health_state = {"edge-api": {"status": "healthy", "consecutive_failures": 0}}
+
+    class DummyClient:
+        async def get(self, url, headers=None, timeout=None):
+            return _ControlStatusResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "mode": "MANUAL",
+                        "auto_dispatch_status": "manual_stopped",
+                        "pause_reason": None,
+                        "requires_reauthorization": False,
+                        "authority_snapshot": {"AUTHORITY_OWNER": "EDGE", "AUTHORITY_EPOCH": 3},
+                        "transport": {"ready": True, "mqtt_connected": True, "signature_configured": True},
+                        "last_command_result": {"scope": "manual", "result": {"success": True, "status": "acked"}},
+                    },
+                }
+            )
+
+    service.http_client = cast(AsyncClient, DummyClient())
+
+    record = await service._check_control_status()
+    transition = service._update_control_visibility_state(record)
+
+    assert record["status"] == "healthy"
+    assert record["detail"] == "control_status_ok"
+    assert transition["state"] == "resolved"
+    assert transition["severity"] is None
+    assert service.control_status["self_heal"]["enabled"] is False
+    assert service.service_health_state["edge-api"]["consecutive_failures"] == 0
+
+
+@pytest.mark.asyncio
+async def test_control_status_unreachable_is_down_not_service_self_heal():
+    service = _new_service()
+    _enable_control_probe(service)
+    service.service_health_state = {}
+
+    class DummyClient:
+        async def get(self, url, headers=None, timeout=None):
+            raise httpx.ConnectError("connect refused")
+
+    service.http_client = cast(AsyncClient, DummyClient())
+
+    record = await service._check_control_status()
+    transition = service._update_control_visibility_state(record)
+
+    assert record["status"] == "down"
+    assert record["detail"] == "control_status_unreachable"
+    assert transition["state"] == "firing"
+    assert transition["severity"] == "critical"
+    assert service.control_status["self_heal"]["enabled"] is False
+    assert service.service_health_state == {}
 
 
 @pytest.mark.asyncio
