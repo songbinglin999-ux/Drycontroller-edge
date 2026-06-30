@@ -355,6 +355,19 @@ class ControlStateService:
                 "command_result": result,
                 "data": self._status_payload(line_id=line_id, transport=transport),
             }
+        except Exception as exc:  # noqa: BLE001 - AUTO must fail closed on ordinary dispatch faults.
+            reason = f"AUTO_DISPATCH_EXCEPTION:{type(exc).__name__}"
+            await self._pause_auto(
+                reason=reason,
+                actor=actor,
+                detail={"error": str(exc)},
+            )
+            return {
+                "success": False,
+                "error": "auto_dispatch_exception",
+                "blocked_by": [reason],
+                "data": self._status_payload(line_id=line_id, transport=self._transport_status()),
+            }
         finally:
             async with self._lock:
                 self._in_flight = False
@@ -457,7 +470,7 @@ class ControlStateService:
             "requires_confirmation": False,
             "production_requires_confirmation": False,
             "production_authorization_model": "MANUAL_AUTO_AUTO_PAUSED",
-            "manual_command_entrypoint": "/api/v1/control/recommendations/manual-confirm",
+            "manual_command_entrypoint": "/api/v1/control/manual/set",
             "auto_authorize_entrypoint": "/api/v1/control/mode",
             "auto_dispatch_entrypoint": "/api/v1/control/auto/dispatch",
             "cooldown_policy": {

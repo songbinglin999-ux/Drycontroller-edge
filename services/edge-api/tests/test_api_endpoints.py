@@ -81,11 +81,11 @@ class DummyControlOrchestrator:
     async def get_recommendations(self, **kwargs):
         return await DummyControlSvc().get_recommendations(**kwargs)
 
-    async def confirm_manual_action(self, **kwargs):
+    async def send_manual_setpoint(self, **kwargs):
         return {
             "success": True,
-            "status": "confirmed",
-            "recommendation": {"id": kwargs["request_id"], "line_id": kwargs["line"]},
+            "status": "sent",
+            "manual_command": {"id": kwargs["request_id"], "line_id": kwargs["line"]},
             "command_results": [{"success": True, "status": "acked"}],
         }
 
@@ -303,9 +303,9 @@ def test_control_auto_dispatch_endpoint():
     assert resp.json()["status"] == "dispatched"
 
 
-def test_manual_control_confirm_endpoint():
+def test_manual_control_set_endpoint():
     resp = client.post(
-        "/api/v1/control/recommendations/manual-confirm",
+        "/api/v1/control/manual/set",
         json={
             "line": "L1",
             "target_softpoint": "VFM1_FREQ_SP",
@@ -318,7 +318,7 @@ def test_manual_control_confirm_endpoint():
         headers={settings.API_KEY_HEADER: "test-control"},
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "confirmed"
+    assert resp.json()["status"] == "sent"
 
 
 def test_control_recommendation_dismiss_endpoint():
@@ -335,6 +335,7 @@ def test_legacy_control_write_endpoints_removed():
         "/api/v1/control/set",
         "/api/v1/control/batch",
         "/api/v1/control/emergency-stop",
+        "/api/v1/control/recommendations/manual-confirm",
         "/api/v1/control/recommendations/rec_l1_x/confirm",
     ):
         resp = client.post(

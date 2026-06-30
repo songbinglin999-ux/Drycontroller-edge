@@ -109,14 +109,14 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
   - 功能：人工切回 `MANUAL` 或授权 `AUTO`；`AUTO_PAUSED` 不是操作员可选模式。
 - `POST /api/v1/control/auto/dispatch`
   - 功能：执行一次 AUTO 自动签发 tick；只选择 actionable 的六频率软点动作，经 signed command + D5100 闭环下发。
-- `POST /api/v1/control/recommendations/manual-confirm`
+- `POST /api/v1/control/manual/set`
   - 功能：`MANUAL` 模式下人工输入 6 个频率目标之一并写入。
 - `POST /api/v1/control/recommendations/{id}/dismiss`
   - 功能：驳回建议并记录审计。
 
 处理逻辑：
 
-1. AUTO 只通过 `/auto/dispatch` 生成 signed command；MANUAL 人工调频只通过 `/recommendations/manual-confirm` 生成 signed command。
+1. AUTO 只通过 `/auto/dispatch` 生成 signed command；MANUAL 人工调频只通过 `/manual/set` 生成 signed command。
 2. 写入 PostgreSQL 控制操作日志。
 3. 通过 MQTT 将 signed command 发送给 `edge-daq`。
 4. `edge-daq` 按 D5100 单路事务写 PLC 的 V1 频率目标。

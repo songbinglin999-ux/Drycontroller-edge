@@ -233,6 +233,12 @@ class DummyMismatchCommand(DummyCommand):
         }
 
 
+class DummyRaisingCommand(DummyCommand):
+    async def send_set(self, **kwargs):
+        self.calls.append(kwargs)
+        raise RuntimeError("mqtt task crashed")
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_recommendations_are_advisory_only(monkeypatch):
     audit_events = []
@@ -331,7 +337,7 @@ async def test_orchestrator_marks_missing_data_not_actionable(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_confirms_manual_softpoint_through_gate(monkeypatch):
+async def test_orchestrator_sends_manual_softpoint_through_gate(monkeypatch):
     audit_events = []
 
     async def fake_write_audit(**kwargs):
@@ -344,7 +350,7 @@ async def test_orchestrator_confirms_manual_softpoint_through_gate(monkeypatch):
         command_service=command,
     )
 
-    confirmed = await orchestrator.confirm_manual_action(
+    sent = await orchestrator.send_manual_setpoint(
         line="L1",
         target_softpoint="VFM1_FREQ_SP",
         value=20.0,
@@ -355,7 +361,8 @@ async def test_orchestrator_confirms_manual_softpoint_through_gate(monkeypatch):
         timeout_sec=1.0,
     )
 
-    assert confirmed["success"] is True
+    assert sent["success"] is True
+    assert sent["status"] == "sent"
     assert command.calls == [
         {
             "line": "L1",
@@ -367,7 +374,7 @@ async def test_orchestrator_confirms_manual_softpoint_through_gate(monkeypatch):
             "timeout_sec": 1.0,
         }
     ]
-    assert audit_events[-1]["action"] == "control.recommendation.confirmed"
+    assert audit_events[-1]["action"] == "control.manual.setpoint"
     assert audit_events[-1]["result"] == "success"
 
 
@@ -383,7 +390,7 @@ async def test_orchestrator_rejects_manual_softpoint_without_plc_authority_state
         command_service=command,
     )
 
-    confirmed = await orchestrator.confirm_manual_action(
+    sent = await orchestrator.send_manual_setpoint(
         line="L1",
         target_softpoint="VF1_FREQ_SP",
         value=25.0,
@@ -394,9 +401,9 @@ async def test_orchestrator_rejects_manual_softpoint_without_plc_authority_state
         timeout_sec=1.0,
     )
 
-    assert confirmed["success"] is False
-    assert confirmed["error"] == "manual_command_not_actionable"
-    assert "DATA_MISSING_OR_STALE" in confirmed["blocked_by"]
+    assert sent["success"] is False
+    assert sent["error"] == "manual_command_not_actionable"
+    assert "DATA_MISSING_OR_STALE" in sent["blocked_by"]
     assert command.calls == []
 
 
@@ -412,7 +419,7 @@ async def test_orchestrator_rejects_manual_softpoint_without_transition_state(mo
         command_service=command,
     )
 
-    confirmed = await orchestrator.confirm_manual_action(
+    sent = await orchestrator.send_manual_setpoint(
         line="L1",
         target_softpoint="VF1_FREQ_SP",
         value=25.0,
@@ -423,9 +430,9 @@ async def test_orchestrator_rejects_manual_softpoint_without_transition_state(mo
         timeout_sec=1.0,
     )
 
-    assert confirmed["success"] is False
-    assert confirmed["error"] == "manual_command_not_actionable"
-    assert "DATA_MISSING_OR_STALE" in confirmed["blocked_by"]
+    assert sent["success"] is False
+    assert sent["error"] == "manual_command_not_actionable"
+    assert "DATA_MISSING_OR_STALE" in sent["blocked_by"]
     assert command.calls == []
 
 
@@ -441,7 +448,7 @@ async def test_orchestrator_manual_softpoint_interrupts_auto_with_manual_d5100(m
         command_service=command,
     )
 
-    confirmed = await orchestrator.confirm_manual_action(
+    sent = await orchestrator.send_manual_setpoint(
         line="L1",
         target_softpoint="VFM1_FREQ_SP",
         value=20.0,
@@ -450,7 +457,7 @@ async def test_orchestrator_manual_softpoint_interrupts_auto_with_manual_d5100(m
         request_id="manual-1",
     )
 
-    assert confirmed["success"] is True
+    assert sent["success"] is True
     assert command.calls == [
         {
             "line": "L1",
@@ -463,7 +470,7 @@ async def test_orchestrator_manual_softpoint_interrupts_auto_with_manual_d5100(m
         }
     ]
     operator_request = next(
-        item for item in confirmed["recommendation"]["evidence"]
+        item for item in sent["manual_command"]["evidence"]
         if item.get("signal") == "operator_request"
     )
     assert operator_request["effective_control_mode"] == "MANUAL"
@@ -482,7 +489,7 @@ async def test_orchestrator_blocks_manual_motor_feedback_write(monkeypatch):
         command_service=command,
     )
 
-    confirmed = await orchestrator.confirm_manual_action(
+    sent = await orchestrator.send_manual_setpoint(
         line="L1",
         target_softpoint="M1",
         value=1.0,
@@ -491,9 +498,9 @@ async def test_orchestrator_blocks_manual_motor_feedback_write(monkeypatch):
         request_id="manual-motor",
     )
 
-    assert confirmed["success"] is False
-    assert confirmed["error"] == "manual_command_not_actionable"
-    assert "MOTOR_FEEDBACK_WRITE_FORBIDDEN" in confirmed["blocked_by"]
+    assert sent["success"] is False
+    assert sent["error"] == "manual_command_not_actionable"
+    assert "MOTOR_FEEDBACK_WRITE_FORBIDDEN" in sent["blocked_by"]
     assert command.calls == []
 
 
@@ -556,7 +563,7 @@ async def test_control_state_manual_frequency_intervention_requires_reauthorizat
         value=20.0,
         reason="hmi_panel_submit",
     )
-    confirmed = await orchestrator.confirm_manual_action(
+    sent = await orchestrator.send_manual_setpoint(
         line="L1",
         target_softpoint="VFM1_FREQ_SP",
         value=20.0,
@@ -564,10 +571,10 @@ async def test_control_state_manual_frequency_intervention_requires_reauthorizat
         operator_id="operator-a",
         request_id="manual-1",
     )
-    await service.record_command_result(result=confirmed, command_scope="manual")
+    await service.record_command_result(result=sent, command_scope="manual")
     status = await service.get_status(line="L1")
 
-    assert confirmed["success"] is True
+    assert sent["success"] is True
     assert command.calls[-1]["mode"] == 1
     assert status["mode"] == "MANUAL"
     assert status["requires_reauthorization"] is True
@@ -652,6 +659,31 @@ async def test_control_state_snapshot_exception_pauses_auto_fail_closed(monkeypa
     assert failed["data"]["mode"] == AUTO_PAUSED
     assert failed["data"]["requires_reauthorization"] is True
     assert command.calls == []
+
+
+@pytest.mark.asyncio
+async def test_control_state_dispatch_exception_pauses_auto_fail_closed(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    command = DummyRaisingCommand()
+    service = ControlStateService(
+        realtime_service=DummyRealtimeFull(),
+        command_service=command,
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    failed = await service.dispatch_auto(line="L1", actor="edge-api:auto", timeout_sec=1.0)
+
+    assert failed["success"] is False
+    assert failed["error"] == "auto_dispatch_exception"
+    assert "AUTO_DISPATCH_EXCEPTION:RuntimeError" in failed["blocked_by"]
+    assert failed["data"]["mode"] == AUTO_PAUSED
+    assert failed["data"]["requires_reauthorization"] is True
+    assert command.calls
 
 
 @pytest.mark.asyncio

@@ -27,7 +27,7 @@ async def list_control_recommendations(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-class ManualRecommendationConfirmRequest(BaseModel):
+class ManualSetRequest(BaseModel):
     line: Optional[str] = Field(None, description="产线标识，默认 L1")
     target_softpoint: str = Field(..., description="控制软点，如 VFM3_FREQ_SP / VF3_FREQ_SP")
     value: float = Field(..., description="MANUAL 模式下的目标值")
@@ -50,9 +50,9 @@ class AutoDispatchRequest(BaseModel):
     timeout_sec: float = Field(3.0, ge=0.2, le=30.0, description="等待 ACK 超时（秒）")
 
 
-@router.post("/recommendations/manual-confirm")
-async def confirm_manual_control_recommendation(
-    req: ManualRecommendationConfirmRequest,
+@router.post("/manual/set")
+async def set_manual_control(
+    req: ManualSetRequest,
     api_key: str = Depends(require_control_api_key),
     orchestrator: ControlOrchestrator = Depends(get_control_orchestrator),
     state_service: ControlStateService = Depends(get_control_state_service),
@@ -65,7 +65,7 @@ async def confirm_manual_control_recommendation(
         value=req.value,
         reason=req.reason,
     )
-    resp = await orchestrator.confirm_manual_action(
+    resp = await orchestrator.send_manual_setpoint(
         line=req.line,
         target_softpoint=req.target_softpoint,
         value=req.value,

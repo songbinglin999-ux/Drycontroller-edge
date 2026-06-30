@@ -72,7 +72,7 @@ class ControlOrchestrator:
             },
         }
 
-    async def confirm_manual_action(
+    async def send_manual_setpoint(
         self,
         *,
         line: Optional[str],
@@ -95,21 +95,21 @@ class ControlOrchestrator:
         self._cache[recommendation.id] = recommendation
 
         if not recommendation.actionable:
-            await self._audit_confirmation(
-                recommendation_id=recommendation.id,
+            await self._audit_manual_setpoint(
+                command_id=recommendation.id,
                 actor=actor,
                 result="denied",
                 detail={
                     "error": "manual_command_not_actionable",
                     "blocked_by": recommendation.blocked_by,
-                    "recommendation": recommendation.model_dump(mode="json"),
+                    "manual_command": recommendation.model_dump(mode="json"),
                 },
             )
             return {
                 "success": False,
                 "error": "manual_command_not_actionable",
                 "blocked_by": recommendation.blocked_by,
-                "recommendation": recommendation.model_dump(mode="json"),
+                "manual_command": recommendation.model_dump(mode="json"),
             }
 
         action = recommendation.suggested_actions[0]
@@ -123,19 +123,19 @@ class ControlOrchestrator:
             timeout_sec=timeout_sec,
         )
         success = result.get("success") is True
-        await self._audit_confirmation(
-            recommendation_id=recommendation.id,
+        await self._audit_manual_setpoint(
+            command_id=recommendation.id,
             actor=actor,
             result="success" if success else "failed",
             detail={
-                "recommendation": recommendation.model_dump(mode="json"),
+                "manual_command": recommendation.model_dump(mode="json"),
                 "command_results": [result],
             },
         )
         return {
             "success": success,
-            "status": "confirmed" if success else "failed",
-            "recommendation": recommendation.model_dump(mode="json"),
+            "status": "sent" if success else "failed",
+            "manual_command": recommendation.model_dump(mode="json"),
             "command_results": [result],
         }
 
@@ -180,19 +180,19 @@ class ControlOrchestrator:
             detail=recommendation.model_dump(mode="json"),
         )
 
-    async def _audit_confirmation(
+    async def _audit_manual_setpoint(
         self,
         *,
-        recommendation_id: str,
+        command_id: str,
         actor: str,
         result: str,
         detail: Dict[str, Any],
     ) -> None:
         await write_audit(
             actor=actor,
-            action="control.recommendation.confirmed",
-            resource_type="control_recommendation",
-            resource_id=recommendation_id,
+            action="control.manual.setpoint",
+            resource_type="manual_control_command",
+            resource_id=command_id,
             result=result,
             detail=detail,
         )
@@ -232,11 +232,11 @@ class ControlOrchestrator:
             ),
         )
         recommendation = ControlRecommendation(
-            id=recommendation_id(line_id, "manual_operator_setpoint", request_id or target_softpoint),
+            id=recommendation_id(line_id, "manual_setpoint", request_id or target_softpoint),
             line_id=line_id,
             level="info",
-            diagnosis_code="manual_operator_setpoint",
-            title=f"Manual confirmed softpoint command for {target_softpoint}",
+            diagnosis_code="manual_setpoint",
+            title=f"Manual softpoint command for {target_softpoint}",
             reason=reason or "HMI/operator requested a manual-mode setpoint write through the control orchestrator.",
             evidence=[
                 {
