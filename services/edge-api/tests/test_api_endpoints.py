@@ -85,7 +85,16 @@ class DummyControlOrchestrator:
         return {
             "success": True,
             "status": "sent",
-            "manual_command": {"id": kwargs["request_id"], "line_id": kwargs["line"]},
+            "manual_command": {
+                "id": kwargs["request_id"],
+                "line_id": kwargs["line"],
+                "evidence": [
+                    {
+                        "signal": "operator_request",
+                        "auto_reauthorization_required": kwargs["auto_reauthorization_required"],
+                    }
+                ],
+            },
             "command_results": [{"success": True, "status": "acked"}],
         }
 
@@ -319,6 +328,8 @@ def test_manual_control_set_endpoint():
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "sent"
+    operator_request = resp.json()["manual_command"]["evidence"][0]
+    assert operator_request["auto_reauthorization_required"] is True
 
 
 def test_control_recommendation_dismiss_endpoint():

@@ -83,6 +83,7 @@ class ControlOrchestrator:
         request_id: Optional[str] = None,
         reason: Optional[str] = None,
         timeout_sec: float = 3.0,
+        auto_reauthorization_required: bool = False,
     ) -> dict:
         recommendation = await self._build_manual_recommendation(
             line=line,
@@ -91,6 +92,7 @@ class ControlOrchestrator:
             operator_id=operator_id,
             request_id=request_id,
             reason=reason,
+            auto_reauthorization_required=auto_reauthorization_required,
         )
         self._cache[recommendation.id] = recommendation
 
@@ -206,6 +208,7 @@ class ControlOrchestrator:
         operator_id: Optional[str],
         request_id: Optional[str],
         reason: Optional[str],
+        auto_reauthorization_required: bool,
     ) -> ControlRecommendation:
         line_id = line or "L1"
         snapshot = await build_process_snapshot(
@@ -217,7 +220,6 @@ class ControlOrchestrator:
         feedback_tag = softpoint_feedback_tag(target_softpoint)
         current_value = _as_float(snapshot.tags.get(feedback_tag)) if feedback_tag else None
         unit = softpoint_unit(target_softpoint) if target_softpoint in ALLOWED_CONTROL_SOFTPOINTS else None
-        manual_interrupts_auto = snapshot.control_state.CONTROL_MODE == "AUTO"
         action = SuggestedAction(
             target_softpoint=target_softpoint,
             action_type="setpoint_hold",
@@ -227,7 +229,7 @@ class ControlOrchestrator:
             unit=unit,
             risk_note=reason or (
                 "Manual intervention exits AUTO and sends this D5100 request as MANUAL."
-                if manual_interrupts_auto
+                if auto_reauthorization_required
                 else "Manual-mode softpoint command."
             ),
         )
@@ -248,7 +250,7 @@ class ControlOrchestrator:
                     "operator_id": operator_id,
                     "request_id": request_id,
                     "effective_control_mode": "MANUAL",
-                    "auto_reauthorization_required": manual_interrupts_auto,
+                    "auto_reauthorization_required": auto_reauthorization_required,
                 },
                 {
                     "tag": feedback_tag,

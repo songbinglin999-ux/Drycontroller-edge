@@ -463,6 +463,7 @@ async def test_orchestrator_manual_softpoint_interrupts_auto_with_manual_d5100(m
         actor="operator:test",
         operator_id="operator-a",
         request_id="manual-1",
+        auto_reauthorization_required=True,
     )
 
     assert sent["success"] is True
@@ -482,7 +483,7 @@ async def test_orchestrator_manual_softpoint_interrupts_auto_with_manual_d5100(m
         if item.get("signal") == "operator_request"
     )
     assert operator_request["effective_control_mode"] == "MANUAL"
-    assert operator_request["auto_reauthorization_required"] is False
+    assert operator_request["auto_reauthorization_required"] is True
 
 
 @pytest.mark.asyncio

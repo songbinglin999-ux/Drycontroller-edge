@@ -58,7 +58,7 @@ async def set_manual_control(
     state_service: ControlStateService = Depends(get_control_state_service),
 ):
     actor = api_key_actor(api_key, role="control")
-    await state_service.note_manual_intervention(
+    manual_state = await state_service.note_manual_intervention(
         line=req.line,
         actor=actor,
         target_softpoint=req.target_softpoint,
@@ -74,6 +74,9 @@ async def set_manual_control(
         request_id=req.request_id,
         reason=req.reason,
         timeout_sec=req.timeout_sec,
+        auto_reauthorization_required=(
+            manual_state.get("previous_mode") in {"AUTO", "AUTO_PAUSED"}
+        ),
     )
     await state_service.record_command_result(result=resp, command_scope="manual")
     if not resp.get("success") and resp.get("error") == "manual_command_not_actionable":
