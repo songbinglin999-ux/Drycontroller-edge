@@ -13,26 +13,54 @@ SCHEMA_VERSION = "drycontroller.control_recommendation.v1"
 RECOMMENDATION_TTL_SECONDS = 300
 
 LEVEL_TAGS = [f"LL{index}" for index in range(1, 7)]
-TEMPERATURE_TAGS = ["FTT1", "FTT2", "FTT3", "T_OUT2", "T_OUT4", "TT1", "TT2"]
-CURRENT_TAGS = [f"I_M{index}" for index in range(1, 17)]
-MOTOR_TAGS = [f"M{index}" for index in range(1, 17)]
-FEEDBACK_TAGS = ["VFM1", "VFM2", "VFM3", "VF1", "VF2", "VF3"]
-PROCESS_TAGS = LEVEL_TAGS + TEMPERATURE_TAGS + ["MT1"] + CURRENT_TAGS + MOTOR_TAGS + FEEDBACK_TAGS
+CURRENT_TAGS = [
+    "M1_I",
+    "M2_I",
+    "VFM1_I",
+    "M4_I",
+    "M3_I",
+    "VFM2_I",
+    "M6_I",
+    "M5_I",
+    "M7_I",
+    "M8_I",
+    "M9_I",
+    "VFM3_I",
+    "M11_I",
+    "M10_I",
+    "M12_I",
+    "M13_I",
+    "M14_I",
+    "VF1_I",
+    "VF2_I",
+    "VF3_I",
+    "M15_I",
+    "M16_I",
+]
+TEMPERATURE_TAGS = ["FTT1_T", "FTT2_T", "FTT3_T", "TT1_T", "TT2_T"]
+HUMIDITY_TAGS = ["MT1_H"]
+ACTIVE_TARGET_TAGS = [
+    "VFM1_ACTIVE_FREQ_TARGET",
+    "VFM2_ACTIVE_FREQ_TARGET",
+    "VFM3_ACTIVE_FREQ_TARGET",
+    "VF1_ACTIVE_FREQ_TARGET",
+    "VF2_ACTIVE_FREQ_TARGET",
+    "VF3_ACTIVE_FREQ_TARGET",
+]
+PROCESS_TAGS = LEVEL_TAGS + CURRENT_TAGS + TEMPERATURE_TAGS + HUMIDITY_TAGS
 CONTROL_STATE_TAGS = [
-    "CONTROL_MODE",
     "AUTHORITY_OWNER",
     "AUTHORITY_EPOCH",
     "AUTH_TRANSITION_STATE",
     "HMI_DIRECT_ENABLE",
-    "MAINTENANCE_LOCK",
-    "EMERGENCY_STOP",
 ]
 # DryController only replaces manual writes to the six frequency setpoints.
 # Product mode is MANUAL/AUTO/AUTO_PAUSED; PLC authority owner/epoch are
 # required before edge-api can ask edge-daq to issue a D5100 write.
-SNAPSHOT_TAGS = PROCESS_TAGS + CONTROL_STATE_TAGS
+SNAPSHOT_TAGS = PROCESS_TAGS + ACTIVE_TARGET_TAGS + CONTROL_STATE_TAGS
 REQUIRED_CONTROL_STATE_TAGS = ["AUTHORITY_OWNER", "AUTHORITY_EPOCH", "AUTH_TRANSITION_STATE", "HMI_DIRECT_ENABLE"]
 REQUIRED_SNAPSHOT_TAGS = PROCESS_TAGS + REQUIRED_CONTROL_STATE_TAGS
+CONTROL_BASIS_BLOCK = "CONTROL_BASIS_INSUFFICIENT"
 
 ALLOWED_CONTROL_SOFTPOINTS = {
     "VFM1_FREQ_SP": (0.0, 50.0, "Hz"),
@@ -43,23 +71,35 @@ ALLOWED_CONTROL_SOFTPOINTS = {
     "VF3_FREQ_SP": (0.0, 50.0, "Hz"),
 }
 
-BOILER_MONITOR_ONLY_TAGS = {"TT1", "TT2", "LL5", "LL6", "M15", "M16"}
+BOILER_MONITOR_ONLY_TAGS = {"TT1_T", "TT2_T", "LL5", "LL6", "M15_I", "M16_I"}
 
-MOTOR_FEED_SOFTPOINTS = {
-    "M1": "VFM1_FREQ_SP",
-    "M2": "VFM1_FREQ_SP",
-    "M3": "VFM1_FREQ_SP",
-    "M4": "VFM2_FREQ_SP",
-    "M5": "VFM2_FREQ_SP",
-    "M6": "VFM2_FREQ_SP",
-    "M7": "VFM2_FREQ_SP",
-    "M8": "VFM2_FREQ_SP",
-    "M9": "VFM3_FREQ_SP",
-    "M10": "VFM3_FREQ_SP",
-    "M11": "VFM3_FREQ_SP",
-    "M12": "VFM3_FREQ_SP",
-    "M13": "VFM3_FREQ_SP",
-    "M14": "VFM3_FREQ_SP",
+CURRENT_FEED_SOFTPOINTS = {
+    "M1_I": "VFM1_FREQ_SP",
+    "M2_I": "VFM1_FREQ_SP",
+    "M3_I": "VFM1_FREQ_SP",
+    "VFM1_I": "VFM1_FREQ_SP",
+    "M4_I": "VFM2_FREQ_SP",
+    "M5_I": "VFM2_FREQ_SP",
+    "M6_I": "VFM2_FREQ_SP",
+    "M7_I": "VFM2_FREQ_SP",
+    "M8_I": "VFM2_FREQ_SP",
+    "VFM2_I": "VFM2_FREQ_SP",
+    "M9_I": "VFM3_FREQ_SP",
+    "M10_I": "VFM3_FREQ_SP",
+    "M11_I": "VFM3_FREQ_SP",
+    "M12_I": "VFM3_FREQ_SP",
+    "M13_I": "VFM3_FREQ_SP",
+    "M14_I": "VFM3_FREQ_SP",
+    "VFM3_I": "VFM3_FREQ_SP",
+}
+
+SOFTPOINT_ACTIVE_TARGET_TAGS = {
+    "VFM1_FREQ_SP": "VFM1_ACTIVE_FREQ_TARGET",
+    "VFM2_FREQ_SP": "VFM2_ACTIVE_FREQ_TARGET",
+    "VFM3_FREQ_SP": "VFM3_ACTIVE_FREQ_TARGET",
+    "VF1_FREQ_SP": "VF1_ACTIVE_FREQ_TARGET",
+    "VF2_FREQ_SP": "VF2_ACTIVE_FREQ_TARGET",
+    "VF3_FREQ_SP": "VF3_ACTIVE_FREQ_TARGET",
 }
 
 
@@ -143,9 +183,9 @@ def recommendation_id(line_id: str, diagnosis_code: str, suffix: str | None = No
 
 
 def softpoint_feedback_tag(softpoint: str | None) -> Optional[str]:
-    if not softpoint or not softpoint.endswith("_FREQ_SP"):
+    if not softpoint:
         return None
-    return softpoint.removesuffix("_FREQ_SP")
+    return SOFTPOINT_ACTIVE_TARGET_TAGS.get(softpoint)
 
 
 def clamp_softpoint_value(softpoint: str, value: float) -> float:

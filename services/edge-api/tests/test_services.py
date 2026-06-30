@@ -21,7 +21,12 @@ from app.services.realtime_data import RealtimeDataService  # noqa: E402
 from app.services.ai_softsensor import AISoftsensorService  # noqa: E402
 from app.services.system_status import SystemStatusService  # noqa: E402
 from app.services.event_bus import EventBus  # noqa: E402
-from app.services.control_core.models import SCHEMA_VERSION  # noqa: E402
+from app.services.control_core.models import (  # noqa: E402
+    ACTIVE_TARGET_TAGS,
+    CONTROL_BASIS_BLOCK,
+    REQUIRED_SNAPSHOT_TAGS,
+    SCHEMA_VERSION,
+)
 from app.services.control_orchestrator import ControlOrchestrator  # noqa: E402
 from app.services.alarm import AlarmService  # noqa: E402
 from app.services.influx import InfluxQueryService  # noqa: E402
@@ -328,25 +333,53 @@ async def test_system_metric_trend(monkeypatch):
     assert payload["count"] == 1
 
 
+def _real_control_values(**overrides):
+    values = {tag: 0 for tag in REQUIRED_SNAPSHOT_TAGS}
+    values.update({tag: 30.0 for tag in ACTIVE_TARGET_TAGS})
+    values.update(
+        {
+            "AUTHORITY_OWNER": "EDGE",
+            "AUTHORITY_EPOCH": 1,
+            "AUTH_TRANSITION_STATE": 0,
+            "HMI_DIRECT_ENABLE": 0,
+            "FTT1_T": 70.0,
+            "FTT2_T": 70.0,
+            "FTT3_T": 70.0,
+            "TT1_T": 82.0,
+            "TT2_T": 80.0,
+            "MT1_H": 13.0,
+            "VFM1_ACTIVE_FREQ_TARGET": 30.0,
+            "VFM2_ACTIVE_FREQ_TARGET": 30.0,
+            "VFM3_ACTIVE_FREQ_TARGET": 30.0,
+            "VF1_ACTIVE_FREQ_TARGET": 35.0,
+            "VF2_ACTIVE_FREQ_TARGET": 35.0,
+            "VF3_ACTIVE_FREQ_TARGET": 35.0,
+        }
+    )
+    values.update(overrides)
+    return values
+
+
+def _rows_for_requested(requested_tags, values):
+    return [{"tag": tag, "value": values[tag]} for tag in requested_tags if tag in values]
+
+
 class DummyRealtimeControl:
     async def get_latest_payload(self, requested_tags, lookback):
+        values = _real_control_values(
+            M3_I=42.0,
+            M5_I=15.0,
+            VF1_ACTIVE_FREQ_TARGET=35.0,
+            VFM1_ACTIVE_FREQ_TARGET=30.0,
+        )
         return {
             "success": True,
-            "data": [
-                {"tag": "MOISTURE.PREDICTED", "value": 13.5},
-                {"tag": "MT1", "value": 14.2},
-                {"tag": "I_M3", "value": 42.0},
-                {"tag": "M3", "value": 1},
-                {"tag": "I_M5", "value": 15.0},
-                {"tag": "M5", "value": 1},
-                {"tag": "VF1", "value": 35.0},
-                {"tag": "VFM1", "value": 30.0},
-            ],
+            "data": _rows_for_requested(requested_tags, values),
             "missing": [],
         }
 
     async def get_history_payload(self, tag, period, window, aggregation):
-        values = [12.0, 16.0, 42.0] if tag == "I_M3" else [14.0, 15.0, 15.0]
+        values = [12.0, 16.0, 42.0] if tag == "M3_I" else [14.0, 15.0, 15.0]
         points = [
             {"time": "2026-06-08T00:00:00Z", "value": values[0]},
             {"time": "2026-06-08T00:02:30Z", "value": values[1]},
@@ -379,24 +412,22 @@ class DummyRealtimeControlNoData:
 
 class DummyRealtimeConveyorBlockage:
     async def get_latest_payload(self, requested_tags, lookback):
+        values = _real_control_values(
+            M11_I=32.0,
+            M12_I=38.0,
+            M13_I=17.0,
+        )
         return {
             "success": True,
-            "data": [
-                {"tag": "I_M11", "value": 32.0},
-                {"tag": "M11", "value": 1},
-                {"tag": "I_M12", "value": 38.0},
-                {"tag": "M12", "value": 1},
-                {"tag": "I_M13", "value": 17.0},
-                {"tag": "M13", "value": 1},
-            ],
+            "data": _rows_for_requested(requested_tags, values),
             "missing": [],
         }
 
     async def get_history_payload(self, tag, period, window, aggregation):
         values_by_tag = {
-            "I_M11": [12.0, 13.0, 32.0],
-            "I_M12": [18.0, 20.0, 38.0],
-            "I_M13": [16.0, 17.0, 17.0],
+            "M11_I": [12.0, 13.0, 32.0],
+            "M12_I": [18.0, 20.0, 38.0],
+            "M13_I": [16.0, 17.0, 17.0],
         }
         values = values_by_tag.get(tag, [10.0, 10.0, 10.0])
         points = [
@@ -414,21 +445,20 @@ class DummyRealtimeConveyorBlockage:
 
 class DummyRealtimeConveyorEmptyRun:
     async def get_latest_payload(self, requested_tags, lookback):
+        values = _real_control_values(
+            M1_I=4.0,
+            M2_I=5.0,
+        )
         return {
             "success": True,
-            "data": [
-                {"tag": "I_M1", "value": 4.0},
-                {"tag": "M1", "value": 1},
-                {"tag": "I_M2", "value": 5.0},
-                {"tag": "M2", "value": 1},
-            ],
+            "data": _rows_for_requested(requested_tags, values),
             "missing": [],
         }
 
     async def get_history_payload(self, tag, period, window, aggregation):
         values_by_tag = {
-            "I_M1": [20.0, 21.0, 4.0],
-            "I_M2": [18.0, 17.0, 5.0],
+            "M1_I": [20.0, 21.0, 4.0],
+            "M2_I": [18.0, 17.0, 5.0],
         }
         values = values_by_tag.get(tag, [10.0, 10.0, 10.0])
         points = [
@@ -454,6 +484,8 @@ async def test_control_recommendations_use_new_diagnosis_schema(monkeypatch):
     assert payload["success"] is True
     data = payload["data"]
     assert data["schema_version"] == SCHEMA_VERSION
+    assert data["freshness"]["status"] == "fresh"
+    assert data["freshness"]["missing_tags"] == []
     assert data["requires_confirmation"] is False
     assert data["production_requires_confirmation"] is False
     assert data["operation_modes"] == ["MANUAL", "AUTO"]
@@ -469,10 +501,11 @@ async def test_control_recommendations_use_new_diagnosis_schema(monkeypatch):
         if item["diagnosis_code"] == "current_trend_high_load"
     )
     assert recommendation["level"] == "warning"
-    assert recommendation["evidence"][0]["tag"] == "I_M3"
+    assert recommendation["evidence"][0]["tag"] == "M3_I"
     assert recommendation["requires_confirmation"] is False
     assert recommendation["actionable"] is False
-    assert "DATA_MISSING_OR_STALE" in recommendation["blocked_by"]
+    assert CONTROL_BASIS_BLOCK in recommendation["blocked_by"]
+    assert "DATA_MISSING_OR_STALE" not in recommendation["blocked_by"]
 
 
 @pytest.mark.asyncio
@@ -486,33 +519,26 @@ async def test_control_recommendations_detect_downstream_blockage(monkeypatch):
         item for item in payload["data"]["recommendations"]
         if item["diagnosis_code"] == "current_trend_high_load"
     )
-    assert recommendation["id"] == "rec_l1_current_trend_high_load_m11"
+    assert recommendation["id"] == "rec_l1_current_trend_high_load_m11_i"
     assert recommendation["level"] == "warning"
     assert recommendation["actionable"] is False
-    assert recommendation["evidence"][0]["tag"] == "I_M11"
+    assert recommendation["evidence"][0]["tag"] == "M11_I"
     assert recommendation["evidence"][0]["signal"] == "current"
     assert recommendation["suggested_actions"][0]["target_softpoint"] == "VFM3_FREQ_SP"
     assert "M11" not in {action["target_softpoint"] for action in recommendation["suggested_actions"]}
 
 
 @pytest.mark.asyncio
-async def test_control_recommendations_detect_empty_run(monkeypatch):
+async def test_control_recommendations_do_not_fabricate_empty_run_without_run_feedback(monkeypatch):
     realtime_stub = cast(RealtimeDataService, DummyRealtimeConveyorEmptyRun())
     orchestrator = _control_orchestrator(realtime_stub, monkeypatch)
 
     payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
 
-    recommendation = next(
-        item for item in payload["data"]["recommendations"]
-        if item["diagnosis_code"] == "current_trend_empty_run"
+    assert all(
+        item["diagnosis_code"] != "current_trend_empty_run"
+        for item in payload["data"]["recommendations"]
     )
-    assert recommendation["id"] == "rec_l1_current_trend_empty_run_m1"
-    assert recommendation["level"] == "warning"
-    assert recommendation["actionable"] is False
-    assert [item["signal"] for item in recommendation["evidence"]] == [
-        "current",
-        "motor_feedback",
-    ]
 
 
 @pytest.mark.asyncio

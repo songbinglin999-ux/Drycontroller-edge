@@ -30,13 +30,13 @@ def _boiler_level_monitor(snapshot, tag: str) -> ControlRecommendation:
         reason="Boiler level is monitor-only in the first advisory control phase.",
         evidence=[
             {"tag": tag, "value": snapshot.tags.get(tag), "signal": "boiler_monitor_only"},
-            {"tag": "M15", "value": snapshot.tags.get("M15"), "signal": "boiler_feed_status_only"},
-            {"tag": "M16", "value": snapshot.tags.get("M16"), "signal": "boiler_feed_status_only"},
+            {"tag": "M15_I", "value": snapshot.tags.get("M15_I"), "signal": "boiler_feed_current_only"},
+            {"tag": "M16_I", "value": snapshot.tags.get("M16_I"), "signal": "boiler_feed_current_only"},
         ],
         suggested_actions=[
             SuggestedAction(
                 action_type="inspect",
-                risk_note="Notify operator; do not write boiler softpoints or M15/M16 from algorithm control.",
+                risk_note="Notify operator; do not write boiler softpoints or M15_I/M16_I from algorithm control.",
             )
         ],
         actionable=False,

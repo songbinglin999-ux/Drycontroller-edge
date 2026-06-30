@@ -10,7 +10,16 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
     if entry not in sys.path:
         sys.path.append(entry)
 
-from app.services.control_core.models import REQUIRED_SNAPSHOT_TAGS  # noqa: E402
+from app.services.control_core.models import (  # noqa: E402
+    ACTIVE_TARGET_TAGS,
+    CONTROL_BASIS_BLOCK,
+    REQUIRED_SNAPSHOT_TAGS,
+    ControlRecommendation,
+    SuggestedAction,
+    expires_from,
+    recommendation_id,
+    utc_now,
+)
 from app.services.control_orchestrator import ControlOrchestrator  # noqa: E402
 from app.services.control_state import AUTO_PAUSED, ControlStateService  # noqa: E402
 
@@ -18,45 +27,37 @@ from app.services.control_state import AUTO_PAUSED, ControlStateService  # noqa:
 class DummyRealtimeFull:
     async def get_latest_payload(self, requested_tags, lookback):
         values = {tag: 0 for tag in REQUIRED_SNAPSHOT_TAGS}
+        values.update({tag: 30.0 for tag in ACTIVE_TARGET_TAGS})
         values.update(
             {
-                "CONTROL_MODE": "AUTO",
                 "AUTHORITY_OWNER": "EDGE",
                 "AUTHORITY_EPOCH": 1,
                 "AUTH_TRANSITION_STATE": 0,
                 "HMI_DIRECT_ENABLE": 0,
-                "MAINTENANCE_LOCK": 0,
-                "EMERGENCY_STOP": 0,
-                "FTT1": 70.0,
-                "FTT2": 70.0,
-                "FTT3": 70.0,
-                "T_OUT2": 65.0,
-                "T_OUT4": 66.0,
-                "TT1": 82.0,
-                "TT2": 80.0,
-                "MT1": 13.0,
-                "VFM1": 30.0,
-                "VFM2": 30.0,
-                "VFM3": 30.0,
-                "VF1": 35.0,
-                "VF2": 35.0,
-                "VF3": 35.0,
-                "I_M11": 48.0,
+                "FTT1_T": 70.0,
+                "FTT2_T": 70.0,
+                "FTT3_T": 70.0,
+                "TT1_T": 82.0,
+                "TT2_T": 80.0,
+                "MT1_H": 13.0,
+                "M11_I": 48.0,
+                "VFM1_ACTIVE_FREQ_TARGET": 30.0,
+                "VFM2_ACTIVE_FREQ_TARGET": 30.0,
+                "VFM3_ACTIVE_FREQ_TARGET": 30.0,
+                "VF1_ACTIVE_FREQ_TARGET": 35.0,
+                "VF2_ACTIVE_FREQ_TARGET": 35.0,
+                "VF3_ACTIVE_FREQ_TARGET": 35.0,
             }
         )
-        for index in range(1, 15):
-            values.setdefault(f"M{index}", 1)
-            values.setdefault(f"I_M{index}", 10.0)
-        values["M11"] = 1
         return {
             "success": True,
-            "data": [{"tag": tag, "value": values[tag]} for tag in requested_tags],
+            "data": [{"tag": tag, "value": values[tag]} for tag in requested_tags if tag in values],
             "missing": [],
             "timestamp": 1,
         }
 
     async def get_history_payload(self, tag, period, window, aggregation):
-        values = [10.0, 12.0, 48.0] if tag == "I_M11" else [10.0, 10.0, 10.0]
+        values = [10.0, 12.0, 48.0] if tag == "M11_I" else [10.0, 10.0, 10.0]
         return {
             "success": True,
             "data": {
@@ -84,13 +85,10 @@ class DummyRealtimeNoPlcControlState(DummyRealtimeFull):
     async def get_latest_payload(self, requested_tags, lookback):
         payload = await super().get_latest_payload(requested_tags, lookback)
         optional_state_tags = {
-            "CONTROL_MODE",
             "AUTHORITY_OWNER",
             "AUTHORITY_EPOCH",
             "AUTH_TRANSITION_STATE",
             "HMI_DIRECT_ENABLE",
-            "MAINTENANCE_LOCK",
-            "EMERGENCY_STOP",
         }
         payload["data"] = [
             row for row in payload["data"]
@@ -112,35 +110,11 @@ class DummyRealtimeMissingTransitionState(DummyRealtimeFull):
 
 
 class DummyRealtimeManual(DummyRealtimeFull):
-    async def get_latest_payload(self, requested_tags, lookback):
-        payload = await super().get_latest_payload(requested_tags, lookback)
-        for row in payload["data"]:
-            if row["tag"] == "CONTROL_MODE":
-                row["value"] = "MANUAL"
-        return payload
-
-
-class DummyRealtimeModeChanges(DummyRealtimeFull):
-    def __init__(self):
-        self.latest_calls = 0
-
-    async def get_latest_payload(self, requested_tags, lookback):
-        self.latest_calls += 1
-        payload = await super().get_latest_payload(requested_tags, lookback)
-        if self.latest_calls >= 2:
-            for row in payload["data"]:
-                if row["tag"] == "CONTROL_MODE":
-                    row["value"] = "MANUAL"
-        return payload
+    pass
 
 
 class DummyRealtimeAuto(DummyRealtimeFull):
-    async def get_latest_payload(self, requested_tags, lookback):
-        payload = await super().get_latest_payload(requested_tags, lookback)
-        for row in payload["data"]:
-            if row["tag"] == "CONTROL_MODE":
-                row["value"] = "AUTO"
-        return payload
+    pass
 
 
 class DummyRealtimeLocalOwner(DummyRealtimeFull):
@@ -239,6 +213,36 @@ class DummyRaisingCommand(DummyCommand):
         raise RuntimeError("mqtt task crashed")
 
 
+def _actionable_auto_recommendation(snapshot, value: float = 28.0):
+    line_id = snapshot.line_id
+    now = utc_now()
+    return [
+        ControlRecommendation(
+            id=recommendation_id(line_id, "test_auto_action", "vfm3"),
+            line_id=line_id,
+            level="warning",
+            diagnosis_code="test_auto_action",
+            title="Test AUTO action",
+            reason="Synthetic actionable recommendation for state-machine tests.",
+            evidence=[{"tag": "M11_I", "value": 48.0, "signal": "current"}],
+            suggested_actions=[
+                SuggestedAction(
+                    target_softpoint="VFM3_FREQ_SP",
+                    action_type="setpoint_delta",
+                    current_value=30.0,
+                    suggested_value=value,
+                    delta=value - 30.0,
+                    unit="Hz",
+                    risk_note="Test-only action.",
+                )
+            ],
+            actionable=True,
+            created_at=now,
+            expires_at=expires_from(now),
+        )
+    ]
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_recommendations_are_advisory_only(monkeypatch):
     audit_events = []
@@ -255,38 +259,42 @@ async def test_orchestrator_recommendations_are_advisory_only(monkeypatch):
 
     payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
     recommendations = payload["data"]["recommendations"]
-    recommendation = next(item for item in recommendations if item["actionable"])
+    recommendation = next(
+        item for item in recommendations
+        if any(action.get("target_softpoint") for action in item["suggested_actions"])
+    )
 
     assert recommendation["requires_confirmation"] is False
+    assert recommendation["actionable"] is False
+    assert CONTROL_BASIS_BLOCK in recommendation["blocked_by"]
     assert recommendation["suggested_actions"][0]["target_softpoint"].endswith("_FREQ_SP")
     assert not recommendation["suggested_actions"][0]["target_softpoint"].startswith("M")
+    assert "DATA_MISSING_OR_STALE" not in recommendation["blocked_by"]
     assert payload["data"]["recommendation_confirmation_scope"] == "advisory_only"
     assert command.calls == []
     assert {event["action"] for event in audit_events} == {"control.recommendation.generated"}
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_marks_non_auto_recommendations_not_actionable(monkeypatch):
+async def test_orchestrator_real_tag_snapshot_is_not_stale_without_legacy_tags(monkeypatch):
     async def fake_write_audit(**kwargs):
         return None
 
     monkeypatch.setattr("app.services.control_orchestrator.write_audit", fake_write_audit)
     command = DummyCommand()
     orchestrator = ControlOrchestrator(
-        realtime_service=DummyRealtimeModeChanges(),
+        realtime_service=DummyRealtimeFull(),
         command_service=command,
     )
 
     payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
-    assert next(item for item in payload["data"]["recommendations"] if item["actionable"])
-    next_payload = await orchestrator.get_recommendations(line="L1", lookback="5m")
-    next_recommendation = next(
-        item for item in next_payload["data"]["recommendations"]
-        if any(action.get("target_softpoint") for action in item["suggested_actions"])
-    )
 
-    assert next_recommendation["actionable"] is False
-    assert "CONTROL_MODE_NOT_AUTO" in next_recommendation["blocked_by"]
+    assert payload["data"]["freshness"]["status"] == "fresh"
+    assert payload["data"]["freshness"]["missing_tags"] == []
+    assert all(
+        "DATA_MISSING_OR_STALE" not in item["blocked_by"]
+        for item in payload["data"]["recommendations"]
+    )
     assert command.calls == []
 
 
@@ -474,7 +482,7 @@ async def test_orchestrator_manual_softpoint_interrupts_auto_with_manual_d5100(m
         if item.get("signal") == "operator_request"
     )
     assert operator_request["effective_control_mode"] == "MANUAL"
-    assert operator_request["auto_reauthorization_required"] is True
+    assert operator_request["auto_reauthorization_required"] is False
 
 
 @pytest.mark.asyncio
@@ -505,7 +513,7 @@ async def test_orchestrator_blocks_manual_motor_feedback_write(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_control_state_authorized_auto_dispatches_single_d5100_command(monkeypatch):
+async def test_control_state_authorized_auto_no_action_without_signed_control_basis(monkeypatch):
     audit_events = []
 
     async def fake_write_audit(**kwargs):
@@ -525,14 +533,10 @@ async def test_control_state_authorized_auto_dispatches_single_d5100_command(mon
 
     assert authorized["success"] is True
     assert dispatched["success"] is True
-    assert dispatched["status"] == "dispatched"
-    assert command.calls
-    assert command.calls[0]["mode"] == 2
-    assert command.calls[0]["wait_ack"] is True
-    assert command.calls[0]["tag"] in {"VFM3_FREQ_SP", "VF3_FREQ_SP"}
+    assert dispatched["status"] == "no_action"
+    assert command.calls == []
     assert {event["action"] for event in audit_events} >= {
         "control.mode.auto_authorize",
-        "control.auto.dispatch",
     }
 
 
@@ -667,6 +671,7 @@ async def test_control_state_dispatch_exception_pauses_auto_fail_closed(monkeypa
         return None
 
     monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    monkeypatch.setattr("app.services.control_state.build_recommendations", _actionable_auto_recommendation)
     command = DummyRaisingCommand()
     service = ControlStateService(
         realtime_service=DummyRealtimeFull(),
@@ -692,6 +697,7 @@ async def test_control_state_nak_pauses_auto_and_records_command(monkeypatch):
         return None
 
     monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    monkeypatch.setattr("app.services.control_state.build_recommendations", _actionable_auto_recommendation)
     command = DummyNakCommand()
     service = ControlStateService(
         realtime_service=DummyRealtimeFull(),
@@ -716,6 +722,7 @@ async def test_control_state_cooldown_rejects_next_auto_command(monkeypatch):
         return None
 
     monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    monkeypatch.setattr("app.services.control_state.build_recommendations", _actionable_auto_recommendation)
     command = DummyCommand()
     service = ControlStateService(
         realtime_service=DummyRealtimeFull(),
@@ -742,6 +749,7 @@ async def test_control_state_active_target_mismatch_pauses_auto(monkeypatch):
         return None
 
     monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    monkeypatch.setattr("app.services.control_state.build_recommendations", _actionable_auto_recommendation)
     command = DummyMismatchCommand()
     service = ControlStateService(
         realtime_service=DummyRealtimeFull(),

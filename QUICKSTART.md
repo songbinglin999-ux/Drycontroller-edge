@@ -95,7 +95,7 @@ curl http://localhost:8000/api/v1/system/status
 curl http://localhost:8000/api/realtime/latest | jq
 
 # 获取特定标签（当前 SSOT 使用 io-map V2 位号）
-curl "http://localhost:8000/api/realtime/latest?tags=FTT1&tags=VF1" | jq
+curl "http://localhost:8000/api/realtime/latest?tags=FTT1_T&tags=VF1_I" | jq
 ```
 
 ### 方式 2: 订阅 MQTT
@@ -200,19 +200,18 @@ curl http://localhost:8000/api/v1/ai/moisture/current | jq
 curl http://localhost:8000/api/v1/ai/optimization/recommendation | jq
 ```
 
-## 测试控制建议与 MANUAL 过渡写入
+## 测试控制建议与 MANUAL 写入
 
 ```bash
 curl http://localhost:8000/api/v1/control/recommendations \
   -H "X-API-Key: $CONTROL_API_KEY" | jq
 ```
 
-V1 生产口径是 `MANUAL` / `AUTO` 模式授权，不是每条建议人工确认。下面的
-`manual-confirm` 只用于 `MANUAL` 写入或 commissioning/debug 过渡；旧
-`/api/v1/control/set`、`/batch`、`/emergency-stop` 不再作为公开入口。
+V1 生产口径是 `MANUAL` / `AUTO` 模式授权，不是每条建议人工确认。`MANUAL`
+人工调频只走 `/api/v1/control/manual/set`；旧直接控制和逐条确认入口不再作为公开入口。
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/control/recommendations/manual-confirm \
+curl -X POST http://localhost:8000/api/v1/control/manual/set \
   -H "X-API-Key: $CONTROL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

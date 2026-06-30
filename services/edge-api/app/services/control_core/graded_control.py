@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import List, Optional
 
 from app.services.control_core.models import (
+    CONTROL_BASIS_BLOCK,
+    CURRENT_TAGS,
     ControlRecommendation,
     SuggestedAction,
     clamp_softpoint_value,
@@ -15,12 +17,12 @@ from app.services.control_core.models import (
 
 def analyze_graded_control(snapshot) -> List[ControlRecommendation]:
     high_currents = [
-        tag for tag in (f"I_M{index}" for index in range(1, 15))
+        tag for tag in CURRENT_TAGS
         if _as_float(snapshot.tags.get(tag), 0.0) >= 45.0
     ]
-    moisture = _as_float(snapshot.tags.get("MT1"))
+    moisture = _as_float(snapshot.tags.get("MT1_H"))
     low_temperatures = [
-        tag for tag in ("FTT1", "FTT2", "FTT3")
+        tag for tag in ("FTT1_T", "FTT2_T", "FTT3_T")
         if _as_float(snapshot.tags.get(tag), 999.0) <= 55.0
     ]
 
@@ -35,7 +37,7 @@ def analyze_graded_control(snapshot) -> List[ControlRecommendation]:
 
 def _l3_stop_feed(snapshot, high_currents: List[str]) -> ControlRecommendation:
     now = utc_now()
-    current_value = _as_float(snapshot.tags.get("VFM3"))
+    current_value = _as_float(snapshot.tags.get("VFM3_ACTIVE_FREQ_TARGET"))
     suggested_value = 0.0 if current_value is not None else None
     return ControlRecommendation(
         id=recommendation_id(snapshot.line_id, "graded_l3_stop_feed", "vfm3"),
@@ -56,7 +58,8 @@ def _l3_stop_feed(snapshot, high_currents: List[str]) -> ControlRecommendation:
                 risk_note="Do not auto-stop feed in V1; suspend AUTO and require downstream inspection.",
             )
         ],
-        actionable=True,
+        actionable=False,
+        blocked_by=[CONTROL_BASIS_BLOCK],
         created_at=now,
         expires_at=expires_from(now),
     )
@@ -69,7 +72,7 @@ def _l2_adjust_feed(
     low_temperatures: List[str],
 ) -> ControlRecommendation:
     now = utc_now()
-    current_value = _as_float(snapshot.tags.get("VFM3"))
+    current_value = _as_float(snapshot.tags.get("VFM3_ACTIVE_FREQ_TARGET"))
     suggested_value = (
         clamp_softpoint_value("VFM3_FREQ_SP", current_value - 1.0)
         if current_value is not None
@@ -77,7 +80,7 @@ def _l2_adjust_feed(
     )
     evidence = [{"tag": tag, "value": snapshot.tags.get(tag), "signal": "high_current"} for tag in high_currents]
     if moisture is not None:
-        evidence.append({"tag": "MT1", "value": moisture, "signal": "moisture"})
+        evidence.append({"tag": "MT1_H", "value": moisture, "signal": "moisture"})
     evidence.extend({"tag": tag, "value": snapshot.tags.get(tag), "signal": "low_temperature"} for tag in low_temperatures)
     return ControlRecommendation(
         id=recommendation_id(snapshot.line_id, "graded_l2_adjust_feed", "vfm3"),
@@ -98,7 +101,8 @@ def _l2_adjust_feed(
                 risk_note="Small feed reduction candidate for AUTO only while all gates are clear.",
             )
         ],
-        actionable=True,
+        actionable=False,
+        blocked_by=[CONTROL_BASIS_BLOCK],
         created_at=now,
         expires_at=expires_from(now),
     )
@@ -113,7 +117,7 @@ def _l1_monitor(snapshot, moisture: float) -> ControlRecommendation:
         diagnosis_code="graded_l1_monitor",
         title="L1 condition: monitor moisture",
         reason="Moisture is mildly above target; no setpoint change is recommended yet.",
-        evidence=[{"tag": "MT1", "value": moisture, "signal": "moisture"}],
+        evidence=[{"tag": "MT1_H", "value": moisture, "signal": "moisture"}],
         suggested_actions=[
             SuggestedAction(action_type="inspect", risk_note="Keep monitoring moisture and downstream load.")
         ],

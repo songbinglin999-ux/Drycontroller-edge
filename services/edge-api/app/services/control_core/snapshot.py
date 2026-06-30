@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 from app.services.control_core.models import (
+    ACTIVE_TARGET_TAGS,
     CURRENT_TAGS,
     PROCESS_TAGS,
     REQUIRED_SNAPSHOT_TAGS,
@@ -43,7 +44,7 @@ async def build_process_snapshot(
         line_id=line_id,
         timestamp=datetime.now(timezone.utc),
         freshness=freshness,
-        tags={tag: latest.get(tag) for tag in PROCESS_TAGS if tag in latest},
+        tags={tag: latest.get(tag) for tag in (PROCESS_TAGS + ACTIVE_TARGET_TAGS) if tag in latest},
         histories=histories,
         control_state=ControlState(
             CONTROL_MODE=_as_str(latest.get("CONTROL_MODE")),

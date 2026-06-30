@@ -2,7 +2,7 @@
 
 > 状态：v0.2 草案（2026-06-19 CST）
 > 范围：pre-AI 可解释诊断 / V1 AUTO 六频率目标建议；不做完整监督控制
-> 点位来源：`docs/plc/io-map.html` + `configs/tags.yaml` 当前 52 个只读 I/O 点
+> 点位来源：`docs/plc/io-map.html` + `configs/tags.yaml` 当前真实 28D+6 只读 I/O 点；下文旧 52 点名仅作历史规则草案参考
 > 关联边界：`docs/plc/io-and-control-contract.md`、根 `architecture-audit-2026-05-06.md` E 线
 > 自适应治理：`docs/algorithm-governance/self-evolution-design.md`
 
@@ -10,12 +10,12 @@
 
 ## 0. 设计边界
 
-本文定义 E 线控制核心在当前阶段能做什么、不能做什么。这里的“控制核心”不是 PLC 点位文档，也不是黑盒 AI/MPC；它是基于现场 52 个只读位号、历史窗口和 softsensor 输出，给出可解释诊断、分级提示，以及 V1 `AUTO` 模式下的六频率目标候选。
+本文定义 E 线控制核心在当前阶段能做什么、不能做什么。这里的“控制核心”不是 PLC 点位文档，也不是黑盒 AI/MPC；它是基于现场真实 28D+6 只读位号、历史窗口和 softsensor 输出，给出可解释诊断、分级提示，以及 V1 `AUTO` 模式下的六频率目标候选。旧 52 点规则里引用的 `T_OUT2/T_OUT4`、裸 `M*` 运行反馈、裸 `VFM*`/`VF*` 频率反馈在当前真实点表中不存在，不能作为 actionable 控制依据。
 
 **固定范围**：
-- 只使用当前 `io-map` / `tags.yaml` 里的 52 个 I/O 位号：`LL1-6`、`FTT1-3`、`T_OUT2/T_OUT4`、`TT1-2`、`MT1`、`I_M1-16`、`M1-16`、`VFM1-3`、`VF1-3`。
-- `M*`、`VFM*`、`VF*` 全部按 PLC 反馈值处理；edge 观察它们，不写它们。
-- 输出诊断、证据、置信度、建议文案、目标频率候选和阻断原因；未进入 `AUTO`、数据不 fresh、softpoint/范围/变化率/ACK-NAK/读回 gate 不满足时必须 `actionable=false` 或进入 `AUTO_SUSPENDED`。
+- 只使用当前 `io-map` / `tags.yaml` 里的真实位号：`LL1-6`、`M*_I` / `VFM*_I` / `VF*_I` 电流、`FTT*_T` / `TT*_T` 温度、`MT1_H` 湿度，以及 authority / accepted-target 诊断点。
+- 裸 `M*`、`VFM*`、`VF*` 不是当前 PLC 反馈位号；edge 不再请求这些旧名，也不把 `D30-D35` 当 VFD PV 或 D5100 读回。
+- 输出诊断、证据、置信度、建议文案、目标频率候选和阻断原因；未进入 `AUTO`、数据不 fresh、softpoint/范围/变化率/ACK-NAK/读回 gate 不满足时必须 `actionable=false` 或进入 `AUTO_PAUSED`。
 - 阈值先按相对基线和趋势写设计，真实电流/温度/湿度阈值等现场数据后再标定。
 
 **明确排除**：
@@ -206,7 +206,7 @@ v0.2 按 `MANUAL` / `AUTO` 分开处理。`AUTO` 是模式级授权，不是每�
 | L0 | 观察 | 记录趋势和 evidence，不提示操作员 |
 | L1 | 提示 | 大屏 / HMI 展示“可能异常” |
 | L2 | AUTO 小步调节候选 | `MANUAL` 下只展示；`AUTO` 下经 gate 后可自动签发六频率目标 |
-| L3 | 高风险挂起 / 人工处置 | 暂不自动强动作；进入 `AUTO_SUSPENDED` 并提示现场检查，需 `P0-SAFETY` 与现场验收后再扩展 |
+| L3 | 高风险挂起 / 人工处置 | 暂不自动强动作；进入 `AUTO_PAUSED` 并提示现场检查，需 `P0-SAFETY` 与现场验收后再扩展 |
 
 输出字段保持当前 edge-api 最小 schema：
 

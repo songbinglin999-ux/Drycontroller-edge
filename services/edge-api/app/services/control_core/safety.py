@@ -17,6 +17,7 @@ _ACTION_ERROR_BY_BLOCK = {
     "MOTOR_FEEDBACK_WRITE_FORBIDDEN": "motor_feedback_write_forbidden",
     "SOFTPOINT_NOT_ALLOWED": "softpoint_not_allowed",
     "SUGGESTED_VALUE_MISSING": "suggested_value_missing",
+    "EXECUTABLE_ACTION_MISSING_CURRENT_VALUE": "missing_current_value",
     "SETPOINT_OUT_OF_RANGE": "setpoint_out_of_range",
 }
 
@@ -99,6 +100,8 @@ def action_blocks(action: SuggestedAction) -> List[str]:
         return ["SOFTPOINT_NOT_ALLOWED"]
     if action.suggested_value is None:
         return ["SUGGESTED_VALUE_MISSING"]
+    if action.current_value is None:
+        return ["EXECUTABLE_ACTION_MISSING_CURRENT_VALUE"]
     lo, hi, _unit = ALLOWED_CONTROL_SOFTPOINTS[action.target_softpoint]
     if action.suggested_value < lo or action.suggested_value > hi:
         return ["SETPOINT_OUT_OF_RANGE"]
