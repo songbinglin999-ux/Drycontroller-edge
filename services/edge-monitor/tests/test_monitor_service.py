@@ -475,7 +475,14 @@ async def test_control_status_command_failures_are_degraded(command_result, expe
 
 
 @pytest.mark.asyncio
-async def test_control_status_normal_manual_resolves_without_self_heal():
+@pytest.mark.parametrize(
+    ("mode", "dispatch_status"),
+    [
+        ("MANUAL", "manual_stopped"),
+        ("AUTO", "ready"),
+    ],
+)
+async def test_control_status_normal_mode_resolves_stale_command_failure_without_self_heal(mode, dispatch_status):
     service = _new_service()
     _enable_control_probe(service)
     service.control_visibility_state = {"status": "degraded"}
@@ -487,13 +494,18 @@ async def test_control_status_normal_manual_resolves_without_self_heal():
                 {
                     "success": True,
                     "data": {
-                        "mode": "MANUAL",
-                        "auto_dispatch_status": "manual_stopped",
+                        "mode": mode,
+                        "auto_dispatch_status": dispatch_status,
                         "pause_reason": None,
                         "requires_reauthorization": False,
+                        "last_transition": {"from": "AUTO_PAUSED", "to": mode, "at": "2026-06-30T00:01:00+00:00"},
                         "authority_snapshot": {"AUTHORITY_OWNER": "EDGE", "AUTHORITY_EPOCH": 3},
                         "transport": {"ready": True, "mqtt_connected": True, "signature_configured": True},
-                        "last_command_result": {"scope": "manual", "result": {"success": True, "status": "acked"}},
+                        "last_command_result": {
+                            "scope": "auto",
+                            "recorded_at": "2026-06-30T00:00:00+00:00",
+                            "result": {"success": False, "status": "nak", "error": "control_nak"},
+                        },
                     },
                 }
             )
@@ -505,6 +517,7 @@ async def test_control_status_normal_manual_resolves_without_self_heal():
 
     assert record["status"] == "healthy"
     assert record["detail"] == "control_status_ok"
+    assert record["last_command_result"]["problem"] is True
     assert transition["state"] == "resolved"
     assert transition["severity"] is None
     assert service.control_status["self_heal"]["enabled"] is False

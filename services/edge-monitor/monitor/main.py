@@ -23,6 +23,7 @@
 
 import asyncio
 from collections import deque
+from datetime import datetime
 import json
 import os
 import time
@@ -909,7 +910,7 @@ class MonitorService:
                 for reason in reasons
             ):
                 reasons.append("CONTROL_TRANSPORT_NOT_READY")
-        if last_command.get("problem"):
+        if last_command.get("problem") and self._last_command_problem_is_current(data, last_command):
             reasons.append(str(last_command.get("reason") or "CONTROL_COMMAND_ERROR"))
 
         status = "degraded" if reasons else "healthy"
@@ -967,6 +968,24 @@ class MonitorService:
             "success": result.get("success") if isinstance(result, dict) else None,
             "error": error_value,
         }
+
+    def _last_command_problem_is_current(self, data: Dict[str, Any], last_command: Dict[str, Any]) -> bool:
+        if data.get("mode") == "AUTO_PAUSED":
+            return True
+        command_at = self._iso_timestamp(last_command.get("recorded_at"))
+        transition = data.get("last_transition") if isinstance(data.get("last_transition"), dict) else {}
+        transition_at = self._iso_timestamp(transition.get("at"))
+        if command_at is None or transition_at is None:
+            return True
+        return command_at > transition_at
+
+    def _iso_timestamp(self, value: Any) -> Optional[float]:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
 
     def _scalar_values(self, value: Any) -> list[Any]:
         if isinstance(value, dict):
