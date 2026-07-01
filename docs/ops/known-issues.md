@@ -13,9 +13,11 @@
 
 **影响**：HMI edge HTTP 超时过短时会出现危险假阴性：HMI 先报 `timed out` / `edge_control_status_unavailable`，但 edge/PLC 随后 ACK 成功。HMI runtime 已将默认 `HMI_EDGE_TIMEOUT_SEC` 调整为 15s 并保留 fail-closed；edge-api 状态接口延迟本身仍需后续优化。
 
-**修法（未排期）**：排查 `control/status` 的实时点查询路径，优先考虑复用内存最新快照或为控制状态查询设置更窄的 tag/timeout，避免 HMI 操作路径被 Influx/实时查询尾延迟拖慢。
+**修法**：2026-07-01 已处理。`GET /api/v1/control/status` 改为内存快路径，只同步返回产品态、transport、最近 authority snapshot 和最近 command 结果；AUTO 状态下只触发后台轻量 authority gate refresh，不再同步构建完整 process snapshot。`AUTO` 授权改为只查 `CONTROL_STATE_TAGS`，不拉 22 个电流历史窗口；`AUTO dispatch` 仍保留完整诊断快照，但历史窗口查询改为并发执行，避免串行放大尾延迟。
 
-**状态**：backlog，未排期。
+**验证**：`python3 -m py_compile services/edge-api/app/services/control_state.py services/edge-api/app/services/control_core/snapshot.py services/ai-ctrl-optimizer/tests/test_health.py`；`../scripts/agent-test-env.sh pytest services/edge-api/tests/test_control_orchestrator.py -q`；`../scripts/agent-test-env.sh pytest services/edge-api/tests/test_api_endpoints.py -q`；`../scripts/agent-test-env.sh pytest services/edge-api/tests/test_services.py -q`；`../scripts/agent-test-env.sh pytest services/edge-api/tests/test_influx_validation.py -q`。
+
+**状态**：done（edge-api local verification passed）。
 
 ---
 
@@ -27,8 +29,8 @@
 
 **影响**：**非上线阻塞**。CI 入口 `scripts/test-all.sh`（`--cov-fail-under=50`）对各服务以**独立 pytest 进程**分别执行，进程级 `sys.modules` 互不污染，不触发该问题。仅在"一条 pytest 命令跨服务混跑"的手工跑法下出现。已由 CI 实跑（Gitea Actions）验证通过。
 
-**修法（择一，未排期）**：
-- 跑测试时加 `--import-mode=importlib`（pytest 现代导入模式，不操纵 `sys.path`、不按模块名去重）——最省；
-- 或将两个服务的 `src` 改为唯一包名（如 `ai_softsensor` / `ai_ctrl_optimizer`）——更彻底但侵入大。
+**修法**：2026-07-01 已处理。保留两个服务运行时的 `src` 包名和 Docker 入口不变，只把 `ai-ctrl-optimizer` 测试改为通过唯一模块名 `ai_ctrl_optimizer_main` 加载 `src/main.py`，避免测试进程占用共享的 `src.main`。
 
-**状态**：backlog，未排期。
+**验证**：`../scripts/agent-test-env.sh pytest services/ai-softsensor/tests services/ai-ctrl-optimizer/tests -q`。
+
+**状态**：done（local mixed pytest session passed）。

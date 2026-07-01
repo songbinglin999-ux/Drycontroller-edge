@@ -21,7 +21,7 @@ from app.services.control_core.models import (
     SuggestedAction,
 )
 from app.services.control_core.safety import action_validation_error
-from app.services.control_core.snapshot import build_process_snapshot
+from app.services.control_core.snapshot import build_control_gate_snapshot, build_process_snapshot
 from app.services.realtime_data import RealtimeDataService, get_realtime_data_service
 
 CONTROL_MODES = ("MANUAL", "AUTO")
@@ -63,23 +63,20 @@ class ControlStateService:
         self._last_auto_action: Optional[dict] = None
         self._in_flight = False
         self._last_auto_by_softpoint: Dict[str, Tuple[float, float]] = {}
+        self._status_refresh_tasks: Dict[str, asyncio.Task] = {}
 
     async def get_status(self, *, line: Optional[str] = None, lookback: str = "5m") -> dict:
         line_id = line or "L1"
-        snapshot, snapshot_error = await self._safe_snapshot(line_id=line_id, lookback=lookback)
         transport = self._transport_status()
-        blocks = self._gate_blocks(snapshot, transport) if snapshot else ["DATA_MISSING_OR_STALE"]
-        if snapshot_error:
-            blocks.append(snapshot_error)
-        if snapshot:
-            self._authority_snapshot = _authority_snapshot(snapshot)
-
+        blocks = self._transport_blocks(transport)
         if self._mode == "AUTO" and blocks:
             await self._pause_auto(
                 reason=blocks[0],
                 actor="edge-api",
                 detail={"blocked_by": blocks, "authority_snapshot": self._authority_snapshot},
             )
+        elif self._mode == "AUTO":
+            self._schedule_status_refresh(line_id=line_id, lookback=lookback)
         return self._status_payload(line_id=line_id, transport=transport)
 
     async def authorize_auto(
@@ -91,7 +88,7 @@ class ControlStateService:
         lookback: str = "5m",
     ) -> dict:
         line_id = line or "L1"
-        snapshot, snapshot_error = await self._safe_snapshot(line_id=line_id, lookback=lookback)
+        snapshot, snapshot_error = await self._safe_control_gate_snapshot(line_id=line_id, lookback=lookback)
         transport = self._transport_status()
         blocks = self._gate_blocks(snapshot, transport) if snapshot else ["DATA_MISSING_OR_STALE"]
         if snapshot_error:
@@ -404,11 +401,32 @@ class ControlStateService:
         except Exception as exc:  # noqa: BLE001 - malformed realtime payloads must fail closed.
             return None, f"SNAPSHOT_ERROR:{type(exc).__name__}"
 
+    async def _safe_control_gate_snapshot(self, *, line_id: str, lookback: str) -> Tuple[Optional[ProcessSnapshot], Optional[str]]:
+        try:
+            return (
+                await build_control_gate_snapshot(
+                    line_id=line_id,
+                    lookback=lookback,
+                    realtime_service=self._realtime,
+                ),
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001 - malformed realtime payloads must fail closed.
+            return None, f"SNAPSHOT_ERROR:{type(exc).__name__}"
+
     def _transport_status(self) -> dict:
         status_fn = getattr(self._command, "transport_status", None)
         if callable(status_fn):
             return status_fn()
         return {"ready": True, "mqtt_connected": True, "signature_configured": True}
+
+    def _transport_blocks(self, transport: dict) -> List[str]:
+        blocks: List[str] = []
+        if not transport.get("mqtt_connected"):
+            blocks.append("MQTT_NOT_CONNECTED")
+        if not transport.get("signature_configured"):
+            blocks.append("CONTROL_SIGNATURE_SECRET_MISSING")
+        return blocks
 
     def _gate_blocks(self, snapshot: Optional[ProcessSnapshot], transport: dict) -> List[str]:
         blocks: List[str] = []
@@ -427,11 +445,36 @@ class ControlStateService:
             blocks.append("MAINTENANCE_LOCK_ACTIVE")
         if state is not None and state.emergency_stop is True:
             blocks.append("EMERGENCY_STOP_ACTIVE")
-        if not transport.get("mqtt_connected"):
-            blocks.append("MQTT_NOT_CONNECTED")
-        if not transport.get("signature_configured"):
-            blocks.append("CONTROL_SIGNATURE_SECRET_MISSING")
+        blocks.extend(self._transport_blocks(transport))
         return list(dict.fromkeys(blocks))
+
+    def _schedule_status_refresh(self, *, line_id: str, lookback: str) -> None:
+        task = self._status_refresh_tasks.get(line_id)
+        if task and not task.done():
+            return
+        task = asyncio.create_task(self._refresh_control_gate(line_id=line_id, lookback=lookback))
+        self._status_refresh_tasks[line_id] = task
+        task.add_done_callback(lambda done: self._finish_status_refresh(line_id, done))
+
+    def _finish_status_refresh(self, line_id: str, task: asyncio.Task) -> None:
+        self._status_refresh_tasks.pop(line_id, None)
+        if not task.cancelled():
+            task.exception()
+
+    async def _refresh_control_gate(self, *, line_id: str, lookback: str) -> None:
+        snapshot, snapshot_error = await self._safe_control_gate_snapshot(line_id=line_id, lookback=lookback)
+        transport = self._transport_status()
+        blocks = self._gate_blocks(snapshot, transport) if snapshot else ["DATA_MISSING_OR_STALE"]
+        if snapshot_error:
+            blocks.append(snapshot_error)
+        if snapshot:
+            self._authority_snapshot = _authority_snapshot(snapshot)
+        if self._mode == "AUTO" and blocks:
+            await self._pause_auto(
+                reason=blocks[0],
+                actor="edge-api",
+                detail={"blocked_by": blocks, "authority_snapshot": self._authority_snapshot},
+            )
 
     def _rate_block(self, action: SuggestedAction) -> Optional[str]:
         tag = str(action.target_softpoint)

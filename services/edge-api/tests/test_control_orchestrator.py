@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -13,6 +14,7 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
 from app.services.control_core.models import (  # noqa: E402
     ACTIVE_TARGET_TAGS,
     CONTROL_BASIS_BLOCK,
+    CONTROL_STATE_TAGS,
     REQUIRED_SNAPSHOT_TAGS,
     ControlRecommendation,
     SuggestedAction,
@@ -71,6 +73,22 @@ class DummyRealtimeFull:
             "count": 3,
             "timestamp": 1,
         }
+
+
+class DummyRealtimeCounting(DummyRealtimeFull):
+    def __init__(self):
+        self.latest_calls = 0
+        self.history_calls = 0
+        self.latest_requested_tags = []
+
+    async def get_latest_payload(self, requested_tags, lookback):
+        self.latest_calls += 1
+        self.latest_requested_tags.append(list(requested_tags))
+        return await super().get_latest_payload(requested_tags, lookback)
+
+    async def get_history_payload(self, tag, period, window, aggregation):
+        self.history_calls += 1
+        return await super().get_history_payload(tag, period, window, aggregation)
 
 
 class DummyRealtimeMissing:
@@ -539,6 +557,71 @@ async def test_control_state_authorized_auto_no_action_without_signed_control_ba
     assert {event["action"] for event in audit_events} >= {
         "control.mode.auto_authorize",
     }
+
+
+@pytest.mark.asyncio
+async def test_control_status_fast_path_does_not_query_realtime(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    realtime = DummyRealtimeCounting()
+    service = ControlStateService(
+        realtime_service=realtime,
+        command_service=DummyCommand(),
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    status = await service.get_status(line="L1")
+
+    assert status["mode"] == "MANUAL"
+    assert realtime.latest_calls == 0
+    assert realtime.history_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_control_auto_authorize_uses_gate_snapshot_without_histories(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    realtime = DummyRealtimeCounting()
+    service = ControlStateService(
+        realtime_service=realtime,
+        command_service=DummyCommand(),
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    authorized = await service.authorize_auto(line="L1", actor="operator:test")
+
+    assert authorized["success"] is True
+    assert realtime.latest_calls == 1
+    assert realtime.latest_requested_tags == [list(CONTROL_STATE_TAGS)]
+    assert realtime.history_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_control_status_background_gate_refresh_pauses_auto(monkeypatch):
+    async def fake_write_audit(**kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.control_state.write_audit", fake_write_audit)
+    service = ControlStateService(
+        realtime_service=DummyRealtimeOwnerChanges(),
+        command_service=DummyCommand(),
+        cooldown_sec=0,
+        max_delta_hz=10,
+    )
+
+    assert (await service.authorize_auto(line="L1", actor="operator:test"))["success"] is True
+    status = await service.get_status(line="L1")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert status["mode"] == "AUTO"
+    assert (await service.get_status(line="L1"))["mode"] == AUTO_PAUSED
 
 
 @pytest.mark.asyncio
