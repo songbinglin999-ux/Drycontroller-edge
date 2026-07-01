@@ -5,6 +5,20 @@
 
 ---
 
+## CONTROL-STATUS-LATENCY — `/api/v1/control/status` 在联调高状态切换下响应偏慢
+
+**发现**：2026-07-01
+
+**现象**：edge-api + edge-daq + `fas66mt_fake_plc` + HMI runtime 本地联调时，AUTO 授权、AUTO dispatch、LOCAL_SCREEN/EDGE 权属切换后，`GET /api/v1/control/status?line=L1` 多次耗时约 4-11s；`POST /api/v1/control/auto/dispatch` 曾耗时约 12.6s。edge-daq 同期保持 ready，PLC ACK 最终成功。
+
+**影响**：HMI edge HTTP 超时过短时会出现危险假阴性：HMI 先报 `timed out` / `edge_control_status_unavailable`，但 edge/PLC 随后 ACK 成功。HMI runtime 已将默认 `HMI_EDGE_TIMEOUT_SEC` 调整为 15s 并保留 fail-closed；edge-api 状态接口延迟本身仍需后续优化。
+
+**修法（未排期）**：排查 `control/status` 的实时点查询路径，优先考虑复用内存最新快照或为控制状态查询设置更窄的 tag/timeout，避免 HMI 操作路径被 Influx/实时查询尾延迟拖慢。
+
+**状态**：backlog，未排期。
+
+---
+
 ## TEST-IMPORT-COLLISION — ai-softsensor / ai-ctrl-optimizer 同名 `src.main` pytest import 串包
 
 **发现**：2026-06-17
