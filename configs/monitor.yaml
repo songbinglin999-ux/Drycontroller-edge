@@ -61,8 +61,8 @@ control:
   status:
     enabled: true
     url: "http://edge-api:8000/api/v1/control/status"
-    # edge-api /control/status 当前走控制级鉴权；monitor 在 docker 内网用 admin key 只读拉取，
-    # 不把控制写 key 暴露到只读外部面。
+    # /control/status 是只读白名单端点；monitor 仍可在 docker 内网附带 admin key，
+    # 但大屏不需要也不能持有控制写 key。
     api_key_env: "ADMIN_API_KEYS"
     api_key_header: "X-API-Key"
     self_heal:

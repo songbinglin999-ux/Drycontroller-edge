@@ -6,12 +6,12 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.core.security import require_control_api_key
+from app.core.security import require_control_api_key, require_readonly_http_source
 from app.services.audit import api_key_actor
 from app.services.control_orchestrator import ControlOrchestrator, get_control_orchestrator
 from app.services.control_state import ControlStateService, get_control_state_service
 
-router = APIRouter(dependencies=[Depends(require_control_api_key)])
+router = APIRouter()
 logger = structlog.get_logger(__name__)
 
 
@@ -19,6 +19,7 @@ logger = structlog.get_logger(__name__)
 async def list_control_recommendations(
     line: Optional[str] = Query(None, description="可选：按产线过滤"),
     lookback: str = Query("5m", description="分析窗口，如 5m/10m"),
+    _: str = Depends(require_control_api_key),
     orchestrator: ControlOrchestrator = Depends(get_control_orchestrator),
 ):
     try:
@@ -102,7 +103,7 @@ async def dismiss_control_recommendation(
     )
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_readonly_http_source)])
 async def get_control_status(
     line: Optional[str] = Query(None, description="可选：按产线过滤"),
     state_service: ControlStateService = Depends(get_control_state_service),

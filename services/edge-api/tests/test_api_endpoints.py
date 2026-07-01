@@ -272,10 +272,7 @@ def test_control_recommendations_endpoint():
 
 
 def test_control_status_uses_mode_authorization_model():
-    resp = client.get(
-        "/api/v1/control/status",
-        headers={settings.API_KEY_HEADER: "test-control"},
-    )
+    resp = client.get("/api/v1/control/status")
     assert resp.status_code == 200
     body = resp.json()["data"]
     assert body["operation_modes"] == ["MANUAL", "AUTO"]
@@ -293,6 +290,24 @@ def test_control_status_uses_mode_authorization_model():
     assert body["last_auto_action"] is None
     assert body["manual_command_entrypoint"] == "/api/v1/control/manual/set"
     assert body["auto_dispatch_entrypoint"] == "/api/v1/control/auto/dispatch"
+
+
+def test_control_write_and_recommendation_endpoints_still_require_control_key():
+    resp = client.get("/api/v1/control/recommendations")
+    assert resp.status_code == 401
+
+    resp = client.post("/api/v1/control/mode", json={"line": "L1", "mode": "AUTO"})
+    assert resp.status_code == 401
+
+    resp = client.post(
+        "/api/v1/control/manual/set",
+        json={
+            "line": "L1",
+            "target_softpoint": "VFM1_FREQ_SP",
+            "value": 20.0,
+        },
+    )
+    assert resp.status_code == 401
 
 
 def test_control_mode_auto_authorize_endpoint():
