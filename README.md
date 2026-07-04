@@ -101,8 +101,8 @@ Representative local endpoints:
 ```text
 GET  /ready
 GET  /api/v1/system/status?line=L1
-GET  /api/realtime/latest
-GET  /api/history
+GET  /api/v1/data/latest
+GET  /api/v1/data/history
 GET  /api/v1/control/recommendations
 POST /api/v1/control/manual/set
 POST /api/v1/control/auto/dispatch

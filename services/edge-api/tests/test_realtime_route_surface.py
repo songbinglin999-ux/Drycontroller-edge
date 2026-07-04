@@ -21,11 +21,12 @@ def test_realtime_data_plane_has_single_public_surface():
 
     paths = {getattr(route, "path", "") for route in app.routes}
 
-    assert "/api/realtime/latest" in paths
-    assert "/api/history" in paths
     assert "/api/ws/realtime" in paths
+    assert "/api/v1/data/latest" in paths
+    assert "/api/v1/data/history" in paths
     assert "/api/v1/data/tags" in paths
 
+    assert "/api/realtime/latest" not in paths
+    assert "/api/history" not in paths
     assert "/api/realtime/stream" not in paths
     assert "/api/v1/data/realtime" not in paths
-    assert "/api/v1/data/history" not in paths

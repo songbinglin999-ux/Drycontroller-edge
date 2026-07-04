@@ -1,6 +1,4 @@
-"""
-实时数据 API
-"""
+"""实时数据 WebSocket API 和系统流兜底。"""
 
 import time
 from typing import Callable, List, Optional, Set
@@ -10,54 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.services.ws_stream import ws_stream
-from app.services.realtime_data import (
-    RealtimeDataService,
-    get_realtime_data_service,
-)
 from app.core.security import require_readonly_http_source, require_readonly_ws_source
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
-
-
-@router.get("/realtime/latest", dependencies=[Depends(require_readonly_http_source)])
-async def realtime_latest(
-    tags: Optional[List[str]] = Query(
-        None,
-        description="指定标签列表，不传则返回全部配置标签",
-    ),
-    lookback: str = Query(
-        "5m",
-        description="查询时间窗口，例如 5m/1h/1d",
-    ),
-    service: RealtimeDataService = Depends(get_realtime_data_service),
-):
-    try:
-        return await service.get_latest_payload(tags, lookback=lookback)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-
-@router.get("/history", dependencies=[Depends(require_readonly_http_source)])
-async def history(
-    tag: str = Query(..., description="标签名称"),
-    period: str = Query("1h", description="时间范围，例如 1h/6h/1d"),
-    window: str = Query("1m", description="聚合窗口，例如 1m/5m/1h"),
-    aggregation: str = Query(
-        "mean",
-        description="聚合函数，可选 mean/max/min/sum/last/first",
-    ),
-    service: RealtimeDataService = Depends(get_realtime_data_service),
-):
-    try:
-        return await service.get_history_payload(
-            tag=tag,
-            period=period,
-            window=window,
-            aggregation=aggregation,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =========== WebSocket MQTT Streaming ===========

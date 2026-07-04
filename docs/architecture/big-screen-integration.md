@@ -4,7 +4,7 @@
 
 | 数据类型 | 推荐接口 | 说明 |
 |----------|----------|------|
-| 最新点位 / 历史曲线 | REST：`/api/realtime/latest`、`/api/history` | 用于页面初始化或回放 |
+| 最新点位 / 历史曲线 | REST：`/api/v1/data/latest`、`/api/v1/data/history` | 用于页面初始化或回放 |
 | 实时点位推送 | WebSocket：`/api/ws/realtime` | 可按 `line`、`tags` 过滤 |
 | AI 推理结果 | WebSocket：`/api/ws/ai` | 含 `value`、`confidence`、`model_version` |
 | 系统健康状态 | WebSocket：`/api/ws/system` / REST：`/api/system/health` | 监控整体状况 |
@@ -110,7 +110,7 @@ WebSocket 消息与 MQTT 载荷完全一致，字段说明：
    - 启动 WebSocket 持续更新。
 
 2. **历史回放**  
-   - 调用 `/api/history?tag=FTT1&period=6h&window=1m` 获取折线；
+   - 调用 `/api/v1/data/history?tag=FTT1&period=6h&window=1m` 获取折线；
    - 若需 AI 历史，调用 `/api/v1/ai/moisture/history`。
 
 3. **系统告警**  
@@ -121,7 +121,7 @@ WebSocket 消息与 MQTT 载荷完全一致，字段说明：
 
 | 场景 | 建议处理 |
 |------|----------|
-| WebSocket 断开 | 指数退避重连；重连后重新请求 `/api/realtime/latest` 补齐丢失数据 |
+| WebSocket 断开 | 指数退避重连；重连后重新请求 `/api/v1/data/latest` 补齐丢失数据 |
 | 无历史数据 | 提示“暂无数据”，并记录请求参数便于排障 |
 | API 429/503 | 实现简单地退避重试，并将告警报到 edge-monitor |
 

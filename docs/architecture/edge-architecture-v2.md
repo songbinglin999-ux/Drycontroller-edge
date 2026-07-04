@@ -150,7 +150,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 
 | 面 | 端点（示例） | 鉴权 | 理由 |
 |---|---|---|---|
-| 只读面（edge-api） | `/ws/realtime`·`/ws/ai`·`/ws/system`、`/realtime/latest`·`/history`·`/system/health`、`v1/data`·`v1/ai`·`v1/alarms`(读)·`v1/system`(读) | 来源 IP 白名单（`require_readonly_*_source` → `READONLY_WS_ALLOWLIST`），**零凭证** | 同 LAN 只读，无需下发/管理凭证 |
+| 只读面（edge-api） | `/ws/realtime`·`/ws/ai`·`/ws/system`、`/system/health`、`v1/data`·`v1/ai`·`v1/alarms`(读)·`v1/system`(读) | 来源 IP 白名单（`require_readonly_*_source` → `READONLY_WS_ALLOWLIST`），**零凭证** | 同 LAN 只读，无需下发/管理凭证 |
 | 只读面（edge-monitor） | `/system/health`·`/system/metrics`·`/health`·`/ready`·`/metrics` | 无应用层鉴权，靠主机端口绑定 + 防火墙（LAN/tailnet） | 纯只读快照，暴露面由网络层控制 |
 | 控制/写入面（edge-api） | 控制 / signed command WS 与写入流 | 控制级 HMAC challenge-response + 签名 command | 写 PLC 执行器需防误写/防重放，与网络是否可信无关 |
 | 运维操作面（edge-monitor） | `/ops/*`（self-heal / logs / alerts） | ops API key（`MONITOR_OPS_API_KEYS` / `ADMIN_API_KEYS`） | 触发重启 / 读日志属敏感操作 |

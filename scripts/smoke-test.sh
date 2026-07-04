@@ -124,9 +124,9 @@ check_mqtt
 check_latest_realtime() {
   log_step "Edge API 最新数据"
   local body
-  body="$(curl -fsS "http://localhost:${EDGE_API_PORT}/api/realtime/latest?tags=FTT1&lookback=2m")"
+  body="$(curl -fsS "http://localhost:${EDGE_API_PORT}/api/v1/data/latest?tags=FTT1&lookback=2m")"
   echo "响应：$(echo "$body" | tr -d '\n' | cut -c1-160)"
-  log_ok "/api/realtime/latest 正常"
+  log_ok "/api/v1/data/latest 正常"
 }
 
 check_system_health_ws_cache() {

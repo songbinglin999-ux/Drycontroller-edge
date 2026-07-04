@@ -69,7 +69,7 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 - **实时数据**
 
-  - `GET /api/realtime/latest`
+  - `GET /api/v1/data/latest`
   - 功能：返回当前产线关键点位的实时值  
   - 典型请求参数：
     - `tags`: 点位名（可重复传参；可选，默认返回全部配置点位）
@@ -89,7 +89,7 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 
 - **历史数据**
 
-  - `GET /api/history`
+  - `GET /api/v1/data/history`
   - 功能：查询指定时间范围内的历史曲线（来自 InfluxDB）  
   - 典型请求参数：
     - `tag`: 点位名
