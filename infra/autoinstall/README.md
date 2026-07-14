@@ -64,22 +64,28 @@ files directly at the root, or under one top-level `Drycontroller-edge/`
 directory.
 
 Build `drycontroller-apt/` on an Ubuntu amd64 host whose apt sources match the
-installer ISO release:
+installer ISO release. Current release media is Ubuntu 24.04 LTS, so the package
+set must be noble:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y dpkg-dev
-bash scripts/build-autoinstall-offline-apt-repo.sh --out dist/autoinstall/drycontroller-apt
+bash scripts/build-autoinstall-offline-apt-repo.sh \
+  --suite noble \
+  --arch amd64 \
+  --out dist/autoinstall/drycontroller-apt
 ```
 
-Ubuntu 22.04 media should use a jammy package set; Ubuntu 24.04 media should use
-a noble package set.
+If the installer ISO changes in the future, the package set must change to the
+matching Ubuntu codename.
 
 If the default Ubuntu archive is unstable from the build host, pass a reachable
 mirror:
 
 ```bash
 bash scripts/build-autoinstall-offline-apt-repo.sh \
+  --suite noble \
+  --arch amd64 \
   --mirror https://mirrors.aliyun.com/ubuntu/ \
   --out dist/autoinstall/drycontroller-apt
 ```

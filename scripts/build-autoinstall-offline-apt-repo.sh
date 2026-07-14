@@ -34,8 +34,8 @@ Ubuntu Server OS Installer USB as:
   /drycontroller-apt/
 
 Run this on an Ubuntu/Debian amd64 build host whose apt sources match the target
-installer ISO release. For Ubuntu 22.04 media, build on jammy; for 24.04 media,
-build on noble.
+installer ISO release. Current release media is Ubuntu 24.04 LTS, so build on
+noble or pass --suite noble.
 
 When the default Ubuntu archive is unstable, pass a reachable mirror, for example:
 
@@ -106,7 +106,7 @@ if [ -z "$SUITE" ] && [ -r /etc/os-release ]; then
   SUITE="${VERSION_CODENAME:-}"
 fi
 [ -n "$SUITE" ] || {
-  echo "could not detect suite; pass --suite jammy or --suite noble" >&2
+  echo "could not detect suite; pass --suite noble for current Ubuntu 24.04 media" >&2
   exit 1
 }
 

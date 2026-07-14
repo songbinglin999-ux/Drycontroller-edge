@@ -32,10 +32,9 @@ scripts/build-autoinstall-offline-apt-repo.sh
 
 ### 1. 准备 Ubuntu Server ISO
 
-建议版本：
+当前支持版本：
 
-- Ubuntu Server 22.04 LTS x86_64
-- 后续真实 Linux e2e 稳定后，再评估 24.04 LTS
+- Ubuntu Server 24.04 LTS x86_64（noble）
 
 ### macOS 写入 U 盘注意
 
@@ -66,18 +65,23 @@ diskutil eject /dev/disk2
 bash scripts/build-autoinstall-bundle.sh
 ```
 
-在一台能访问目标 Ubuntu 包源、且发行版与安装 ISO 匹配的 Ubuntu amd64 构建机上生成离线 apt repo。Ubuntu 22.04 ISO 用 jammy 构建机，Ubuntu 24.04 ISO 用 noble 构建机：
+在一台能访问目标 Ubuntu 包源、且发行版与安装 ISO 匹配的 Ubuntu amd64 构建机上生成离线 apt repo。当前发布介质是 Ubuntu 24.04 LTS，离线 apt repo 必须使用 noble 包集：
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y dpkg-dev
-bash scripts/build-autoinstall-offline-apt-repo.sh --out dist/autoinstall/drycontroller-apt
+bash scripts/build-autoinstall-offline-apt-repo.sh \
+  --suite noble \
+  --arch amd64 \
+  --out dist/autoinstall/drycontroller-apt
 ```
 
 如果默认 Ubuntu 源不稳定，显式指定可达镜像：
 
 ```bash
 bash scripts/build-autoinstall-offline-apt-repo.sh \
+  --suite noble \
+  --arch amd64 \
   --mirror https://mirrors.aliyun.com/ubuntu/ \
   --out dist/autoinstall/drycontroller-apt
 ```
