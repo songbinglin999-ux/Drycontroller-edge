@@ -46,6 +46,7 @@ _MANIFEST_FIELDS = {
     "registry",
     "signing_key_sha256",
     "services",
+    "image_ids",
 }
 _POLICY_FIELDS = {
     "operation_id",
@@ -176,6 +177,9 @@ def validate_manifest(manifest: object) -> dict[str, Any]:
     services = manifest.get("services")
     if not isinstance(services, dict) or set(services) != set(SOFTWARE_RELEASE_SERVICES):
         raise ReleaseError("manifest must contain the complete service set")
+    image_ids = manifest.get("image_ids")
+    if not isinstance(image_ids, dict) or set(image_ids) != set(SOFTWARE_RELEASE_SERVICES):
+        raise ReleaseError("manifest must contain the complete image ID set")
     for service in SOFTWARE_RELEASE_SERVICES:
         reference = services.get(service)
         if not isinstance(reference, str) or "@" not in reference:
@@ -186,6 +190,9 @@ def validate_manifest(manifest: object) -> dict[str, Any]:
             raise ReleaseError(f"service {service} image must use the manifest registry")
         if not _DIGEST.fullmatch(digest):
             raise ReleaseError(f"service {service} image must be digest locked")
+        image_id = image_ids.get(service)
+        if not isinstance(image_id, str) or not _DIGEST.fullmatch(image_id):
+            raise ReleaseError(f"service {service} image ID must be digest locked")
     return manifest
 
 
@@ -422,7 +429,7 @@ class ReleaseEngine:
         try:
             self._materialize_and_verify_manifest(slot)
             for service in SOFTWARE_RELEASE_SERVICES:
-                self._assert_local_image(manifest["services"][service])
+                self._assert_local_image(manifest["image_ids"][service])
         except ReleaseError:
             raise
         except Exception as exc:
@@ -436,6 +443,42 @@ class ReleaseEngine:
             "release_id": manifest["release_id"],
             "manifest_digest": digest,
             "status": "already_initialized" if already_initialized else "initialized",
+        }
+
+    def start_active(self) -> dict[str, Any]:
+        journal = self._load_journal()
+        if journal["phase"] != "idle":
+            self._recover_interrupted(journal)
+        active = self._validate_slot(journal["active"], require_verified=True)
+        journal.update({"phase": "active_starting", "effect": None, "error": None})
+        self._persist_journal(journal)
+        try:
+            override = self._effect(
+                journal,
+                "active_manifest_verify",
+                lambda: self._materialize_and_verify_manifest(active),
+            )
+            self._prove_local_images(journal, active, "active")
+            self._effect(
+                journal,
+                "active_compose_up",
+                lambda: self._command_runner(
+                    self._compose_args(override, "up", "-d", "--remove-orphans", "--pull", "never")
+                ),
+            )
+            journal["phase"] = "active_health_check"
+            self._persist_journal(journal)
+            self._verify_runtime(journal, active, override, "active")
+        except ReleaseError as exc:
+            journal.update({"phase": "idle", "effect": None, "error": str(exc)[:512]})
+            self._persist_journal(journal)
+            raise
+        journal.update({"phase": "idle", "effect": None, "error": None})
+        self._persist_journal(journal)
+        return {
+            "release_id": active["manifest"]["release_id"],
+            "manifest_digest": active["manifest_digest"],
+            "status": "running",
         }
 
     def _validate_policy(self, policy: object, operation_id: str, active: dict[str, Any]) -> dict[str, Any]:
@@ -517,7 +560,7 @@ class ReleaseEngine:
             override_lines.extend(
                 [
                     f"  {service}:",
-                    f"    image: {json.dumps(manifest['services'][service])}",
+                    f"    image: {json.dumps(manifest['image_ids'][service])}",
                 ]
             )
         _atomic_write(override_path, ("\n".join(override_lines) + "\n").encode("utf-8"))
@@ -570,25 +613,28 @@ class ReleaseEngine:
         self._persist_journal(journal)
         return result
 
-    def _assert_local_image(self, reference: str) -> None:
+    def _assert_local_image(self, image_id: str) -> None:
         output = self._command_runner(
-            [_DOCKER, "image", "inspect", "--format", "{{json .RepoDigests}}", reference]
+            [_DOCKER, "image", "inspect", "--format", "{{.Id}}", image_id]
         )
-        try:
-            repo_digests = json.loads(output)
-        except json.JSONDecodeError as exc:
-            raise ReleaseError("local image inspection invalid") from exc
-        if not isinstance(repo_digests, list) or reference not in repo_digests:
+        if output.strip() != image_id:
             raise ReleaseError("local release image missing")
+
+    def _assert_reference_image_id(self, reference: str, expected_image_id: str) -> None:
+        output = self._command_runner(
+            [_DOCKER, "image", "inspect", "--format", "{{.Id}}", reference]
+        )
+        if output.strip() != expected_image_id:
+            raise ReleaseError("release image ID mismatch")
 
     def _prove_local_images(self, journal: dict[str, Any], slot: dict[str, Any], prefix: str) -> None:
         manifest = validate_manifest(slot["manifest"])
         for service in SOFTWARE_RELEASE_SERVICES:
-            reference = manifest["services"][service]
+            image_id = manifest["image_ids"][service]
             self._effect(
                 journal,
                 f"{prefix}_inspect_{service}",
-                lambda reference=reference: self._assert_local_image(reference),
+                lambda image_id=image_id: self._assert_local_image(image_id),
             )
 
     def _pull_and_verify_candidate(self, journal: dict[str, Any], slot: dict[str, Any]) -> None:
@@ -612,6 +658,14 @@ class ReleaseEngine:
                         str(self.paths.cosign_pubkey),
                         reference,
                     ]
+                ),
+            )
+            expected_image_id = manifest["image_ids"][service]
+            self._effect(
+                journal,
+                f"candidate_image_id_{service}",
+                lambda reference=reference, expected_image_id=expected_image_id: self._assert_reference_image_id(
+                    reference, expected_image_id
                 ),
             )
         self._prove_local_images(journal, slot, "candidate")
@@ -641,7 +695,7 @@ class ReleaseEngine:
                 raise ReleaseError("compose service inventory mismatch")
             for service in SOFTWARE_RELEASE_SERVICES:
                 record = records[service]
-                if record.get("Image") != manifest["services"][service]:
+                if record.get("Image") != manifest["image_ids"][service]:
                     raise ReleaseError("running image does not match release manifest")
                 state = str(record.get("State") or "").lower()
                 if service == "mosquitto-init":

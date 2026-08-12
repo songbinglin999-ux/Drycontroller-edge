@@ -135,6 +135,10 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
                 service: f"registry.example.com/drycontroller/{service}@sha256:{index:064x}"
                 for index, service in enumerate(services, start=1)
             },
+            "image_ids": {
+                service: f"sha256:{index:064x}"
+                for index, service in enumerate(services, start=1)
+            },
         }
         predecessor_path.write_text(
             json.dumps(

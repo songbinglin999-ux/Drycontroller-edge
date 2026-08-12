@@ -59,6 +59,7 @@ predecessor_signature_path="${release_work_dir}/predecessor-manifest.sigstore.js
 changed_services_path="${release_work_dir}/changed-services.txt"
 inherited_images_path="${release_work_dir}/inherited-images.tsv"
 declare -A IMAGE_REFS=()
+declare -A IMAGE_IDS=()
 declare -A CHANGED_SERVICES=()
 declare -a LOCAL_TARGETS=()
 
@@ -339,7 +340,7 @@ Path(sys.argv[2]).write_bytes(manifest_bytes)
 Path(sys.argv[3]).write_bytes(signature)
 Path(sys.argv[5]).write_text(
     "".join(
-        f"{service}\t{manifest['services'][service]}\n"
+        f"{service}\t{manifest['services'][service]}\t{manifest['image_ids'][service]}\n"
         for service in SOFTWARE_RELEASE_SERVICES
         if service not in changed
     ),
@@ -354,11 +355,12 @@ PY
       --bundle "${predecessor_signature_path}" \
       "${predecessor_manifest_path}" >/dev/null
   fi
-  while IFS=$'\t' read -r service inherited_ref; do
-    [[ -n "${service}" && -n "${inherited_ref}" ]]
+  while IFS=$'\t' read -r service inherited_ref inherited_id; do
+    [[ -n "${service}" && -n "${inherited_ref}" && "${inherited_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
     release_step_scan "${inherited_ref}"
     release_step_verify_image "${inherited_ref}"
     IMAGE_REFS["${service}"]="${inherited_ref}"
+    IMAGE_IDS["${service}"]="${inherited_id}"
   done < "${inherited_images_path}"
 }
 
@@ -443,11 +445,17 @@ for service in "${SERVICES[@]}"; do
   release_step_sign_image "${digest_ref}"
   release_step_verify_image "${digest_ref}"
   IMAGE_REFS["${service}"]="${digest_ref}"
+  image_id="$(docker image inspect --format '{{.Id}}' "${target}")"
+  [[ "${image_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
+  IMAGE_IDS["${service}"]="${image_id}"
 done
 
 : > "${image_map_path}"
 for service in "${SERVICES[@]}"; do
-  printf '%s\t%s\n' "${service}" "${IMAGE_REFS[${service}]}" >> "${image_map_path}"
+  printf '%s\t%s\t%s\n' \
+    "${service}" \
+    "${IMAGE_REFS[${service}]}" \
+    "${IMAGE_IDS[${service}]}" >> "${image_map_path}"
 done
 
 export RELEASE_ID="${release_id}"
@@ -460,9 +468,11 @@ from pathlib import Path
 from release_engine import canonical_manifest_bytes, validate_manifest
 
 services = {}
+image_ids = {}
 for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    service, reference = line.split("\t", 1)
+    service, reference, image_id = line.split("\t")
     services[service] = reference
+    image_ids[service] = image_id
 manifest = {
     "schema": "drycontroller.software-release.v1",
     "release_id": os.environ["RELEASE_ID"],
@@ -472,6 +482,7 @@ manifest = {
     "registry": os.environ["HARBOR_HOST"],
     "signing_key_sha256": os.environ["SIGNING_KEY_SHA256"],
     "services": services,
+    "image_ids": image_ids,
 }
 validate_manifest(manifest)
 Path(sys.argv[2]).write_bytes(canonical_manifest_bytes(manifest))

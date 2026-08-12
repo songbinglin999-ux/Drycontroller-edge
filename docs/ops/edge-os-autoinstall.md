@@ -268,7 +268,7 @@ bash scripts/build-os-installer-release.sh --channel stable
 - `cosign.pub`：与 SoftwareRelease `signing_key_sha256` 匹配的发布公钥。
 - `cosign-linux-amd64`：受控发布工具链中的 Linux amd64 cosign 可执行文件。
 
-制作机还必须安装可信的 host `cosign`、登录 manifest 指定的 Harbor。wrapper 会先用 host cosign 验 manifest 和 12 个镜像签名，然后拉取、检查并打包精确 digest；安装时再在目标 IPC 上验 manifest、证明 12 个本地 `RepoDigests`，最后原子生成 `active` journal。任一步不确定都停止安装，不启动 OTA helper。
+制作机还必须安装可信的 host `cosign`、登录 manifest 指定的 Harbor。wrapper 会先用 host cosign 验 manifest 和 12 个镜像签名，再把每个 registry digest 对应的 Docker image ID 一并写入签名 manifest，然后拉取、核对并打包精确镜像集合；安装时目标 IPC 使用签名 image ID 证明 12 个本地镜像，原子生成 `active` journal，并只以这些 image ID 执行 `docker compose up --pull never`。任一步不确定都停止安装，不启动业务容器或 OTA helper。
 
 默认发布镜像不允许隐式带入 `dist/autoinstall/wifi.env`。如果某批次确实要把现场 WiFi 凭据嵌进 ISO，命令必须显式追加 `--include-wifi`，manifest 会记录 `wifi_env` 的 sha256；否则发现该文件就直接失败。
 

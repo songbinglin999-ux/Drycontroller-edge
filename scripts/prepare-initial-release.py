@@ -147,20 +147,21 @@ def prepare(
         )
 
     references = [manifest["services"][service] for service in SOFTWARE_RELEASE_SERVICES]
-    for reference in references:
+    for service in SOFTWARE_RELEASE_SERVICES:
+        reference = manifest["services"][service]
         subprocess.run(["docker", "pull", reference], check=True)
         subprocess.run(
             ["cosign", "verify", "--insecure-ignore-tlog=true", "--key", str(public_key), reference],
             check=True,
             stdout=subprocess.DEVNULL,
         )
+        expected_image_id = manifest["image_ids"][service]
         raw = subprocess.check_output(
-            ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", reference],
+            ["docker", "image", "inspect", "--format", "{{.Id}}", reference],
             text=True,
         )
-        repo_digests = json.loads(raw)
-        if not isinstance(repo_digests, list) or reference not in repo_digests:
-            raise ValueError(f"pulled image does not retain exact digest: {reference}")
+        if raw.strip() != expected_image_id:
+            raise ValueError(f"pulled image ID does not match signed manifest: {reference}")
 
     image_bundle.parent.mkdir(parents=True, exist_ok=True)
     temporary_bundle = image_bundle.with_name(f".{image_bundle.name}.tmp")

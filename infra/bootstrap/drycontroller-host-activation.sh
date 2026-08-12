@@ -18,6 +18,7 @@ LICENSE_FILE_PATH="${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
 FACTORY_LICENSE_ARCHIVE_PATH="${FACTORY_LICENSE_ARCHIVE_PATH:-/var/lib/drycontroller/factory-license.json}"
 LICENSE_PUBLIC_KEY_PATH="${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}"
 EDGE_ENV_FILE="${EDGE_ENV_FILE:-}"
+START_ACTIVE_PROGRAM="${DRYCONTROLLER_START_ACTIVE_PROGRAM:-/usr/libexec/drycontroller/start-active-release}"
 LOG_PREFIX="[drycontroller-activation]"
 
 log() {
@@ -501,10 +502,14 @@ PY
 reapply_edge_compose_binding() {
   [ -n "${EDGE_ROOT:-}" ] || return 0
   [ -f "${EDGE_ROOT}/docker-compose.yml" ] || return 0
-  command -v docker >/dev/null 2>&1 || return 0
-  log "re-applying edge compose binding after activation tailnet sync"
-  if ! (cd "$EDGE_ROOT" && docker compose up -d); then
-    log "edge compose re-apply failed; bootstrap or operator must run docker compose up -d"
+  [ -x "$START_ACTIVE_PROGRAM" ] || {
+    log "signed active release starter is unavailable: $START_ACTIVE_PROGRAM"
+    return 1
+  }
+  log "starting signed active release after activation tailnet sync"
+  if ! "$START_ACTIVE_PROGRAM"; then
+    log "signed active release start failed; activation will retry"
+    return 1
   fi
 }
 
@@ -576,7 +581,7 @@ bind_current_tailnet_node() {
     return 1
   }
   sync_edge_env_after_activation "$current_ip" "$hostname"
-  reapply_edge_compose_binding
+  reapply_edge_compose_binding || return 1
   if ! confirm_current_tailnet_binding "$current_ip" "$hostname"; then
     return 75
   fi
@@ -607,6 +612,7 @@ PY
 )"
 if [ "$current_state" = "formal_license_active" ]; then
   sync_edge_env_after_activation "$(tailnet_ip)" "${TS_HOSTNAME:-}"
+  reapply_edge_compose_binding || exit 75
   mark_bootstrap_complete
   start_host_enroll_service_if_configured
   log "activation already complete"
@@ -616,6 +622,7 @@ if [ "$current_state" = "formal_tailnet_joined" ]; then
   current_tailnet_ip="$(tailnet_ip)"
   if confirm_current_tailnet_binding "$current_tailnet_ip" "${TS_HOSTNAME:-}"; then
     sync_edge_env_after_activation "$current_tailnet_ip" "${TS_HOSTNAME:-}"
+    reapply_edge_compose_binding || exit 75
     write_state "formal_license_active" "activation_complete"
     mark_bootstrap_complete
     start_host_enroll_service_if_configured

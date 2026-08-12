@@ -109,6 +109,7 @@ command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 [ -f "$INITIAL_IMAGE_BUNDLE" ] || die "complete initial release image bundle is required"
 [ -f "$COSIGN_PUBLIC_KEY" ] || die "initial release cosign public key is required"
 [ -f "$COSIGN_BIN" ] || die "Linux amd64 cosign binary is required"
+[ ! -e /var/lib/drycontroller-ota/release-journal.json ] || die "factory installer refuses an existing release journal"
 
 if [ -z "$REPO_SOURCE" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -126,6 +127,7 @@ fi
 [ -f "${REPO_SOURCE}/infra/ota-helper/release_engine.py" ] || die "OTA release engine missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/ota-apply" ] || die "fixed OTA apply program missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/initialize-active-release" ] || die "active release initializer missing in source"
+[ -f "${REPO_SOURCE}/infra/ota-helper/start-active-release" ] || die "active release starter missing in source"
 
 install_base_packages_apt() {
   export DEBIAN_FRONTEND=noninteractive
@@ -288,6 +290,7 @@ install_host_services() {
   install -o root -g root -m 0644 "${EDGE_ROOT}/infra/ota-helper/release_engine.py" /usr/libexec/drycontroller/release_engine.py
   install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/ota-apply" /usr/libexec/drycontroller/ota-apply
   install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/initialize-active-release" /usr/libexec/drycontroller/initialize-active-release
+  install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/start-active-release" /usr/libexec/drycontroller/start-active-release
   install -o root -g root -m 0644 "${EDGE_ROOT}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
   install -o root -g root -m 0644 "$COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub
   install -o root -g root -m 0755 "$COSIGN_BIN" /usr/local/bin/cosign

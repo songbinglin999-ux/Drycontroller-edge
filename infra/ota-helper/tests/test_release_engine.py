@@ -46,6 +46,10 @@ def _manifest(release_id: str, sequence: int, version: str) -> dict:
             service: f"{REGISTRY}/drycontroller/{service}@sha256:{sequence * 100 + index:064x}"
             for index, service in enumerate(SOFTWARE_RELEASE_SERVICES, start=1)
         },
+        "image_ids": {
+            service: f"sha256:{sequence * 100 + index:064x}"
+            for index, service in enumerate(SOFTWARE_RELEASE_SERVICES, start=1)
+        },
     }
 
 
@@ -162,7 +166,7 @@ class FakeRuntime:
     def run(self, args: list[str]) -> str:
         self.calls.append(list(args))
         if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
-            return json.dumps([args[-1]])
+            return args[-1].rsplit("@", 1)[-1]
         if args[:2] == ["/usr/bin/docker", "pull"]:
             return "pulled"
         if args[0] == "/usr/local/bin/cosign":
@@ -211,7 +215,7 @@ def test_initial_release_is_verified_and_persisted_only_after_all_images_are_pro
     assert journal["previous"] is None
     assert any(call[:2] == ["/usr/local/bin/cosign", "verify-blob"] for call in runtime.calls)
     inspected = [call[-1] for call in runtime.calls if call[:3] == ["/usr/bin/docker", "image", "inspect"]]
-    assert inspected == [manifest["services"][service] for service in SOFTWARE_RELEASE_SERVICES]
+    assert inspected == [manifest["image_ids"][service] for service in SOFTWARE_RELEASE_SERVICES]
 
     replay = ReleaseEngine(paths=paths, command_runner=runtime.run).initialize_active(_initial_seed(manifest))
     assert replay["status"] == "already_initialized"
@@ -223,7 +227,7 @@ def test_initial_release_failure_never_creates_an_active_journal(tmp_path):
 
     def missing_image(args: list[str]) -> str:
         if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
-            return "[]"
+            return "sha256:" + "0" * 64
         return FakeRuntime().run(args)
 
     with pytest.raises(ReleaseError, match="local release image missing"):
@@ -271,6 +275,30 @@ def test_manifest_rejects_partial_or_mutable_service_sets():
     tagged["services"]["edge-api"] = f"{REGISTRY}/drycontroller/edge-api:latest"
     with pytest.raises(ReleaseError, match="digest locked"):
         validate_manifest(tagged)
+
+    missing_image_id = {**manifest, "image_ids": dict(manifest["image_ids"])}
+    missing_image_id["image_ids"].pop("edge-api")
+    with pytest.raises(ReleaseError, match="complete image ID set"):
+        validate_manifest(missing_image_id)
+
+
+def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
+    paths = _paths(tmp_path)
+    runtime = FakeRuntime()
+    active = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, active)
+
+    result = _engine(paths, runtime, {}).start_active()
+
+    assert result["status"] == "running"
+    compose_up = next(call for call in runtime.calls if call[:2] == ["/usr/bin/docker", "compose"] and "up" in call)
+    assert compose_up[-2:] == ["--pull", "never"]
+    assert not any(call[:2] == ["/usr/bin/docker", "pull"] for call in runtime.calls)
+    assert runtime.current_override is not None
+    assert runtime._images(runtime.current_override) == active["image_ids"]
+    journal = json.loads(paths.journal.read_text(encoding="utf-8"))
+    assert journal["phase"] == "idle"
+    assert journal["effect"] is None
 
 
 def test_manifest_verification_uses_real_cosign_signature(tmp_path):
@@ -420,7 +448,7 @@ def test_missing_local_previous_image_refuses_before_candidate_mutation(tmp_path
     runtime = FakeRuntime()
 
     def run_with_missing_previous(args: list[str]) -> str:
-        if args[:3] == ["/usr/bin/docker", "image", "inspect"] and args[-1] in release_a["services"].values():
+        if args[:3] == ["/usr/bin/docker", "image", "inspect"] and args[-1] in release_a["image_ids"].values():
             raise ReleaseError("local release image missing")
         return runtime.run(args)
 
@@ -434,6 +462,37 @@ def test_missing_local_previous_image_refuses_before_candidate_mutation(tmp_path
     _request(paths, operation_id)
 
     with pytest.raises(ReleaseError, match="local release image missing"):
+        engine.apply()
+
+    journal = json.loads(paths.journal.read_text(encoding="utf-8"))
+    assert journal["phase"] == "idle"
+    assert journal["active"]["manifest_digest"] == canonical_manifest_digest(release_a)
+    assert journal["candidate"] is None
+    assert not any("up" in call for call in runtime.calls)
+
+
+def test_candidate_registry_reference_must_resolve_to_the_signed_image_id(tmp_path):
+    paths = _paths(tmp_path)
+    release_a = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    release_b = _manifest("22222222-2222-4222-8222-222222222222", 2, "1.1.0")
+    _seed(paths, release_a)
+    runtime = FakeRuntime()
+
+    def run_with_wrong_candidate_id(args: list[str]) -> str:
+        if args[:3] == ["/usr/bin/docker", "image", "inspect"] and args[-1] in release_b["services"].values():
+            return "sha256:" + "0" * 64
+        return runtime.run(args)
+
+    operation_id = "00000000000000020000000000000007"
+    engine = ReleaseEngine(
+        paths=paths,
+        command_runner=run_with_wrong_candidate_id,
+        policy_fetcher=lambda _operation_id: _policy(operation_id, release_b),
+        health_checker=runtime.health,
+    )
+    _request(paths, operation_id)
+
+    with pytest.raises(ReleaseError, match="release image ID mismatch"):
         engine.apply()
 
     journal = json.loads(paths.journal.read_text(encoding="utf-8"))

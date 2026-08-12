@@ -384,6 +384,7 @@ def test_install_edge_host_installs_root_owned_ota_helper():
     assert "infra/ota-helper/release_engine.py" in text
     assert "infra/ota-helper/ota-apply" in text
     assert "infra/ota-helper/initialize-active-release" in text
+    assert "infra/ota-helper/start-active-release" in text
     assert "signed initial SoftwareRelease seed is required" in text
     assert "complete initial release image bundle is required" in text
     assert 'install -o root -g root -m 0644 "$COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub' in text
@@ -393,4 +394,17 @@ def test_install_edge_host_installs_root_owned_ota_helper():
     assert text.index('initialize-active-release "$INITIAL_RELEASE"') < text.index(
         "systemctl enable --now drycontroller-ota-helper.service"
     )
+    assert "factory installer refuses an existing release journal" in text
+    assert text.index("factory installer refuses an existing release journal") < text.index(
+        'log "preparing Drycontroller edge host"'
+    )
     assert '"ota_helper_service": "drycontroller-ota-helper.service"' in text
+
+
+def test_activation_starts_only_the_signed_active_release_without_registry_pull():
+    text = ACTIVATION_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'START_ACTIVE_PROGRAM="${DRYCONTROLLER_START_ACTIVE_PROGRAM:-/usr/libexec/drycontroller/start-active-release}"' in text
+    assert '"$START_ACTIVE_PROGRAM"' in text
+    assert "docker compose up -d" not in text
+    assert "reapply_edge_compose_binding || return 1" in text

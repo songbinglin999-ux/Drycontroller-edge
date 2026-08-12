@@ -51,6 +51,7 @@ def test_prepare_initial_release_verifies_and_packages_the_exact_complete_image_
             service: f"registry.example.test:5443/drycontroller/{service}@sha256:{index:064x}"
             for index, service in enumerate(SERVICES, start=1)
         },
+        "image_ids": {service: f"sha256:{index:064x}" for index, service in enumerate(SERVICES, start=1)},
     }
     canonical = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     release = tmp_path / "release.json"
@@ -82,7 +83,7 @@ def test_prepare_initial_release_verifies_and_packages_the_exact_complete_image_
 printf 'docker %s\n' "$*" >> "$COMMAND_LOG"
 if [ "$1 $2" = "image inspect" ]; then
   eval "last=\${$#}"
-  printf '["%s"]\n' "$last"
+  printf '%s\n' "${last##*@}"
 elif [ "$1 $2" = "image save" ]; then
   printf 'archive' > "$4"
 fi

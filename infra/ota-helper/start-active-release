@@ -1,0 +1,28 @@
+#!/usr/bin/python3
+"""Start only the signed active release with registry access disabled."""
+
+from __future__ import annotations
+
+import json
+import sys
+
+from release_engine import ReleaseEngine, ReleaseError
+
+
+def main() -> int:
+    if len(sys.argv) != 1:
+        return 64
+    try:
+        result = ReleaseEngine().start_active()
+    except ReleaseError as exc:
+        print(f"[start-active-release] failed: {exc}", flush=True)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - root startup boundary must fail closed
+        print(f"[start-active-release] unexpected failure: {type(exc).__name__}", flush=True)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
