@@ -36,6 +36,7 @@ def test_release_builder_is_complete_and_completion_is_last():
     assert "release_step_scan \"${inherited_ref}\"" in script
     assert "release_step_verify_image \"${inherited_ref}\"" in script
     assert "inputs.services" not in script
+    assert "bash scripts/ci/verify-cosign-toolchain.sh" in script
 
     order = [
         "release_step_build_or_mirror",
@@ -50,6 +51,56 @@ def test_release_builder_is_complete_and_completion_is_last():
     ]
     positions = [script.index(marker) for marker in order]
     assert positions == sorted(positions)
+
+
+def test_release_cosign_toolchain_gate_checks_platform_version_and_checksum(tmp_path: Path):
+    verifier = ROOT / "scripts" / "ci" / "verify-cosign-toolchain.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "uname").write_text(
+        '#!/bin/sh\n[ "$1" = "-s" ] && echo "${FAKE_UNAME_S}" || echo "${FAKE_UNAME_M}"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "cosign").write_text(
+        '#!/bin/sh\nprintf "GitVersion: %s\\nPlatform: %s\\n" "${FAKE_COSIGN_VERSION}" "${FAKE_COSIGN_PLATFORM}"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "sha256sum").write_text(
+        '#!/bin/sh\nprintf "%s  %s\\n" "${FAKE_COSIGN_SHA256}" "$1"\n',
+        encoding="utf-8",
+    )
+    for path in fake_bin.iterdir():
+        path.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_UNAME_S": "Linux",
+        "FAKE_UNAME_M": "x86_64",
+        "FAKE_COSIGN_VERSION": "v3.1.3",
+        "FAKE_COSIGN_PLATFORM": "linux/amd64",
+        "FAKE_COSIGN_SHA256": "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
+    }
+
+    accepted = subprocess.run(["bash", str(verifier)], env=environment, check=False)
+    assert accepted.returncode == 0
+
+    rejected_cases = (
+        ({"FAKE_COSIGN_SHA256": "0" * 64}, "checksum is not approved"),
+        ({"FAKE_COSIGN_VERSION": "v3.1.2"}, "version is not approved"),
+        ({"FAKE_COSIGN_PLATFORM": "linux/arm64"}, "platform is not approved"),
+        ({"FAKE_UNAME_S": "Darwin"}, "builder must be Linux"),
+        ({"FAKE_UNAME_M": "aarch64"}, "builder must be amd64"),
+    )
+    for overrides, expected_error in rejected_cases:
+        rejected = subprocess.run(
+            ["bash", str(verifier)],
+            env={**environment, **overrides},
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert rejected.returncode == 1
+        assert expected_error in rejected.stderr
 
 
 def test_release_workflow_uses_the_fixed_builder_after_tests():

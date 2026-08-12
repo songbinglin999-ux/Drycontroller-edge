@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -93,6 +94,8 @@ _HEALTH_URLS = (
 _DOCKER = "/usr/bin/docker"
 _COSIGN = "/usr/local/bin/cosign"
 _MAX_JSON_BYTES = 1024 * 1024
+_RUNTIME_READY_TIMEOUT_SECONDS = 180.0
+_RUNTIME_READY_POLL_SECONDS = 2.0
 _FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -247,13 +250,32 @@ class ReleaseEngine:
         *,
         paths: ReleasePaths | None = None,
         command_runner: Callable[[list[str]], str] | None = None,
+        runtime_command_runner: Callable[[list[str], float], str] | None = None,
         policy_fetcher: Callable[[str], dict[str, Any]] | None = None,
         health_checker: Callable[[str], None] | None = None,
+        runtime_health_checker: Callable[[str, float], None] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        sleeper: Callable[[float], None] | None = None,
+        runtime_ready_timeout: float = _RUNTIME_READY_TIMEOUT_SECONDS,
+        runtime_ready_poll: float = _RUNTIME_READY_POLL_SECONDS,
     ) -> None:
         self.paths = paths or ReleasePaths.production()
         self._command_runner = command_runner or self._run_command
+        self._runtime_command_runner = runtime_command_runner or (
+            (lambda args, timeout: self._run_command(args, timeout=timeout))
+            if command_runner is None
+            else (lambda args, _timeout: command_runner(args))
+        )
         self._policy_fetcher = policy_fetcher or self._fetch_policy
-        self._health_checker = health_checker or self._check_health
+        self._runtime_health_checker = runtime_health_checker or (
+            (lambda url, timeout: self._check_health(url, timeout=timeout))
+            if health_checker is None
+            else (lambda url, _timeout: health_checker(url))
+        )
+        self._monotonic = monotonic or time.monotonic
+        self._sleeper = sleeper or time.sleep
+        self._runtime_ready_timeout = runtime_ready_timeout
+        self._runtime_ready_poll = runtime_ready_poll
 
     @contextlib.contextmanager
     def _transaction_lock(self) -> Iterator[None]:
@@ -280,7 +302,7 @@ class ReleaseEngine:
             finally:
                 os.close(descriptor)
 
-    def _run_command(self, args: list[str]) -> str:
+    def _run_command(self, args: list[str], *, timeout: float | None = None) -> str:
         try:
             completed = subprocess.run(
                 args,
@@ -291,7 +313,10 @@ class ReleaseEngine:
                 stderr=subprocess.STDOUT,
                 text=True,
                 check=False,
+                timeout=timeout,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise ReleaseError(f"command timed out: {Path(args[0]).name}") from exc
         except OSError as exc:
             raise ReleaseError(f"command unavailable: {Path(args[0]).name}") from exc
         if completed.returncode != 0:
@@ -299,10 +324,10 @@ class ReleaseEngine:
             raise ReleaseError(f"command failed: {Path(args[0]).name} {action}")
         return completed.stdout
 
-    def _check_health(self, url: str) -> None:
+    def _check_health(self, url: str, *, timeout: float = 5) -> None:
         request = urllib.request.Request(url, method="GET")
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=min(5, timeout)) as response:
                 if response.status != 200:
                     raise ReleaseError("release health check failed")
         except (OSError, urllib.error.URLError) as exc:
@@ -750,32 +775,62 @@ class ReleaseEngine:
     def _verify_runtime(self, journal: dict[str, Any], slot: dict[str, Any], override: Path, prefix: str) -> None:
         manifest = validate_manifest(slot["manifest"])
 
-        def compose_status() -> None:
-            output = self._command_runner(self._compose_args(override, "ps", "--all", "--format", "json"))
+        deadline = self._monotonic() + self._runtime_ready_timeout
+
+        def remaining() -> float:
+            timeout = deadline - self._monotonic()
+            if timeout <= 0:
+                raise ReleaseError("release runtime readiness deadline exceeded")
+            return timeout
+
+        def compose_status() -> bool:
+            output = self._runtime_command_runner(
+                self._compose_args(override, "ps", "--all", "--format", "json"), remaining()
+            )
             records = {str(record.get("Service") or ""): record for record in self._parse_compose_ps(output)}
             if set(records) != set(SOFTWARE_RELEASE_SERVICES):
                 raise ReleaseError("compose service inventory mismatch")
+            pending = False
             for service in SOFTWARE_RELEASE_SERVICES:
                 record = records[service]
                 if record.get("Image") != manifest["image_ids"][service]:
                     raise ReleaseError("running image does not match release manifest")
                 state = str(record.get("State") or "").lower()
                 if service == "mosquitto-init":
-                    if state != "exited" or int(record.get("ExitCode") or 0) != 0:
+                    if state in {"created", "running", "restarting"}:
+                        pending = True
+                    elif state != "exited" or int(record.get("ExitCode") or 0) != 0:
                         raise ReleaseError("mosquitto-init did not complete successfully")
                 elif state != "running":
-                    raise ReleaseError("release service is not running")
+                    if state in {"created", "restarting"}:
+                        pending = True
+                    else:
+                        raise ReleaseError("release service is not running")
                 health = str(record.get("Health") or "").lower()
-                if service in _LONG_RUNNING_SERVICES and health not in {"", "healthy"}:
+                if service in _LONG_RUNNING_SERVICES and health == "starting":
+                    pending = True
+                elif service in _LONG_RUNNING_SERVICES and health not in {"", "healthy"}:
                     raise ReleaseError("release service is unhealthy")
+            return not pending
 
-        self._effect(journal, f"{prefix}_compose_status", compose_status)
-        for index, url in enumerate(_HEALTH_URLS, start=1):
-            self._effect(
-                journal,
-                f"{prefix}_health_{index}",
-                lambda url=url: self._health_checker(url),
-            )
+        def runtime_ready() -> None:
+            last_error: ReleaseError | None = None
+            while True:
+                if compose_status():
+                    try:
+                        for url in _HEALTH_URLS:
+                            self._runtime_health_checker(url, remaining())
+                    except ReleaseError as exc:
+                        last_error = exc
+                    else:
+                        remaining()
+                        return
+                try:
+                    self._sleeper(min(self._runtime_ready_poll, remaining()))
+                except ReleaseError as exc:
+                    raise ReleaseError("release runtime readiness deadline exceeded") from (last_error or exc)
+
+        self._effect(journal, f"{prefix}_runtime_ready", runtime_ready)
 
     def _clear_without_mutation(
         self,

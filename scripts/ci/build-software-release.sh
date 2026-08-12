@@ -38,6 +38,7 @@ command -v docker >/dev/null
 command -v trivy >/dev/null
 command -v cosign >/dev/null
 command -v python3 >/dev/null
+bash scripts/ci/verify-cosign-toolchain.sh
 test -f "${TRIVY_CACHE_DIR}/db/trivy.db"
 test -f "${TRIVY_CACHE_DIR}/db/metadata.json"
 

@@ -331,6 +331,109 @@ def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
     assert paths.lock.is_file()
 
 
+def test_signed_active_waits_for_compose_start_period_and_transient_http_readiness(tmp_path):
+    paths = _paths(tmp_path)
+    runtime = FakeRuntime()
+    active = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, active)
+    status_checks = 0
+    health_checks = 0
+
+    def command(args: list[str]) -> str:
+        nonlocal status_checks
+        output = runtime.run(args)
+        if args[:2] == ["/usr/bin/docker", "compose"] and "ps" in args:
+            status_checks += 1
+            if status_checks == 1:
+                records = json.loads(output)
+                for record in records:
+                    if record["Service"] != "mosquitto-init":
+                        record["Health"] = "starting"
+                return json.dumps(records)
+        return output
+
+    def health(_url: str) -> None:
+        nonlocal health_checks
+        health_checks += 1
+        if health_checks == 1:
+            raise ReleaseError("release health check failed")
+
+    result = ReleaseEngine(
+        paths=paths,
+        command_runner=command,
+        health_checker=health,
+        sleeper=lambda _seconds: None,
+    ).start_active()
+
+    assert result["status"] == "running"
+    assert status_checks == 3
+    assert health_checks == 3
+
+
+def test_signed_active_pending_service_does_not_hide_later_image_mismatch(tmp_path):
+    paths = _paths(tmp_path)
+    runtime = FakeRuntime()
+    active = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, active)
+    sleeps = 0
+
+    def status(args: list[str], _timeout: float) -> str:
+        records = json.loads(runtime.run(args))
+        records[0]["Health"] = "starting"
+        records[-1]["Image"] = "sha256:" + "f" * 64
+        return json.dumps(records)
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+
+    with pytest.raises(ReleaseError, match="running image does not match release manifest"):
+        ReleaseEngine(
+            paths=paths,
+            command_runner=runtime.run,
+            runtime_command_runner=status,
+            health_checker=runtime.health,
+            sleeper=sleep,
+        ).start_active()
+
+    assert sleeps == 0
+
+
+def test_runtime_compose_probe_receives_remaining_deadline_and_timeout_is_fail_closed(tmp_path):
+    paths = _paths(tmp_path)
+    runtime = FakeRuntime()
+    active = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, active)
+    timeouts: list[float] = []
+
+    def timed_out(_args: list[str], timeout: float) -> str:
+        timeouts.append(timeout)
+        raise ReleaseError("command timed out: docker")
+
+    with pytest.raises(ReleaseError, match="command timed out: docker"):
+        ReleaseEngine(
+            paths=paths,
+            command_runner=runtime.run,
+            runtime_command_runner=timed_out,
+            health_checker=runtime.health,
+            runtime_ready_timeout=7,
+        ).start_active()
+
+    assert len(timeouts) == 1
+    assert 0 < timeouts[0] <= 7
+
+
+def test_subprocess_timeout_is_mapped_to_release_error(tmp_path, monkeypatch):
+    paths = _paths(tmp_path)
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=1)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(ReleaseError, match="command timed out: docker"):
+        ReleaseEngine(paths=paths)._run_command(["/usr/bin/docker", "compose"], timeout=1)
+
+
 def _install_nonblocking_lock_probe(blocked, acquired_without_waiting) -> None:
     import release_engine
 
@@ -663,12 +766,31 @@ def test_candidate_failure_rolls_back_previous_without_registry(tmp_path):
     release_b = _manifest("22222222-2222-4222-8222-222222222222", 2, "1.1.0")
     _seed(paths, release_a)
     runtime = FakeRuntime()
-    runtime.fail_next_health = True
     operation_id = "00000000000000020000000000000007"
-    engine = _engine(paths, runtime, {operation_id: _policy(operation_id, release_b)})
+    clock = 0.0
+
+    def health(_url: str) -> None:
+        assert runtime.current_override is not None
+        if runtime._images(runtime.current_override) == release_b["image_ids"]:
+            raise ReleaseError("candidate_health_failed")
+
+    def sleep(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    engine = ReleaseEngine(
+        paths=paths,
+        command_runner=runtime.run,
+        policy_fetcher=lambda requested: {operation_id: _policy(operation_id, release_b)}[requested],
+        health_checker=health,
+        monotonic=lambda: clock,
+        sleeper=sleep,
+        runtime_ready_timeout=1,
+        runtime_ready_poll=1,
+    )
     _request(paths, operation_id)
 
-    with pytest.raises(ReleaseError, match="candidate_health_failed"):
+    with pytest.raises(ReleaseError, match="readiness deadline exceeded"):
         engine.apply()
 
     journal = json.loads(paths.journal.read_text(encoding="utf-8"))
