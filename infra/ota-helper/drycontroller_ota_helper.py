@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 import re
+import signal
 import socketserver
 import stat
 import subprocess
@@ -24,6 +25,14 @@ APPLY_PROGRAM = Path("/usr/libexec/drycontroller/ota-apply")
 PROJECT_DIR = Path("/opt/Drycontroller-edge")
 OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")
 TERMINAL_STATUSES = {"succeeded", "failed"}
+APPLY_TIMEOUT_SECONDS = 30 * 60
+PROCESS_TERMINATE_GRACE_SECONDS = 10
+PROCESS_OUTPUT_DRAIN_GRACE_SECONDS = 10
+MAX_FULL_OPERATIONS = 256
+MAX_OPERATION_TOMBSTONES = 4096
+MAX_OPERATION_LOG_BYTES = 1024 * 1024
+LOG_FILE_MAX_BYTES = 16 * 1024 * 1024
+LOG_ENTRY_OVERHEAD_BYTES = 512
 FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -87,7 +96,7 @@ class OperationController:
             directory.mkdir(parents=True, exist_ok=True)
             directory.chmod(0o700)
         if not self.state_path.exists():
-            self._write_state({"operations": {}})
+            self._write_state({"operations": {}, "tombstones": {}})
         if not self.log_path.exists():
             self.log_path.touch(mode=0o600)
         self.log_path.chmod(0o600)
@@ -95,6 +104,9 @@ class OperationController:
     def _read_state(self) -> dict[str, Any]:
         data = json.loads(self.state_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or not isinstance(data.get("operations"), dict):
+            raise RuntimeError("invalid OTA helper state")
+        tombstones = data.setdefault("tombstones", {})
+        if not isinstance(tombstones, dict):
             raise RuntimeError("invalid OTA helper state")
         return data
 
@@ -134,7 +146,54 @@ class OperationController:
                 )
                 changed = True
         if changed:
+            self._prune_state(state)
             self._write_state(state)
+
+    def _prune_state(self, state: dict[str, Any]) -> None:
+        operations = state["operations"]
+        tombstones = state["tombstones"]
+        while len(operations) > MAX_FULL_OPERATIONS:
+            terminal = [
+                operation
+                for operation in operations.values()
+                if operation.get("status") in TERMINAL_STATUSES
+            ]
+            if not terminal:
+                break
+            oldest = min(terminal, key=lambda operation: str(operation.get("finished_at") or ""))
+            operation_id = oldest["operation_id"]
+            tombstones[operation_id] = {
+                "operation_id": operation_id,
+                "status": oldest["status"],
+                "step": "retained",
+                "started_at": oldest.get("started_at"),
+                "finished_at": oldest.get("finished_at"),
+                "exit_code": oldest.get("exit_code"),
+                "error": oldest.get("error"),
+                "log_available": False,
+            }
+            del operations[operation_id]
+
+        if len(tombstones) > MAX_OPERATION_TOMBSTONES:
+            oldest_ids = sorted(
+                tombstones,
+                key=lambda operation_id: str(tombstones[operation_id].get("finished_at") or ""),
+            )
+            for operation_id in oldest_ids[: len(tombstones) - MAX_OPERATION_TOMBSTONES]:
+                del tombstones[operation_id]
+
+    def _prepare_log_for_new_operation(self, state: dict[str, Any]) -> int:
+        reserve = MAX_OPERATION_LOG_BYTES + LOG_ENTRY_OVERHEAD_BYTES
+        if self.log_path.stat().st_size <= max(0, LOG_FILE_MAX_BYTES - reserve):
+            return self.log_path.stat().st_size
+
+        with self.log_path.open("wb") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+        for operation in state["operations"].values():
+            if operation.get("status") in TERMINAL_STATUSES:
+                operation.update({"log_available": False, "log_start": None, "log_end": None})
+        return 0
 
     def ready(self) -> dict[str, Any]:
         with self._lock:
@@ -149,12 +208,14 @@ class OperationController:
         with self._lock:
             state = self._read_state()
             existing = state["operations"].get(operation_id)
+            if existing is None:
+                existing = state["tombstones"].get(operation_id)
             if existing is not None:
                 return dict(existing), False
             if self._active_operation_id is not None:
                 raise OperationBusy(self._active_operation_id)
 
-            log_start = self.log_path.stat().st_size
+            log_start = self._prepare_log_for_new_operation(state)
             operation = {
                 "operation_id": operation_id,
                 "status": "queued",
@@ -163,6 +224,7 @@ class OperationController:
                 "finished_at": None,
                 "exit_code": None,
                 "error": None,
+                "log_available": True,
                 "log_start": log_start,
                 "log_end": None,
             }
@@ -176,13 +238,24 @@ class OperationController:
     def get(self, operation_id: str) -> dict[str, Any]:
         operation_id = validate_operation_id(operation_id)
         with self._lock:
-            operation = self._read_state()["operations"].get(operation_id)
+            state = self._read_state()
+            operation = state["operations"].get(operation_id)
+            if operation is None:
+                operation = state["tombstones"].get(operation_id)
             if operation is None:
                 raise OperationNotFound(operation_id)
             return dict(operation)
 
     def logs(self, operation_id: str) -> dict[str, Any]:
         operation = self.get(operation_id)
+        if not operation.get("log_available", True):
+            return {
+                "success": True,
+                "operation_id": operation_id,
+                "count": 0,
+                "data": [],
+                "available": False,
+            }
         start = int(operation["log_start"])
         end_value = operation.get("log_end")
         with self.log_path.open("rb") as handle:
@@ -194,16 +267,89 @@ class OperationController:
             "operation_id": operation_id,
             "count": len(lines),
             "data": lines,
+            "available": True,
         }
 
-    def _patch(self, operation_id: str, **values: Any) -> None:
+    def _patch(self, operation_id: str, *, prune: bool = False, **values: Any) -> None:
         state = self._read_state()
         state["operations"][operation_id].update(values)
+        if prune:
+            self._prune_state(state)
         self._write_state(state)
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.terminate()
+        try:
+            process.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.kill()
+        process.wait()
+
+    @staticmethod
+    def _copy_process_output(
+        process: subprocess.Popen[bytes],
+        log_handle: Any,
+        errors: list[Exception],
+    ) -> None:
+        assert process.stdout is not None
+        written = 0
+        truncated = False
+        try:
+            while True:
+                chunk = process.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                remaining = max(0, MAX_OPERATION_LOG_BYTES - written)
+                if remaining:
+                    kept = chunk[:remaining]
+                    log_handle.write(kept)
+                    written += len(kept)
+                if len(chunk) > remaining and not truncated:
+                    log_handle.write(b"\n[ota-helper] process output truncated\n")
+                    truncated = True
+        except (OSError, ValueError) as exc:
+            errors.append(exc)
+        finally:
+            process.stdout.close()
+
+    @staticmethod
+    def _finish_output_reader(process: subprocess.Popen[bytes], reader: threading.Thread) -> bool:
+        reader.join(timeout=PROCESS_OUTPUT_DRAIN_GRACE_SECONDS)
+        if not reader.is_alive():
+            return True
+
+        for stop_signal in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, stop_signal)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                pass
+            reader.join(timeout=PROCESS_OUTPUT_DRAIN_GRACE_SECONDS)
+            if not reader.is_alive():
+                return True
+        return False
 
     def _run(self, operation_id: str) -> None:
         exit_code: int | None = None
         error: str | None = None
+        process: subprocess.Popen[bytes] | None = None
+        reader: threading.Thread | None = None
+        reader_errors: list[Exception] = []
         try:
             with self._lock:
                 self._patch(
@@ -219,19 +365,42 @@ class OperationController:
                     cwd=self.project_dir,
                     env=FIXED_ENV,
                     stdin=subprocess.DEVNULL,
-                    stdout=log_handle,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     close_fds=True,
+                    start_new_session=True,
                 )
-                exit_code = process.wait()
+                reader = threading.Thread(
+                    target=self._copy_process_output,
+                    args=(process, log_handle, reader_errors),
+                    daemon=True,
+                )
+                reader.start()
+                try:
+                    exit_code = process.wait(timeout=APPLY_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    error = "fixed_state_machine_timeout"
+                    self._terminate_process(process)
+                    exit_code = process.returncode
+                if not self._finish_output_reader(process, reader) and error is None:
+                    error = "fixed_state_machine_log_drain_timeout"
+                if reader_errors and error is None:
+                    error = f"fixed_state_machine_log_error:{type(reader_errors[0]).__name__}"
                 log_handle.write(f"[ota-helper] fixed state machine exited: {exit_code}\n".encode())
+                log_handle.flush()
+                os.fsync(log_handle.fileno())
         except (OSError, subprocess.SubprocessError) as exc:
             error = f"fixed_state_machine_error:{type(exc).__name__}"
+            if process is not None and process.poll() is None:
+                self._terminate_process(process)
+            if process is not None and reader is not None:
+                self._finish_output_reader(process, reader)
 
         with self._lock:
             succeeded = exit_code == 0 and error is None
             self._patch(
                 operation_id,
+                prune=True,
                 status="succeeded" if succeeded else "failed",
                 step="done",
                 finished_at=utc_now(),

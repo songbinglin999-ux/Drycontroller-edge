@@ -10,7 +10,6 @@ LOG_FILE="/var/log/drycontroller-autoinstall.log"
 BUNDLE="/opt/drycontroller-edge.tar.gz"
 IMAGE_BUNDLE="/opt/drycontroller-images/bundle-images.tar"
 SOURCE_ROOT="/opt/drycontroller-edge-source"
-EDGE_ROOT="/opt/Drycontroller-edge"
 WIFI_ENV="/opt/drycontroller-wifi.env"
 
 log() {
@@ -68,8 +67,7 @@ fi
 
 log "running install-edge-host.sh"
 bash "${SOURCE_ROOT}/infra/bootstrap/install-edge-host.sh" \
-  --source "$SOURCE_ROOT" \
-  --edge-root "$EDGE_ROOT"
+  --source "$SOURCE_ROOT"
 
 if [ -f "$IMAGE_BUNDLE" ]; then
   log "loading bundled Docker images: $IMAGE_BUNDLE"

@@ -123,6 +123,68 @@ def test_interrupted_operation_is_failed_on_restart(tmp_path):
     assert recovered["log_end"] == 0
 
 
+def test_timed_out_program_is_terminated_and_releases_serial_slot(tmp_path, monkeypatch):
+    monkeypatch.setattr(helper, "APPLY_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(helper, "PROCESS_TERMINATE_GRACE_SECONDS", 0.05)
+    controller = _controller(tmp_path, "sleep 30")
+
+    controller.start("7" * 32)
+    timed_out = _wait_terminal(controller, "7" * 32)
+
+    assert timed_out["status"] == "failed"
+    assert timed_out["error"] == "fixed_state_machine_timeout"
+
+    monkeypatch.setattr(helper, "APPLY_TIMEOUT_SECONDS", 1)
+    controller.apply_program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    controller.apply_program.chmod(0o755)
+    _, created = controller.start("8" * 32)
+    assert created is True
+    assert _wait_terminal(controller, "8" * 32)["status"] == "succeeded"
+
+
+def test_terminal_state_retention_keeps_bounded_idempotency_tombstones(tmp_path, monkeypatch):
+    monkeypatch.setattr(helper, "MAX_FULL_OPERATIONS", 2)
+    monkeypatch.setattr(helper, "MAX_OPERATION_TOMBSTONES", 3)
+    controller = _controller(tmp_path, "exit 0")
+
+    for digit in "12345":
+        operation_id = digit * 32
+        controller.start(operation_id)
+        _wait_terminal(controller, operation_id)
+
+    state = controller._read_state()
+    assert len(state["operations"]) == 2
+    assert len(state["tombstones"]) == 3
+
+    retained, created = controller.start("1" * 32)
+    assert created is False
+    assert retained["operation_id"] == "1" * 32
+    assert retained["status"] == "succeeded"
+
+
+def test_finished_program_cannot_leave_log_pipe_open_forever(tmp_path, monkeypatch):
+    monkeypatch.setattr(helper, "PROCESS_OUTPUT_DRAIN_GRACE_SECONDS", 0.05)
+    controller = _controller(tmp_path, "sleep 30 & exit 0")
+
+    controller.start("6" * 32)
+
+    assert _wait_terminal(controller, "6" * 32)["status"] == "succeeded"
+
+
+def test_process_output_and_shared_log_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(helper, "MAX_OPERATION_LOG_BYTES", 128)
+    monkeypatch.setattr(helper, "LOG_FILE_MAX_BYTES", 1024)
+    controller = _controller(tmp_path, "yes x | head -c 4096")
+
+    for digit in "12345678":
+        operation_id = digit * 32
+        controller.start(operation_id)
+        _wait_terminal(controller, operation_id)
+
+    assert controller.log_path.stat().st_size <= helper.LOG_FILE_MAX_BYTES
+    assert b"output truncated" in controller.log_path.read_bytes()
+
+
 def test_unix_http_api_accepts_only_operation_id(tmp_path):
     controller = _controller(tmp_path, "echo applied")
     socket_path = Path("/private/tmp") / f"dc-ota-{os.getpid()}-{time.time_ns()}.sock"

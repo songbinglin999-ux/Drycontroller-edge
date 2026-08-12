@@ -153,6 +153,8 @@ def test_autoinstall_media_carries_and_loads_first_boot_image_bundle():
     assert "/cdrom/bundle-images.tar" in user_data
     assert "/target/opt/drycontroller-images/bundle-images.tar" in user_data
     assert 'IMAGE_BUNDLE="/opt/drycontroller-images/bundle-images.tar"' in post_install
+    assert "--edge-root" not in post_install
+    assert '--source "$SOURCE_ROOT"' in post_install
     assert 'docker load -i "$IMAGE_BUNDLE"' in post_install
     assert 'rm -f "$IMAGE_BUNDLE"' in post_install
     assert "self.include_images_var = tk.BooleanVar(value=True)" in maker
@@ -357,6 +359,8 @@ def test_install_edge_host_installs_activation_agent_service():
 def test_install_edge_host_installs_root_owned_ota_helper():
     text = INSTALL_SCRIPT.read_text(encoding="utf-8")
 
+    assert 'EDGE_ROOT="/opt/Drycontroller-edge"' in text
+    assert "--edge-root" not in text
     assert "infra/ota-helper/drycontroller_ota_helper.py" in text
     assert "infra/ota-helper/ota-apply" in text
     assert "install -o root -g root -m 0755" in text

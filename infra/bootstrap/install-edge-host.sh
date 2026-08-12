@@ -21,7 +21,6 @@ Usage:
   sudo bash infra/bootstrap/install-edge-host.sh [options]
 
 Options:
-  --edge-root PATH       Install edge project here. Default: /opt/Drycontroller-edge
   --source PATH          Source repo/package directory. Default: repository root containing this script
   --skip-packages        Do not run apt-get; only verify prerequisites
   --skip-docker          Do not install Docker; only verify it exists
@@ -45,11 +44,6 @@ die() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --edge-root)
-      EDGE_ROOT="${2:-}"
-      [ -n "$EDGE_ROOT" ] || die "--edge-root requires a value"
-      shift 2
-      ;;
     --source)
       REPO_SOURCE="${2:-}"
       [ -n "$REPO_SOURCE" ] || die "--source requires a value"
