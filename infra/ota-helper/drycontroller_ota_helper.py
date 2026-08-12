@@ -65,6 +65,11 @@ def validate_operation_id(value: object) -> str:
     return value
 
 
+def operation_sequence(operation_id: str) -> int:
+    """Return the Cloud job sequence encoded in the first 64 bits."""
+    return int(validate_operation_id(operation_id)[:16], 16)
+
+
 def operation_id_from_body(body: object) -> str:
     if not isinstance(body, dict) or set(body) != {"operation_id"}:
         raise InvalidOperationId("request body must contain only operation_id")
@@ -96,7 +101,7 @@ class OperationController:
             directory.mkdir(parents=True, exist_ok=True)
             directory.chmod(0o700)
         if not self.state_path.exists():
-            self._write_state({"operations": {}, "tombstones": {}})
+            self._write_state({"operations": {}, "tombstones": {}, "high_watermark": -1})
         if not self.log_path.exists():
             self.log_path.touch(mode=0o600)
         self.log_path.chmod(0o600)
@@ -107,6 +112,9 @@ class OperationController:
             raise RuntimeError("invalid OTA helper state")
         tombstones = data.setdefault("tombstones", {})
         if not isinstance(tombstones, dict):
+            raise RuntimeError("invalid OTA helper state")
+        high_watermark = data.setdefault("high_watermark", -1)
+        if not isinstance(high_watermark, int) or high_watermark < -1:
             raise RuntimeError("invalid OTA helper state")
         return data
 
@@ -187,12 +195,15 @@ class OperationController:
         if self.log_path.stat().st_size <= max(0, LOG_FILE_MAX_BYTES - reserve):
             return self.log_path.stat().st_size
 
-        with self.log_path.open("wb") as handle:
-            handle.flush()
-            os.fsync(handle.fileno())
         for operation in state["operations"].values():
             if operation.get("status") in TERMINAL_STATUSES:
                 operation.update({"log_available": False, "log_start": None, "log_end": None})
+        self._write_state(state)
+        # The persisted metadata must become conservative before old bytes are
+        # removed; a crash can leave logs unavailable, never falsely readable.
+        with self.log_path.open("wb") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
         return 0
 
     def ready(self) -> dict[str, Any]:
@@ -214,6 +225,18 @@ class OperationController:
                 return dict(existing), False
             if self._active_operation_id is not None:
                 raise OperationBusy(self._active_operation_id)
+            sequence = operation_sequence(operation_id)
+            if sequence <= state["high_watermark"]:
+                return {
+                    "operation_id": operation_id,
+                    "status": "failed",
+                    "step": "retained",
+                    "started_at": None,
+                    "finished_at": None,
+                    "exit_code": None,
+                    "error": "operation_replay_rejected",
+                    "log_available": False,
+                }, False
 
             log_start = self._prepare_log_for_new_operation(state)
             operation = {
@@ -229,6 +252,7 @@ class OperationController:
                 "log_end": None,
             }
             state["operations"][operation_id] = operation
+            state["high_watermark"] = sequence
             self._write_state(state)
             self._active_operation_id = operation_id
             worker = threading.Thread(target=self._run, args=(operation_id,), daemon=True)
@@ -247,20 +271,27 @@ class OperationController:
             return dict(operation)
 
     def logs(self, operation_id: str) -> dict[str, Any]:
-        operation = self.get(operation_id)
-        if not operation.get("log_available", True):
-            return {
-                "success": True,
-                "operation_id": operation_id,
-                "count": 0,
-                "data": [],
-                "available": False,
-            }
-        start = int(operation["log_start"])
-        end_value = operation.get("log_end")
-        with self.log_path.open("rb") as handle:
-            handle.seek(start)
-            data = handle.read(None if end_value is None else max(0, int(end_value) - start))
+        operation_id = validate_operation_id(operation_id)
+        with self._lock:
+            state = self._read_state()
+            operation = state["operations"].get(operation_id)
+            if operation is None:
+                operation = state["tombstones"].get(operation_id)
+            if operation is None:
+                raise OperationNotFound(operation_id)
+            if not operation.get("log_available", True):
+                return {
+                    "success": True,
+                    "operation_id": operation_id,
+                    "count": 0,
+                    "data": [],
+                    "available": False,
+                }
+            start = int(operation["log_start"])
+            end_value = operation.get("log_end")
+            with self.log_path.open("rb") as handle:
+                handle.seek(start)
+                data = handle.read(None if end_value is None else max(0, int(end_value) - start))
         lines = data.decode("utf-8", errors="replace").splitlines()[-200:]
         return {
             "success": True,

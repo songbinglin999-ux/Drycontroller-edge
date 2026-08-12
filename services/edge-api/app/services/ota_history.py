@@ -76,7 +76,7 @@ async def record_ota_operation(
 
     req = request_payload or {}
     status_text = str(operation.get("status") or "unknown")
-    started_at = _parse_dt(operation.get("started_at")) or dt.datetime.now(dt.timezone.utc)
+    parsed_started_at = _parse_dt(operation.get("started_at"))
     finished_at = _parse_dt(operation.get("finished_at"))
 
     try:
@@ -84,27 +84,35 @@ async def record_ota_operation(
             try:
                 res = await db.execute(select(OtaOperation).where(OtaOperation.operation_id == op_id).limit(1))
                 row = res.scalars().one_or_none()
+                previous_payload = _build_outbox_payload(row) if row is not None else None
+                stored_request = (
+                    dict((row.params or {}).get("request") or {})
+                    if row is not None and isinstance(row.params, dict)
+                    else {}
+                )
+                effective_req = req if request_payload is not None else stored_request
                 if row is None:
                     row = OtaOperation(
                         tenant_id=tenant_id,
                         operation_id=op_id,
-                        ota_version=str(operation.get("target_version") or req.get("target_version") or "unknown"),
-                        source=str(operation.get("mode") or req.get("mode") or "online"),
+                        ota_version=str(operation.get("target_version") or effective_req.get("target_version") or "unknown"),
+                        source=str(operation.get("mode") or effective_req.get("mode") or "online"),
                         status=status_text,
-                        started_at=started_at,
+                        started_at=parsed_started_at or dt.datetime.now(dt.timezone.utc),
                     )
                     db.add(row)
 
                 row.status = status_text
-                row.ota_version = str(operation.get("target_version") or req.get("target_version") or row.ota_version or "unknown")
-                row.source = str(operation.get("mode") or req.get("mode") or row.source or "online")
-                row.started_at = started_at
+                row.ota_version = str(operation.get("target_version") or effective_req.get("target_version") or row.ota_version or "unknown")
+                row.source = str(operation.get("mode") or effective_req.get("mode") or row.source or "online")
+                if parsed_started_at is not None:
+                    row.started_at = parsed_started_at
                 row.finished_at = finished_at
                 row.params = {
                     "operation_id": op_id,
-                    "request": dict(req),
+                    "request": dict(effective_req),
                     "step": operation.get("step"),
-                    "timeout_sec": operation.get("timeout_sec") or req.get("timeout_sec"),
+                    "timeout_sec": operation.get("timeout_sec") or effective_req.get("timeout_sec"),
                 }
                 row.log_path = "/var/log/drycontroller-ota/operations.log"
                 row.result = {
@@ -115,13 +123,15 @@ async def record_ota_operation(
                 }
                 await db.flush()
 
-                db.add(
-                    CloudSyncOutbox(
-                        kind="ota_operation",
-                        max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
-                        payload=_build_outbox_payload(row),
+                current_payload = _build_outbox_payload(row)
+                if current_payload != previous_payload:
+                    db.add(
+                        CloudSyncOutbox(
+                            kind="ota_operation",
+                            max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
+                            payload=current_payload,
+                        )
                     )
-                )
                 await db.commit()
             except Exception:  # noqa: BLE001 - 故意宽捕：best-effort OTA history 失败需 rollback 后交给外层吞掉
                 await db.rollback()

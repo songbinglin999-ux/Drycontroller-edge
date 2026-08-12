@@ -142,12 +142,13 @@ def test_timed_out_program_is_terminated_and_releases_serial_slot(tmp_path, monk
     assert _wait_terminal(controller, "8" * 32)["status"] == "succeeded"
 
 
-def test_terminal_state_retention_keeps_bounded_idempotency_tombstones(tmp_path, monkeypatch):
+def test_evicted_operation_id_is_rejected_without_reexecution(tmp_path, monkeypatch):
     monkeypatch.setattr(helper, "MAX_FULL_OPERATIONS", 2)
     monkeypatch.setattr(helper, "MAX_OPERATION_TOMBSTONES", 3)
-    controller = _controller(tmp_path, "exit 0")
+    marker = tmp_path / "calls"
+    controller = _controller(tmp_path, f"printf x >> '{marker}'")
 
-    for digit in "12345":
+    for digit in "123456":
         operation_id = digit * 32
         controller.start(operation_id)
         _wait_terminal(controller, operation_id)
@@ -159,7 +160,9 @@ def test_terminal_state_retention_keeps_bounded_idempotency_tombstones(tmp_path,
     retained, created = controller.start("1" * 32)
     assert created is False
     assert retained["operation_id"] == "1" * 32
-    assert retained["status"] == "succeeded"
+    assert retained["status"] == "failed"
+    assert retained["error"] == "operation_replay_rejected"
+    assert marker.read_text(encoding="utf-8") == "x" * 6
 
 
 def test_finished_program_cannot_leave_log_pipe_open_forever(tmp_path, monkeypatch):
@@ -183,6 +186,65 @@ def test_process_output_and_shared_log_are_bounded(tmp_path, monkeypatch):
 
     assert controller.log_path.stat().st_size <= helper.LOG_FILE_MAX_BYTES
     assert b"output truncated" in controller.log_path.read_bytes()
+
+
+def test_log_rotation_persists_unavailable_state_before_truncation(tmp_path, monkeypatch):
+    monkeypatch.setattr(helper, "MAX_OPERATION_LOG_BYTES", 8)
+    monkeypatch.setattr(helper, "LOG_FILE_MAX_BYTES", 16)
+    monkeypatch.setattr(helper, "LOG_ENTRY_OVERHEAD_BYTES", 0)
+    controller = _controller(tmp_path, "exit 0")
+    operation_id = "1" * 32
+    state = controller._read_state()
+    state["operations"][operation_id] = {
+        "operation_id": operation_id,
+        "status": "succeeded",
+        "log_available": True,
+        "log_start": 0,
+        "log_end": 16,
+    }
+    controller._write_state(state)
+    controller.log_path.write_bytes(b"x" * 16)
+
+    controller._prepare_log_for_new_operation(state)
+
+    persisted = controller._read_state()["operations"][operation_id]
+    assert persisted["log_available"] is False
+    assert persisted["log_start"] is None
+    assert persisted["log_end"] is None
+    assert controller.log_path.stat().st_size == 0
+
+
+def test_log_rotation_failure_leaves_persisted_state_conservative(tmp_path, monkeypatch):
+    monkeypatch.setattr(helper, "MAX_OPERATION_LOG_BYTES", 8)
+    monkeypatch.setattr(helper, "LOG_FILE_MAX_BYTES", 16)
+    monkeypatch.setattr(helper, "LOG_ENTRY_OVERHEAD_BYTES", 0)
+    controller = _controller(tmp_path, "exit 0")
+    operation_id = "1" * 32
+    state = controller._read_state()
+    state["operations"][operation_id] = {
+        "operation_id": operation_id,
+        "status": "succeeded",
+        "log_available": True,
+        "log_start": 0,
+        "log_end": 16,
+    }
+    controller._write_state(state)
+    controller.log_path.write_bytes(b"x" * 16)
+    real_open = Path.open
+
+    def fail_log_truncate(path, mode="r", *args, **kwargs):
+        if path == controller.log_path and mode == "wb":
+            raise OSError("simulated rotation crash")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_log_truncate)
+
+    with pytest.raises(OSError, match="simulated rotation crash"):
+        controller._prepare_log_for_new_operation(state)
+
+    persisted = controller._read_state()["operations"][operation_id]
+    assert persisted["log_available"] is False
+    assert controller.log_path.stat().st_size == 16
 
 
 def test_unix_http_api_accepts_only_operation_id(tmp_path):

@@ -141,6 +141,52 @@ async def test_record_ota_operation_updates_existing_and_writes_outbox(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_record_ota_operation_does_not_enqueue_unchanged_poll(monkeypatch):
+    from app.models import OtaOperation
+    from app.services import ota_history as oh_module
+
+    started_at = dt.datetime(2026, 5, 22, 1, 0, tzinfo=dt.timezone.utc)
+    existing = OtaOperation(
+        id=9,
+        operation_id="ota-1",
+        ota_version="2026.05.22",
+        source="online",
+        status="running",
+        started_at=started_at,
+        params={
+            "operation_id": "ota-1",
+            "request": {"mode": "online", "target_version": "2026.05.22"},
+            "step": "apply",
+            "timeout_sec": None,
+        },
+        log_path="/var/log/drycontroller-ota/operations.log",
+        result={
+            "exit_code": None,
+            "error": None,
+            "helper_container_id": None,
+            "helper_image": None,
+        },
+    )
+    session = _FakeSession(rows=[existing])
+    monkeypatch.setattr(oh_module, "AsyncSessionLocal", lambda: session)
+
+    await oh_module.record_ota_operation(
+        {
+            "operation_id": "ota-1",
+            "status": "running",
+            "mode": "online",
+            "target_version": "2026.05.22",
+            "started_at": started_at.isoformat(),
+            "step": "apply",
+        },
+        request_payload={"mode": "online", "target_version": "2026.05.22"},
+    )
+
+    assert session.committed is True
+    assert session.added == []
+
+
+@pytest.mark.asyncio
 async def test_outbox_drain_pushes_ota_operation_to_ota_path(monkeypatch):
     from app.models import CloudSyncOutbox
     from app.services import outbox_drain as drain_module
