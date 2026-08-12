@@ -148,17 +148,28 @@ def test_host_activation_syncs_cloud_runtime_env_into_edge_env(tmp_path):
 def test_autoinstall_media_carries_and_loads_first_boot_image_bundle():
     user_data = (AUTOINSTALL_DIR / "user-data").read_text(encoding="utf-8")
     post_install = (AUTOINSTALL_DIR / "post-install.sh").read_text(encoding="utf-8")
+    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
     maker = USB_MAKER.read_text(encoding="utf-8")
 
     assert "/cdrom/bundle-images.tar" in user_data
     assert "/target/opt/drycontroller-images/bundle-images.tar" in user_data
     assert 'IMAGE_BUNDLE="/opt/drycontroller-images/bundle-images.tar"' in post_install
+    assert 'INITIAL_RELEASE="/opt/drycontroller-release/software-release-seed.json"' in post_install
     assert "--edge-root" not in post_install
     assert '--source "$SOURCE_ROOT"' in post_install
-    assert 'docker load -i "$IMAGE_BUNDLE"' in post_install
-    assert 'rm -f "$IMAGE_BUNDLE"' in post_install
+    assert '--initial-release "$INITIAL_RELEASE"' in post_install
+    assert '--image-bundle "$IMAGE_BUNDLE"' in post_install
+    assert 'docker image load -i "$INITIAL_IMAGE_BUNDLE"' in installer
+    assert 'initialize-active-release "$INITIAL_RELEASE"' in installer
+    assert 'rm -f "$IMAGE_BUNDLE" "$INITIAL_RELEASE" "$COSIGN_PUBLIC_KEY" "$COSIGN_BIN"' in post_install
+    assert "/cdrom/software-release-seed.json" in user_data
+    assert "/cdrom/cosign.pub" in user_data
+    assert "/cdrom/cosign-linux-amd64" in user_data
     assert "self.include_images_var = tk.BooleanVar(value=True)" in maker
     assert 'maps.append(("dist/bundle-images.tar", "/bundle-images.tar"))' in maker
+    assert '("dist/autoinstall/software-release-seed.json", "/software-release-seed.json")' in maker
+    assert '("dist/autoinstall/cosign.pub", "/cosign.pub")' in maker
+    assert '("dist/autoinstall/cosign-linux-amd64", "/cosign-linux-amd64")' in maker
 
 
 def test_autoinstall_media_accepts_single_activation_bundle():
@@ -215,6 +226,11 @@ def test_os_installer_release_and_write_wrappers_are_fail_closed():
     assert "git status --porcelain=v1" in release
     assert "git worktree must be clean before building a release ISO" in release
     assert "tools/build-bundle-images.sh" in release
+    assert "scripts/prepare-initial-release.py" in release
+    assert '--software-release "$SOFTWARE_RELEASE"' in release
+    assert '--cosign-public-key "$COSIGN_PUBLIC_KEY"' in release
+    assert '--cosign-linux-amd64 "$COSIGN_LINUX_AMD64"' in release
+    assert '--source-commit "$(git rev-parse HEAD)"' in release
     assert "build-autoinstall-offline-apt-repo.sh" in release
     assert "build-autoinstall-bundle.sh" in release
     assert '"include_images": True' in release
@@ -226,6 +242,9 @@ def test_os_installer_release_and_write_wrappers_are_fail_closed():
     assert "final_iso_release_checklist" in release
     assert "bundle-images.tar" in release
     assert "activation-bundle.json" in release
+    assert "software-release-seed.json" in release
+    assert '"initial_active_release"' in release
+    assert '"source_commit": initial_manifest["source_commit"]' in release
     assert '"include_wifi": include_wifi' in release
     assert '"wifi_env"' in release
 
@@ -364,6 +383,14 @@ def test_install_edge_host_installs_root_owned_ota_helper():
     assert "infra/ota-helper/drycontroller_ota_helper.py" in text
     assert "infra/ota-helper/release_engine.py" in text
     assert "infra/ota-helper/ota-apply" in text
+    assert "infra/ota-helper/initialize-active-release" in text
+    assert "signed initial SoftwareRelease seed is required" in text
+    assert "complete initial release image bundle is required" in text
+    assert 'install -o root -g root -m 0644 "$COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub' in text
+    assert 'install -o root -g root -m 0755 "$COSIGN_BIN" /usr/local/bin/cosign' in text
     assert "install -o root -g root -m 0755" in text
     assert "systemctl enable --now drycontroller-ota-helper.service" in text
+    assert text.index('initialize-active-release "$INITIAL_RELEASE"') < text.index(
+        "systemctl enable --now drycontroller-ota-helper.service"
+    )
     assert '"ota_helper_service": "drycontroller-ota-helper.service"' in text

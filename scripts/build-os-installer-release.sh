@@ -21,21 +21,27 @@ PASSWORD_HASH=""
 APT_MIRROR="${DRYCONTROLLER_AUTOINSTALL_APT_MIRROR:-}"
 INCLUDE_WIFI=false
 FORCE=false
+SOFTWARE_RELEASE="dist/initial-release/software-release.json"
+COSIGN_PUBLIC_KEY="dist/initial-release/cosign.pub"
+COSIGN_LINUX_AMD64="dist/initial-release/cosign-linux-amd64"
 
 usage() {
   cat <<'EOF'
 Usage:
   bash scripts/build-os-installer-release.sh [--channel NAME] [--output dist/OSYYYYMMDD-NAME.iso]
                                                 [--password-env-file FILE | --password-hash-file FILE | --password-hash HASH]
+                                                [--software-release FILE] [--cosign-public-key FILE]
+                                                [--cosign-linux-amd64 FILE]
                                                 [--apt-mirror URI] [--include-wifi] [--force]
 
 Builds a full clean-room OS Installer release:
   1. Require a clean git worktree.
   2. Rebuild service Docker images and dist/bundle-images.tar.
-  3. Rebuild the offline apt repo in an Ubuntu 24.04 Docker container.
-  4. Rebuild dist/autoinstall with a real dryops sha512-crypt hash.
-  5. Remaster the ISO and run the final ISO release checklist.
-  6. Generate a matching .manifest.json next to the ISO.
+  3. Replace that archive with the exact, signed, complete SoftwareRelease image set.
+  4. Rebuild the offline apt repo in an Ubuntu 24.04 Docker container.
+  5. Rebuild dist/autoinstall with a real dryops sha512-crypt hash.
+  6. Remaster the ISO and run the final ISO release checklist.
+  7. Generate a matching .manifest.json next to the ISO.
 
 Default password source:
   infra/autoinstall/password.env, when present.
@@ -45,6 +51,10 @@ the manifest exists, matches the ISO checksum, and records a passing checklist.
 
 dist/autoinstall/wifi.env is refused by default. Pass --include-wifi only when
 the release intentionally embeds site WiFi credentials.
+
+Initial release inputs default to dist/initial-release/. software-release.json
+must be one completed Cloud SoftwareRelease response. cosign.pub and the Linux
+amd64 cosign binary must come from the same controlled release toolchain.
 EOF
 }
 
@@ -107,6 +117,21 @@ while [ $# -gt 0 ]; do
       [ -n "$APT_MIRROR" ] || { usage >&2; exit 2; }
       shift 2
       ;;
+    --software-release)
+      SOFTWARE_RELEASE="${2:-}"
+      [ -n "$SOFTWARE_RELEASE" ] || { usage >&2; exit 2; }
+      shift 2
+      ;;
+    --cosign-public-key)
+      COSIGN_PUBLIC_KEY="${2:-}"
+      [ -n "$COSIGN_PUBLIC_KEY" ] || { usage >&2; exit 2; }
+      shift 2
+      ;;
+    --cosign-linux-amd64)
+      COSIGN_LINUX_AMD64="${2:-}"
+      [ -n "$COSIGN_LINUX_AMD64" ] || { usage >&2; exit 2; }
+      shift 2
+      ;;
     --include-wifi)
       INCLUDE_WIFI=true
       shift
@@ -140,6 +165,7 @@ require_cmd docker
 require_cmd python3
 require_cmd bsdtar
 require_cmd shasum
+require_cmd cosign
 
 if [ -n "$(git status --porcelain=v1)" ]; then
   git status --short >&2
@@ -167,6 +193,9 @@ if output_iso == manifest:
 PY
 
 require_file "$BASE_ISO"
+require_file "$SOFTWARE_RELEASE"
+require_file "$COSIGN_PUBLIC_KEY"
+require_file "$COSIGN_LINUX_AMD64"
 
 if [ -n "$PASSWORD_ENV_FILE" ]; then
   [ -z "$PASSWORD_HASH_FILE" ] && [ -z "$PASSWORD_HASH" ] || die "use only one password source"
@@ -192,6 +221,13 @@ fi
 export DRYCONTROLLER_RELEASE_WRAPPER=1
 
 run bash tools/build-bundle-images.sh
+run python3 scripts/prepare-initial-release.py \
+  --software-release "$SOFTWARE_RELEASE" \
+  --cosign-public-key "$COSIGN_PUBLIC_KEY" \
+  --cosign-linux-amd64 "$COSIGN_LINUX_AMD64" \
+  --source-commit "$(git rev-parse HEAD)" \
+  --output-dir dist/autoinstall \
+  --image-bundle dist/bundle-images.tar
 
 log "rebuilding offline apt repository in ubuntu:24.04..."
 run docker run --rm \
@@ -227,6 +263,9 @@ require_file "dist/drycontroller-edge.tar.gz"
 require_file "dist/autoinstall/drycontroller-apt/Packages"
 require_file "dist/autoinstall/drycontroller-apt/Packages.gz"
 require_file "dist/autoinstall/activation-bundle.json"
+require_file "dist/autoinstall/software-release-seed.json"
+require_file "dist/autoinstall/cosign.pub"
+require_file "dist/autoinstall/cosign-linux-amd64"
 
 run python3 - "$BASE_ISO" "$OUTPUT_ISO" <<'PY'
 from __future__ import annotations
@@ -336,9 +375,14 @@ def image_entries(path: Path) -> list[dict[str, object]]:
 source_bundle = Path("dist/drycontroller-edge.tar.gz")
 image_bundle = Path("dist/bundle-images.tar")
 activation_bundle = Path("dist/autoinstall/activation-bundle.json")
+initial_release_seed = Path("dist/autoinstall/software-release-seed.json")
+release_cosign_pub = Path("dist/autoinstall/cosign.pub")
+release_cosign_bin = Path("dist/autoinstall/cosign-linux-amd64")
 wifi_env = Path("dist/autoinstall/wifi.env")
 apt_pool = Path("dist/autoinstall/drycontroller-apt/pool")
 status = git("status", "--porcelain=v1")
+initial_release = json.loads(initial_release_seed.read_text(encoding="utf-8"))
+initial_manifest = initial_release["manifest"]
 
 manifest = {
     "schema": "drycontroller.os-installer-release.v1",
@@ -383,6 +427,16 @@ manifest = {
             "sha256": sha256(activation_bundle),
             "fingerprint": json_file_fingerprint(activation_bundle),
         },
+        "initial_release": {
+            "release_id": initial_manifest["release_id"],
+            "version": initial_manifest["version"],
+            "sequence": initial_manifest["sequence"],
+            "source_commit": initial_manifest["source_commit"],
+            "manifest_digest": initial_release["manifest_digest"],
+            "seed_sha256": sha256(initial_release_seed),
+            "cosign_public_key_sha256": sha256(release_cosign_pub),
+            "cosign_linux_amd64_sha256": sha256(release_cosign_bin),
+        },
         "wifi_env": (
             {"included": True, "path": rel(wifi_env), "sha256": sha256(wifi_env), "size": wifi_env.stat().st_size}
             if include_wifi
@@ -393,7 +447,11 @@ manifest = {
         "final_iso_release_checklist": {
             "passed": True,
             "checker": "tools/os-installer-usb-maker/os_installer_usb_maker.py::verify_final_iso",
-        }
+        },
+        "initial_active_release": {
+            "passed": True,
+            "checker": "scripts/prepare-initial-release.py",
+        },
     },
 }
 
@@ -405,6 +463,8 @@ if not manifest["artifacts"]["image_bundle"]["images"]:
     raise SystemExit("image bundle contains no image manifest entries")
 if manifest["artifacts"]["wifi_env"]["included"] != include_wifi:
     raise SystemExit("wifi manifest state mismatch")
+if manifest["artifacts"]["initial_release"]["source_commit"] != manifest["git"]["commit"]:
+    raise SystemExit("initial SoftwareRelease source commit mismatch")
 
 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 print(f"release manifest written: {manifest_path}")

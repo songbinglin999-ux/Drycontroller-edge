@@ -260,7 +260,15 @@ drycontroller-edge-post-install.service
 bash scripts/build-os-installer-release.sh --channel stable
 ```
 
-该脚本会强制 clean git、重建 Docker 镜像包、重建 offline apt、重建 autoinstall overlay、remaster ISO、运行最终 ISO release checklist，并在 ISO 旁生成 `.manifest.json`。不要手工调用 `xorriso`、不要只跑 `scripts/build-autoinstall-bundle.sh` 就当成发布镜像。
+该脚本会强制 clean git、重建 Docker 镜像包、验证完整签名 SoftwareRelease 并把精确 digest 镜像集合重打包、重建 offline apt、重建 autoinstall overlay、remaster ISO、运行最终 ISO release checklist，并在 ISO 旁生成 `.manifest.json`。不要手工调用 `xorriso`、不要只跑 `scripts/build-autoinstall-bundle.sh` 就当成发布镜像。
+
+制盘前要在 `dist/initial-release/` 放入三个受控输入：
+
+- `software-release.json`：Cloud Ops 中一个 `completed` SoftwareRelease 的完整 GET 响应，其 `source_commit` 必须精确等于当前 Edge commit。
+- `cosign.pub`：与 SoftwareRelease `signing_key_sha256` 匹配的发布公钥。
+- `cosign-linux-amd64`：受控发布工具链中的 Linux amd64 cosign 可执行文件。
+
+制作机还必须安装可信的 host `cosign`、登录 manifest 指定的 Harbor。wrapper 会先用 host cosign 验 manifest 和 12 个镜像签名，然后拉取、检查并打包精确 digest；安装时再在目标 IPC 上验 manifest、证明 12 个本地 `RepoDigests`，最后原子生成 `active` journal。任一步不确定都停止安装，不启动 OTA helper。
 
 默认发布镜像不允许隐式带入 `dist/autoinstall/wifi.env`。如果某批次确实要把现场 WiFi 凭据嵌进 ISO，命令必须显式追加 `--include-wifi`，manifest 会记录 `wifi_env` 的 sha256；否则发现该文件就直接失败。
 
@@ -294,6 +302,7 @@ bash scripts/write-os-installer-usb.sh dist/OSYYYYMMDD-stable.iso --disk diskN
 - `dist/autoinstall/user-data` 的 installer apt 源只指向 `http://127.0.0.1:18080`，包含 `python3 -m http.server 18080` early-command，且不含 `mirrors.aliyun.com` / `security.ubuntu.com` / `archive.ubuntu.com` 等现场外网源。
 - `dist/autoinstall/drycontroller-apt/Packages` 和 `Packages.gz` 存在，`pool/` 内有 Docker、Docker Compose、Tailscale、NetworkManager 及基础依赖包。
 - `dist/drycontroller-edge.tar.gz` 来自当前 edge worktree；clean-room 装机要同时刷新 `dist/bundle-images.tar`。
+- `dist/initial-release/software-release.json`、`cosign.pub`、`cosign-linux-amd64` 存在；SoftwareRelease 为 completed、完整 12 服务、当前 source commit，且公钥摘要和 manifest 一致。
 - `dist/autoinstall/activation-bundle.json` 存在，schema 是 `drycontroller.activation-bundle.v1`，内含 `tailnet` 与 `factory_license`。
 - `dist/autoinstall/` 不保留旧 split 材料作为产品路径：没有 `tailnet.env` / `factory-license.json` 参与最终 ISO。
 - `dist/autoinstall/wifi.env` 必须缺省不存在；仅现场明确需要 WiFi 安装时使用 `--include-wifi`，并在 manifest 中留下 `wifi_env` 记录。
@@ -310,14 +319,14 @@ ruby -ryaml -e 'YAML.load_file(ARGV[0]); puts "yaml ok"' /tmp/drycontroller-user
 rg -n 'password:|REPLACE_WITH_SHA512_CRYPT_HASH|127\\.0\\.0\\.1:18080|http.server 18080|sources_list|disable_suites|network:|dhcp4|optional:' /tmp/drycontroller-user-data.verify
 ! rg -n 'REPLACE_WITH_SHA512_CRYPT_HASH' /tmp/drycontroller-user-data.verify
 ! rg -n 'mirrors\\.aliyun\\.com|mirrors\\.tuna\\.tsinghua\\.edu\\.cn|archive\\.ubuntu\\.com|security\\.ubuntu\\.com' /tmp/drycontroller-user-data.verify
-bsdtar -tf "$ISO" | rg '^(user-data|meta-data|post-install.sh|drycontroller-edge-post-install.service|drycontroller-edge.tar.gz|drycontroller-apt/Packages|drycontroller-apt/Packages.gz|activation-bundle.json|bundle-images.tar)$'
+bsdtar -tf "$ISO" | rg '^(user-data|meta-data|post-install.sh|drycontroller-edge-post-install.service|drycontroller-edge.tar.gz|drycontroller-apt/Packages|drycontroller-apt/Packages.gz|activation-bundle.json|bundle-images.tar|software-release-seed.json|cosign.pub|cosign-linux-amd64)$'
 bsdtar -tf "$ISO" | rg '^(tailnet.env|factory-license.json)$' && exit 1 || true
 bsdtar -xOf "$ISO" dists/noble/main/binary-amd64/Packages.gz | gzip -dc | rg '^Package: (linux-generic|linux-image-generic|grub-pc|grub-efi-amd64)'
 bsdtar -xOf "$ISO" boot/grub/grub.cfg | rg 'DryController Edge Autoinstall|autoinstall ds=nocloud\\;s=/cdrom/'
 hdiutil imageinfo "$ISO" | sed -n '1,130p'
 ```
 
-`bundle-images.tar` 可按本次目标决定是否必需；用于 clean-room 首次启动时必须存在。`hdiutil imageinfo` 在 macOS 上偶尔会返回内部错误码但打印分区信息，仍需看到 GPT/ISO9660/ESP 结构；否则用另一种工具复核 hybrid 启动结构。
+`bundle-images.tar`、`software-release-seed.json`、`cosign.pub` 和 `cosign-linux-amd64` 是一组不可拆分的首版发布材料，产品安装盘必须全部存在。`hdiutil imageinfo` 在 macOS 上偶尔会返回内部错误码但打印分区信息，仍需看到 GPT/ISO9660/ESP 结构；否则用另一种工具复核 hybrid 启动结构。
 
 ### 写盘和现场验收
 
@@ -365,6 +374,7 @@ hdiutil imageinfo "$ISO" | sed -n '1,130p'
 | 安装中途 `install_docker.io` 失败 | 查看 `/var/log/installer/curtin-install.log`，优先确认 `drycontroller-apt/` 与 ISO 版本/架构匹配，且包含 `docker.io` 及依赖。 |
 | 安装完成但没有自动关机 | 查看 `/var/log/installer/`，确认 late-commands 是否执行。 |
 | 首次开机后没有继续 host install | 查看 `/var/log/drycontroller-autoinstall.log` 和 `systemctl status drycontroller-edge-post-install.service`。 |
+| 首版发布初始化失败 | 检查 ISO 是否同时包含四个首版材料，查看 `/var/log/drycontroller-autoinstall.log`；不要手工补 journal。重新制盘前确认 SoftwareRelease source commit、公钥摘要、manifest 签名和 12 个镜像 digest 都通过 wrapper。 |
 | WiFi 连不上 | 检查安装盘根目录是否有 `wifi.env`，SSID/密码是否正确；必要时设置 `WIFI_INTERFACE`。 |
 | 激活阶段一直停在待确认 | 新装机主线不应卡在人工待确认；检查 `activation-bundle.json` 是否过期、签名/fingerprint 是否匹配、请求来源是否符合 Cloud Ops 策略。历史 pending 或异常记录才在 cloud-console Factory Activations 页面人工兜底处理。 |
 | 激活失败 | 查看 `/var/log/drycontroller-host-tailnet.log`、`/var/log/drycontroller-host-activation.log` 和 `systemctl status drycontroller-tailnet.service drycontroller-activation.service`，同时在 Cloud Ops 查看 factory activation、license 和 Headscale 配置。 |

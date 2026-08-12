@@ -14,6 +14,10 @@ INSTALL_PACKAGES=true
 INSTALL_DOCKER=true
 INSTALL_TAILSCALE=true
 REPO_SOURCE=""
+INITIAL_RELEASE=""
+INITIAL_IMAGE_BUNDLE=""
+COSIGN_PUBLIC_KEY=""
+COSIGN_BIN=""
 
 usage() {
   cat <<'EOF'
@@ -25,6 +29,10 @@ Options:
   --skip-packages        Do not run apt-get; only verify prerequisites
   --skip-docker          Do not install Docker; only verify it exists
   --skip-tailscale       Do not install Tailscale; only verify it exists
+  --initial-release FILE Completed signed SoftwareRelease seed JSON
+  --image-bundle FILE    Complete digest-locked Docker image archive for the seed
+  --cosign-public-key FILE  Public key bound by the SoftwareRelease manifest
+  --cosign-bin FILE      Linux amd64 cosign binary for offline verification
   -h, --help             Show this help
 
 Expected follow-up:
@@ -63,6 +71,26 @@ while [ $# -gt 0 ]; do
       INSTALL_TAILSCALE=false
       shift
       ;;
+    --initial-release)
+      INITIAL_RELEASE="${2:-}"
+      [ -n "$INITIAL_RELEASE" ] || die "--initial-release requires a value"
+      shift 2
+      ;;
+    --image-bundle)
+      INITIAL_IMAGE_BUNDLE="${2:-}"
+      [ -n "$INITIAL_IMAGE_BUNDLE" ] || die "--image-bundle requires a value"
+      shift 2
+      ;;
+    --cosign-public-key)
+      COSIGN_PUBLIC_KEY="${2:-}"
+      [ -n "$COSIGN_PUBLIC_KEY" ] || die "--cosign-public-key requires a value"
+      shift 2
+      ;;
+    --cosign-bin)
+      COSIGN_BIN="${2:-}"
+      [ -n "$COSIGN_BIN" ] || die "--cosign-bin requires a value"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -77,6 +105,10 @@ done
 [ "$(id -u)" -eq 0 ] || die "run as root, for example: sudo bash infra/bootstrap/install-edge-host.sh"
 [ "$(uname -s)" = "Linux" ] || die "Linux is required"
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
+[ -f "$INITIAL_RELEASE" ] || die "signed initial SoftwareRelease seed is required"
+[ -f "$INITIAL_IMAGE_BUNDLE" ] || die "complete initial release image bundle is required"
+[ -f "$COSIGN_PUBLIC_KEY" ] || die "initial release cosign public key is required"
+[ -f "$COSIGN_BIN" ] || die "Linux amd64 cosign binary is required"
 
 if [ -z "$REPO_SOURCE" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -93,6 +125,7 @@ fi
 [ -f "${REPO_SOURCE}/infra/ota-helper/drycontroller_ota_helper.py" ] || die "OTA helper missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/release_engine.py" ] || die "OTA release engine missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/ota-apply" ] || die "fixed OTA apply program missing in source"
+[ -f "${REPO_SOURCE}/infra/ota-helper/initialize-active-release" ] || die "active release initializer missing in source"
 
 install_base_packages_apt() {
   export DEBIAN_FRONTEND=noninteractive
@@ -238,7 +271,12 @@ copy_edge_project() {
 
 install_host_services() {
   retire_legacy_bootstrap_service
+  systemctl disable --now drycontroller-ota-helper.service >/dev/null 2>&1 || true
 
+  mkdir -p /etc/drycontroller/keys /etc/drycontroller/license /var/lib/drycontroller /var/log
+  chmod 755 /etc/drycontroller /etc/drycontroller/keys
+  chmod 750 /etc/drycontroller/license
+  chmod 700 /var/lib/drycontroller
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-tailnet.sh" /usr/local/sbin/drycontroller-host-tailnet.sh
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-enroll.sh" /usr/local/sbin/drycontroller-host-enroll.sh
   install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-activation.sh" /usr/local/sbin/drycontroller-host-activation.sh
@@ -249,17 +287,21 @@ install_host_services() {
   install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/drycontroller_ota_helper.py" /usr/libexec/drycontroller/drycontroller_ota_helper.py
   install -o root -g root -m 0644 "${EDGE_ROOT}/infra/ota-helper/release_engine.py" /usr/libexec/drycontroller/release_engine.py
   install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/ota-apply" /usr/libexec/drycontroller/ota-apply
+  install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/initialize-active-release" /usr/libexec/drycontroller/initialize-active-release
   install -o root -g root -m 0644 "${EDGE_ROOT}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
+  install -o root -g root -m 0644 "$COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub
+  install -o root -g root -m 0755 "$COSIGN_BIN" /usr/local/bin/cosign
 
-  mkdir -p /etc/drycontroller/keys /etc/drycontroller/license /var/lib/drycontroller /var/log
-  chmod 755 /etc/drycontroller /etc/drycontroller/keys
-  chmod 750 /etc/drycontroller/license
-  chmod 700 /var/lib/drycontroller
+  /usr/local/bin/cosign version >/dev/null
+  log "loading complete initial release image bundle"
+  docker image load -i "$INITIAL_IMAGE_BUNDLE"
+  log "verifying and initializing signed active release"
+  /usr/libexec/drycontroller/initialize-active-release "$INITIAL_RELEASE"
 
   systemctl daemon-reload
   systemctl enable drycontroller-tailnet.service drycontroller-activation.service
   systemctl enable --now drycontroller-ota-helper.service
-  log "enabled host identity services and root-owned OTA helper"
+  log "initialized active release and enabled host identity services and root-owned OTA helper"
 }
 
 retire_legacy_bootstrap_service() {

@@ -381,6 +381,63 @@ class ReleaseEngine:
             raise ReleaseError("release slot verification evidence missing")
         return slot
 
+    def initialize_active(self, seed: object) -> dict[str, Any]:
+        if not isinstance(seed, dict) or set(seed) != {
+            "manifest",
+            "manifest_digest",
+            "manifest_signature",
+        }:
+            raise ReleaseError("initial release seed fields invalid")
+        manifest = validate_manifest(seed.get("manifest"))
+        digest = canonical_manifest_digest(manifest)
+        if seed.get("manifest_digest") != digest:
+            raise ReleaseError("initial release seed digest mismatch")
+        signature = seed.get("manifest_signature")
+        if not isinstance(signature, str) or not signature:
+            raise ReleaseError("initial release seed signature missing")
+        slot = self._slot(manifest, digest, signature, verified_at=None)
+
+        expected_existing = {
+            "schema": RELEASE_JOURNAL_SCHEMA,
+            "phase": "idle",
+            "operation_id": None,
+            "last_operation_id": None,
+            "active": None,
+            "candidate": None,
+            "previous": None,
+            "effect": None,
+            "error": None,
+        }
+        already_initialized = self.paths.journal.exists()
+        if already_initialized:
+            journal = self._load_journal()
+            existing_shape = {**journal, "active": None}
+            active = self._validate_slot(journal["active"], require_verified=True)
+            if existing_shape != expected_existing or any(
+                active[key] != slot[key]
+                for key in ("manifest", "manifest_digest", "manifest_signature")
+            ):
+                raise ReleaseError("initial release conflicts with existing journal")
+
+        try:
+            self._materialize_and_verify_manifest(slot)
+            for service in SOFTWARE_RELEASE_SERVICES:
+                self._assert_local_image(manifest["services"][service])
+        except ReleaseError:
+            raise
+        except Exception as exc:
+            raise ReleaseError("initial release verification failed") from exc
+
+        if not already_initialized:
+            slot["verified_at"] = utc_now()
+            expected_existing["active"] = slot
+            self._persist_journal(expected_existing)
+        return {
+            "release_id": manifest["release_id"],
+            "manifest_digest": digest,
+            "status": "already_initialized" if already_initialized else "initialized",
+        }
+
     def _validate_policy(self, policy: object, operation_id: str, active: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(policy, dict) or set(policy) != _POLICY_FIELDS:
             raise ReleaseError("release policy fields invalid")
@@ -513,23 +570,26 @@ class ReleaseEngine:
         self._persist_journal(journal)
         return result
 
+    def _assert_local_image(self, reference: str) -> None:
+        output = self._command_runner(
+            [_DOCKER, "image", "inspect", "--format", "{{json .RepoDigests}}", reference]
+        )
+        try:
+            repo_digests = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise ReleaseError("local image inspection invalid") from exc
+        if not isinstance(repo_digests, list) or reference not in repo_digests:
+            raise ReleaseError("local release image missing")
+
     def _prove_local_images(self, journal: dict[str, Any], slot: dict[str, Any], prefix: str) -> None:
         manifest = validate_manifest(slot["manifest"])
         for service in SOFTWARE_RELEASE_SERVICES:
             reference = manifest["services"][service]
-
-            def inspect(reference: str = reference) -> None:
-                output = self._command_runner(
-                    [_DOCKER, "image", "inspect", "--format", "{{json .RepoDigests}}", reference]
-                )
-                try:
-                    repo_digests = json.loads(output)
-                except json.JSONDecodeError as exc:
-                    raise ReleaseError("local image inspection invalid") from exc
-                if not isinstance(repo_digests, list) or reference not in repo_digests:
-                    raise ReleaseError("local release image missing")
-
-            self._effect(journal, f"{prefix}_inspect_{service}", inspect)
+            self._effect(
+                journal,
+                f"{prefix}_inspect_{service}",
+                lambda reference=reference: self._assert_local_image(reference),
+            )
 
     def _pull_and_verify_candidate(self, journal: dict[str, Any], slot: dict[str, Any]) -> None:
         manifest = validate_manifest(slot["manifest"])

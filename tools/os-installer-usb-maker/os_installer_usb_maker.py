@@ -749,13 +749,19 @@ class UsbMakerApp(tk.Tk):
         self._set_ready_status("apt_repo", apt_ok, "已就绪" if apt_ok else "会生成", warn=not apt_ok)
 
         if self.include_images_var.get():
-            images_ok = (DIST_DIR / "bundle-images.tar").is_file()
+            required_release_files = (
+                DIST_DIR / "bundle-images.tar",
+                AUTOINSTALL_DIR / "software-release-seed.json",
+                AUTOINSTALL_DIR / "cosign.pub",
+                AUTOINSTALL_DIR / "cosign-linux-amd64",
+            )
+            images_ok = all(path.is_file() for path in required_release_files)
             if not images_ok:
-                blocking.append("业务镜像包")
+                blocking.append("签名首版发布包")
             self._set_ready_status("images", images_ok, "已就绪" if images_ok else "缺失")
         else:
-            warnings.append("未包含业务镜像")
-            self._set_ready_status("images", True, "未包含", warn=True)
+            blocking.append("签名首版发布包")
+            self._set_ready_status("images", False, "必须包含")
 
         iso_ready = not blocking
 
@@ -849,8 +855,17 @@ class UsbMakerApp(tk.Tk):
             wifi_ssid = ""
             wifi_password = ""
             wifi_interface = ""
-        if self.include_images_var.get() and not (DIST_DIR / "bundle-images.tar").is_file():
-            raise ValueError("已勾选包含业务镜像，但 dist/bundle-images.tar 不存在。请先构建镜像包或取消勾选。")
+        if not self.include_images_var.get():
+            raise ValueError("产品安装盘必须包含完整签名首版发布包。")
+        required_release_files = (
+            DIST_DIR / "bundle-images.tar",
+            AUTOINSTALL_DIR / "software-release-seed.json",
+            AUTOINSTALL_DIR / "cosign.pub",
+            AUTOINSTALL_DIR / "cosign-linux-amd64",
+        )
+        missing_release_files = [str(path.relative_to(REPO_ROOT)) for path in required_release_files if not path.is_file()]
+        if missing_release_files:
+            raise ValueError("缺少签名首版发布材料：" + "、".join(missing_release_files))
         include_factory_materials = True
         activation_bundle = Path(self.activation_bundle_var.get()).expanduser()
         if not activation_bundle.is_file():
@@ -1083,6 +1098,13 @@ def build_iso(app: UsbMakerApp, plan: dict[str, object]) -> None:
     maps.append(("dist/autoinstall/activation-bundle.json", "/activation-bundle.json"))
     if plan["include_images"]:
         maps.append(("dist/bundle-images.tar", "/bundle-images.tar"))
+        maps.extend(
+            [
+                ("dist/autoinstall/software-release-seed.json", "/software-release-seed.json"),
+                ("dist/autoinstall/cosign.pub", "/cosign.pub"),
+                ("dist/autoinstall/cosign-linux-amd64", "/cosign-linux-amd64"),
+            ]
+        )
 
     xorriso_args = [
         "xorriso",
@@ -1167,7 +1189,14 @@ def verify_final_iso(app: UsbMakerApp, iso: Path, *, include_images: bool) -> No
         "activation-bundle.json",
     }
     if include_images:
-        required.add("bundle-images.tar")
+        required.update(
+            {
+                "bundle-images.tar",
+                "software-release-seed.json",
+                "cosign.pub",
+                "cosign-linux-amd64",
+            }
+        )
     missing = sorted(required - entries)
     if missing:
         raise RuntimeError("ISO 缺少必需根目录文件：" + ", ".join(missing))

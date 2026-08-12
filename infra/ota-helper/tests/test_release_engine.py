@@ -134,6 +134,14 @@ def _seed(paths: ReleasePaths, active: dict, *, previous: dict | None = None) ->
     )
 
 
+def _initial_seed(manifest: dict) -> dict:
+    return {
+        "manifest": manifest,
+        "manifest_digest": canonical_manifest_digest(manifest),
+        "manifest_signature": SIGNATURE,
+    }
+
+
 class FakeRuntime:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
@@ -184,6 +192,57 @@ class FakeRuntime:
         if self.fail_next_health:
             self.fail_next_health = False
             raise ReleaseError("candidate_health_failed")
+
+
+def test_initial_release_is_verified_and_persisted_only_after_all_images_are_proven(tmp_path):
+    paths = _paths(tmp_path)
+    runtime = FakeRuntime()
+    manifest = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+
+    result = ReleaseEngine(paths=paths, command_runner=runtime.run).initialize_active(_initial_seed(manifest))
+
+    journal = json.loads(paths.journal.read_text(encoding="utf-8"))
+    assert result["status"] == "initialized"
+    assert journal["phase"] == "idle"
+    assert journal["active"]["manifest"] == manifest
+    assert journal["active"]["manifest_digest"] == canonical_manifest_digest(manifest)
+    assert journal["active"]["verified_at"]
+    assert journal["candidate"] is None
+    assert journal["previous"] is None
+    assert any(call[:2] == ["/usr/local/bin/cosign", "verify-blob"] for call in runtime.calls)
+    inspected = [call[-1] for call in runtime.calls if call[:3] == ["/usr/bin/docker", "image", "inspect"]]
+    assert inspected == [manifest["services"][service] for service in SOFTWARE_RELEASE_SERVICES]
+
+    replay = ReleaseEngine(paths=paths, command_runner=runtime.run).initialize_active(_initial_seed(manifest))
+    assert replay["status"] == "already_initialized"
+
+
+def test_initial_release_failure_never_creates_an_active_journal(tmp_path):
+    paths = _paths(tmp_path)
+    manifest = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+
+    def missing_image(args: list[str]) -> str:
+        if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            return "[]"
+        return FakeRuntime().run(args)
+
+    with pytest.raises(ReleaseError, match="local release image missing"):
+        ReleaseEngine(paths=paths, command_runner=missing_image).initialize_active(_initial_seed(manifest))
+
+    assert not paths.journal.exists()
+
+
+def test_initial_release_never_overwrites_a_different_existing_journal(tmp_path):
+    paths = _paths(tmp_path)
+    release_a = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    release_b = _manifest("22222222-2222-4222-8222-222222222222", 2, "2.0.0")
+    _seed(paths, release_a)
+    before = paths.journal.read_bytes()
+
+    with pytest.raises(ReleaseError, match="conflicts with existing journal"):
+        ReleaseEngine(paths=paths, command_runner=FakeRuntime().run).initialize_active(_initial_seed(release_b))
+
+    assert paths.journal.read_bytes() == before
 
 
 def _engine(paths: ReleasePaths, runtime: FakeRuntime, policies: dict[str, dict]) -> ReleaseEngine:

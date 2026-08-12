@@ -9,6 +9,9 @@ set -euo pipefail
 LOG_FILE="/var/log/drycontroller-autoinstall.log"
 BUNDLE="/opt/drycontroller-edge.tar.gz"
 IMAGE_BUNDLE="/opt/drycontroller-images/bundle-images.tar"
+INITIAL_RELEASE="/opt/drycontroller-release/software-release-seed.json"
+COSIGN_PUBLIC_KEY="/opt/drycontroller-release/cosign.pub"
+COSIGN_BIN="/opt/drycontroller-release/cosign-linux-amd64"
 SOURCE_ROOT="/opt/drycontroller-edge-source"
 WIFI_ENV="/opt/drycontroller-wifi.env"
 
@@ -23,6 +26,10 @@ die() {
 
 [ "$(id -u)" -eq 0 ] || die "post-install must run as root"
 [ -f "$BUNDLE" ] || die "missing edge bundle: $BUNDLE"
+[ -f "$IMAGE_BUNDLE" ] || die "missing complete initial image bundle: $IMAGE_BUNDLE"
+[ -f "$INITIAL_RELEASE" ] || die "missing signed initial SoftwareRelease: $INITIAL_RELEASE"
+[ -f "$COSIGN_PUBLIC_KEY" ] || die "missing initial release cosign public key: $COSIGN_PUBLIC_KEY"
+[ -f "$COSIGN_BIN" ] || die "missing Linux amd64 cosign binary: $COSIGN_BIN"
 
 configure_wifi() {
   [ -f "$WIFI_ENV" ] || return 0
@@ -67,16 +74,14 @@ fi
 
 log "running install-edge-host.sh"
 bash "${SOURCE_ROOT}/infra/bootstrap/install-edge-host.sh" \
-  --source "$SOURCE_ROOT"
+  --source "$SOURCE_ROOT" \
+  --initial-release "$INITIAL_RELEASE" \
+  --image-bundle "$IMAGE_BUNDLE" \
+  --cosign-public-key "$COSIGN_PUBLIC_KEY" \
+  --cosign-bin "$COSIGN_BIN"
 
-if [ -f "$IMAGE_BUNDLE" ]; then
-  log "loading bundled Docker images: $IMAGE_BUNDLE"
-  docker load -i "$IMAGE_BUNDLE" >>"$LOG_FILE" 2>&1
-  rm -f "$IMAGE_BUNDLE"
-  log "bundled Docker images loaded"
-else
-  log "no bundled Docker images found; compose may require registry or manual image load"
-fi
+rm -f "$IMAGE_BUNDLE" "$INITIAL_RELEASE" "$COSIGN_PUBLIC_KEY" "$COSIGN_BIN"
+log "signed initial active release installed"
 
 systemctl disable drycontroller-edge-post-install.service >/dev/null 2>&1 || true
 

@@ -58,6 +58,26 @@ def test_release_workflow_uses_the_fixed_builder_after_tests():
     assert "services:" not in workflow.split("workflow_dispatch:", 1)[1].split("jobs:", 1)[0]
 
 
+def test_release_workflow_pins_actions_and_scopes_release_secrets_to_the_builder_step():
+    workflow = (ROOT / ".gitea/workflows/edge-software-release.yml").read_text(encoding="utf-8")
+    release_job = workflow.split("\n  release:\n", 1)[1]
+    before_builder = release_job.split("      - name: Build and complete signed SoftwareRelease", 1)[0]
+    builder = release_job.split("      - name: Build and complete signed SoftwareRelease", 1)[1]
+
+    assert "actions/checkout@v4" not in workflow
+    assert "actions/setup-python@v5" not in workflow
+    assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
+    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
+    for secret in (
+        "HARBOR_PASSWORD",
+        "COSIGN_PRIVATE_KEY",
+        "COSIGN_PASSWORD",
+        "CLOUD_OPS_RELEASE_API_KEY",
+    ):
+        assert secret not in before_builder
+        assert f"{secret}: ${{{{ secrets.{secret} }}}}" in builder
+
+
 def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path):
     script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
     match = re.search(

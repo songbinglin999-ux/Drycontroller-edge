@@ -49,6 +49,11 @@ The build wrapper also refuses a leftover `dist/autoinstall/wifi.env` unless
 `--include-wifi` is passed, so site WiFi credentials cannot enter a release ISO
 silently.
 
+The release wrapper also requires `dist/initial-release/software-release.json`,
+`cosign.pub`, and `cosign-linux-amd64`. It verifies the completed release and
+all exact image digests before embedding the complete image archive and the
+signed active-release seed. Product media cannot omit this set.
+
 ## Run
 
 ```bash
@@ -75,7 +80,9 @@ build artifacts and should not be committed.
 - `infra/autoinstall/password.env` exists on the maker Mac.
 - `dist/drycontroller-os-installer-hybrid.iso` exists as the known bootable base ISO.
 - `dist/autoinstall/drycontroller-apt/Packages` exists, or the UI option to rebuild the offline apt repo is enabled.
-- `dist/bundle-images.tar` exists when the default "include business Docker images" option is enabled.
+- `dist/bundle-images.tar` plus `dist/autoinstall/software-release-seed.json`,
+  `cosign.pub`, and `cosign-linux-amd64` exist. The release wrapper prepares
+  these from the controlled inputs under `dist/initial-release/`.
 - `dist/autoinstall/activation-bundle.json` exists when the default "include
   factory activation materials" option is enabled. This is batch material
   prepared and handed off by Cloud Ops / factory administrators, not generated
