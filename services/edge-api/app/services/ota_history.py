@@ -106,7 +106,7 @@ async def record_ota_operation(
                     "step": operation.get("step"),
                     "timeout_sec": operation.get("timeout_sec") or req.get("timeout_sec"),
                 }
-                row.log_path = f"/logs/edge-ota-agent/{op_id}.log"
+                row.log_path = "/var/log/drycontroller-ota/operations.log"
                 row.result = {
                     "exit_code": operation.get("exit_code"),
                     "error": operation.get("error"),

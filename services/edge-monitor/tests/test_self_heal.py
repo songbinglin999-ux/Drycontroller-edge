@@ -61,7 +61,7 @@ def test_policy_restart_action():
 
 class DummyExecutor(SelfHealExecutor):
     def __init__(self, *, succeed: bool = True):
-        super().__init__(docker_client_getter=None)
+        super().__init__()
         self.succeed = succeed
         self.calls = []
 
@@ -134,3 +134,10 @@ async def test_manager_skips_during_cooldown(monkeypatch):
     assert outcome.decision.action == "noop"
     assert outcome.decision.reason == "cooldown_active"
 
+
+@pytest.mark.asyncio
+async def test_default_executor_cannot_mutate_docker():
+    result = await SelfHealExecutor().restart_container("edge-api")
+
+    assert result.success is False
+    assert result.error == "host_container_mutation_disabled"

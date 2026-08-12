@@ -116,12 +116,12 @@ graph LR
 
 - `edge-api` 的控制/运维接口已支持 API Key 鉴权（未配置 key 时会拒绝访问）。
 - `mosquitto` 禁止匿名连接，使用口令文件。
-- `edge-monitor` 需要访问 Docker 引擎以实现自动重启（当前默认通过受控 `docker-socket-proxy` 访问 Docker API；宿主机的 `docker.sock` 不再直接暴露给业务容器）。
+- 业务容器不访问 Docker Engine。`edge-monitor` 只做 HTTP/TCP 观测；唯一 Docker mutation 边界是 root-owned OTA helper 的固定状态机。
 
 ### 4.2 需要重点加固（建议作为 7x24 验收前置）
 
 - **运维高危接口必须鉴权**：包括重启容器、自愈开关、读取日志、告警查询等。
-- **docker.sock 风险隔离**：若必须使用，建议采用受控代理（socket-proxy）或把运维接口锁定在本机/内网管理平面。
+- **Docker mutation 隔离**：业务容器不挂载 Docker socket，也不通过 socket proxy；`edge-api` 只连接 root-owned `0660` UDS 并提交 operation ID。
 - **网络暴露面最小化**：默认仅暴露 `edge-api` 必要端口；监控与运维端口按需开启且受控。
 
 ---

@@ -13,10 +13,10 @@ Drycontroller-cloudserver/docs/ops/product-hardening-design.md
 - `edge-api /api/v1/ops/preflight`。状态：已完成第一版（云端远程只读检查）。
 - `edge-api /api/v1/ops/license/install`。状态：已完成第一版。
 - `edge-api /api/v1/alarms/{alarm_id}/acknowledge`
-- `edge-ota-agent dry_run`
-- `edge-ota-agent offline/offline-tar`
-- `edge-ota-agent /ready` 深度检查
-- `edge-monitor` 容器 start/stop/restart 操作闭环
+- root-owned `drycontroller-ota-helper.service` + `0660` UDS（RB-3 已落协调分支）。
+- operation-ID-only、串行幂等的固定 OTA 状态机（RB-3 已落协调分支）。
+- 完整 release manifest、强制 cosign、active/candidate/previous 与确定性回滚（RB-4，未完成前不得部署）。
+- `edge-monitor` 保持只读；容器 start/stop/restart 已 fail-closed。
 - Influx outbox 本地补写
 
 ## 设计原则：现场无人值守
@@ -58,8 +58,8 @@ bash scripts/preflight.sh
 可选参数：
 
 - `--strict`：将 degraded 视为失败，用于最终严格验收。
-- `--check-ota`：强制检查 `edge-ota-agent /ready`。
-- `--skip-ota`：跳过 OTA agent 检查，适合未启用 OTA profile 的出厂工位。
+- `--check-ota`：强制检查 root-owned OTA helper UDS。
+- `--skip-ota`：跳过 helper 检查，仅适合 RB-4 完成前的非 OTA 工位。
 
 当前检查内容：
 
@@ -70,7 +70,7 @@ bash scripts/preflight.sh
 - cosign public key。
 - Docker Compose 与核心容器状态。
 - `edge-api /ready`、`edge-daq /ready`、`edge-monitor /ready`。
-- OTA agent readiness（按参数或运行状态决定）。
+- root-owned OTA helper readiness（按参数或 systemd 运行状态决定）。
 - tailnet 与 cloud enroll 本机配置。
 
 边界：

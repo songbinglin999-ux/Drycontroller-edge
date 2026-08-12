@@ -22,8 +22,8 @@ Usage:
 
 Options:
   --strict      Treat degraded checks as failure.
-  --check-ota   Require edge-ota-agent readiness.
-  --skip-ota    Do not check edge-ota-agent readiness.
+  --check-ota   Require root-owned OTA helper readiness.
+  --skip-ota    Do not check root-owned OTA helper readiness.
 
 Output:
   JSON only. Exit code 0 means pass or accepted degraded. Exit code 1 means fail.
@@ -81,7 +81,7 @@ esac
 EDGE_DAQ_HEALTH_PORT="${EDGE_DAQ_HEALTH_PORT:-8082}"
 LICENSE_SERVICE_PORT="${LICENSE_SERVICE_PORT:-8004}"
 EDGE_MONITOR_PORT="${EDGE_MONITOR_PORT:-8080}"
-OTA_AGENT_PORT="${OTA_AGENT_PORT:-8090}"
+OTA_HELPER_SOCKET=/run/drycontroller-ota/helper.sock
 
 CHECKS_FILE="$(mktemp "${TMPDIR:-/tmp}/drycontroller-preflight.XXXXXX")"
 trap 'rm -f "$CHECKS_FILE"' EXIT
@@ -423,10 +423,23 @@ should_check_ota() {
     printf '%s' "$CHECK_OTA"
     return
   fi
-  if [ "$(docker inspect -f '{{.State.Running}}' edge-ota-agent 2>/dev/null || printf false)" = "true" ]; then
+  if systemctl is-active --quiet drycontroller-ota-helper.service 2>/dev/null; then
     printf true
   else
     printf false
+  fi
+}
+
+check_ota_helper() {
+  if [ ! -S "$OTA_HELPER_SOCKET" ]; then
+    add_check "ota_helper.ready" fail socket_missing "drycontroller-ota-helper.service must own the fixed UDS" "{}"
+    return
+  fi
+  local body
+  if body="$(curl -fsS --max-time "$TIMEOUT_SEC" --unix-socket "$OTA_HELPER_SOCKET" http://localhost/ready 2>/dev/null)"; then
+    add_check "ota_helper.ready" pass ok "" "$body"
+  else
+    add_check "ota_helper.ready" fail unreachable "drycontroller-ota-helper.service must report ready=true" "{}"
   fi
 }
 
@@ -441,9 +454,9 @@ http_check "edge_api.ready" "http://${EDGE_API_READY_HOST}:${EDGE_API_PORT}/read
 http_check "edge_daq.ready" "http://127.0.0.1:${EDGE_DAQ_HEALTH_PORT}/ready" true
 http_check "edge_monitor.ready" "http://127.0.0.1:${EDGE_MONITOR_PORT}/ready" false
 if [ "$(should_check_ota)" = true ]; then
-  container_http_check "ota_agent.ready" "edge-ota-agent" "http://127.0.0.1:${OTA_AGENT_PORT}/ready" false
+  check_ota_helper
 else
-  add_check "ota_agent.ready" degraded skipped "edge-ota-agent profile is not running; pass --check-ota to require it" "{}"
+  add_check "ota_helper.ready" degraded skipped "root OTA helper is not active; pass --check-ota to require it" "{}"
 fi
 check_tailnet_identity
 check_cloud_enroll_config

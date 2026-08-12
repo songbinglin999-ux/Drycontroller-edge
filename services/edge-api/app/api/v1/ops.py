@@ -72,7 +72,7 @@ class PreflightRequest(BaseModel):
     """
 
     strict: bool = Field(False, description="true 时 degraded 也视为失败")
-    check_ota: bool = Field(False, description="true 时要求 edge-ota-agent /ready 可用")
+    check_ota: bool = Field(False, description="true 时要求 root-owned OTA helper 可用")
 
 
 def _service_override_payload(o: ServiceOverride) -> dict:
@@ -316,6 +316,30 @@ async def _preflight_http_check(
         _preflight_check(checks, check_id, "fail", "unreachable", hint="endpoint is not reachable", detail={"url": url, "error": str(exc)})
 
 
+async def _preflight_ota_helper(checks: list[dict[str, Any]]) -> None:
+    try:
+        body = await get_ota_ops_client().ready()
+    except HTTPException as exc:
+        _preflight_check(
+            checks,
+            "ota_helper.ready",
+            "fail",
+            "unreachable",
+            hint="install and start drycontroller-ota-helper.service",
+            detail={"status_code": exc.status_code, "body": exc.detail},
+        )
+        return
+    ready = body.get("ready") is True
+    _preflight_check(
+        checks,
+        "ota_helper.ready",
+        "pass" if ready else "fail",
+        "ok" if ready else "not_ready",
+        hint="drycontroller-ota-helper.service must report ready=true" if not ready else "",
+        detail={"body": body},
+    )
+
+
 def _preflight_summary(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
     counts = {"pass": 0, "degraded": 0, "fail": 0}
     for check in checks:
@@ -410,21 +434,15 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
         allow_degraded=allow_degraded,
     )
     if req.check_ota:
-        await _preflight_http_check(
-            checks,
-            "ota_agent.ready",
-            f"{settings.OTA_AGENT_API_BASE.rstrip('/')}/ready",
-            degraded_ok=False,
-            allow_degraded=allow_degraded,
-        )
+        await _preflight_ota_helper(checks)
         _preflight_registry_credential(checks)
     else:
         _preflight_check(
             checks,
-            "ota_agent.ready",
+            "ota_helper.ready",
             "degraded" if allow_degraded else "fail",
             "skipped",
-            hint="edge-ota-agent check skipped; set check_ota=true for final OTA acceptance",
+            hint="root OTA helper check skipped; set check_ota=true for final OTA acceptance",
         )
         _preflight_check(
             checks,
@@ -615,27 +633,23 @@ async def manual_toggle_self_heal(
     return result
 
 
-# ==================== OTA（由 edge-ota-agent 执行，edge-api 负责鉴权与代理） ====================
+# ==================== OTA（root-owned helper 执行，edge-api 只代理 operation ID） ====================
 
 
 @router.post("/ota/start")
 async def ota_start(
     req: OtaStartRequest,
     client: OtaOpsClient = Depends(get_ota_ops_client),
-    api_key: str = Depends(require_admin_api_key),
+    _: str = Depends(require_admin_api_key),
 ):
-    # 透传到 ota-agent（MVP 仅支持 online）
-    if req.require_registry_credentials and req.mode == "online":
-        result = registry_credential_check(
-            expected_credential_id=req.registry_credential_id,
-            expected_version=req.registry_credential_version,
-            expected_secret_fingerprint=req.registry_secret_fingerprint,
+    credential = registry_credential_check()
+    if not credential["ok"]:
+        raise HTTPException(
+            status_code=409,
+            detail={"success": False, "error": credential["reason"], "credential": credential["detail"]},
         )
-        if not result["ok"]:
-            raise HTTPException(status_code=409, detail={"success": False, "error": result["reason"], "credential": result["detail"]})
-    request_payload = req.model_dump(exclude_none=True)
-    result = await client.start(api_key=api_key, payload=request_payload)
-    await record_ota_operation(result, request_payload=request_payload)
+    result = await client.start(req.operation_id)
+    await record_ota_operation(result, request_payload={"operation_id": req.operation_id})
     return result
 
 
@@ -643,9 +657,9 @@ async def ota_start(
 async def ota_get_operation(
     operation_id: str,
     client: OtaOpsClient = Depends(get_ota_ops_client),
-    api_key: str = Depends(require_admin_api_key),
+    _: str = Depends(require_admin_api_key),
 ):
-    result = await client.get_operation(operation_id, api_key=api_key)
+    result = await client.get_operation(operation_id)
     await record_ota_operation(result)
     return result
 
@@ -653,11 +667,10 @@ async def ota_get_operation(
 @router.get("/ota/operations/{operation_id}/logs")
 async def ota_get_logs(
     operation_id: str,
-    lines: int = 200,
     client: OtaOpsClient = Depends(get_ota_ops_client),
-    api_key: str = Depends(require_admin_api_key),
+    _: str = Depends(require_admin_api_key),
 ):
-    return await client.get_logs(operation_id, api_key=api_key, lines=lines)
+    return await client.get_logs(operation_id)
 
 
 # ==================== PLC 通讯参数下发（不改网卡，仅改应用层） ====================

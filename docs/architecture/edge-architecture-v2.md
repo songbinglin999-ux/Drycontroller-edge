@@ -266,20 +266,20 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | license-service | ✓ | ✗ | 合并进 edge-api |
 | edge-monitor | ✓ | ✓ | 新增 PLC 模式 / 心跳健康 / NAK 监控 |
 | ops-console | △（代码已存在，未接 compose） | ✓ | edge 本地维护控制台（Svelte/Vite，`ops-console/`），面向维护工程师，走 edge-api 管理员 API Key；当前无 Dockerfile/未接 compose，**部署形态待定**（见下） |
-| edge-ota-agent | ✓（profile: ota） | ✓ | 不变 |
+| drycontroller-ota-helper.service | ✗ | ✓（systemd） | root-owned UDS；只接受 operation ID |
 | postgres | ✓ | ✓ | 不变 |
 | influxdb | ✓ | ✓ | 不变 |
 | mosquitto | ✓ | ✓ | 不变 |
 | mosquitto-init | ✓ | ✓ | 不变 |
 | prometheus | ✓ | ✓ | 不变 |
 | alertmanager | ✓ | ✓ | 不变 |
-| docker-socket-proxy | ✓ | ✓ | 不变 |
-| docker-socket-proxy-ota | ✓ | ✓（profile: ota） | 不变 |
+| docker-socket-proxy | ✓ | ✗ | RB-3 删除；业务容器不再访问 Docker API |
+| docker-socket-proxy-ota | ✓（profile: ota） | ✗ | RB-3 删除；由 root-owned helper 替代 |
 | tailscale | ✓（profile: remote-debug，容器内） | ✗（迁 **systemd**，宿主机级） | 迁出容器 |
 | edge-enroll | ✓（profile: remote-debug） | ✓ | **需改造**（Tailscale 迁出后激活链路调整，见 §2.2） |
 | Grafana | — | **不加** | — |
 
-**容器数推导**：v1 compose 实测 **17 个 service**（已核实）。v2 = 17 − license-service（−1）− tailscale 迁 systemd（−1）= **15**；若 ops-console 落为 edge compose 内独立容器则 +1 = **16**。
+**容器数推导**：旧 v1 compose 实测 **17 个 service**。RB-3 删除 OTA agent 与两个 socket proxy 后为 **14**；若再按本节 v2 计划移除 license-service、把 tailscale 迁到 systemd，则为 **12**。ops-console 若独立容器部署再 +1。
 
 **ops-console 部署形态（推荐 edge-api StaticFiles 挂卷托管，容器数 15）**：身份与边界已由 `ops-console/README.md` 明确——edge 本地维护控制台（维护工程师用，可重启服务/看日志/调自愈参数，走 edge-api 管理员 API Key），区别于现场只读大屏（`Drycontroller-frontend`/bigscreen）和云端 cloud-console（多节点/租户/license/OTA/job）。代码已存在但未接 compose，落地排期靠后（见 §9 Phase 6）。形态对比：
 - **edge-api StaticFiles 挂卷托管（推荐）**：`npm run build` 产物（`ops-console/dist`）经宿主机目录只读挂进 edge-api，挂载在 `/console` 子路径，与 `/api/v1` 同源 → 零 CORS、WebSocket 同源；不新增容器，容器数 **15**；前端更新只替换挂卷产物，不重建 edge-api 镜像。

@@ -352,3 +352,13 @@ def test_install_edge_host_installs_activation_agent_service():
     assert "rm -f /etc/systemd/system/drycontroller-bootstrap.service" in text
     assert "rm -f /usr/local/sbin/drycontroller-bootstrap.sh" in text
     assert '"bootstrap_service"' not in text
+
+
+def test_install_edge_host_installs_root_owned_ota_helper():
+    text = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert "infra/ota-helper/drycontroller_ota_helper.py" in text
+    assert "infra/ota-helper/ota-apply" in text
+    assert "install -o root -g root -m 0755" in text
+    assert "systemctl enable --now drycontroller-ota-helper.service" in text
+    assert '"ota_helper_service": "drycontroller-ota-helper.service"' in text

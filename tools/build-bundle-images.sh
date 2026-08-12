@@ -87,7 +87,7 @@ if [ "$BUILD_IMAGES" = true ]; then
   BEFORE="${DIST_DIR}/.image-ids-before.txt"
   docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort > "$BEFORE"
 
-  # 构建所有 build-type 服务（含 profile: ota 的 edge-ota-agent）
+  # 构建所有 build-type 业务服务；宿主 OTA helper 不是容器镜像。
   BUILD_ARGS=(build --parallel)
   if [ "$BUILD_PULL" = true ]; then
     BUILD_ARGS=(build --pull --parallel)

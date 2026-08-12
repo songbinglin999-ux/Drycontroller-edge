@@ -42,9 +42,9 @@ boundaries:
 | `ai-softsensor` | ONNX-based moisture soft sensor |
 | `ai-ctrl-optimizer` | Control optimization service |
 | `license-service` | Local signed license verification |
-| `edge-monitor` | Docker/system health, self-heal, metrics, ops log proxy |
+| `edge-monitor` | Read-only system/service health, metrics, ops log proxy |
 | `edge-enroll` | Cloud enroll/status reporter |
-| `edge-ota-agent` | Online OTA execution surface |
+| `drycontroller-ota-helper.service` | Root-owned, operation-ID-only host OTA boundary |
 | PostgreSQL, InfluxDB, Mosquitto | Local data and message infrastructure |
 
 ## Quick Start
@@ -202,8 +202,8 @@ Current open work is tracked in the top-level audit, not in this README. As of
 the latest audit snapshot, important edge-adjacent items include:
 
 - Finish remaining outbox producers/drainers beyond audit and control-command.
-- Productize OTA online update and long-running CI runner.
-- Reduce OTA agent Docker socket exposure.
+- Complete RB-4 signed release identity and deterministic rollback before OTA deployment.
+- Keep the root OTA helper and its UDS unavailable to every container except `edge-api`.
 - Complete real hardware acceptance for OS Installer USB.
 
 Do not close or reinterpret those boundaries from this README; update

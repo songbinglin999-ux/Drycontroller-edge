@@ -1,5 +1,5 @@
-# P2-16: edge-monitor / license-service / edge-ota-agent alert rules
-# 这三个服务当前无自定义 Prometheus 指标（仅暴露默认 process/* 指标）。
+# P2-16: edge-monitor / license-service alert rules
+# 这两个服务当前无自定义 Prometheus 指标（仅暴露默认 process/* 指标）。
 # 先用 up + process 指标做最小覆盖；后续各服务补自定义指标后扩展。
 
 groups:
@@ -56,35 +56,3 @@ groups:
         annotations:
           summary: "license-service 过去 1 小时内重启"
           description: "检测到进程重启，请检查日志确认原因。"
-
-  - name: edge-ota-agent-health
-    rules:
-      - alert: EdgeOtaAgentDown
-        expr: up{job="edge-ota-agent"} == 0
-        for: 1m
-        labels:
-          severity: critical
-          service: edge-ota-agent
-        annotations:
-          summary: "edge-ota-agent 不可达"
-          description: "Prometheus 无法抓取 edge-ota-agent /metrics 持续 1 分钟以上。"
-
-      - alert: EdgeOtaAgentHighMemory
-        expr: process_resident_memory_bytes{job="edge-ota-agent"} > 300 * 1024 * 1024
-        for: 5m
-        labels:
-          severity: warning
-          service: edge-ota-agent
-        annotations:
-          summary: "edge-ota-agent 内存占用过高"
-          description: "edge-ota-agent RSS 超过 300MB（当前 {{ $value | humanize }}），OTA 操作可能异常。"
-
-      - alert: EdgeOtaAgentRestarted
-        expr: changes(process_start_time_seconds{job="edge-ota-agent"}[1h]) > 0
-        for: 0m
-        labels:
-          severity: warning
-          service: edge-ota-agent
-        annotations:
-          summary: "edge-ota-agent 过去 1 小时内重启"
-          description: "检测到进程重启，如有进行中的 OTA 操作需检查状态。"

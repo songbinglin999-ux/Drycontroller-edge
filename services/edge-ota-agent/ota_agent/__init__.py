@@ -1,3 +1,0 @@
-# Edge OTA Agent package
-
-

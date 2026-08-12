@@ -12,7 +12,8 @@ services:
   recovery_observe: 6     # 重启后观察周期
   max_restart_per_hour: 5 # 单服务每小时最大自愈次数
   self_heal:
-    enabled: true         # 全局自愈开关
+    # 监控容器只读；Docker mutation 仅属于 root-owned OTA helper 的固定状态机。
+    enabled: false
   targets:
     - name: "edge-api"
       url: "http://edge-api:8000/ready"

@@ -10,68 +10,6 @@ x-ulimits: &default-ulimits
     hard: 65536
 
 services:
-  # ==================== Docker Socket Proxy（最小权限隔离 docker.sock） ====================
-  # 说明：
-  # - edge-monitor 需要重启/查询容器，但直接挂载 docker.sock 等价 root
-  # - 使用 socket-proxy 仅开放必需的 Docker API 子集，降低横向攻击面
-  docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.1.1
-    container_name: edge-docker-socket-proxy
-    restart: always
-    logging: *default-logging
-    networks:
-      - edge-network
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      # 仅开放容器相关 API（查询/重启）
-      - CONTAINERS=1
-      - INFO=1
-      - VERSION=1
-      - PING=1
-      # 允许 POST（重启容器需要 POST）
-      - POST=1
-    read_only: true
-    tmpfs:
-      - /run
-      - /tmp
-
-  # ==================== Docker Socket Proxy (OTA 专用，profile=ota) ====================
-  # 说明：
-  # - edge-ota-agent 需要 compose pull / up / ps，比 edge-monitor 多 IMAGES/NETWORKS/VOLUMES 权限
-  # - 独立实例以保持 edge-monitor 最小权限不受影响（避免横向扩权）
-  # - 仅在 ota profile 启用，与 edge-ota-agent 同生命周期
-  docker-socket-proxy-ota:
-    image: tecnativa/docker-socket-proxy:0.1.1
-    container_name: edge-docker-socket-proxy-ota
-    profiles:
-      - ota
-    restart: always
-    logging: *default-logging
-    networks:
-      - edge-network
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      # OTA 必需：compose pull -> POST /images/create
-      - IMAGES=1
-      # OTA 必需：compose up/down/ps 操作容器
-      - CONTAINERS=1
-      # OTA 必需：compose up 管理用户定义网络
-      - NETWORKS=1
-      # OTA 必需：compose up 创建命名卷
-      - VOLUMES=1
-      # 客户端兼容/健康检查
-      - INFO=1
-      - VERSION=1
-      - PING=1
-      # 必须：上述 API 大多通过 POST 完成 create/start/load
-      - POST=1
-    read_only: true
-    tmpfs:
-      - /run
-      - /tmp
-
   # ==================== 数据库服务 ====================
   postgres:
     image: postgres:15-alpine
@@ -274,6 +212,8 @@ services:
       - /etc/drycontroller/registry:/etc/drycontroller/registry
       # 只读读取 bootstrap sentinel，供大屏现场状态摘要显示装机状态
       - /var/lib/drycontroller:/var/lib/drycontroller:ro
+      # 唯一宿主 mutation 边界：只连接 root-owned 0660 UDS，不挂 Docker socket。
+      - /run/drycontroller-ota:/run/drycontroller-ota:ro
     ports:
       # P0-N1 audit 2026-05-15：默认绑 127.0.0.1，避免 LAN/PLC 网段直达 license install
       # 端点。生产若真有外部访问需求，由前置 Caddy/Traefik 反代，并显式覆写本变量。
@@ -503,8 +443,6 @@ services:
       - INFLUXDB_ORG=${INFLUXDB_ORG}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - LOG_LEVEL=${LOG_LEVEL}
-      # 使用受控 socket proxy，而不是直接挂载 docker.sock
-      - DOCKER_HOST=tcp://docker-socket-proxy:2375
       # 工业级告警：对接本地 Alertmanager（Prometheus 触发告警后可被 ops-console 展示）
       - ALERTMANAGER_BASE_URL=http://alertmanager:9093
       # 7x24 安全基线：保护 /ops/* 高危接口（默认复用 ADMIN_API_KEYS，也可单独配置 MONITOR_OPS_API_KEYS）
@@ -522,74 +460,11 @@ services:
       # 7x24 默认安全：仅绑定本机回环地址，避免运维面暴露到现场网段
       - "127.0.0.1:${EDGE_MONITOR_PORT:-8080}:8080"
     depends_on:
-      docker-socket-proxy:
-        condition: service_started
       mosquitto:
         condition: service_healthy
       influxdb:
         condition: service_healthy
     restart: always
-    logging: *default-logging
-
-  # ==================== OTA Agent（在线升级执行器，profile=ota） ====================
-  # 用途：
-  # - 作为"设备侧执行面"，负责执行在线升级（compose pull/up + /ready 校验 + 失败回滚）
-  # - 对外不暴露端口，建议只由 edge-api 代理调用（同 docker network）
-  #
-  # 安全提示：
-  # - 不再直挂 /var/run/docker.sock；通过 docker-socket-proxy-ota 受控访问 docker engine
-  # - 仅开放 OTA 必需的 Docker API（IMAGES / CONTAINERS / NETWORKS / VOLUMES + POST），降低横向攻击面
-  edge-ota-agent:
-    build:
-      context: .
-      dockerfile: services/edge-ota-agent/Dockerfile
-    container_name: edge-ota-agent
-    ulimits: *default-ulimits
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/ready', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    profiles:
-      - ota
-    environment:
-      # 通过 docker-socket-proxy-ota 访问 docker engine（替代直挂 docker.sock）
-      - DOCKER_HOST=tcp://docker-socket-proxy-ota:2375
-      - LOG_LEVEL=${LOG_LEVEL}
-      - API_KEY_HEADER=${API_KEY_HEADER:-X-API-Key}
-      # 默认复用 ADMIN_API_KEYS；也可单独配置 OTA_AGENT_API_KEYS
-      - ADMIN_API_KEYS=${ADMIN_API_KEYS}
-      - OTA_AGENT_API_KEYS=${OTA_AGENT_API_KEYS:-}
-      # 关键：在容器内使用与宿主机一致的绝对路径，避免 compose 的相对路径 bind mount 解析到宿主机不存在的 /work/*
-      - OTA_WORK_DIR=/opt/Drycontroller-edge
-      # 关键：让 OTA agent 以“同一个 compose project”操作现有容器，避免 project 不一致导致 container_name 冲突
-      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-drycontroller-edge}
-      # 联调/演示环境：如无 PLC 或某服务 /ready 会长期 503，可临时跳过 ready/smoke
-      - OTA_SKIP_READY=${OTA_SKIP_READY:-false}
-      - OTA_SKIP_SMOKE=${OTA_SKIP_SMOKE:-false}
-      # 联调/弱网环境：如无法访问 Docker Hub，可临时跳过 compose pull（仅做 up -d）
-      - OTA_SKIP_PULL=${OTA_SKIP_PULL:-false}
-      # cosign 公钥（运维资产，只读挂载到容器）
-      - OTA_COSIGN_PUBKEY_PATH=${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}
-      - OTA_TRUSTED_REGISTRY=${OTA_TRUSTED_REGISTRY:-}
-      - DOCKER_CONFIG=${DOCKER_CONFIG:-/etc/drycontroller/registry}
-      - REGISTRY_CREDENTIAL_STATUS_PATH=${REGISTRY_CREDENTIAL_STATUS_PATH:-/etc/drycontroller/registry/status.json}
-      - REGISTRY_CREDENTIAL_MAX_AGE_HOURS=${REGISTRY_CREDENTIAL_MAX_AGE_HOURS:-0}
-    volumes:
-      # 关键：把仓库根目录挂载到“与宿主机一致的路径”，让 compose 解析出来的 bind mount src 能在宿主机上真实存在
-      - ./:/opt/Drycontroller-edge
-      # 运维资产：cosign 公钥（默认宿主机 /etc/drycontroller/keys/cosign.pub）
-      - ${OTA_COSIGN_PUBKEY_HOST_PATH:-/etc/drycontroller/keys/cosign.pub}:${OTA_COSIGN_PUBKEY_PATH:-/etc/drycontroller/keys/cosign.pub}:ro
-      - /etc/drycontroller/registry:/etc/drycontroller/registry:ro
-      - ./logs/edge-ota-agent:/logs/edge-ota-agent
-      - ./data/ota:/data/ota
-    networks:
-      - edge-network
-    depends_on:
-      docker-socket-proxy-ota:
-        condition: service_started
-    restart: unless-stopped
     logging: *default-logging
 
   # ==================== Prometheus（指标采集/告警规则） ====================

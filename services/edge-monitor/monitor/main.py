@@ -30,8 +30,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import docker
-from docker import errors as docker_errors
 import httpx
 import psutil
 import structlog
@@ -48,11 +46,7 @@ from pydantic import BaseModel
 from common.logging import setup_logging
 from monitor.audit import SelfHealAuditor
 from monitor.discovery import DiscoveryAgent
-from monitor.self_heal import (
-    SelfHealDecision,
-    SelfHealManager,
-    SelfHealOutcome,
-)
+from monitor.self_heal import SelfHealManager
 
 event_recorder = setup_logging("edge-monitor")
 logger = structlog.get_logger(__name__)
@@ -246,7 +240,6 @@ class MonitorService:
         self.influx_client = None
         self.write_api = None
         self.http_client: httpx.AsyncClient | None = None
-        self.docker_client = None
 
         # P0：连接可靠性（90 天游泳）
         # - 连接失败不能永久停在 None，需要自动重试
@@ -284,7 +277,7 @@ class MonitorService:
         启动监控服务
         
         启动流程：
-        1. 连接 MQTT、InfluxDB、HTTP 客户端、Docker
+        1. 连接 MQTT、InfluxDB、HTTP 客户端
         2. 启动系统指标采集循环
         3. 启动服务健康检查循环
         """
@@ -298,8 +291,6 @@ class MonitorService:
         self._connect_mqtt()
         self._connect_influx()
         await self._connect_http()
-        self._connect_docker()
-        self.self_heal_manager.set_docker_client_getter(self._get_docker_client)
         await self.discovery_agent.start()
         
         # 启动两个并行的监控循环
@@ -319,7 +310,7 @@ class MonitorService:
         """
         停止监控服务
         
-        按顺序清理资源：后台任务 -> HTTP客户端 -> InfluxDB -> MQTT -> Docker
+        按顺序清理资源：后台任务 -> HTTP客户端 -> InfluxDB -> MQTT
         """
         logger.info("edge_monitor_stopping")
         event_recorder.record_event(
@@ -350,11 +341,6 @@ class MonitorService:
             self.mqtt_client.disconnect()
             self.mqtt_client = None
         
-        # 关闭 Docker 客户端
-        if self.docker_client:
-            self.docker_client.close()
-            self.docker_client = None
-
         await self.discovery_agent.stop()
         
         logger.info("edge_monitor_stopped")
@@ -488,18 +474,6 @@ class MonitorService:
         """初始化 HTTP 客户端（用于服务健康检查）"""
         self.http_client = httpx.AsyncClient(timeout=self.http_timeout)
     
-    def _connect_docker(self):
-        """连接到本地 Docker daemon（用于容器状态检查）"""
-        try:
-            self.docker_client = docker.from_env()
-        except docker_errors.DockerException as exc:
-            logger.error("monitor_docker_connect_failed", error=str(exc))
-            self.docker_client = None
-
-    def _get_docker_client(self):
-        """提供当前 Docker 客户端实例"""
-        return self.docker_client
-
     def _get_mqtt_client(self):
         """提供当前 MQTT 客户端实例"""
         return self.mqtt_client
@@ -711,10 +685,9 @@ class MonitorService:
         """
         检查单个服务的健康状态
         
-        支持三种检查方式（可组合）：
+        支持两种检查方式（可组合）：
         - HTTP 健康检查：访问指定 URL 检查返回状态码
         - TCP 端口检查：尝试建立 TCP 连接
-        - 容器状态检查：查询 Docker 容器运行状态
         
         综合所有检查结果，取最严重的状态作为最终状态。
         
@@ -746,13 +719,6 @@ class MonitorService:
             )
             checks["tcp"] = tcp_result
             overall_status = self._merge_status(overall_status, tcp_result.get("status"))
-        
-        # 容器状态检查
-        container_name = target.get("container")
-        if container_name:
-            container_result = self._container_health_check(container_name)
-            checks["container"] = container_result
-            overall_status = self._merge_status(overall_status, container_result.get("status"))
         
         # 如果没有配置任何检查方式，标记为降级
         if not checks:
@@ -1116,48 +1082,6 @@ class MonitorService:
             # 连接失败（超时、拒绝、主机不可达等）
             result["status"] = "down"
             result["detail"] = str(exc)
-        
-        return result
-    
-    def _container_health_check(self, container_name: str) -> Dict[str, Any]:
-        """
-        检查 Docker 容器运行状态
-        
-        通过 Docker API 查询容器状态，判断服务是否正常运行。
-        
-        Args:
-            container_name: Docker 容器名称
-            
-        Returns:
-            检查结果字典，包含 status、state 等
-        """
-        result: Dict[str, Any] = {"status": "unknown", "name": container_name}
-        
-        # 检查 Docker 客户端是否就绪
-        if not self.docker_client:
-            # 没有 docker_client 时，容器状态无法判定，但健康检查应提示“降级”
-            # 以便上层 merge_status 能把它当作风险信号（而不是完全未知）
-            result["status"] = "degraded"
-            result["detail"] = "docker_client_not_ready"
-            return result
-        
-        try:
-            # 获取容器信息
-            container = self.docker_client.containers.get(container_name)
-            result["state"] = container.status
-            # running 状态为健康，其他（paused、exited 等）为降级
-            result["status"] = "healthy" if container.status == "running" else "degraded"
-            
-        except docker_errors.NotFound:
-            # 容器不存在
-            result["state"] = "missing"
-            result["status"] = "down"
-            result["detail"] = "container_not_found"
-            
-        except docker_errors.DockerException as exc:
-            # Docker API 错误
-            result["status"] = "unknown"
-            result["detail"] = f"docker:{exc}"
         
         return result
     
@@ -1530,32 +1454,13 @@ class MonitorService:
                 self.self_heal_auditor.emit(name, outcome)
 
     async def manual_restart(self, service_name: str) -> dict:
-        target = self._find_service_target(service_name)
-        if not target:
-            raise HTTPException(status_code=404, detail=f"service {service_name} not found")
-        container_name = target.get("container")
-        if not container_name:
-            raise HTTPException(status_code=400, detail="service does not define container name")
-
-        result = await self.self_heal_manager.executor.restart_container(container_name)
-        outcome = SelfHealOutcome(
-            timestamp=int(time.time()),
-            decision=SelfHealDecision(
-                action="manual_restart",
-                reason="manual_command",
-                details={"initiator": "ops-console"},
-            ),
-            executed=True,
-            success=result.success,
-            execution=result,
-            state_updates={"manual": True},
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "host_container_mutation_disabled",
+                "service": service_name,
+            },
         )
-        if self.self_heal_auditor:
-            self.self_heal_auditor.emit(service_name, outcome)
-
-        if not result.success:
-            raise HTTPException(status_code=500, detail=result.error or "restart failed")
-        return {"success": True, "service": service_name}
 
     def set_self_heal_enabled(self, service_name: str, enabled: bool) -> dict:
         target = self._find_service_target(service_name)

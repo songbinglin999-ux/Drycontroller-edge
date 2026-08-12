@@ -71,3 +71,36 @@ def test_edge_api_entrypoint_uses_runtime_postgres_settings_for_migration_backup
     assert "from app.core.config import settings" in entrypoint
     assert "db_url = settings.database_url" in entrypoint
     assert "using POSTGRES_* settings for pre-migration backup" in entrypoint
+
+
+def test_business_containers_have_no_docker_mutation_surface():
+    services = _compose_services()
+
+    assert "docker-socket-proxy" not in services
+    assert "docker-socket-proxy-ota" not in services
+    assert "edge-ota-agent" not in services
+    for service in services.values():
+        assert all("docker.sock" not in str(volume) for volume in service.get("volumes", []))
+        assert "DOCKER_HOST" not in _env_map(service)
+
+    assert "/run/drycontroller-ota:/run/drycontroller-ota:ro" in services["edge-api"]["volumes"]
+
+
+def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
+    helper = (ROOT / "infra/ota-helper/drycontroller_ota_helper.py").read_text(encoding="utf-8")
+    apply = (ROOT / "infra/ota-helper/ota-apply").read_text(encoding="utf-8")
+    unit = (ROOT / "infra/ota-helper/drycontroller-ota-helper.service").read_text(encoding="utf-8")
+
+    assert 'APPLY_PROGRAM = Path("/usr/libexec/drycontroller/ota-apply")' in helper
+    assert 'PROJECT_DIR = Path("/opt/Drycontroller-edge")' in helper
+    assert 'OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")' in helper
+    assert "sys.argv" not in helper
+    assert "os.getenv" not in helper
+    assert "[ \"$#\" -eq 0 ] || exit 64" in apply
+    assert "unset COMPOSE_FILE COMPOSE_PROFILES" in apply
+    assert "pre-check" not in apply
+    assert "post-check" not in apply
+    assert "User=root" in unit
+    assert "Group=root" in unit
+    assert "ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py" in unit
+    assert "ReadWritePaths=/run/drycontroller-ota /var/lib/drycontroller-ota /var/log/drycontroller-ota" in unit

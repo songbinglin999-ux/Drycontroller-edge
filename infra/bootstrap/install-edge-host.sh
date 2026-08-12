@@ -96,6 +96,8 @@ fi
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-tailnet.sh" ] || die "host tailnet script missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-enroll.sh" ] || die "host enroll script missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-activation.sh" ] || die "host activation script missing in source"
+[ -f "${REPO_SOURCE}/infra/ota-helper/drycontroller_ota_helper.py" ] || die "OTA helper missing in source"
+[ -f "${REPO_SOURCE}/infra/ota-helper/ota-apply" ] || die "fixed OTA apply program missing in source"
 
 install_base_packages_apt() {
   export DEBIAN_FRONTEND=noninteractive
@@ -248,6 +250,10 @@ install_host_services() {
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-tailnet.service" /etc/systemd/system/drycontroller-tailnet.service
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-enroll.service" /etc/systemd/system/drycontroller-enroll.service
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-activation.service" /etc/systemd/system/drycontroller-activation.service
+  install -d -m 0755 /usr/libexec/drycontroller
+  install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/drycontroller_ota_helper.py" /usr/libexec/drycontroller/drycontroller_ota_helper.py
+  install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/ota-apply" /usr/libexec/drycontroller/ota-apply
+  install -o root -g root -m 0644 "${EDGE_ROOT}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
 
   mkdir -p /etc/drycontroller/keys /etc/drycontroller/license /var/lib/drycontroller /var/log
   chmod 755 /etc/drycontroller /etc/drycontroller/keys
@@ -256,7 +262,8 @@ install_host_services() {
 
   systemctl daemon-reload
   systemctl enable drycontroller-tailnet.service drycontroller-activation.service
-  log "enabled drycontroller-tailnet.service and drycontroller-activation.service"
+  systemctl enable --now drycontroller-ota-helper.service
+  log "enabled host identity services and root-owned OTA helper"
 }
 
 retire_legacy_bootstrap_service() {
@@ -277,6 +284,7 @@ write_host_manifest() {
   "tailnet_service": "drycontroller-tailnet.service",
   "activation_service": "drycontroller-activation.service",
   "enroll_service": "drycontroller-enroll.service",
+  "ota_helper_service": "drycontroller-ota-helper.service",
   "docker": "$(docker --version 2>/dev/null || true)",
   "compose": "$(docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || true)",
   "tailscale": "$(tailscale version 2>/dev/null | head -n 1 || true)"

@@ -1,10 +1,8 @@
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
-from docker.client import DockerClient
+from fastapi import HTTPException
 import httpx
 from httpx import AsyncClient
 from typing import cast
@@ -20,8 +18,7 @@ for path in {str(ROOT), str(SERVICE_ROOT)}:
         sys.path.append(path)
 
 
-from monitor.main import MonitorService
-from monitor.self_heal import SelfHealExecutionResult, SelfHealExecutor
+from monitor.main import MonitorService  # noqa: E402
 
 
 def _new_service():
@@ -230,46 +227,16 @@ async def test_tcp_health_check_missing_host():
     assert result["detail"] == "tcp_host_or_port_missing"
 
 
-def test_container_health_check_running():
-    service = _new_service()
-    
-    class DummyContainers:
-        def get(self, name):
-            assert name == "edge-api"
-            return SimpleNamespace(status="running")
-    
-    class DummyDocker:
-        containers = DummyContainers()
-    
-    service.docker_client = cast(DockerClient, DummyDocker())
-    result = service._container_health_check("edge-api")
-    assert result["status"] == "healthy"
-    assert result["state"] == "running"
-
-
-def test_container_health_check_without_docker():
-    service = _new_service()
-    service.docker_client = None
-    result = service._container_health_check("edge-api")
-    assert result["status"] == "degraded"
-    assert result["detail"] == "docker_client_not_ready"
-
-
 @pytest.mark.asyncio
-async def test_manual_restart(monkeypatch):
+async def test_manual_restart():
     service = _new_service()
     service.service_targets = [{"name": "edge-api", "container": "edge-api"}]
 
-    class DummyExecutor(SelfHealExecutor):
-        async def restart_container(self, container_name, timeout=15):
-            assert container_name == "edge-api"
-            return SelfHealExecutionResult(success=True)
+    with pytest.raises(HTTPException) as raised:
+        await service.manual_restart("edge-api")
 
-    service.self_heal_manager.executor = cast(SelfHealExecutor, DummyExecutor())
-    service.self_heal_auditor = None
-
-    result = await service.manual_restart("edge-api")
-    assert result["success"] is True
+    assert raised.value.status_code == 503
+    assert raised.value.detail["error"] == "host_container_mutation_disabled"
 
 
 def test_set_self_heal_enabled():

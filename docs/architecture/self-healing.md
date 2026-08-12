@@ -72,16 +72,16 @@
 ### 4.3 决策动作
 
 - **noop**：阈值未到/处于冷却/自愈禁用
-- **restart**：达到阈值且未触发熔断限制 → 重启目标容器
+- **restart**：策略仍可产生该决定，但业务容器执行器会 fail-closed 并升级为人工告警
 - **escalate**：达到每小时重启上限 → 进入更长冷却并等待人工介入
 
 ---
 
-## 5. 自愈执行与审计（已实现）
+## 5. 自愈执行与审计
 
 ### 5.1 执行方式
 
-- 通过 Docker API 重启指定容器（依赖 Docker 引擎访问能力；当前默认通过受控 `docker-socket-proxy` 访问，而不是把 `/var/run/docker.sock` 直接暴露给业务容器）。
+- `edge-monitor` 不持有 Docker SDK、socket 或 proxy。容器重启执行返回 `host_container_mutation_disabled`；RB-3 的 root helper 只允许固定 OTA 状态机，不提供任意 restart 操作。
 
 ### 5.2 审计与事件上报
 
@@ -95,7 +95,7 @@
 
 ## 6. 运维接口（已实现，但必须做安全加固）
 
-`edge-monitor` 提供运维接口（例如重启、开关自愈、拉取日志、查询告警）。这些接口属于**高危面**：
+`edge-monitor` 提供开关策略、拉取日志、查询告警等接口；历史重启入口保留 fail-closed 响应，不再执行 mutation：
 
 - 在 7x24 交付形态中，必须做到：**鉴权 + 网络隔离 + 最小暴露面**。
 - 推荐：仅允许 `edge-api` 代理访问，宿主机层面默认不开放对外端口；或仅绑定本机回环地址。
@@ -104,8 +104,7 @@
 
 ## 7. 当前缺口与后续规划（面向 7x24 验收）
 
-- **P0（必须）**：`edge-monitor` 的 `/ops/*` 接口鉴权；默认不向宿主机暴露该端口；docker.sock 风险隔离方案落地（当前默认通过 `docker-socket-proxy` 收敛权限）。
+- **P0（已完成于 RB-3 协调分支）**：`edge-monitor` 无 Docker 能力，socket proxy 已删除；`/ops/*` 继续鉴权并默认只绑定回环。
 - **P1**：AI 模型版本/校验/回滚闭环；Influx/DB 降级策略与补写机制；运维操作审计入库。
 - **P2**：OTA 蓝绿发布与自动回滚；故障注入与演练脚本（断链、磁盘满、MQTT 抖动）。
-
 

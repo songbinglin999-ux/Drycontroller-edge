@@ -4,12 +4,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
-from docker import errors as docker_errors
 import structlog
 import os
 
@@ -121,37 +119,28 @@ class SelfHealPolicy:
 
 class SelfHealExecutor:
     """
-    执行具体的自愈动作（例如 Docker 容器重启）。
+    Fail-closed container mutation boundary.
+
+    edge-monitor remains a read-only business container. Only the root-owned
+    host helper may access Docker, and OTA is its only fixed operation.
     """
 
-    def __init__(self, docker_client_getter: Optional[Callable[[], Any]] = None):
-        self._docker_client_getter = docker_client_getter or (lambda: None)
+    def __init__(self):
         self.logger = structlog.get_logger(__name__)
-
-    def set_docker_client_getter(self, getter: Optional[Callable[[], Any]]):
-        self._docker_client_getter = getter or (lambda: None)
 
     async def restart_container(self, container_name: Optional[str], timeout: int = 15) -> SelfHealExecutionResult:
         if not container_name:
             return SelfHealExecutionResult(success=False, error="missing_container")
-
-        docker_client = self._docker_client_getter()
-        if not docker_client:
-            return SelfHealExecutionResult(success=False, error="docker_unavailable")
-
-        loop = asyncio.get_running_loop()
-
-        def _restart():
-            container = docker_client.containers.get(container_name)
-            container.restart(timeout=timeout)
-
-        try:
-            await loop.run_in_executor(None, _restart)
-            self.logger.info("self_heal_restart_success", container=container_name)
-            return SelfHealExecutionResult(success=True)
-        except (docker_errors.DockerException, OSError, RuntimeError) as exc:  # pragma: no cover - 依赖 docker 环境
-            self.logger.error("self_heal_restart_failed", container=container_name, error=str(exc))
-            return SelfHealExecutionResult(success=False, error=str(exc))
+        self.logger.warning(
+            "self_heal_restart_denied",
+            container=container_name,
+            reason="root_ota_helper_has_no_restart_operation",
+        )
+        return SelfHealExecutionResult(
+            success=False,
+            error="host_container_mutation_disabled",
+            detail="edge-monitor cannot restart containers",
+        )
 
 
 class SelfHealManager:
@@ -168,9 +157,6 @@ class SelfHealManager:
         self.policy = policy or SelfHealPolicy()
         self.executor = executor or SelfHealExecutor()
         self.logger = structlog.get_logger(__name__)
-
-    def set_docker_client_getter(self, getter: Optional[Callable[[], Any]]):
-        self.executor.set_docker_client_getter(getter)
 
     async def evaluate_and_execute(
         self,

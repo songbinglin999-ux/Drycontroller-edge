@@ -1,0 +1,40 @@
+#!/bin/sh
+# Fixed OTA state machine. It intentionally accepts no arguments or overrides.
+set -eu
+
+[ "$#" -eq 0 ] || exit 64
+
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export DOCKER_CONFIG=/etc/drycontroller/registry
+export COMPOSE_PROJECT_NAME=drycontroller-edge
+unset COMPOSE_FILE COMPOSE_PROFILES
+
+PROJECT_DIR=/opt/Drycontroller-edge
+COMPOSE_FILE_PATH=/opt/Drycontroller-edge/docker-compose.yml
+DOCKER=/usr/bin/docker
+CURL=/usr/bin/curl
+
+cd "$PROJECT_DIR"
+test -r "$COMPOSE_FILE_PATH"
+test -r /etc/drycontroller/registry/config.json
+
+compose() {
+  "$DOCKER" compose \
+    --project-name drycontroller-edge \
+    --file "$COMPOSE_FILE_PATH" \
+    "$@"
+}
+
+compose config --quiet
+compose pull
+compose up -d --remove-orphans
+
+"$CURL" --fail --silent --show-error --max-time 5 \
+  --retry 30 --retry-delay 2 --retry-connrefused \
+  http://127.0.0.1:8000/ready >/dev/null
+"$CURL" --fail --silent --show-error --max-time 5 \
+  --retry 30 --retry-delay 2 --retry-connrefused \
+  http://127.0.0.1:8082/ready >/dev/null
+
+compose ps

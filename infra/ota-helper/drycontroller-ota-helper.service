@@ -1,0 +1,36 @@
+[Unit]
+Description=DryController root OTA operation helper
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=drycontroller-ota
+RuntimeDirectoryMode=0755
+StateDirectory=drycontroller-ota
+StateDirectoryMode=0700
+LogsDirectory=drycontroller-ota
+LogsDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/run/drycontroller-ota /var/lib/drycontroller-ota /var/log/drycontroller-ota
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

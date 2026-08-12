@@ -255,12 +255,28 @@ def test_ota_start_requires_registry_credential_status(tmp_path: Path):
 
     resp = _client().post(
         "/api/v1/ops/ota/start",
-        json={"mode": "online"},
+        json={"operation_id": "a" * 32},
         headers={"X-API-Key": "admin-1"},
     )
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "registry_credential_missing"
+
+
+def test_ota_start_rejects_every_execution_input_except_operation_id():
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+
+    resp = _client().post(
+        "/api/v1/ops/ota/start",
+        json={
+            "operation_id": "a" * 32,
+            "compose_override_yaml": "services: {}",
+        },
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert resp.status_code == 422
 
 
 def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatch):
