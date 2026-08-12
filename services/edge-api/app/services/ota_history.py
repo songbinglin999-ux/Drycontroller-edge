@@ -73,6 +73,9 @@ async def record_ota_operation(
     if not op_id:
         logger.error("edge_ota_history_missing_operation_id")
         return
+    if operation.get("error") == "operation_replay_rejected":
+        logger.warning("edge_ota_history_replay_rejection_not_mirrored", operation_id=op_id)
+        return
 
     req = request_payload or {}
     status_text = str(operation.get("status") or "unknown")

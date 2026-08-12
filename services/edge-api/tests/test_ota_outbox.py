@@ -187,6 +187,26 @@ async def test_record_ota_operation_does_not_enqueue_unchanged_poll(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_record_ota_operation_does_not_overwrite_history_with_replay_rejection(monkeypatch):
+    from app.services import ota_history as oh_module
+
+    def unexpected_session():
+        raise AssertionError("replay rejection must not touch OTA history")
+
+    monkeypatch.setattr(oh_module, "AsyncSessionLocal", unexpected_session)
+
+    await oh_module.record_ota_operation(
+        {
+            "operation_id": "ota-1",
+            "status": "failed",
+            "step": "retained",
+            "error": "operation_replay_rejected",
+            "log_available": False,
+        }
+    )
+
+
+@pytest.mark.asyncio
 async def test_outbox_drain_pushes_ota_operation_to_ota_path(monkeypatch):
     from app.models import CloudSyncOutbox
     from app.services import outbox_drain as drain_module
