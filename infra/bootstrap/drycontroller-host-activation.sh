@@ -38,17 +38,59 @@ fi
 
 command -v python3 >/dev/null 2>&1 || die "python3 is not installed"
 
+durable_secret_replace() {
+  local target="$1"
+  local parent
+  local temporary
+  shift
+  parent="$(dirname "$target")"
+  mkdir -p "$parent"
+  temporary="$(umask 077; mktemp "${parent}/.$(basename "$target").XXXXXX.tmp")" || return 1
+  if ! "$@" > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! chmod 0600 "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! python3 - "$temporary" <<'PY'
+import os
+import sys
+
+descriptor = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+  then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! mv -f -- "$temporary" "$target"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  python3 - "$parent" <<'PY'
+import os
+import sys
+
+descriptor = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
 materialize_activation_bundle() {
   [ -f "$BUNDLE_FILE" ] || return 0
 
   BUNDLE_FILE="$BUNDLE_FILE" \
-  ENV_FILE="$ENV_FILE" \
-  LICENSE_FILE_PATH="$LICENSE_FILE_PATH" \
-  FACTORY_LICENSE_ARCHIVE_PATH="$FACTORY_LICENSE_ARCHIVE_PATH" \
   python3 - <<'PY'
 import json
 import os
-import shlex
 from pathlib import Path
 
 bundle = json.loads(Path(os.environ["BUNDLE_FILE"]).read_text(encoding="utf-8"))
@@ -74,14 +116,6 @@ missing = sorted(key for key in required if not values.get(key))
 if missing:
     raise SystemExit(f"activation bundle tailnet missing: {', '.join(missing)}")
 
-env_path = Path(os.environ["ENV_FILE"])
-if not env_path.exists():
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    env_path.write_text(
-        "\n".join(f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())) + "\n",
-        encoding="utf-8",
-    )
-
 factory_license = bundle.get("factory_license")
 if not isinstance(factory_license, dict):
     raise SystemExit("activation bundle missing factory_license object")
@@ -89,14 +123,39 @@ if factory_license.get("schema") != "drycontroller.factory-license.v1":
     raise SystemExit("activation bundle factory_license is not drycontroller.factory-license.v1")
 if not factory_license.get("signature"):
     raise SystemExit("activation bundle factory_license missing signature")
-
-archive_path = Path(os.environ["FACTORY_LICENSE_ARCHIVE_PATH"])
-if not archive_path.exists():
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
-    archive_path.write_text(json.dumps(factory_license, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
 PY
-  chmod 0600 "$ENV_FILE" "$FACTORY_LICENSE_ARCHIVE_PATH" 2>/dev/null || true
+  if [ ! -f "$ENV_FILE" ]; then
+    BUNDLE_FILE="$BUNDLE_FILE" durable_secret_replace "$ENV_FILE" python3 - <<'PY'
+import json
+import os
+import shlex
+from pathlib import Path
+
+tailnet = json.loads(Path(os.environ["BUNDLE_FILE"]).read_text(encoding="utf-8"))["tailnet"]
+aliases = {
+    "ts_login_server": "TS_LOGIN_SERVER",
+    "ts_hostname": "TS_HOSTNAME",
+    "ts_authkey": "TS_AUTHKEY",
+    "cloud_ops_base_url": "CLOUD_OPS_BASE_URL",
+}
+values = {
+    aliases.get(str(key), str(key)).upper(): str(value)
+    for key, value in tailnet.items()
+    if value is not None
+}
+print("\n".join(f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())))
+PY
+  fi
+  if [ ! -f "$FACTORY_LICENSE_ARCHIVE_PATH" ]; then
+    BUNDLE_FILE="$BUNDLE_FILE" durable_secret_replace "$FACTORY_LICENSE_ARCHIVE_PATH" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+factory_license = json.loads(Path(os.environ["BUNDLE_FILE"]).read_text(encoding="utf-8"))["factory_license"]
+print(json.dumps(factory_license, ensure_ascii=False, indent=2))
+PY
+  fi
   log "materialized activation files from activation bundle"
 }
 
@@ -299,7 +358,7 @@ PY
 
 save_runtime_credentials() {
   local response_file="$1"
-  ENV_FILE="$ENV_FILE" python3 - "$response_file" <<'PY'
+  ENV_FILE="$ENV_FILE" durable_secret_replace "$ENV_FILE" python3 - "$response_file" <<'PY'
 import json
 import os
 import shlex
@@ -315,9 +374,6 @@ if (resp.get("tenant_id") or "").strip():
     updates["TENANT_ID"] = resp["tenant_id"].strip()
 if (resp.get("line_id") or "").strip():
     updates["LINE_ID"] = resp["line_id"].strip()
-if not updates:
-    raise SystemExit(0)
-
 path = Path(os.environ["ENV_FILE"])
 lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 out = []
@@ -333,17 +389,28 @@ for line in lines:
 for key, value in updates.items():
     if key not in seen:
         out.append(f"{key}={shlex.quote(value)}")
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-tmp.replace(path)
+print("\n".join(out))
 PY
-  chmod 0600 "$ENV_FILE" || true
+}
+
+validate_edge_ops_credentials() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+response = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for name in ("edge_admin_api_key", "edge_control_api_key"):
+    value = response.get(name)
+    if not isinstance(value, str) or not value.strip() or value.strip().lower().startswith("change_me"):
+        raise SystemExit(f"activation response missing strong {name}")
+PY
 }
 
 save_edge_ops_credentials() {
   local response_file="$1"
   [ -n "${EDGE_ENV_FILE:-}" ] || return 0
-  EDGE_ENV_FILE="$EDGE_ENV_FILE" python3 - "$response_file" <<'PY'
+  EDGE_ENV_FILE="$EDGE_ENV_FILE" durable_secret_replace "$EDGE_ENV_FILE" python3 - "$response_file" <<'PY'
 import json
 import os
 import sys
@@ -357,12 +424,9 @@ if admin_key:
     updates["ADMIN_API_KEYS"] = json.dumps([admin_key], separators=(",", ":"))
 if control_key:
     updates["CONTROL_API_KEYS"] = json.dumps([control_key], separators=(",", ":"))
-if not updates:
-    raise SystemExit(0)
-
 path = Path(os.environ["EDGE_ENV_FILE"])
 if not path.exists():
-    raise SystemExit(0)
+    raise SystemExit("edge env file is missing")
 lines = path.read_text(encoding="utf-8").splitlines()
 out = []
 seen = set()
@@ -377,16 +441,13 @@ for line in lines:
 for key, value in updates.items():
     if key not in seen:
         out.append(f"{key}={value}")
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-tmp.replace(path)
+print("\n".join(out))
 PY
-  chmod 0600 "$EDGE_ENV_FILE" || true
 }
 
 sync_tailnet_env_after_activation() {
   local hostname="$1"
-  ENV_FILE="$ENV_FILE" FORMAL_HOSTNAME="$hostname" python3 - <<'PY'
+  ENV_FILE="$ENV_FILE" FORMAL_HOSTNAME="$hostname" durable_secret_replace "$ENV_FILE" python3 - <<'PY'
 import os
 import shlex
 from pathlib import Path
@@ -411,15 +472,12 @@ for line in lines:
 for key, value in updates.items():
     if key not in seen:
         out.append(f"{key}={shlex.quote(value)}")
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-tmp.replace(path)
+print("\n".join(out))
 PY
-  chmod 0600 "$ENV_FILE" || true
 }
 
 remove_bootstrap_tailnet_authkey() {
-  ENV_FILE="$ENV_FILE" python3 - <<'PY'
+  ENV_FILE="$ENV_FILE" durable_secret_replace "$ENV_FILE" python3 - <<'PY'
 import os
 from pathlib import Path
 
@@ -428,22 +486,60 @@ if not path.exists():
     raise SystemExit(0)
 lines = path.read_text(encoding="utf-8").splitlines()
 kept = [line for line in lines if not line.startswith("TS_AUTHKEY=")]
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
-tmp.replace(path)
+print("\n".join(kept))
 PY
-  chmod 0600 "$ENV_FILE" || true
+}
+
+edge_runtime_storage_state() {
+  local volume_names
+  local present=0
+  local volume
+  command -v docker >/dev/null 2>&1 || {
+    log "docker is required to inspect edge runtime storage" >&2
+    return 1
+  }
+  volume_names="$(docker volume ls --format '{{.Name}}')" || {
+    log "cannot inspect edge runtime storage" >&2
+    return 1
+  }
+  for volume in \
+    postgres_data \
+    influxdb_data \
+    influxdb_config \
+    mosquitto_data \
+    mosquitto_logs \
+    mosquitto_secrets \
+    prometheus_data \
+    alertmanager_data
+  do
+    if grep -Fxq "drycontroller-edge_${volume}" <<<"$volume_names"; then
+      present=$((present + 1))
+    fi
+  done
+  case "$present" in
+    0) printf 'fresh\n' ;;
+    8) printf 'existing\n' ;;
+    *)
+      log "partial edge runtime storage detected (${present}/8 volumes); credential migration is required" >&2
+      return 1
+      ;;
+  esac
 }
 
 sync_edge_env_after_activation() {
   local ip="$1"
   local hostname="$2"
+  local runtime_storage_state
   [ -n "${EDGE_ENV_FILE:-}" ] || {
     log "EDGE_ENV_FILE not set; skipping edge .env tailnet binding sync"
     return 0
   }
-  EDGE_ENV_FILE="$EDGE_ENV_FILE" ENV_FILE="$ENV_FILE" FORMAL_TAILNET_IP="$ip" FORMAL_HOSTNAME="$hostname" python3 - <<'PY'
+  runtime_storage_state="$(edge_runtime_storage_state)" || return 1
+  EDGE_ENV_FILE="$EDGE_ENV_FILE" ENV_FILE="$ENV_FILE" FORMAL_TAILNET_IP="$ip" FORMAL_HOSTNAME="$hostname" \
+    EDGE_RUNTIME_STORAGE_STATE="$runtime_storage_state" durable_secret_replace "$EDGE_ENV_FILE" python3 - <<'PY'
+import json
 import os
+import secrets
 import shlex
 from pathlib import Path
 
@@ -476,6 +572,79 @@ for key in ("TS_LOGIN_SERVER", "CLOUD_OPS_BASE_URL", "CLOUD_OPS_ENROLL_TOKEN", "
     value = host_env.get(key, "").strip()
     if value:
         updates[key] = value
+
+runtime_secret_keys = (
+    "POSTGRES_PASSWORD",
+    "INFLUXDB_PASSWORD",
+    "INFLUXDB_TOKEN",
+    "MQTT_PASSWORD_EDGE_API",
+    "MQTT_PASSWORD_EDGE_DAQ",
+    "MQTT_PASSWORD_AI_SOFTSENSOR",
+    "MQTT_PASSWORD_EDGE_MONITOR",
+    "MQTT_PASSWORD_AI_CTRL_OPTIMIZER",
+    "CONTROL_SIGNATURE_SECRET",
+)
+public_runtime_defaults = {
+    "POSTGRES_PASSWORD": {"edge_password", "edge_password_2025"},
+    "INFLUXDB_PASSWORD": {"admin_password_2025"},
+    "INFLUXDB_TOKEN": {"influx_token_2025"},
+    "MQTT_PASSWORD_EDGE_API": {"mqtt_password"},
+    "MQTT_PASSWORD_EDGE_DAQ": {"mqtt_password"},
+    "MQTT_PASSWORD_AI_SOFTSENSOR": {"mqtt_password"},
+    "MQTT_PASSWORD_EDGE_MONITOR": {"mqtt_password"},
+    "MQTT_PASSWORD_AI_CTRL_OPTIMIZER": {"mqtt_password"},
+    "CONTROL_SIGNATURE_SECRET": {"dev-control-secret"},
+}
+edge_env = read_env(path)
+raw_edge_env = {
+    line.split("=", 1)[0]: line.split("=", 1)[1]
+    for line in path.read_text(encoding="utf-8").splitlines()
+    if "=" in line
+}
+weak_runtime_keys = []
+for key in runtime_secret_keys:
+    value = edge_env.get(key, "").strip()
+    if (
+        not value
+        or value.lower().startswith("change_me")
+        or value in public_runtime_defaults[key]
+    ):
+        weak_runtime_keys.append(key)
+
+storage_state = os.environ["EDGE_RUNTIME_STORAGE_STATE"]
+if storage_state == "existing" and weak_runtime_keys:
+    raise SystemExit(
+        "existing edge runtime storage has missing or placeholder credentials; "
+        "credential migration is required"
+    )
+if storage_state == "fresh":
+    for key in weak_runtime_keys:
+        updates[key] = secrets.token_urlsafe(48)
+
+def strong_key_list(raw: str) -> bool:
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    return (
+        isinstance(values, list)
+        and bool(values)
+        and all(
+            isinstance(value, str)
+            and bool(value.strip())
+            and not value.strip().lower().startswith("change_me")
+            for value in values
+        )
+    )
+
+for required_key in ("ADMIN_API_KEYS", "CONTROL_API_KEYS"):
+    if not strong_key_list(raw_edge_env.get(required_key, "")):
+        raise SystemExit(f"edge runtime requires strong {required_key} before signed release start")
+
+monitor_key = raw_edge_env.get("MONITOR_OPS_API_KEYS", "").strip()
+admin_key = raw_edge_env.get("ADMIN_API_KEYS", "").strip()
+if (not monitor_key or monitor_key.lower().startswith("change_me")) and admin_key:
+    updates["MONITOR_OPS_API_KEYS"] = admin_key
 if not updates:
     raise SystemExit(0)
 lines = path.read_text(encoding="utf-8").splitlines()
@@ -492,9 +661,7 @@ for line in lines:
 for key, value in updates.items():
     if key not in seen:
         out.append(f"{key}={value}")
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-tmp.replace(path)
+print("\n".join(out))
 PY
   log "edge .env tailnet binding synced ip=${ip:-?} hostname=${hostname:-?}"
 }
@@ -656,6 +823,7 @@ if [ "$response_state" = "pending_ops_approval" ]; then
   exit 75
 fi
 
+validate_edge_ops_credentials "$response_file"
 install_license_from_response "$response_file"
 save_device_identity "$response_file"
 save_runtime_credentials "$response_file"

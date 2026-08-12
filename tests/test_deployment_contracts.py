@@ -1,3 +1,7 @@
+import io
+import subprocess
+import sys
+import tarfile
 from pathlib import Path
 
 import yaml
@@ -112,3 +116,65 @@ def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
     assert "Group=root" in unit
     assert "ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py" in unit
     assert "ReadWritePaths=/run/drycontroller-ota /var/lib/drycontroller-ota /var/log/drycontroller-ota" in unit
+
+
+def test_source_bundle_excludes_and_rejects_macos_metadata():
+    builder = (ROOT / "tools" / "build-bundle-images.sh").read_text(encoding="utf-8")
+
+    assert "COPYFILE_DISABLE=1 tar -czf" in builder
+    assert "--exclude='._*'" in builder
+    assert "--exclude='__MACOSX'" in builder
+    assert 'python3 scripts/validate-source-bundle.py "$BUNDLE"' in builder
+    assert "source bundle contains forbidden macOS metadata" in builder
+
+
+def _write_source_bundle(path: Path, member_name: str) -> None:
+    payload = b"bundle-test"
+    member = tarfile.TarInfo(member_name)
+    member.size = len(payload)
+    with tarfile.open(path, "w:gz") as archive:
+        archive.addfile(member, io.BytesIO(payload))
+
+
+def test_source_bundle_validator_accepts_clean_archive(tmp_path):
+    bundle = tmp_path / "clean.tar.gz"
+    _write_source_bundle(bundle, "./infra/prometheus/rules/ai-softsensor.yml")
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "validate-source-bundle.py"), str(bundle)],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert bundle.is_file()
+
+
+def test_source_bundle_validator_removes_forbidden_or_corrupt_archive(tmp_path):
+    for index, member_name in enumerate(
+        (
+            "./infra/prometheus/rules/._ai-softsensor.yml",
+            "./infra/prometheus/rules/.DS_Store",
+            "./__MACOSX/infra/prometheus/rules/ai-softsensor.yml",
+        )
+    ):
+        bundle = tmp_path / f"forbidden-{index}.tar.gz"
+        _write_source_bundle(bundle, member_name)
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "validate-source-bundle.py"), str(bundle)],
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 1
+        assert not bundle.exists()
+
+    corrupt = tmp_path / "corrupt.tar.gz"
+    _write_source_bundle(corrupt, "./large-member.bin")
+    corrupt.write_bytes(corrupt.read_bytes()[:-8])
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "validate-source-bundle.py"), str(corrupt)],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 1
+    assert not corrupt.exists()

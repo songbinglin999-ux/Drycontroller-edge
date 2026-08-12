@@ -131,7 +131,7 @@ if [ "$BUILD_BUNDLE" = true ]; then
   log "packaging edge source bundle..."
 
   cd "$REPO_ROOT"
-  tar -czf "$BUNDLE" \
+  COPYFILE_DISABLE=1 tar -czf "$BUNDLE" \
     --exclude='.git' \
     --exclude='.env' \
     --exclude='.env.*' \
@@ -145,6 +145,11 @@ if [ "$BUILD_BUNDLE" = true ]; then
     --exclude='__pycache__' \
     --exclude='.pytest_cache' \
     --exclude='.DS_Store' \
+    --exclude='*/.DS_Store' \
+    --exclude='._*' \
+    --exclude='*/._*' \
+    --exclude='__MACOSX' \
+    --exclude='*/__MACOSX' \
     --exclude='*.pyc' \
     --exclude='dist' \
     --exclude='logs' \
@@ -154,6 +159,9 @@ if [ "$BUILD_BUNDLE" = true ]; then
     --exclude='tools/os-installer-usb-maker/build_app.sh' \
     --exclude='tools/os-installer-usb-maker/icon.icns' \
     .
+
+  python3 scripts/validate-source-bundle.py "$BUNDLE" \
+    || die "source bundle contains forbidden macOS metadata or cannot be inspected"
 
   log "bundle created: $BUNDLE ($(du -h "$BUNDLE" | cut -f1))"
 

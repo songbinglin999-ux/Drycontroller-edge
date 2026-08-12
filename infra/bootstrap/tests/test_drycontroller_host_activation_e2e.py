@@ -4,6 +4,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 BOOTSTRAP_DIR = Path(__file__).resolve().parents[1]
 ACTIVATION_SCRIPT = BOOTSTRAP_DIR / "drycontroller-host-activation.sh"
@@ -46,6 +48,24 @@ def _fake_path(tmp_path: Path) -> Path:
         "#!/usr/bin/env bash\nexit 0\n",
     )
     _write_executable(
+        bin_dir / "docker",
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = volume ] && [ \"${2:-}\" = ls ]; then\n"
+        "  case \"${DRYCONTROLLER_E2E_VOLUME_STATE:-fresh}\" in\n"
+        "    fresh) exit 0 ;;\n"
+        "    partial) echo drycontroller-edge_postgres_data; exit 0 ;;\n"
+        "    existing)\n"
+        "      for name in postgres_data influxdb_data influxdb_config mosquitto_data mosquitto_logs mosquitto_secrets prometheus_data alertmanager_data; do\n"
+        "        echo drycontroller-edge_${name}\n"
+        "      done\n"
+        "      exit 0\n"
+        "      ;;\n"
+        "    error) exit 1 ;;\n"
+        "  esac\n"
+        "fi\n"
+        "exit 1\n",
+    )
+    _write_executable(
         bin_dir / "curl",
         "#!/usr/bin/env bash\n"
         "out=''\n"
@@ -66,8 +86,13 @@ def _fake_path(tmp_path: Path) -> Path:
         "  exit 0\n"
         "fi\n"
         "printf '%s' \"$data\" > \"$DRYCONTROLLER_E2E_CAPTURE_DIR/activation-payload.json\"\n"
-        "cat > \"$out\" <<'JSON'\n"
-        "{\"success\":true,\"state\":\"cloud_activated\",\"device_id\":\"EDGE-E2E0001\",\"tenant_id\":\"tenant-e2e\",\"line_id\":\"line-a\",\"node_name\":\"edge-e2e0001\",\"license_payload\":{\"schema\":\"drycontroller.license.v1\",\"signature\":\"signed-production\",\"expires_at\":\"2027-01-01T00:00:00+00:00\"},\"license_public_key\":\"public-key-e2e\",\"license_key_id\":\"test-key\",\"node_enroll_token\":\"node-token-e2e\",\"enroll_token\":\"node-token-e2e\",\"edge_admin_api_key\":\"edge-admin-e2e\",\"edge_control_api_key\":\"edge-control-e2e\",\"message\":\"activation_auto_approved\"}\n"
+        "case \"${DRYCONTROLLER_E2E_OPS_KEYS:-strong}\" in\n"
+        "  missing) ops_keys='\"edge_admin_api_key\":null,\"edge_control_api_key\":null' ;;\n"
+        "  placeholder) ops_keys='\"edge_admin_api_key\":\"change_me_admin\",\"edge_control_api_key\":\"change_me_control\"' ;;\n"
+        "  *) ops_keys='\"edge_admin_api_key\":\"edge-admin-e2e\",\"edge_control_api_key\":\"edge-control-e2e\"' ;;\n"
+        "esac\n"
+        "cat > \"$out\" <<JSON\n"
+        "{\"success\":true,\"state\":\"cloud_activated\",\"device_id\":\"EDGE-E2E0001\",\"tenant_id\":\"tenant-e2e\",\"line_id\":\"line-a\",\"node_name\":\"edge-e2e0001\",\"license_payload\":{\"schema\":\"drycontroller.license.v1\",\"signature\":\"signed-production\",\"expires_at\":\"2027-01-01T00:00:00+00:00\"},\"license_public_key\":\"public-key-e2e\",\"license_key_id\":\"test-key\",\"node_enroll_token\":\"node-token-e2e\",\"enroll_token\":\"node-token-e2e\",${ops_keys},\"message\":\"activation_auto_approved\"}\n"
         "JSON\n",
     )
     return bin_dir
@@ -105,7 +130,26 @@ def test_host_activation_bundle_to_formal_license_e2e(tmp_path: Path):
     bundle_path = etc_dir / "activation-bundle.json"
     bundle_path.write_text(json.dumps(_activation_bundle()), encoding="utf-8")
     edge_env = edge_root / ".env"
-    edge_env.write_text("UNCHANGED=1\nCLOUD_OPS_BASE_URL=http://old-cloud\n", encoding="utf-8")
+    edge_env.write_text(
+        "\n".join(
+            [
+                "UNCHANGED=1",
+                "CLOUD_OPS_BASE_URL=http://old-cloud",
+                "POSTGRES_PASSWORD=change_me_postgres_password",
+                "INFLUXDB_PASSWORD=change_me_influx_password",
+                "INFLUXDB_TOKEN=change_me_influx_token",
+                "MQTT_PASSWORD_EDGE_API=change_me_mqtt_edge_api",
+                "MQTT_PASSWORD_EDGE_DAQ=change_me_mqtt_edge_daq",
+                "MQTT_PASSWORD_AI_SOFTSENSOR=change_me_mqtt_ai_softsensor",
+                "MQTT_PASSWORD_EDGE_MONITOR=change_me_mqtt_edge_monitor",
+                "MQTT_PASSWORD_AI_CTRL_OPTIMIZER=change_me_mqtt_ai_ctrl_optimizer",
+                "CONTROL_SIGNATURE_SECRET=change_me_control_signature_secret",
+                "MONITOR_OPS_API_KEYS=change_me_admin_api_key",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     env = {
         **os.environ,
@@ -154,6 +198,9 @@ def test_host_activation_bundle_to_formal_license_e2e(tmp_path: Path):
     assert "TENANT_ID=tenant-e2e" in tailnet_env
     assert "LINE_ID=line-a" in tailnet_env
     assert "TS_HOSTNAME=edge-e2e0001" in tailnet_env
+    assert stat.S_IMODE((etc_dir / "tailnet.env").stat().st_mode) == 0o600
+    assert stat.S_IMODE((var_dir / "factory-license.json").stat().st_mode) == 0o600
+    assert not list(etc_dir.glob(".tailnet.env.*.tmp"))
 
     edge_env_lines = edge_env.read_text(encoding="utf-8").splitlines()
     assert "UNCHANGED=1" in edge_env_lines
@@ -164,6 +211,24 @@ def test_host_activation_bundle_to_formal_license_e2e(tmp_path: Path):
     assert "CLOUD_OPS_BASE_URL=https://ops.example.test" in edge_env_lines
     assert "CLOUD_OPS_ENROLL_TOKEN=node-token-e2e" in edge_env_lines
     assert "CLOUD_OPS_ENROLL_TOKEN_HEADER=X-Enroll-Token" in edge_env_lines
+    edge_env_values = dict(line.split("=", 1) for line in edge_env_lines if "=" in line)
+    generated_secret_names = (
+        "POSTGRES_PASSWORD",
+        "INFLUXDB_PASSWORD",
+        "INFLUXDB_TOKEN",
+        "MQTT_PASSWORD_EDGE_API",
+        "MQTT_PASSWORD_EDGE_DAQ",
+        "MQTT_PASSWORD_AI_SOFTSENSOR",
+        "MQTT_PASSWORD_EDGE_MONITOR",
+        "MQTT_PASSWORD_AI_CTRL_OPTIMIZER",
+        "CONTROL_SIGNATURE_SECRET",
+    )
+    generated_secrets = [edge_env_values[name] for name in generated_secret_names]
+    assert all(len(value) >= 32 and not value.startswith("change_me") for value in generated_secrets)
+    assert len(set(generated_secrets)) == len(generated_secrets)
+    assert edge_env_values["MONITOR_OPS_API_KEYS"] == edge_env_values["ADMIN_API_KEYS"]
+    assert stat.S_IMODE(edge_env.stat().st_mode) == 0o600
+    assert not list(edge_env.parent.glob("..env.*.tmp"))
 
     activation_payload = json.loads((capture_dir / "activation-payload.json").read_text(encoding="utf-8"))
     assert activation_payload["machine_id"] == "e2e-machine-id"
@@ -195,7 +260,122 @@ def test_host_activation_bundle_to_formal_license_e2e(tmp_path: Path):
     assert "TS_AUTHKEY=" not in tailnet_env_after_rerun
     assert "CLOUD_OPS_ENROLL_TOKEN=node-token-e2e" in tailnet_env_after_rerun
     assert "TS_HOSTNAME=edge-e2e0001" in tailnet_env_after_rerun
+    edge_env_after_rerun = dict(
+        line.split("=", 1)
+        for line in edge_env.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert [edge_env_after_rerun[name] for name in generated_secret_names] == generated_secrets
 
+    existing_env = {**env, "DRYCONTROLLER_E2E_VOLUME_STATE": "existing"}
+    existing_rerun = subprocess.run(
+        ["bash", str(ACTIVATION_SCRIPT)],
+        env=existing_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "activation already complete" in existing_rerun.stdout
+    assert edge_env.read_text(encoding="utf-8") == "\n".join(edge_env_lines) + "\n"
+
+    original = edge_env.read_text(encoding="utf-8")
+    broken = original.replace(
+        f"POSTGRES_PASSWORD={edge_env_values['POSTGRES_PASSWORD']}",
+        "POSTGRES_PASSWORD=change_me_postgres_password",
+    )
+    edge_env.write_text(broken, encoding="utf-8")
+    edge_env.chmod(0o600)
+    failed_existing = subprocess.run(
+        ["bash", str(ACTIVATION_SCRIPT)],
+        env=existing_env,
+        text=True,
+        capture_output=True,
+    )
+    assert failed_existing.returncode != 0
+    assert "credential migration is required" in failed_existing.stderr
+    assert edge_env.read_text(encoding="utf-8") == broken
+    assert not list(edge_env.parent.glob("..env.*.tmp"))
+
+    partial_env = {**env, "DRYCONTROLLER_E2E_VOLUME_STATE": "partial"}
+    failed_partial = subprocess.run(
+        ["bash", str(ACTIVATION_SCRIPT)],
+        env=partial_env,
+        text=True,
+        capture_output=True,
+    )
+    assert failed_partial.returncode != 0
+    assert "credential migration is required" in failed_partial.stderr
+    assert edge_env.read_text(encoding="utf-8") == broken
+
+    edge_env.parent.chmod(0o500)
+    try:
+        failed_write = subprocess.run(
+            ["bash", str(ACTIVATION_SCRIPT)],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+    finally:
+        edge_env.parent.chmod(0o700)
+    assert failed_write.returncode != 0
+    assert edge_env.read_text(encoding="utf-8") == broken
+    assert not list(edge_env.parent.glob("..env.*.tmp"))
+
+
+@pytest.mark.parametrize("ops_key_mode", ["missing", "placeholder"])
+def test_host_activation_rejects_weak_cloud_ops_keys_before_signed_start(tmp_path: Path, ops_key_mode: str):
+    bin_dir = _fake_path(tmp_path)
+    etc_dir = tmp_path / "etc" / "drycontroller"
+    var_dir = tmp_path / "var" / "lib" / "drycontroller"
+    edge_root = tmp_path / "edge"
+    capture_dir = tmp_path / "capture"
+    etc_dir.mkdir(parents=True)
+    var_dir.mkdir(parents=True)
+    edge_root.mkdir()
+    bundle_path = etc_dir / "activation-bundle.json"
+    bundle_path.write_text(json.dumps(_activation_bundle()), encoding="utf-8")
+    edge_env = edge_root / ".env"
+    original_env = (
+        'ADMIN_API_KEYS=["change_me_admin_api_key"]\n'
+        'CONTROL_API_KEYS=["change_me_control_api_key"]\n'
+        "POSTGRES_PASSWORD=change_me_postgres_password\n"
+    )
+    edge_env.write_text(original_env, encoding="utf-8")
+    edge_env.chmod(0o600)
+    (edge_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    start_marker = tmp_path / "start-active-called"
+    start_program = tmp_path / "start-active"
+    _write_executable(start_program, f"#!/usr/bin/env bash\ntouch {start_marker}\n")
+
+    result = subprocess.run(
+        ["bash", str(ACTIVATION_SCRIPT)],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "DRYCONTROLLER_ACTIVATION_BUNDLE": str(bundle_path),
+            "DRYCONTROLLER_TAILNET_ENV": str(etc_dir / "tailnet.env"),
+            "DRYCONTROLLER_ACTIVATION_STATE": str(var_dir / "activation-state.json"),
+            "DRYCONTROLLER_DEVICE_JSON": str(var_dir / "device.json"),
+            "DRYCONTROLLER_BOOTSTRAP_SENTINEL": str(var_dir / ".bootstrapped"),
+            "LICENSE_FILE_PATH": str(etc_dir / "license" / "license.json"),
+            "FACTORY_LICENSE_ARCHIVE_PATH": str(var_dir / "factory-license.json"),
+            "LICENSE_PUBLIC_KEY_PATH": str(etc_dir / "keys" / "license.pub"),
+            "EDGE_ROOT": str(edge_root),
+            "EDGE_ENV_FILE": str(edge_env),
+            "DRYCONTROLLER_E2E_CAPTURE_DIR": str(capture_dir),
+            "DRYCONTROLLER_E2E_OPS_KEYS": ops_key_mode,
+            "DRYCONTROLLER_START_ACTIVE_PROGRAM": str(start_program),
+        },
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "activation response missing strong edge_admin_api_key" in result.stderr
+    assert not start_marker.exists()
+    assert edge_env.read_text(encoding="utf-8") == original_env
+    assert stat.S_IMODE(edge_env.stat().st_mode) == 0o600
+    assert not list(edge_env.parent.glob("..env.*.tmp"))
 
 def test_host_tailnet_does_not_accept_split_material_without_bundle(tmp_path: Path):
     bin_dir = _fake_path(tmp_path)
