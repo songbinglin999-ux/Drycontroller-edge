@@ -52,3 +52,26 @@ async def test_real_config_authority_diagnostics_validate(tmp_path, monkeypatch)
     assert svc._validate_config(config) == []
     authority_tags = config["tags"]["diagnostic"]["authority"]
     assert {tag["signal_type"] for tag in authority_tags} == {"DIAG"}
+
+
+@pytest.mark.asyncio
+async def test_real_readonly_point_table_is_28_words_plus_6_coils(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOG_ROOT", str(tmp_path))
+    repo_root = Path(__file__).resolve().parents[3]
+    monkeypatch.setenv("TAGS_CONFIG", str(repo_root / "configs/tags.yaml"))
+    monkeypatch.setenv("MODBUS_ADDRESS_MAP", str(repo_root / "configs/modbus-address-map.yaml"))
+    daq_main = importlib.import_module("daq.main")
+    config = await daq_main.DAQService().load_config()
+
+    word_tags = [
+        tag
+        for category in config["tags"]["process"].values()
+        for tag in category
+    ]
+    coil_tags = config["tags"]["detection"]["limit_switch"]
+
+    assert len(word_tags) == 28
+    assert len(coil_tags) == 6
+    assert {tag["function_code"] for tag in word_tags} == {3}
+    assert {tag["function_code"] for tag in coil_tags} == {1}
+    assert not ({tag["address"] for tag in word_tags} & set(range(40030, 40036)))

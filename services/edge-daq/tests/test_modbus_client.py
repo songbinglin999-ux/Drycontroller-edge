@@ -2,6 +2,7 @@ import asyncio
 import time
 
 import pytest
+from pymodbus.transaction import ModbusRtuFramer
 
 from daq.modbus_client import ModbusClient
 
@@ -54,6 +55,16 @@ class FakeClient:
 
     def close(self):
         self.connected = False
+
+
+def test_modbus_defaults_to_current_rtu_over_tcp_contract(monkeypatch):
+    monkeypatch.delenv("MODBUS_FRAMER", raising=False)
+
+    client = ModbusClient("127.0.0.1")
+
+    assert client.port == 2022
+    assert client.slave_id == 1
+    assert client.framer is ModbusRtuFramer
 
 
 @pytest.mark.asyncio
@@ -112,4 +123,3 @@ def test_modbus_status_payload():
     status = mc.get_status()
     assert status["connected"] is True
     assert status["slave_id"] == 3
-

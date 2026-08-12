@@ -64,6 +64,21 @@ def test_validate_accepts_tags_without_addresses(tmp_path: Path):
     assert vdc.validate(path) == []
 
 
+def test_validate_accepts_readonly_diagnostic_tags(tmp_path: Path):
+    path = tmp_path / "tags.yaml"
+    path.write_text(
+        "tags:\n"
+        "  diagnostic:\n"
+        "    authority:\n"
+        "      - name: AUTHORITY_OWNER\n"
+        "        signal_type: DIAG\n"
+        "        type: int\n",
+        encoding="utf-8",
+    )
+
+    assert vdc.validate(path) == []
+
+
 def test_main_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
     good = tmp_path / "good.yaml"
     good.write_text(

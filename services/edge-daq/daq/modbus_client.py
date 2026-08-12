@@ -30,13 +30,13 @@ MODBUS_CIRCUIT_OPEN = Counter("modbus_circuit_open_total", "Modbus circuit open 
 class ModbusClient:
     """Modbus TCP 客户端封装，带重试和重连"""
 
-    def __init__(self, host: str, port: int = 502, slave_id: int = 1, connect_timeout: int = 5, framer=None):
+    def __init__(self, host: str, port: int = 2022, slave_id: int = 1, connect_timeout: int = 5, framer=None):
         self.host = host
         self.port = port
         self.slave_id = slave_id
         # framer：RTU-over-TCP（CRC 帧）vs 标准 Modbus TCP（MBAP）。
-        # 此 PLC 走 RTU-over-TCP，需 MODBUS_FRAMER=rtu；未设置时维持默认 socket framer。
-        self.framer = self._resolve_framer(framer if framer is not None else os.getenv("MODBUS_FRAMER", ""))
+        # 当前产品只走 RTU-over-TCP；显式参数/环境变量仍可用于测试注入。
+        self.framer = self._resolve_framer(framer if framer is not None else os.getenv("MODBUS_FRAMER", "rtu"))
         self.client = None
         self.connected = False
         self.connect_timeout = connect_timeout

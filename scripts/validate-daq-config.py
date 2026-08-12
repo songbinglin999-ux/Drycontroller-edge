@@ -61,7 +61,7 @@ def _validate_heartbeat(cfg: Dict[str, Any], errors: List[str]) -> None:
 def _validate_tags(cfg: Dict[str, Any], errors: List[str]) -> None:
     tags_cfg = (cfg or {}).get("tags", {})
     allowed_types = {"float", "int", "int32", "uint32", "bool"}
-    allowed_signal_types = {"DI", "AI", "DO", "AO"}
+    allowed_signal_types = {"DI", "AI", "DO", "AO", "DIAG"}
 
     def iter_tags(node: Any):
         if isinstance(node, dict):

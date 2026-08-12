@@ -21,6 +21,27 @@ def _env_map(service: dict) -> dict[str, str]:
     return result
 
 
+def _env_example() -> dict[str, str]:
+    result: dict[str, str] = {}
+    for line in (ROOT / "env.example").read_text(encoding="utf-8").splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        result[key] = value
+    return result
+
+
+def test_plc_deployment_defaults_match_rtu_over_tcp_contract():
+    edge_daq_env = _env_map(_compose_services()["edge-daq"])
+    example = _env_example()
+
+    assert edge_daq_env["PLC_PORT"] == "${PLC_PORT:-2022}"
+    assert edge_daq_env["MODBUS_FRAMER"] == "${MODBUS_FRAMER:-rtu}"
+    assert example["PLC_PORT"] == "2022"
+    assert example["PLC_SLAVE_ID"] == "1"
+    assert example["MODBUS_FRAMER"] == "rtu"
+
+
 def test_license_install_contract_keeps_public_key_anchor_read_only():
     services = _compose_services()
     edge_api = services["edge-api"]
