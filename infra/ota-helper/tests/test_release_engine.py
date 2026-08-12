@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -107,6 +108,7 @@ def _paths(tmp_path: Path) -> ReleasePaths:
         encoding="utf-8",
     )
     return ReleasePaths(
+        lock=tmp_path / "release.lock",
         journal=tmp_path / "release-journal.json",
         request=request,
         releases=tmp_path / "releases",
@@ -208,6 +210,7 @@ def test_initial_release_is_verified_and_persisted_only_after_all_images_are_pro
     journal = json.loads(paths.journal.read_text(encoding="utf-8"))
     assert result["status"] == "initialized"
     assert journal["phase"] == "idle"
+    assert paths.lock.stat().st_mode & 0o777 == 0o600
     assert journal["active"]["manifest"] == manifest
     assert journal["active"]["manifest_digest"] == canonical_manifest_digest(manifest)
     assert journal["active"]["verified_at"]
@@ -292,13 +295,90 @@ def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
 
     assert result["status"] == "running"
     compose_up = next(call for call in runtime.calls if call[:2] == ["/usr/bin/docker", "compose"] and "up" in call)
-    assert compose_up[-2:] == ["--pull", "never"]
+    assert compose_up[-3:] == ["--pull", "never", "--no-build"]
     assert not any(call[:2] == ["/usr/bin/docker", "pull"] for call in runtime.calls)
     assert runtime.current_override is not None
     assert runtime._images(runtime.current_override) == active["image_ids"]
     journal = json.loads(paths.journal.read_text(encoding="utf-8"))
     assert journal["phase"] == "idle"
     assert journal["effect"] is None
+    assert paths.lock.is_file()
+
+
+def test_active_start_waits_for_the_same_cross_process_transaction_lock(tmp_path):
+    paths = _paths(tmp_path)
+    active = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, active)
+    engine = ReleaseEngine(paths=paths, command_runner=FakeRuntime().run)
+    child = None
+    program = r"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from release_engine import ReleaseEngine, ReleasePaths, SOFTWARE_RELEASE_SERVICES
+
+root = Path(sys.argv[2])
+paths = ReleasePaths(
+    lock=root / "release.lock",
+    journal=root / "release-journal.json",
+    request=root / "request.json",
+    releases=root / "releases",
+    project=root / "project",
+    compose=root / "project" / "docker-compose.yml",
+    cosign_pubkey=root / "cosign.pub",
+    registry_status=root / "registry-status.json",
+    device=root / "device.json",
+    cloud_config=root / "tailnet.env",
+)
+
+def run(args):
+    print("command", flush=True)
+    if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
+        return args[-1]
+    if args[0] == "/usr/local/bin/cosign":
+        return "verified"
+    if args[:2] == ["/usr/bin/docker", "compose"]:
+        if "ps" in args:
+            manifest = json.loads(paths.journal.read_text(encoding="utf-8"))["active"]["manifest"]
+            return json.dumps([
+                {
+                    "Service": service,
+                    "Image": manifest["image_ids"][service],
+                    "State": "exited" if service == "mosquitto-init" else "running",
+                    "ExitCode": 0,
+                    "Health": "" if service == "mosquitto-init" else "healthy",
+                }
+                for service in SOFTWARE_RELEASE_SERVICES
+            ])
+        return "ok"
+    raise RuntimeError(args)
+
+print("starting", flush=True)
+result = ReleaseEngine(paths=paths, command_runner=run, health_checker=lambda _url: None).start_active()
+print(json.dumps(result, sort_keys=True), flush=True)
+"""
+    try:
+        with engine._transaction_lock():
+            child = subprocess.Popen(
+                [sys.executable, "-c", program, str(HELPER_DIR), str(tmp_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert child.stdout is not None
+            assert child.stdout.readline().strip() == "starting"
+            ready, _, _ = select.select([child.stdout], [], [], 0.2)
+            assert ready == []
+        stdout, stderr = child.communicate(timeout=5)
+        assert child.returncode == 0, stderr
+        assert "command" in stdout
+        assert '"status": "running"' in stdout
+    finally:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
 
 
 def test_manifest_verification_uses_real_cosign_signature(tmp_path):
@@ -410,7 +490,12 @@ def test_a_to_b_to_c_promotes_only_verified_complete_releases(tmp_path):
     assert journal["active"]["manifest_digest"] == canonical_manifest_digest(release_c)
     assert journal["previous"]["manifest_digest"] == canonical_manifest_digest(release_b)
     assert journal["candidate"] is None
-    assert all("--pull" in call and "never" in call for call in runtime.calls if "up" in call)
+    assert all(
+        "--pull" in call and "never" in call and "--no-build" in call
+        for call in runtime.calls
+        if "up" in call
+    )
+    assert paths.lock.is_file()
 
 
 def test_candidate_failure_rolls_back_previous_without_registry(tmp_path):
@@ -433,7 +518,7 @@ def test_candidate_failure_rolls_back_previous_without_registry(tmp_path):
     assert journal["candidate"] is None
     up_calls = [call for call in runtime.calls if "up" in call]
     assert len(up_calls) == 2
-    assert all("--pull" in call and "never" in call for call in up_calls)
+    assert all("--pull" in call and "never" in call and "--no-build" in call for call in up_calls)
     candidate_up_index = runtime.calls.index(up_calls[0])
     rollback_calls = runtime.calls[candidate_up_index + 1 :]
     assert not any(call[:2] == ["/usr/bin/docker", "pull"] for call in rollback_calls)

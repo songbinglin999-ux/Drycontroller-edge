@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -17,7 +19,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 
 SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"
@@ -98,6 +100,7 @@ class ReleaseError(RuntimeError):
 
 @dataclass(frozen=True)
 class ReleasePaths:
+    lock: Path
     journal: Path
     request: Path
     releases: Path
@@ -111,6 +114,7 @@ class ReleasePaths:
     @classmethod
     def production(cls) -> "ReleasePaths":
         return cls(
+            lock=Path("/var/lib/drycontroller-ota/release.lock"),
             journal=Path("/var/lib/drycontroller-ota/release-journal.json"),
             request=Path("/var/lib/drycontroller-ota/request.json"),
             releases=Path("/var/lib/drycontroller-ota/releases"),
@@ -241,6 +245,31 @@ class ReleaseEngine:
         self._command_runner = command_runner or self._run_command
         self._policy_fetcher = policy_fetcher or self._fetch_policy
         self._health_checker = health_checker or self._check_health
+
+    @contextlib.contextmanager
+    def _transaction_lock(self) -> Iterator[None]:
+        try:
+            self.paths.lock.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(
+                self.paths.lock,
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+            )
+        except OSError as exc:
+            raise ReleaseError("release transaction lock unavailable") from exc
+        try:
+            os.fchmod(descriptor, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            os.close(descriptor)
+            raise ReleaseError("release transaction lock failed") from exc
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
     def _run_command(self, args: list[str]) -> str:
         try:
@@ -389,6 +418,10 @@ class ReleaseEngine:
         return slot
 
     def initialize_active(self, seed: object) -> dict[str, Any]:
+        with self._transaction_lock():
+            return self._initialize_active(seed)
+
+    def _initialize_active(self, seed: object) -> dict[str, Any]:
         if not isinstance(seed, dict) or set(seed) != {
             "manifest",
             "manifest_digest",
@@ -446,6 +479,10 @@ class ReleaseEngine:
         }
 
     def start_active(self) -> dict[str, Any]:
+        with self._transaction_lock():
+            return self._start_active()
+
+    def _start_active(self) -> dict[str, Any]:
         journal = self._load_journal()
         if journal["phase"] != "idle":
             self._recover_interrupted(journal)
@@ -463,7 +500,9 @@ class ReleaseEngine:
                 journal,
                 "active_compose_up",
                 lambda: self._command_runner(
-                    self._compose_args(override, "up", "-d", "--remove-orphans", "--pull", "never")
+                    self._compose_args(
+                        override, "up", "-d", "--remove-orphans", "--pull", "never", "--no-build"
+                    )
                 ),
             )
             journal["phase"] = "active_health_check"
@@ -744,7 +783,9 @@ class ReleaseEngine:
                 journal,
                 "previous_compose_up",
                 lambda: self._command_runner(
-                    self._compose_args(override, "up", "-d", "--remove-orphans", "--pull", "never")
+                    self._compose_args(
+                        override, "up", "-d", "--remove-orphans", "--pull", "never", "--no-build"
+                    )
                 ),
             )
             journal["phase"] = "rollback_applied"
@@ -797,6 +838,10 @@ class ReleaseEngine:
         raise ReleaseError("interrupted_release_recovered")
 
     def apply(self) -> dict[str, Any]:
+        with self._transaction_lock():
+            return self._apply()
+
+    def _apply(self) -> dict[str, Any]:
         operation_id = self._read_operation_id()
         journal = self._load_journal()
         if journal["phase"] != "idle":
@@ -875,7 +920,15 @@ class ReleaseEngine:
                 journal,
                 "candidate_compose_up",
                 lambda: self._command_runner(
-                    self._compose_args(candidate_override, "up", "-d", "--remove-orphans", "--pull", "never")
+                    self._compose_args(
+                        candidate_override,
+                        "up",
+                        "-d",
+                        "--remove-orphans",
+                        "--pull",
+                        "never",
+                        "--no-build",
+                    )
                 ),
             )
             journal["phase"] = "candidate_apply_succeeded"
