@@ -15,9 +15,17 @@ Drycontroller-cloudserver/docs/ops/product-hardening-design.md
 - `edge-api /api/v1/alarms/{alarm_id}/acknowledge`
 - root-owned `drycontroller-ota-helper.service` + `0660` UDS（RB-3 已落协调分支）。
 - operation-ID-only、串行幂等的固定 OTA 状态机（RB-3 已落协调分支）。
-- 完整 release manifest、强制 cosign、active/candidate/previous 与确定性回滚（RB-4，未完成前不得部署）。
+- 完整 SoftwareRelease manifest、强制 cosign、active/candidate/previous 与确定性回滚（RB-4 协调分支已实现，独立 DANGER review 与隔离 E2E 完成前不得部署）。
 - `edge-monitor` 保持只读；容器 start/stop/restart 已 fail-closed。
 - Influx outbox 本地补写
+
+RB-4 发布边界：
+
+- 云端运维台必须显式选择一个 `completed` SoftwareRelease；job 仅绑定 `release_id + manifest_digest`，Edge 仍只接收 operation ID。
+- canonical manifest 固定包含 12 个 Compose 服务及同一 Registry 下的精确 digest，拒绝 tag、局部 override 和自选服务列表。
+- CI 可以只构建直接变更的服务，但未变服务只能继承已完成前序版本的精确 digest，并再次扫描和验签；共享/未知变更、前序不可验证或换签名密钥时全量构建。
+- Edge 在停止 active 前重新验签 active manifest 并证明全部本地镜像；候选与回滚均使用 `--pull never`，回滚阶段不访问 Registry。
+- journal 在副作用前后原子写入并 fsync；中断恢复保守收敛到已证明的 previous。缺少 active/previous、digest、签名、公钥或本地镜像时拒绝升级。
 
 ## 设计原则：现场无人值守
 

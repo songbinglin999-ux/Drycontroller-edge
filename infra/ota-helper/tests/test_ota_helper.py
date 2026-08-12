@@ -26,6 +26,8 @@ def _controller(tmp_path: Path, script: str) -> helper.OperationController:
     project_dir.mkdir()
     return helper.OperationController(
         state_path=tmp_path / "state" / "operations.json",
+        request_path=tmp_path / "state" / "request.json",
+        release_journal_path=tmp_path / "state" / "release-journal.json",
         log_path=tmp_path / "log" / "operations.log",
         apply_program=apply_program,
         project_dir=project_dir,
@@ -97,7 +99,7 @@ def test_failure_is_terminal_and_log_uses_one_fixed_file(tmp_path):
     assert finished["exit_code"] == 17
     assert finished["error"] == "fixed_state_machine_failed"
     assert "fixed-output" in logs["data"]
-    assert list((tmp_path / "state").iterdir()) == [tmp_path / "state" / "operations.json"]
+    assert {path.name for path in (tmp_path / "state").iterdir()} == {"operations.json", "request.json"}
     state = json.loads((tmp_path / "state" / "operations.json").read_text(encoding="utf-8"))
     assert set(state["operations"]) == {operation_id}
 
@@ -113,6 +115,8 @@ def test_interrupted_operation_is_failed_on_restart(tmp_path):
 
     recovered = helper.OperationController(
         state_path=controller.state_path,
+        request_path=controller.request_path,
+        release_journal_path=controller.release_journal_path,
         log_path=controller.log_path,
         apply_program=controller.apply_program,
         project_dir=controller.project_dir,
@@ -121,6 +125,35 @@ def test_interrupted_operation_is_failed_on_restart(tmp_path):
     assert recovered["status"] == "failed"
     assert recovered["error"] == "ota_helper_restarted"
     assert recovered["log_end"] == 0
+
+
+def test_interrupted_operation_with_durable_request_resumes_fixed_program(tmp_path):
+    marker = tmp_path / "resumed"
+    controller = _controller(tmp_path, f"printf x >> '{marker}'")
+    operation_id = "6" * 32
+    state = controller._read_state()
+    state["operations"][operation_id] = {
+        "operation_id": operation_id,
+        "status": "running",
+        "step": "apply",
+        "log_start": 0,
+        "log_available": True,
+    }
+    state["high_watermark"] = helper.operation_sequence(operation_id)
+    controller._write_state(state)
+    controller._write_request(operation_id)
+
+    resumed = helper.OperationController(
+        state_path=controller.state_path,
+        request_path=controller.request_path,
+        release_journal_path=controller.release_journal_path,
+        log_path=controller.log_path,
+        apply_program=controller.apply_program,
+        project_dir=controller.project_dir,
+    )
+
+    assert _wait_terminal(resumed, operation_id)["status"] == "succeeded"
+    assert marker.read_text(encoding="utf-8") == "x"
 
 
 def test_timed_out_program_is_terminated_and_releases_serial_slot(tmp_path, monkeypatch):

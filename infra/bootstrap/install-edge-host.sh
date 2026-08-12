@@ -91,6 +91,7 @@ fi
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-enroll.sh" ] || die "host enroll script missing in source"
 [ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-activation.sh" ] || die "host activation script missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/drycontroller_ota_helper.py" ] || die "OTA helper missing in source"
+[ -f "${REPO_SOURCE}/infra/ota-helper/release_engine.py" ] || die "OTA release engine missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/ota-apply" ] || die "fixed OTA apply program missing in source"
 
 install_base_packages_apt() {
@@ -246,6 +247,7 @@ install_host_services() {
   install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-activation.service" /etc/systemd/system/drycontroller-activation.service
   install -d -m 0755 /usr/libexec/drycontroller
   install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/drycontroller_ota_helper.py" /usr/libexec/drycontroller/drycontroller_ota_helper.py
+  install -o root -g root -m 0644 "${EDGE_ROOT}/infra/ota-helper/release_engine.py" /usr/libexec/drycontroller/release_engine.py
   install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/ota-apply" /usr/libexec/drycontroller/ota-apply
   install -o root -g root -m 0644 "${EDGE_ROOT}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
 

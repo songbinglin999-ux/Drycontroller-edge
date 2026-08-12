@@ -362,6 +362,7 @@ def test_install_edge_host_installs_root_owned_ota_helper():
     assert 'EDGE_ROOT="/opt/Drycontroller-edge"' in text
     assert "--edge-root" not in text
     assert "infra/ota-helper/drycontroller_ota_helper.py" in text
+    assert "infra/ota-helper/release_engine.py" in text
     assert "infra/ota-helper/ota-apply" in text
     assert "install -o root -g root -m 0755" in text
     assert "systemctl enable --now drycontroller-ota-helper.service" in text

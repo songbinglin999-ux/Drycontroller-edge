@@ -89,6 +89,7 @@ def test_business_containers_have_no_docker_mutation_surface():
 def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
     helper = (ROOT / "infra/ota-helper/drycontroller_ota_helper.py").read_text(encoding="utf-8")
     apply = (ROOT / "infra/ota-helper/ota-apply").read_text(encoding="utf-8")
+    release_engine = (ROOT / "infra/ota-helper/release_engine.py").read_text(encoding="utf-8")
     unit = (ROOT / "infra/ota-helper/drycontroller-ota-helper.service").read_text(encoding="utf-8")
 
     assert 'APPLY_PROGRAM = Path("/usr/libexec/drycontroller/ota-apply")' in helper
@@ -96,10 +97,17 @@ def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
     assert 'OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")' in helper
     assert "sys.argv" not in helper
     assert "os.getenv" not in helper
-    assert "[ \"$#\" -eq 0 ] || exit 64" in apply
-    assert "unset COMPOSE_FILE COMPOSE_PROFILES" in apply
+    assert "if len(sys.argv) != 1:" in apply
+    assert "ReleaseEngine().apply()" in apply
     assert "pre-check" not in apply
     assert "post-check" not in apply
+    assert 'RELEASE_JOURNAL_SCHEMA = "drycontroller.release-journal.v1"' in release_engine
+    assert 'SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"' in release_engine
+    assert '"--pull", "never"' in release_engine
+    assert '"verify-blob"' in release_engine
+    assert '"verify"' in release_engine
+    assert "shell=True" not in release_engine
+    assert "os.getenv" not in release_engine
     assert "User=root" in unit
     assert "Group=root" in unit
     assert "ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py" in unit

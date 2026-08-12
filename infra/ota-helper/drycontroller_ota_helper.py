@@ -20,6 +20,8 @@ from urllib.parse import urlsplit
 
 SOCKET_PATH = Path("/run/drycontroller-ota/helper.sock")
 STATE_PATH = Path("/var/lib/drycontroller-ota/operations.json")
+REQUEST_PATH = Path("/var/lib/drycontroller-ota/request.json")
+RELEASE_JOURNAL_PATH = Path("/var/lib/drycontroller-ota/release-journal.json")
 LOG_PATH = Path("/var/log/drycontroller-ota/operations.log")
 APPLY_PROGRAM = Path("/usr/libexec/drycontroller/ota-apply")
 PROJECT_DIR = Path("/opt/Drycontroller-edge")
@@ -83,11 +85,15 @@ class OperationController:
         self,
         *,
         state_path: Path = STATE_PATH,
+        request_path: Path = REQUEST_PATH,
+        release_journal_path: Path = RELEASE_JOURNAL_PATH,
         log_path: Path = LOG_PATH,
         apply_program: Path = APPLY_PROGRAM,
         project_dir: Path = PROJECT_DIR,
     ) -> None:
         self.state_path = state_path
+        self.request_path = request_path
+        self.release_journal_path = release_journal_path
         self.log_path = log_path
         self.apply_program = apply_program
         self.project_dir = project_dir
@@ -137,22 +143,64 @@ class OperationController:
             if temporary.exists():
                 temporary.unlink()
 
+    def _write_request(self, operation_id: str) -> None:
+        payload = json.dumps(
+            {"operation_id": validate_operation_id(operation_id)},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        temporary = self.request_path.with_name("request.json.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(self.request_path)
+            self.request_path.chmod(0o600)
+            directory_fd = os.open(self.request_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _request_operation_id(self) -> str | None:
+        try:
+            request = json.loads(self.request_path.read_text(encoding="utf-8"))
+            return operation_id_from_body(request)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, InvalidOperationId):
+            return None
+
     def _recover_interrupted_operation(self) -> None:
         state = self._read_state()
+        interrupted = [
+            operation
+            for operation in state["operations"].values()
+            if operation.get("status") in {"queued", "running"}
+        ]
+        if len(interrupted) == 1:
+            operation_id = interrupted[0].get("operation_id")
+            if isinstance(operation_id, str) and self._request_operation_id() == operation_id:
+                self._active_operation_id = operation_id
+                worker = threading.Thread(target=self._run, args=(operation_id,), daemon=True)
+                worker.start()
+                return
         changed = False
         log_end = self.log_path.stat().st_size
-        for operation in state["operations"].values():
-            if operation.get("status") in {"queued", "running"}:
-                operation.update(
-                    {
-                        "status": "failed",
-                        "step": "interrupted",
-                        "finished_at": utc_now(),
-                        "error": "ota_helper_restarted",
-                        "log_end": log_end,
-                    }
-                )
-                changed = True
+        for operation in interrupted:
+            operation.update(
+                {
+                    "status": "failed",
+                    "step": "interrupted",
+                    "finished_at": utc_now(),
+                    "error": "ota_helper_restarted",
+                    "log_end": log_end,
+                }
+            )
+            changed = True
         if changed:
             self._prune_state(state)
             self._write_state(state)
@@ -239,6 +287,7 @@ class OperationController:
                 }, False
 
             log_start = self._prepare_log_for_new_operation(state)
+            self._write_request(operation_id)
             operation = {
                 "operation_id": operation_id,
                 "status": "queued",
@@ -427,8 +476,18 @@ class OperationController:
             if process is not None and reader is not None:
                 self._finish_output_reader(process, reader)
 
+        release_summary = self._release_summary()
         with self._lock:
             succeeded = exit_code == 0 and error is None
+            release_values: dict[str, Any] = {
+                "active_release_id": release_summary.get("release_id"),
+                "active_release_version": release_summary.get("version"),
+                "active_manifest_digest": release_summary.get("manifest_digest"),
+            }
+            if succeeded:
+                release_values["target_version"] = release_summary.get("version")
+                release_values["release_id"] = release_summary.get("release_id")
+                release_values["manifest_digest"] = release_summary.get("manifest_digest")
             self._patch(
                 operation_id,
                 prune=True,
@@ -438,8 +497,25 @@ class OperationController:
                 exit_code=exit_code,
                 error=error if error is not None else (None if succeeded else "fixed_state_machine_failed"),
                 log_end=self.log_path.stat().st_size,
+                **release_values,
             )
             self._active_operation_id = None
+
+    def _release_summary(self) -> dict[str, str | None]:
+        try:
+            journal = json.loads(self.release_journal_path.read_text(encoding="utf-8"))
+            active = journal.get("active") if isinstance(journal, dict) else None
+            manifest = active.get("manifest") if isinstance(active, dict) else None
+            digest = active.get("manifest_digest") if isinstance(active, dict) else None
+            if not isinstance(manifest, dict):
+                return {}
+            return {
+                "release_id": str(manifest.get("release_id") or "") or None,
+                "version": str(manifest.get("version") or "") or None,
+                "manifest_digest": str(digest or "") or None,
+            }
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
 
 
 class ThreadingUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
