@@ -435,6 +435,7 @@ manifest = {
             "manifest_digest": initial_release["manifest_digest"],
             "seed_sha256": sha256(initial_release_seed),
             "cosign_public_key_sha256": sha256(release_cosign_pub),
+            "cosign_version": initial_manifest["cosign"]["version"],
             "cosign_linux_amd64_sha256": sha256(release_cosign_bin),
         },
         "wifi_env": (
@@ -465,6 +466,11 @@ if manifest["artifacts"]["wifi_env"]["included"] != include_wifi:
     raise SystemExit("wifi manifest state mismatch")
 if manifest["artifacts"]["initial_release"]["source_commit"] != manifest["git"]["commit"]:
     raise SystemExit("initial SoftwareRelease source commit mismatch")
+if (
+    "sha256:" + manifest["artifacts"]["initial_release"]["cosign_linux_amd64_sha256"]
+    != initial_manifest["cosign"]["linux_amd64_sha256"]
+):
+    raise SystemExit("initial SoftwareRelease cosign binary mismatch")
 
 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 print(f"release manifest written: {manifest_path}")

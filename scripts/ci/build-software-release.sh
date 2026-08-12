@@ -465,7 +465,7 @@ import os
 import sys
 from pathlib import Path
 
-from release_engine import canonical_manifest_bytes, validate_manifest
+from release_engine import COSIGN_TOOLCHAIN, canonical_manifest_bytes, validate_manifest
 
 services = {}
 image_ids = {}
@@ -481,6 +481,7 @@ manifest = {
     "source_commit": os.environ["RELEASE_SOURCE_COMMIT"],
     "registry": os.environ["HARBOR_HOST"],
     "signing_key_sha256": os.environ["SIGNING_KEY_SHA256"],
+    "cosign": COSIGN_TOOLCHAIN,
     "services": services,
     "image_ids": image_ids,
 }

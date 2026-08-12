@@ -24,6 +24,12 @@ from typing import Any, Callable, Iterator
 
 SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"
 RELEASE_JOURNAL_SCHEMA = "drycontroller.release-journal.v1"
+COSIGN_VERSION = "v3.1.3"
+COSIGN_LINUX_AMD64_SHA256 = "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+COSIGN_TOOLCHAIN = {
+    "version": COSIGN_VERSION,
+    "linux_amd64_sha256": COSIGN_LINUX_AMD64_SHA256,
+}
 SOFTWARE_RELEASE_SERVICES = (
     "ai-ctrl-optimizer",
     "ai-softsensor",
@@ -47,6 +53,7 @@ _MANIFEST_FIELDS = {
     "source_commit",
     "registry",
     "signing_key_sha256",
+    "cosign",
     "services",
     "image_ids",
 }
@@ -177,6 +184,8 @@ def validate_manifest(manifest: object) -> dict[str, Any]:
         raise ReleaseError("manifest registry must be one host with optional port")
     if not _DIGEST.fullmatch(_text(manifest, "signing_key_sha256")):
         raise ReleaseError("manifest signing_key_sha256 must be a sha256 digest")
+    if manifest.get("cosign") != COSIGN_TOOLCHAIN:
+        raise ReleaseError("manifest cosign toolchain is not approved")
 
     services = manifest.get("services")
     if not isinstance(services, dict) or set(services) != set(SOFTWARE_RELEASE_SERVICES):
@@ -420,6 +429,20 @@ class ReleaseEngine:
     def initialize_active(self, seed: object) -> dict[str, Any]:
         with self._transaction_lock():
             return self._initialize_active(seed)
+
+    def initialize_active_with_lock_fd(self, seed: object, descriptor: int) -> dict[str, Any]:
+        try:
+            opened = os.fstat(descriptor)
+            expected = self.paths.lock.stat()
+        except OSError as exc:
+            raise ReleaseError("inherited release lock descriptor invalid") from exc
+        if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+            raise ReleaseError("inherited release lock descriptor does not match release lock")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ReleaseError("inherited release lock descriptor is not held") from exc
+        return self._initialize_active(seed)
 
     def _initialize_active(self, seed: object) -> dict[str, Any]:
         if not isinstance(seed, dict) or set(seed) != {

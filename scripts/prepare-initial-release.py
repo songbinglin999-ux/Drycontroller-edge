@@ -39,6 +39,14 @@ def _read_limited(path: Path, maximum: int, label: str) -> bytes:
     return path.read_bytes()
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _atomic_write(path: Path, data: bytes, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
@@ -46,12 +54,23 @@ def _atomic_write(path: Path, data: bytes, mode: int) -> None:
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
+            os.fchmod(handle.fileno(), mode)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        path.chmod(mode)
+        _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _durable_replace(temporary: Path, target: Path) -> None:
+    descriptor = os.open(temporary, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(temporary, target)
+    _fsync_directory(target.parent)
 
 
 def _validate_linux_amd64_elf(binary: bytes) -> None:
@@ -84,7 +103,7 @@ def _normalize_release(payload: object, source_commit: str) -> dict[str, object]
     if not signature_bytes or len(signature_bytes) > 16 * 1024:
         raise ValueError("software release manifest signature size invalid")
 
-    if "status" in payload and payload.get("status") != "completed":
+    if payload.get("status") != "completed":
         raise ValueError("software release is not completed")
     for outer, inner in (
         ("id", "release_id"),
@@ -123,6 +142,9 @@ def prepare(
         raise ValueError("cosign public key does not match SoftwareRelease")
     target_cosign = _read_limited(cosign_linux_amd64, 256 * 1024 * 1024, "cosign target binary")
     _validate_linux_amd64_elf(target_cosign)
+    actual_cosign_digest = "sha256:" + hashlib.sha256(target_cosign).hexdigest()
+    if manifest["cosign"]["linux_amd64_sha256"] != actual_cosign_digest:
+        raise ValueError("Linux amd64 cosign binary does not match SoftwareRelease")
 
     signature_bytes = base64.b64decode(str(seed["manifest_signature"]), validate=True)
     with tempfile.TemporaryDirectory(prefix="drycontroller-initial-release-") as temporary:
@@ -169,7 +191,7 @@ def prepare(
         subprocess.run(["docker", "image", "save", "-o", str(temporary_bundle), *references], check=True)
         if not temporary_bundle.is_file() or temporary_bundle.stat().st_size == 0:
             raise ValueError("Docker produced an empty initial image bundle")
-        os.replace(temporary_bundle, image_bundle)
+        _durable_replace(temporary_bundle, image_bundle)
     finally:
         temporary_bundle.unlink(missing_ok=True)
 

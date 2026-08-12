@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
+import multiprocessing
 import os
-import select
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,7 @@ if str(HELPER_DIR) not in sys.path:
 from release_engine import (  # noqa: E402
     RELEASE_JOURNAL_SCHEMA,
     SOFTWARE_RELEASE_SERVICES,
+    COSIGN_TOOLCHAIN,
     ReleaseEngine,
     ReleaseError,
     ReleasePaths,
@@ -43,6 +45,7 @@ def _manifest(release_id: str, sequence: int, version: str) -> dict:
         "source_commit": f"{sequence:x}" * 40,
         "registry": REGISTRY,
         "signing_key_sha256": PUBKEY_DIGEST,
+        "cosign": COSIGN_TOOLCHAIN,
         "services": {
             service: f"{REGISTRY}/drycontroller/{service}@sha256:{sequence * 100 + index:064x}"
             for index, service in enumerate(SOFTWARE_RELEASE_SERVICES, start=1)
@@ -252,6 +255,22 @@ def test_initial_release_never_overwrites_a_different_existing_journal(tmp_path)
     assert paths.journal.read_bytes() == before
 
 
+def test_initializer_can_reuse_the_factory_transaction_lock_descriptor(tmp_path):
+    paths = _paths(tmp_path)
+    manifest = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    paths.lock.touch(mode=0o600)
+    descriptor = os.open(paths.lock, os.O_WRONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = ReleaseEngine(paths=paths, command_runner=FakeRuntime().run).initialize_active_with_lock_fd(
+            _initial_seed(manifest), descriptor
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result["status"] == "initialized"
+
+
 def _engine(paths: ReleasePaths, runtime: FakeRuntime, policies: dict[str, dict]) -> ReleaseEngine:
     return ReleaseEngine(
         paths=paths,
@@ -284,6 +303,13 @@ def test_manifest_rejects_partial_or_mutable_service_sets():
     with pytest.raises(ReleaseError, match="complete image ID set"):
         validate_manifest(missing_image_id)
 
+    unapproved_cosign = {
+        **manifest,
+        "cosign": {"version": "v3.1.2", "linux_amd64_sha256": "sha256:" + "0" * 64},
+    }
+    with pytest.raises(ReleaseError, match="not approved"):
+        validate_manifest(unapproved_cosign)
+
 
 def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
     paths = _paths(tmp_path)
@@ -305,80 +331,213 @@ def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
     assert paths.lock.is_file()
 
 
-def test_active_start_waits_for_the_same_cross_process_transaction_lock(tmp_path):
+def _install_nonblocking_lock_probe(blocked, acquired_without_waiting) -> None:
+    import release_engine
+
+    original_flock = release_engine.fcntl.flock
+    probed = False
+
+    def probe(descriptor, operation):
+        nonlocal probed
+        if not probed and operation & release_engine.fcntl.LOCK_EX:
+            probed = True
+            try:
+                original_flock(descriptor, operation | release_engine.fcntl.LOCK_NB)
+            except BlockingIOError:
+                blocked.set()
+                return original_flock(descriptor, operation)
+            acquired_without_waiting.set()
+            return None
+        return original_flock(descriptor, operation)
+
+    release_engine.fcntl.flock = probe
+
+
+def test_apply_and_active_start_use_a_two_process_transaction_barrier(tmp_path):
+    paths = _paths(tmp_path)
+    release_a = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    release_b = _manifest("22222222-2222-4222-8222-222222222222", 2, "1.1.0")
+    _seed(paths, release_a)
+    operation_id = "00000000000000020000000000000007"
+    _request(paths, operation_id)
+    policies = {operation_id: _policy(operation_id, release_b)}
+    context = multiprocessing.get_context("fork")
+    apply_entered = context.Event()
+    release_apply = context.Event()
+    start_blocked = context.Event()
+    start_acquired_early = context.Event()
+    start_side_effect = context.Event()
+    results = context.Queue()
+
+    def run_apply() -> None:
+        runtime = FakeRuntime()
+        blocked_once = False
+
+        def command(args: list[str]) -> str:
+            nonlocal blocked_once
+            result = runtime.run(args)
+            if not blocked_once and args[:2] == ["/usr/bin/docker", "compose"] and "up" in args:
+                blocked_once = True
+                apply_entered.set()
+                if not release_apply.wait(10):
+                    raise RuntimeError("apply barrier was not released")
+            return result
+
+        result = ReleaseEngine(
+            paths=paths,
+            command_runner=command,
+            policy_fetcher=lambda requested: policies[requested],
+            health_checker=runtime.health,
+        ).apply()
+        results.put(("apply", result["status"]))
+
+    def run_start() -> None:
+        _install_nonblocking_lock_probe(start_blocked, start_acquired_early)
+        runtime = FakeRuntime()
+
+        def command(args: list[str]) -> str:
+            start_side_effect.set()
+            return runtime.run(args)
+
+        result = ReleaseEngine(paths=paths, command_runner=command, health_checker=runtime.health).start_active()
+        results.put(("start", result["status"]))
+
+    apply_process = context.Process(target=run_apply)
+    start_process = context.Process(target=run_start)
+    try:
+        apply_process.start()
+        assert apply_entered.wait(5)
+        start_process.start()
+        assert start_blocked.wait(5)
+        assert not start_acquired_early.is_set()
+        assert not start_side_effect.is_set()
+        release_apply.set()
+        apply_process.join(10)
+        start_process.join(10)
+        assert apply_process.exitcode == 0
+        assert start_process.exitcode == 0
+        assert {results.get(timeout=1), results.get(timeout=1)} == {("apply", "succeeded"), ("start", "running")}
+    finally:
+        release_apply.set()
+        for process in (apply_process, start_process):
+            if process.is_alive():
+                process.terminate()
+            process.join(5)
+
+
+def test_initializer_and_apply_use_a_two_process_transaction_barrier(tmp_path):
+    paths = _paths(tmp_path)
+    release_a = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    release_b = _manifest("22222222-2222-4222-8222-222222222222", 2, "1.1.0")
+    operation_id = "00000000000000020000000000000007"
+    _request(paths, operation_id)
+    policies = {operation_id: _policy(operation_id, release_b)}
+    context = multiprocessing.get_context("fork")
+    initializer_entered = context.Event()
+    release_initializer = context.Event()
+    apply_blocked = context.Event()
+    apply_acquired_early = context.Event()
+    apply_side_effect = context.Event()
+    results = context.Queue()
+
+    def run_initializer() -> None:
+        runtime = FakeRuntime()
+        blocked_once = False
+
+        def command(args: list[str]) -> str:
+            nonlocal blocked_once
+            if not blocked_once and args[0] == "/usr/local/bin/cosign":
+                blocked_once = True
+                initializer_entered.set()
+                if not release_initializer.wait(10):
+                    raise RuntimeError("initializer barrier was not released")
+            return runtime.run(args)
+
+        result = ReleaseEngine(paths=paths, command_runner=command).initialize_active(_initial_seed(release_a))
+        results.put(("initialize", result["status"]))
+
+    def run_apply() -> None:
+        _install_nonblocking_lock_probe(apply_blocked, apply_acquired_early)
+        runtime = FakeRuntime()
+
+        def command(args: list[str]) -> str:
+            apply_side_effect.set()
+            return runtime.run(args)
+
+        result = ReleaseEngine(
+            paths=paths,
+            command_runner=command,
+            policy_fetcher=lambda requested: policies[requested],
+            health_checker=runtime.health,
+        ).apply()
+        results.put(("apply", result["status"]))
+
+    initializer_process = context.Process(target=run_initializer)
+    apply_process = context.Process(target=run_apply)
+    try:
+        initializer_process.start()
+        assert initializer_entered.wait(5)
+        apply_process.start()
+        assert apply_blocked.wait(5)
+        assert not apply_acquired_early.is_set()
+        assert not apply_side_effect.is_set()
+        release_initializer.set()
+        initializer_process.join(10)
+        apply_process.join(10)
+        assert initializer_process.exitcode == 0
+        assert apply_process.exitcode == 0
+        assert {results.get(timeout=1), results.get(timeout=1)} == {
+            ("initialize", "initialized"),
+            ("apply", "succeeded"),
+        }
+    finally:
+        release_initializer.set()
+        for process in (initializer_process, apply_process):
+            if process.is_alive():
+                process.terminate()
+            process.join(5)
+
+
+def test_killing_the_lock_holder_releases_the_kernel_lock(tmp_path):
     paths = _paths(tmp_path)
     active = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
     _seed(paths, active)
-    engine = ReleaseEngine(paths=paths, command_runner=FakeRuntime().run)
-    child = None
-    program = r"""
-import json
-import sys
-from pathlib import Path
+    context = multiprocessing.get_context("fork")
+    holder_ready = context.Event()
+    start_blocked = context.Event()
+    start_acquired_early = context.Event()
+    results = context.Queue()
 
-sys.path.insert(0, sys.argv[1])
-from release_engine import ReleaseEngine, ReleasePaths, SOFTWARE_RELEASE_SERVICES
+    def hold_lock() -> None:
+        with ReleaseEngine(paths=paths, command_runner=FakeRuntime().run)._transaction_lock():
+            holder_ready.set()
+            context.Event().wait()
 
-root = Path(sys.argv[2])
-paths = ReleasePaths(
-    lock=root / "release.lock",
-    journal=root / "release-journal.json",
-    request=root / "request.json",
-    releases=root / "releases",
-    project=root / "project",
-    compose=root / "project" / "docker-compose.yml",
-    cosign_pubkey=root / "cosign.pub",
-    registry_status=root / "registry-status.json",
-    device=root / "device.json",
-    cloud_config=root / "tailnet.env",
-)
+    def run_start() -> None:
+        _install_nonblocking_lock_probe(start_blocked, start_acquired_early)
+        runtime = FakeRuntime()
+        result = ReleaseEngine(paths=paths, command_runner=runtime.run, health_checker=runtime.health).start_active()
+        results.put(result["status"])
 
-def run(args):
-    print("command", flush=True)
-    if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
-        return args[-1]
-    if args[0] == "/usr/local/bin/cosign":
-        return "verified"
-    if args[:2] == ["/usr/bin/docker", "compose"]:
-        if "ps" in args:
-            manifest = json.loads(paths.journal.read_text(encoding="utf-8"))["active"]["manifest"]
-            return json.dumps([
-                {
-                    "Service": service,
-                    "Image": manifest["image_ids"][service],
-                    "State": "exited" if service == "mosquitto-init" else "running",
-                    "ExitCode": 0,
-                    "Health": "" if service == "mosquitto-init" else "healthy",
-                }
-                for service in SOFTWARE_RELEASE_SERVICES
-            ])
-        return "ok"
-    raise RuntimeError(args)
-
-print("starting", flush=True)
-result = ReleaseEngine(paths=paths, command_runner=run, health_checker=lambda _url: None).start_active()
-print(json.dumps(result, sort_keys=True), flush=True)
-"""
+    holder = context.Process(target=hold_lock)
+    start_process = context.Process(target=run_start)
     try:
-        with engine._transaction_lock():
-            child = subprocess.Popen(
-                [sys.executable, "-c", program, str(HELPER_DIR), str(tmp_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            assert child.stdout is not None
-            assert child.stdout.readline().strip() == "starting"
-            ready, _, _ = select.select([child.stdout], [], [], 0.2)
-            assert ready == []
-        stdout, stderr = child.communicate(timeout=5)
-        assert child.returncode == 0, stderr
-        assert "command" in stdout
-        assert '"status": "running"' in stdout
+        holder.start()
+        assert holder_ready.wait(5)
+        start_process.start()
+        assert start_blocked.wait(5)
+        assert not start_acquired_early.is_set()
+        holder.terminate()
+        holder.join(5)
+        start_process.join(10)
+        assert holder.exitcode is not None and holder.exitcode != 0
+        assert start_process.exitcode == 0
+        assert results.get(timeout=1) == "running"
     finally:
-        if child is not None and child.poll() is None:
-            child.terminate()
-            child.wait(timeout=5)
+        for process in (holder, start_process):
+            if process.is_alive():
+                process.terminate()
+            process.join(5)
 
 
 def test_manifest_verification_uses_real_cosign_signature(tmp_path):

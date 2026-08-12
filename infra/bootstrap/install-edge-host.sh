@@ -18,6 +18,9 @@ INITIAL_RELEASE=""
 INITIAL_IMAGE_BUNDLE=""
 COSIGN_PUBLIC_KEY=""
 COSIGN_BIN=""
+RELEASE_LOCK="/var/lib/drycontroller-ota/release.lock"
+COSIGN_APPROVED_VERSION="v3.1.3"
+COSIGN_APPROVED_LINUX_AMD64_SHA256="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
 
 usage() {
   cat <<'EOF'
@@ -104,12 +107,12 @@ done
 
 [ "$(id -u)" -eq 0 ] || die "run as root, for example: sudo bash infra/bootstrap/install-edge-host.sh"
 [ "$(uname -s)" = "Linux" ] || die "Linux is required"
+[ "$(uname -m)" = "x86_64" ] || die "Linux amd64 is required"
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 [ -f "$INITIAL_RELEASE" ] || die "signed initial SoftwareRelease seed is required"
 [ -f "$INITIAL_IMAGE_BUNDLE" ] || die "complete initial release image bundle is required"
 [ -f "$COSIGN_PUBLIC_KEY" ] || die "initial release cosign public key is required"
-[ -f "$COSIGN_BIN" ] || die "Linux amd64 cosign binary is required"
-[ ! -e /var/lib/drycontroller-ota/release-journal.json ] || die "factory installer refuses an existing release journal"
+[ -x "$COSIGN_BIN" ] || die "executable Linux amd64 cosign binary is required"
 
 if [ -z "$REPO_SOURCE" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -128,6 +131,39 @@ fi
 [ -f "${REPO_SOURCE}/infra/ota-helper/ota-apply" ] || die "fixed OTA apply program missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/initialize-active-release" ] || die "active release initializer missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/start-active-release" ] || die "active release starter missing in source"
+[ -f "${REPO_SOURCE}/infra/bootstrap/release-transaction-lock.sh" ] || die "factory release lock helper missing in source"
+
+command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required"
+# shellcheck source=infra/bootstrap/release-transaction-lock.sh
+source "${REPO_SOURCE}/infra/bootstrap/release-transaction-lock.sh"
+factory_release_lock_acquire "$RELEASE_LOCK" || die "another release or factory install transaction is active"
+[ ! -e /var/lib/drycontroller-ota/release-journal.json ] || die "factory installer refuses an existing release journal"
+
+actual_cosign_sha256="$(sha256sum "$COSIGN_BIN" | awk '{print $1}')"
+[ "$actual_cosign_sha256" = "$COSIGN_APPROVED_LINUX_AMD64_SHA256" ] || die "Linux amd64 cosign binary checksum is not approved"
+cosign_version_output="$("$COSIGN_BIN" version 2>/dev/null)" || die "Linux amd64 cosign binary cannot report its version"
+grep -Eq "GitVersion:[[:space:]]+${COSIGN_APPROVED_VERSION//./\\.}([[:space:]]|$)" <<<"$cosign_version_output" \
+  || die "Linux amd64 cosign version is not approved"
+grep -Eq 'Platform:[[:space:]]+linux/amd64([[:space:]]|$)' <<<"$cosign_version_output" \
+  || die "cosign binary platform is not linux/amd64"
+PYTHONPATH="${REPO_SOURCE}/infra/ota-helper" python3 - \
+  "$INITIAL_RELEASE" "$COSIGN_APPROVED_VERSION" "sha256:${COSIGN_APPROVED_LINUX_AMD64_SHA256}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from release_engine import canonical_manifest_digest, validate_manifest
+
+seed = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(seed, dict) or set(seed) != {"manifest", "manifest_digest", "manifest_signature"}:
+    raise SystemExit("initial release seed fields invalid")
+manifest = validate_manifest(seed["manifest"])
+if seed["manifest_digest"] != canonical_manifest_digest(manifest):
+    raise SystemExit("initial release seed digest mismatch")
+if manifest["cosign"] != {"version": sys.argv[2], "linux_amd64_sha256": sys.argv[3]}:
+    raise SystemExit("initial release cosign toolchain is not approved")
+PY
 
 install_base_packages_apt() {
   export DEBIAN_FRONTEND=noninteractive
@@ -295,11 +331,14 @@ install_host_services() {
   install -o root -g root -m 0644 "$COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub
   install -o root -g root -m 0755 "$COSIGN_BIN" /usr/local/bin/cosign
 
+  installed_cosign_sha256="$(sha256sum /usr/local/bin/cosign | awk '{print $1}')"
+  [ "$installed_cosign_sha256" = "$COSIGN_APPROVED_LINUX_AMD64_SHA256" ] \
+    || die "installed cosign checksum changed"
   /usr/local/bin/cosign version >/dev/null
   log "loading complete initial release image bundle"
   docker image load -i "$INITIAL_IMAGE_BUNDLE"
   log "verifying and initializing signed active release"
-  /usr/libexec/drycontroller/initialize-active-release "$INITIAL_RELEASE"
+  /usr/libexec/drycontroller/initialize-active-release --lock-fd 9 "$INITIAL_RELEASE"
 
   systemctl daemon-reload
   systemctl enable drycontroller-tailnet.service drycontroller-activation.service

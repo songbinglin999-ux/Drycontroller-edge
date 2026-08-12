@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HELPER_DIR = ROOT / "infra/ota-helper"
 
 
 def test_release_builder_is_complete_and_completion_is_last():
@@ -123,6 +124,11 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
     output_path = tmp_path / "changed.txt"
 
     def resolve(previous_commit: str, current_commit: str) -> list[str]:
+        import sys
+
+        sys.path.insert(0, str(HELPER_DIR))
+        from release_engine import COSIGN_TOOLCHAIN
+
         manifest = {
             "schema": "drycontroller.software-release.v1",
             "release_id": "11111111-1111-4111-8111-111111111111",
@@ -131,6 +137,7 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
             "source_commit": previous_commit,
             "registry": "registry.example.com",
             "signing_key_sha256": "sha256:" + "a" * 64,
+            "cosign": COSIGN_TOOLCHAIN,
             "services": {
                 service: f"registry.example.com/drycontroller/{service}@sha256:{index:064x}"
                 for index, service in enumerate(services, start=1)

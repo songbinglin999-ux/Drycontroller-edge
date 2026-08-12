@@ -1,10 +1,12 @@
 import subprocess
+import time
 from pathlib import Path
 
 
 TAILNET_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-tailnet.sh"
 ACTIVATION_SCRIPT = Path(__file__).resolve().parents[1] / "drycontroller-host-activation.sh"
 INSTALL_SCRIPT = Path(__file__).resolve().parents[1] / "install-edge-host.sh"
+RELEASE_LOCK_SCRIPT = Path(__file__).resolve().parents[1] / "release-transaction-lock.sh"
 AUTOINSTALL_DIR = Path(__file__).resolve().parents[2] / "autoinstall"
 USB_MAKER = Path(__file__).resolve().parents[3] / "tools" / "os-installer-usb-maker" / "os_installer_usb_maker.py"
 PREFLIGHT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "preflight.sh"
@@ -160,7 +162,7 @@ def test_autoinstall_media_carries_and_loads_first_boot_image_bundle():
     assert '--initial-release "$INITIAL_RELEASE"' in post_install
     assert '--image-bundle "$IMAGE_BUNDLE"' in post_install
     assert 'docker image load -i "$INITIAL_IMAGE_BUNDLE"' in installer
-    assert 'initialize-active-release "$INITIAL_RELEASE"' in installer
+    assert 'initialize-active-release --lock-fd 9 "$INITIAL_RELEASE"' in installer
     assert 'rm -f "$IMAGE_BUNDLE" "$INITIAL_RELEASE" "$COSIGN_PUBLIC_KEY" "$COSIGN_BIN"' in post_install
     assert "/cdrom/software-release-seed.json" in user_data
     assert "/cdrom/cosign.pub" in user_data
@@ -250,6 +252,11 @@ def test_os_installer_release_and_write_wrappers_are_fail_closed():
 
     assert "manifest schema mismatch" in writer
     assert "ISO sha256 mismatch" in writer
+    assert '"version": "v3.1.3"' in writer
+    assert "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71" in writer
+    assert "release manifest cosign version is not approved" in writer
+    assert "embedded cosign binary checksum mismatch" in writer
+    assert "embedded SoftwareRelease cosign toolchain is not approved" in writer
     assert "maker.verify_final_iso" in writer
     assert "diskutil list external physical" in writer
     assert '"diskutil", "list", "-plist", "external", "physical"' in writer
@@ -391,14 +398,73 @@ def test_install_edge_host_installs_root_owned_ota_helper():
     assert 'install -o root -g root -m 0755 "$COSIGN_BIN" /usr/local/bin/cosign' in text
     assert "install -o root -g root -m 0755" in text
     assert "systemctl enable --now drycontroller-ota-helper.service" in text
-    assert text.index('initialize-active-release "$INITIAL_RELEASE"') < text.index(
+    assert text.index('initialize-active-release --lock-fd 9 "$INITIAL_RELEASE"') < text.index(
         "systemctl enable --now drycontroller-ota-helper.service"
     )
     assert "factory installer refuses an existing release journal" in text
+    assert 'factory_release_lock_acquire "$RELEASE_LOCK"' in text
+    assert 'initialize-active-release --lock-fd 9 "$INITIAL_RELEASE"' in text
+    assert "COSIGN_APPROVED_VERSION=\"v3.1.3\"" in text
+    assert "COSIGN_APPROVED_LINUX_AMD64_SHA256=\"4629c757" in text
     assert text.index("factory installer refuses an existing release journal") < text.index(
         'log "preparing Drycontroller edge host"'
     )
     assert '"ota_helper_service": "drycontroller-ota-helper.service"' in text
+
+
+def test_factory_release_lock_rejects_a_second_installer_until_the_first_exits(tmp_path: Path):
+    lock = tmp_path / "release.lock"
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    holder = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            'source "$1"; factory_release_lock_acquire "$2"; : > "$3"; while [ ! -e "$4" ]; do sleep 0.01; done',
+            "factory-lock-holder",
+            str(RELEASE_LOCK_SCRIPT),
+            str(lock),
+            str(ready),
+            str(release),
+        ]
+    )
+    try:
+        for _ in range(500):
+            if ready.exists():
+                break
+            if holder.poll() is not None:
+                raise AssertionError(f"lock holder exited early: {holder.returncode}")
+            time.sleep(0.01)
+        assert ready.exists()
+
+        contender = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; factory_release_lock_acquire "$2"',
+                "factory-lock-contender",
+                str(RELEASE_LOCK_SCRIPT),
+                str(lock),
+            ],
+            check=False,
+        )
+        assert contender.returncode == 75
+    finally:
+        release.touch()
+        holder.wait(timeout=5)
+
+    after = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; factory_release_lock_acquire "$2"',
+            "factory-lock-after",
+            str(RELEASE_LOCK_SCRIPT),
+            str(lock),
+        ],
+        check=False,
+    )
+    assert after.returncode == 0
 
 
 def test_activation_starts_only_the_signed_active_release_without_registry_pull():

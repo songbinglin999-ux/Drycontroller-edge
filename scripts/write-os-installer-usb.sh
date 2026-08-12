@@ -141,6 +141,18 @@ if expected_sha != actual_sha:
 if not manifest.get("release", {}).get("include_images"):
     raise SystemExit("release manifest must include bundled Docker images")
 
+approved_cosign = {
+    "version": "v3.1.3",
+    "linux_amd64_sha256": "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
+}
+initial_release = manifest.get("artifacts", {}).get("initial_release")
+if not isinstance(initial_release, dict):
+    raise SystemExit("release manifest initial SoftwareRelease identity missing")
+if initial_release.get("cosign_version") != approved_cosign["version"]:
+    raise SystemExit("release manifest cosign version is not approved")
+if "sha256:" + str(initial_release.get("cosign_linux_amd64_sha256")) != approved_cosign["linux_amd64_sha256"]:
+    raise SystemExit("release manifest cosign checksum is not approved")
+
 spec = importlib.util.spec_from_file_location(
     "maker",
     "tools/os-installer-usb-maker/os_installer_usb_maker.py",
@@ -148,6 +160,29 @@ spec = importlib.util.spec_from_file_location(
 maker = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(maker)
+
+seed_bytes = maker.extract_iso_file(iso, "software-release-seed.json")
+public_key_bytes = maker.extract_iso_file(iso, "cosign.pub")
+cosign_bytes = maker.extract_iso_file(iso, "cosign-linux-amd64")
+if hashlib.sha256(seed_bytes).hexdigest() != initial_release.get("seed_sha256"):
+    raise SystemExit("embedded SoftwareRelease seed checksum mismatch")
+if hashlib.sha256(public_key_bytes).hexdigest() != initial_release.get("cosign_public_key_sha256"):
+    raise SystemExit("embedded cosign public key checksum mismatch")
+if hashlib.sha256(cosign_bytes).hexdigest() != initial_release.get("cosign_linux_amd64_sha256"):
+    raise SystemExit("embedded cosign binary checksum mismatch")
+seed = json.loads(seed_bytes)
+seed_manifest = seed.get("manifest") if isinstance(seed, dict) else None
+if not isinstance(seed_manifest, dict) or seed_manifest.get("cosign") != approved_cosign:
+    raise SystemExit("embedded SoftwareRelease cosign toolchain is not approved")
+canonical_seed_manifest = json.dumps(
+    seed_manifest,
+    ensure_ascii=False,
+    sort_keys=True,
+    separators=(",", ":"),
+).encode("utf-8")
+seed_manifest_digest = "sha256:" + hashlib.sha256(canonical_seed_manifest).hexdigest()
+if seed.get("manifest_digest") != seed_manifest_digest or initial_release.get("manifest_digest") != seed_manifest_digest:
+    raise SystemExit("embedded SoftwareRelease manifest digest mismatch")
 
 
 class App:
