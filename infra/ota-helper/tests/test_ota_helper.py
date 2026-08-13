@@ -104,6 +104,23 @@ def test_failure_is_terminal_and_log_uses_one_fixed_file(tmp_path):
     assert set(state["operations"]) == {operation_id}
 
 
+def test_failed_high_operation_id_does_not_poison_replay_watermark(tmp_path):
+    controller = _controller(tmp_path, "exit 17")
+    forged_operation_id = "ffffffffffffffff0000000000000001"
+    legitimate_operation_id = "00000000000000010000000000000001"
+
+    controller.start(forged_operation_id)
+    assert _wait_terminal(controller, forged_operation_id)["status"] == "failed"
+
+    controller.apply_program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    controller.apply_program.chmod(0o755)
+    _, created = controller.start(legitimate_operation_id)
+
+    assert created is True
+    assert _wait_terminal(controller, legitimate_operation_id)["status"] == "succeeded"
+    assert controller._read_state()["high_watermark"] == 1
+
+
 def test_interrupted_operation_is_failed_on_restart(tmp_path):
     controller = _controller(tmp_path, "exit 0")
     state = controller._read_state()
@@ -139,7 +156,6 @@ def test_interrupted_operation_with_durable_request_resumes_fixed_program(tmp_pa
         "log_start": 0,
         "log_available": True,
     }
-    state["high_watermark"] = helper.operation_sequence(operation_id)
     controller._write_state(state)
     controller._write_request(operation_id)
 
@@ -153,6 +169,7 @@ def test_interrupted_operation_with_durable_request_resumes_fixed_program(tmp_pa
     )
 
     assert _wait_terminal(resumed, operation_id)["status"] == "succeeded"
+    assert resumed._read_state()["high_watermark"] == helper.operation_sequence(operation_id)
     assert marker.read_text(encoding="utf-8") == "x"
 
 

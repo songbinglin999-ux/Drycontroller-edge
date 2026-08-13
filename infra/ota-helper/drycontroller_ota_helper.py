@@ -301,7 +301,6 @@ class OperationController:
                 "log_end": None,
             }
             state["operations"][operation_id] = operation
-            state["high_watermark"] = sequence
             self._write_state(state)
             self._active_operation_id = operation_id
             worker = threading.Thread(target=self._run, args=(operation_id,), daemon=True)
@@ -350,9 +349,20 @@ class OperationController:
             "available": True,
         }
 
-    def _patch(self, operation_id: str, *, prune: bool = False, **values: Any) -> None:
+    def _patch(
+        self,
+        operation_id: str,
+        *,
+        prune: bool = False,
+        advance_high_watermark: bool = False,
+        **values: Any,
+    ) -> None:
         state = self._read_state()
         state["operations"][operation_id].update(values)
+        if advance_high_watermark:
+            state["high_watermark"] = max(
+                state["high_watermark"], operation_sequence(operation_id)
+            )
         if prune:
             self._prune_state(state)
         self._write_state(state)
@@ -491,6 +501,7 @@ class OperationController:
             self._patch(
                 operation_id,
                 prune=True,
+                advance_high_watermark=succeeded,
                 status="succeeded" if succeeded else "failed",
                 step="done",
                 finished_at=utc_now(),
