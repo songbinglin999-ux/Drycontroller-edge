@@ -7,9 +7,11 @@ import datetime as dt
 import json
 import os
 import re
+import signal
 import socketserver
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -20,10 +22,26 @@ SOCKET_PATH = Path("/run/drycontroller-host-release/runner.sock")
 STATE_PATH = Path("/var/lib/drycontroller-host/operations.json")
 REQUEST_PATH = Path("/var/lib/drycontroller-host/request.json")
 LOG_PATH = Path("/var/log/drycontroller-host/operations.log")
+COORDINATOR_JOURNAL_PATH = Path("/var/lib/drycontroller-host/coordinator-journal.json")
 APPLY_PROGRAM = Path("/usr/libexec/drycontroller/host-release-apply")
 OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")
 TERMINAL = {"succeeded", "failed"}
 MAX_OPERATIONS = 256
+APPLY_TIMEOUT_SECONDS = 60 * 60
+PROCESS_TERMINATE_GRACE_SECONDS = 10
+COORDINATOR_JOURNAL_SCHEMA = "drycontroller.host-release-coordinator.v1"
+COORDINATOR_JOURNAL_FIELDS = {
+    "schema",
+    "phase",
+    "operation_id",
+    "last_operation_id",
+    "high_watermark",
+    "active",
+    "candidate",
+    "previous",
+    "effect",
+    "error",
+}
 FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -66,11 +84,13 @@ class OperationController:
         *,
         state_path: Path = STATE_PATH,
         request_path: Path = REQUEST_PATH,
+        coordinator_journal_path: Path = COORDINATOR_JOURNAL_PATH,
         log_path: Path = LOG_PATH,
         apply_program: Path = APPLY_PROGRAM,
     ) -> None:
         self.state_path = state_path
         self.request_path = request_path
+        self.coordinator_journal_path = coordinator_journal_path
         self.log_path = log_path
         self.apply_program = apply_program
         self._lock = threading.Lock()
@@ -129,6 +149,19 @@ class OperationController:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, InvalidOperation):
             return None
 
+    def _coordinator_journal_idle(self) -> bool:
+        try:
+            journal = json.loads(self.coordinator_journal_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return (
+            isinstance(journal, dict)
+            and set(journal) == COORDINATOR_JOURNAL_FIELDS
+            and journal.get("schema") == COORDINATOR_JOURNAL_SCHEMA
+            and journal.get("phase") == "idle"
+            and isinstance(journal.get("high_watermark"), int)
+        )
+
     def _recover(self) -> None:
         state = self._read_state()
         running = [item for item in state["operations"].values() if item.get("status") in {"queued", "running"}]
@@ -155,7 +188,25 @@ class OperationController:
             state = self._read_state()
             existing = state["operations"].get(operation_id)
             if existing is not None:
+                if (
+                    existing.get("status") == "queued"
+                    and existing.get("error") == "host_release_recovery_pending"
+                    and self._active is None
+                    and self._request_id() == operation_id
+                ):
+                    self._active = operation_id
+                    threading.Thread(target=self._run, args=(operation_id,), daemon=True).start()
                 return dict(existing)
+            persisted_active = next(
+                (
+                    item.get("operation_id")
+                    for item in state["operations"].values()
+                    if item.get("status") in {"queued", "running"}
+                ),
+                None,
+            )
+            if isinstance(persisted_active, str):
+                raise OperationBusy(persisted_active)
             if self._active is not None:
                 raise OperationBusy(self._active)
             operation = {
@@ -184,6 +235,49 @@ class OperationController:
             threading.Thread(target=self._run, args=(operation_id,), daemon=True).start()
             return dict(operation)
 
+    @staticmethod
+    def _process_group_exists(group_id: int) -> bool:
+        try:
+            os.killpg(group_id, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+        group_id = process.pid
+        try:
+            os.killpg(group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            if process.poll() is None:
+                process.wait()
+            return
+        except OSError:
+            process.terminate()
+
+        deadline = time.monotonic() + PROCESS_TERMINATE_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=min(0.05, max(0.01, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
+            if not OperationController._process_group_exists(group_id):
+                return
+            time.sleep(0.01)
+
+        try:
+            os.killpg(group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            if process.poll() is None:
+                process.kill()
+        if process.poll() is None:
+            process.wait()
+
     def _run(self, operation_id: str) -> None:
         state = self._read_state()
         operation = state["operations"][operation_id]
@@ -192,26 +286,52 @@ class OperationController:
         exit_code = 1
         error = None
         with self.log_path.open("ab", buffering=0) as log:
-            try:
-                completed = subprocess.run(
-                    [str(self.apply_program)],
-                    cwd="/",
-                    env=FIXED_ENV,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                    timeout=60 * 60,
-                )
-                exit_code = completed.returncode
-                if exit_code != 0:
-                    error = "host_release_apply_failed"
-            except subprocess.TimeoutExpired:
-                error = "host_release_apply_timeout"
-            except OSError:
-                error = "host_release_apply_unavailable"
+            for attempt in range(2):
+                error = None
+                process: subprocess.Popen[bytes] | None = None
+                try:
+                    process = subprocess.Popen(
+                        [str(self.apply_program)],
+                        cwd="/",
+                        env=FIXED_ENV,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        close_fds=True,
+                        start_new_session=True,
+                    )
+                    exit_code = process.wait(timeout=APPLY_TIMEOUT_SECONDS)
+                    if exit_code != 0:
+                        error = "host_release_apply_failed"
+                        self._terminate_process(process)
+                except subprocess.TimeoutExpired:
+                    error = "host_release_apply_timeout"
+                    assert process is not None
+                    self._terminate_process(process)
+                    exit_code = process.returncode if process.returncode is not None else 1
+                except OSError:
+                    error = "host_release_apply_unavailable"
+                if self._coordinator_journal_idle():
+                    break
+                if attempt == 0:
+                    log.write(b"[host-release-runner] unfinished transaction detected; starting recovery\n")
             log.flush()
             os.fsync(log.fileno())
+        if not self._coordinator_journal_idle():
+            with self._lock:
+                state = self._read_state()
+                operation = state["operations"][operation_id]
+                operation.update(
+                    {
+                        "status": "queued",
+                        "finished_at": None,
+                        "exit_code": None,
+                        "error": "host_release_recovery_pending",
+                    }
+                )
+                self._write_state(state)
+                self._active = None
+            return
         with self._lock:
             state = self._read_state()
             operation = state["operations"][operation_id]
