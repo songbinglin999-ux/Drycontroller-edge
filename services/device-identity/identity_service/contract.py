@@ -4,6 +4,7 @@ import base64
 import binascii
 import datetime as dt
 import json
+import uuid
 
 
 CHALLENGE_SCHEMA = "drycontroller.device-identity-challenge.v1"
@@ -75,7 +76,7 @@ def decode_nonce(value: str) -> bytes:
     return raw
 
 
-def canonical_challenge(challenge: dict[str, str]) -> bytes:
+def canonical_challenge(challenge: dict[str, object]) -> bytes:
     required = {
         "schema",
         "domain",
@@ -88,19 +89,63 @@ def canonical_challenge(challenge: dict[str, str]) -> bytes:
         "runtime_credential_hash",
         "expires_at",
     }
+    if challenge.get("operation") == "host_release":
+        required |= {
+            "tenant_id",
+            "line_id",
+            "node_name",
+            "node_id",
+            "job_id",
+            "job_item_id",
+            "host_release_id",
+            "host_manifest_digest",
+            "software_release_id",
+            "software_manifest_digest",
+        }
     if set(challenge) != required:
         raise IdentityChallengeError("identity challenge fields do not match the fixed schema")
     if challenge["schema"] != CHALLENGE_SCHEMA or challenge["domain"] != CHALLENGE_DOMAIN:
         raise IdentityChallengeError("identity challenge domain or schema mismatch")
     if challenge["operation"] not in {"activate", "rotate", "re_register", "host_release"}:
         raise IdentityChallengeError("invalid identity operation")
-    decode_nonce(challenge["challenge_nonce"])
+    nonce = challenge["challenge_nonce"]
+    if not isinstance(nonce, str):
+        raise IdentityChallengeError("invalid challenge nonce")
+    decode_nonce(nonce)
     for field in ("identity_fingerprint", "runtime_credential_hash"):
         value = challenge[field]
-        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
             raise IdentityChallengeError(f"invalid {field}")
+    if challenge["operation"] == "host_release":
+        for field in ("tenant_id", "line_id", "node_name"):
+            if not isinstance(challenge[field], str) or not challenge[field]:
+                raise IdentityChallengeError("invalid host release challenge binding")
+        for field in ("node_id", "job_id", "job_item_id"):
+            value = challenge[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise IdentityChallengeError("invalid host release challenge binding")
+        for field in ("host_release_id", "software_release_id"):
+            value = challenge[field]
+            try:
+                canonical = str(uuid.UUID(value)) if isinstance(value, str) else None
+            except ValueError as exc:
+                raise IdentityChallengeError("invalid host release challenge binding") from exc
+            if canonical != value:
+                raise IdentityChallengeError("invalid host release challenge binding")
+        for field in ("host_manifest_digest", "software_manifest_digest"):
+            value = challenge[field]
+            if (
+                not isinstance(value, str)
+                or len(value) != 71
+                or not value.startswith("sha256:")
+                or any(char not in "0123456789abcdef" for char in value[7:])
+            ):
+                raise IdentityChallengeError("invalid host release challenge binding")
     payload = dict(challenge)
-    payload["expires_at"] = format_timestamp(parse_timestamp(challenge["expires_at"]))
+    expires_at = challenge["expires_at"]
+    if not isinstance(expires_at, str):
+        raise IdentityChallengeError("invalid challenge expiry")
+    payload["expires_at"] = format_timestamp(parse_timestamp(expires_at))
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 

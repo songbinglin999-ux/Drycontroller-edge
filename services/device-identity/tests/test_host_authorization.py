@@ -17,7 +17,7 @@ class FakeBackend:
         return base64.b64encode(b"signature").decode()
 
 
-def _challenge(now: dt.datetime) -> dict[str, str]:
+def _challenge(now: dt.datetime) -> dict[str, object]:
     return {
         "schema": "drycontroller.device-identity-challenge.v1",
         "domain": "drycontroller.device-identity",
@@ -28,6 +28,16 @@ def _challenge(now: dt.datetime) -> dict[str, str]:
         "request_id": "0" * 32,
         "identity_fingerprint": "1" * 64,
         "runtime_credential_hash": "2" * 64,
+        "tenant_id": "tenant-a",
+        "line_id": "line-a",
+        "node_name": "edge-001",
+        "node_id": 7,
+        "job_id": 9,
+        "job_item_id": 11,
+        "host_release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "host_manifest_digest": "sha256:" + "3" * 64,
+        "software_release_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "software_manifest_digest": "sha256:" + "4" * 64,
         "expires_at": (now + dt.timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
     }
 
@@ -37,6 +47,9 @@ def _active() -> dict[str, str]:
         "device_id": "EDGE-001",
         "identity_fingerprint": "1" * 64,
         "runtime_credential_hash": "2" * 64,
+        "tenant_id": "tenant-a",
+        "line_id": "line-a",
+        "node_name": "edge-001",
     }
 
 

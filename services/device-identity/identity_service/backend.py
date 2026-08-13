@@ -18,7 +18,7 @@ from .contract import canonical_challenge
 class DeviceIdentityBackend(Protocol):
     def public_key(self) -> str: ...
 
-    def sign_identity_challenge(self, challenge: dict[str, str]) -> str: ...
+    def sign_identity_challenge(self, challenge: dict[str, object]) -> str: ...
 
     def health(self) -> dict[str, str]: ...
 
@@ -36,7 +36,7 @@ class FileTestIdentityBackend:
     def fingerprint(self) -> str:
         return hashlib.sha256(self._public_der()).hexdigest()
 
-    def sign_identity_challenge(self, challenge: dict[str, str]) -> str:
+    def sign_identity_challenge(self, challenge: dict[str, object]) -> str:
         canonical = canonical_challenge(challenge)
         signature = self._private_key.sign(canonical, ec.ECDSA(hashes.SHA256()))
         return base64.b64encode(signature).decode("ascii")
@@ -95,7 +95,7 @@ class TpmIdentityBackend:
         public_der, _signature = self._use_primary()
         return hashlib.sha256(public_der).hexdigest()
 
-    def sign_identity_challenge(self, challenge: dict[str, str]) -> str:
+    def sign_identity_challenge(self, challenge: dict[str, object]) -> str:
         canonical = canonical_challenge(challenge)
         public_der, signature = self._use_primary(canonical)
         if signature is None:  # pragma: no cover - guarded by _use_primary

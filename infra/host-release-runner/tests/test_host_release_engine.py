@@ -191,7 +191,7 @@ def _paths(tmp_path: Path) -> HostReleasePaths:
         encoding="utf-8",
     )
     (tmp_path / "state" / "runtime.env").write_text("TEST=1\n", encoding="utf-8")
-    return HostReleasePaths(
+    paths = HostReleasePaths(
         lock=tmp_path / "state" / "release.lock",
         journal=tmp_path / "state" / "coordinator.json",
         request=tmp_path / "state" / "request.json",
@@ -208,6 +208,8 @@ def _paths(tmp_path: Path) -> HostReleasePaths:
         cloud_config=tmp_path / "state" / "cloud.env",
         runtime_env=tmp_path / "state" / "runtime.env",
     )
+    paths.compatibility_link.symlink_to(paths.current_link)
+    return paths
 
 
 def _install_slot(
@@ -273,6 +275,8 @@ class FakeCommands:
         self.fail_candidate_start = fail_candidate_start
         self.commands: list[list[str]] = []
         self.compose_volumes: list[dict] = []
+        self.compose_project_volumes: dict[str, dict] = {}
+        self.compose_configs: dict[str, dict] = {}
         self.runtime_id_overrides: dict[str, str] = {}
 
     def __call__(self, args: list[str], cwd: Path | None, _input: bytes | None) -> str:
@@ -301,16 +305,19 @@ class FakeCommands:
                 if line.strip().startswith("image: ")
             )
             image = json.loads(image_line)
-            return json.dumps(
-                {
-                    "services": {
-                        "edge-api": {
-                            "image": image,
-                            "volumes": self.compose_volumes,
-                        }
+            config = {
+                "services": {
+                    "edge-api": {
+                        "image": image,
+                        "volumes": self.compose_volumes,
                     }
                 }
-            )
+            }
+            if self.compose_project_volumes:
+                config["volumes"] = self.compose_project_volumes
+            if self.compose_configs:
+                config["configs"] = self.compose_configs
+            return json.dumps(config)
         if args and args[0].endswith("start-active-release") and self.fail_candidate_start:
             if cwd == Path(self.host_path):
                 self.fail_candidate_start = False
@@ -470,6 +477,19 @@ def test_manifest_rejects_runner_self_update_and_special_modes(tmp_path):
     with pytest.raises(HostReleaseError, match="may not contain trust roots"):
         validate_host_manifest(trust_root)
 
+    for path in ("configs/a//b", "configs/a/b/", "configs//a"):
+        noncanonical = {**host2, "files": [dict(item) for item in host2["files"]]}
+        noncanonical["files"].append(
+            {
+                "path": path,
+                "sha256": "sha256:" + "0" * 64,
+                "size": 1,
+                "mode": 0o644,
+            }
+        )
+        with pytest.raises(HostReleaseError, match="path invalid"):
+            validate_host_manifest(noncanonical)
+
     assert paths.releases.is_dir()
 
 
@@ -573,6 +593,57 @@ def test_compose_bind_policy_keeps_signed_files_and_trust_roots_read_only(tmp_pa
     ]
     with pytest.raises(HostReleaseError, match="must be mounted read-only"):
         engine._validate_compose(host1, software1, rootfs)
+
+
+def test_compose_rejects_named_volume_driver_bind_and_external_files(tmp_path):
+    paths, host1, software1, _host2, _software2, command = _fixture(tmp_path)
+    engine = HostReleaseEngine(paths=paths, command_runner=command, policy_fetcher=lambda _value: {})
+    rootfs = paths.releases / host1["release_id"]
+
+    command.compose_volumes = [
+        {"type": "volume", "source": "postgres_data", "target": "/var/lib/postgresql/data"}
+    ]
+    command.compose_project_volumes = {
+        "postgres_data": {"name": "drycontroller-edge_postgres_data"}
+    }
+    engine._validate_compose(host1, software1, rootfs)
+
+    command.compose_volumes = [
+        {"type": "volume", "source": "host-root", "target": "/host", "read_only": False}
+    ]
+    command.compose_project_volumes = {
+        "host-root": {
+            "name": "host-root",
+            "driver_opts": {"type": "none", "o": "bind", "device": "/"},
+        }
+    }
+    with pytest.raises(HostReleaseError, match="named volume forbidden"):
+        engine._validate_compose(host1, software1, rootfs)
+
+    command.compose_volumes = []
+    command.compose_project_volumes = {}
+    command.compose_configs = {"host-secret": {"file": "/var/lib/drycontroller/device.json"}}
+    with pytest.raises(HostReleaseError, match="external file injection forbidden"):
+        engine._validate_compose(host1, software1, rootfs)
+
+
+def test_compatibility_link_is_static_indirection_outside_mutable_parent(tmp_path):
+    paths, _host1, _software1, host2, software2, command = _fixture(tmp_path)
+    engine = HostReleaseEngine(
+        paths=paths,
+        command_runner=command,
+        policy_fetcher=lambda value: _policy(value, host2, software2),
+    )
+
+    engine.apply()
+
+    assert paths.compatibility_link.readlink() == paths.current_link
+    assert paths.compatibility_link.resolve() == paths.releases / host2["release_id"]
+
+    paths.compatibility_link.unlink()
+    paths.compatibility_link.symlink_to(paths.releases / host2["release_id"])
+    with pytest.raises(HostReleaseError, match="immutable indirection"):
+        engine._atomic_links(paths.releases / host2["release_id"])
 
 
 def test_candidate_health_failure_rolls_back_without_registry_access(tmp_path):

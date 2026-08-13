@@ -519,7 +519,7 @@ def test_signed_host_topology_change_and_failed_candidate_roll_back_offline(tmp_
             "host_path": str(first_root),
         }
         paths.current_link.symlink_to(first_root)
-        paths.compatibility_link.symlink_to(first_root)
+        paths.compatibility_link.symlink_to(paths.current_link)
         paths.host_active.write_bytes(
             canonical_json_bytes(
                 {

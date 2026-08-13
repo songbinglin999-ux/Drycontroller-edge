@@ -125,7 +125,11 @@ def test_host_release_runner_is_outside_its_signed_update_surface():
 
     assert "ExecStart=/usr/libexec/drycontroller/host-release-runner" in unit
     assert "ReadWritePaths=" in unit
-    assert "/usr/libexec" not in next(line for line in unit.splitlines() if line.startswith("ReadWritePaths="))
+    writable = next(line for line in unit.splitlines() if line.startswith("ReadWritePaths="))
+    assert "/usr/libexec" not in writable
+    assert "/opt/drycontroller-host" in writable
+    assert "/opt/Drycontroller-edge" not in writable
+    assert "compatibility_target != self.paths.current_link" in engine
     assert '"infra/host-release-runner/' not in builder
     assert '"configs/keys/"' in engine
     assert '"--lock-fd"' in engine

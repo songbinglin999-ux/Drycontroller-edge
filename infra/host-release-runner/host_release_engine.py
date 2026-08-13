@@ -132,6 +132,7 @@ _ALLOWED_PREFIXES = (
 )
 _FORBIDDEN_COMPOSE_KEYS = {
     "build",
+    "configs",
     "privileged",
     "pid",
     "ipc",
@@ -140,6 +141,9 @@ _FORBIDDEN_COMPOSE_KEYS = {
     "cap_add",
     "cap_drop",
     "security_opt",
+    "secrets",
+    "use_api_socket",
+    "volumes_from",
 }
 _MAX_JSON_BYTES = 1024 * 1024
 _MAX_LAYER_BYTES = 256 * 1024 * 1024
@@ -244,7 +248,11 @@ def _safe_path(value: object) -> str:
     if not isinstance(value, str) or not value or len(value) > 240 or "\\" in value:
         raise HostReleaseError("host release file path invalid")
     path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if (
+        path.is_absolute()
+        or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
         raise HostReleaseError("host release file path invalid")
     if value == "docker-compose.yml":
         return value
@@ -622,6 +630,16 @@ class HostReleaseEngine:
                 "request_id": policy.get("request_id"),
                 "identity_fingerprint": policy.get("identity_fingerprint"),
                 "runtime_credential_hash": policy.get("runtime_credential_hash"),
+                "tenant_id": policy.get("tenant_id"),
+                "line_id": policy.get("line_id"),
+                "node_name": policy.get("node_name"),
+                "node_id": policy.get("node_id"),
+                "job_id": policy.get("job_id"),
+                "job_item_id": policy.get("job_item_id"),
+                "host_release_id": policy.get("host_release_id"),
+                "host_manifest_digest": policy.get("host_manifest_digest"),
+                "software_release_id": policy.get("software_release_id"),
+                "software_manifest_digest": policy.get("software_manifest_digest"),
                 "expires_at": policy.get("challenge_expires_at"),
             }
             signature = self._identity_authorizer(challenge)
@@ -920,6 +938,20 @@ class HostReleaseEngine:
         expected_inventory = host["topology"]["service_inventory"]
         if not isinstance(services, dict) or sorted(services) != expected_inventory:
             raise HostReleaseError("HostRelease Compose service inventory mismatch")
+        if config.get("configs") or config.get("secrets"):
+            raise HostReleaseError("HostRelease Compose external file injection forbidden")
+        project_volumes = config.get("volumes") or {}
+        if not isinstance(project_volumes, dict):
+            raise HostReleaseError("HostRelease Compose named volumes invalid")
+        for name, definition in project_volumes.items():
+            if (
+                not isinstance(name, str)
+                or not _SERVICE_NAME.fullmatch(name)
+                or not isinstance(definition, dict)
+                or set(definition) != {"name"}
+                or definition.get("name") != f"drycontroller-edge_{name}"
+            ):
+                raise HostReleaseError("HostRelease Compose named volume forbidden")
         for service, definition in services.items():
             if not isinstance(definition, dict) or any(key in definition for key in _FORBIDDEN_COMPOSE_KEYS):
                 raise HostReleaseError("HostRelease Compose contains forbidden privilege")
@@ -927,8 +959,17 @@ class HostReleaseEngine:
             if image != _local_image_reference(service, software["image_ids"][service]):
                 raise HostReleaseError("HostRelease Compose image is not the paired local image")
             for volume in definition.get("volumes") or []:
-                source = volume.get("source") if isinstance(volume, dict) else None
-                read_only = volume.get("read_only") is True if isinstance(volume, dict) else False
+                if not isinstance(volume, dict):
+                    raise HostReleaseError("HostRelease Compose volume invalid")
+                volume_type = volume.get("type")
+                source = volume.get("source")
+                read_only = volume.get("read_only") is True
+                if volume_type == "volume":
+                    if source not in project_volumes:
+                        raise HostReleaseError("HostRelease Compose named volume forbidden")
+                    continue
+                if volume_type != "bind" or not isinstance(source, str) or not source.startswith("/"):
+                    raise HostReleaseError("HostRelease Compose volume type forbidden")
                 if isinstance(source, str) and (source == "/var/run/docker.sock" or source.startswith("/run/docker")):
                     raise HostReleaseError("HostRelease Compose may not mount the Docker socket")
                 if isinstance(source, str) and source.startswith("/"):
@@ -1243,17 +1284,23 @@ class HostReleaseEngine:
     def _atomic_links(self, target: Path) -> None:
         if not target.is_dir():
             raise HostReleaseError("HostRelease link target unavailable")
-        for link in (self.paths.current_link, self.paths.compatibility_link):
-            link.parent.mkdir(parents=True, exist_ok=True)
-            temporary = link.with_name(f".{link.name}.{os.getpid()}.tmp")
-            temporary.unlink(missing_ok=True)
-            temporary.symlink_to(target)
-            os.replace(temporary, link)
-            directory_fd = os.open(link.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+        try:
+            compatibility_target = self.paths.compatibility_link.readlink()
+        except OSError as exc:
+            raise HostReleaseError("HostRelease compatibility link unavailable") from exc
+        if compatibility_target != self.paths.current_link:
+            raise HostReleaseError("HostRelease compatibility link is not the immutable indirection")
+        link = self.paths.current_link
+        link.parent.mkdir(parents=True, exist_ok=True)
+        temporary = link.with_name(f".{link.name}.{os.getpid()}.tmp")
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(target)
+        os.replace(temporary, link)
+        directory_fd = os.open(link.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     def _software_seed(self, slot: dict[str, Any]) -> dict[str, Any]:
         return {

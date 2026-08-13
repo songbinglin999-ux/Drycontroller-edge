@@ -151,6 +151,14 @@ def test_host_release_workflow_is_manual_serial_and_runs_the_fixed_builder_after
     assert "actions/setup-python@v5" not in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
+    resolve_step = workflow.split("      - name: Resolve release identity", 1)[1].split(
+        "      - name: Prime pinned Trivy database", 1
+    )[0]
+    run_script = resolve_step.split("        run: |", 1)[1]
+    assert "INPUT_HOST_VERSION: ${{ inputs.host_version }}" in resolve_step
+    assert "INPUT_SOFTWARE_VERSION: ${{ inputs.software_version }}" in resolve_step
+    assert "${{ inputs." not in run_script
+    assert '[[ "${GITHUB_REF}" == "refs/heads/master" ]]' in run_script
 
 
 def test_host_release_workflow_scopes_both_signing_keys_to_the_builder_step():

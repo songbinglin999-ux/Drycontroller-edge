@@ -32,6 +32,9 @@ def sign_host_release_challenge(
         raise HostAuthorizationError("host release identity operation is invalid")
     if (
         challenge.get("device_id") != active.get("device_id")
+        or challenge.get("tenant_id") != active.get("tenant_id")
+        or challenge.get("line_id") != active.get("line_id")
+        or challenge.get("node_name") != active.get("node_name")
         or challenge.get("identity_fingerprint") != active.get("identity_fingerprint")
         or challenge.get("runtime_credential_hash") != active.get("runtime_credential_hash")
     ):
@@ -77,15 +80,15 @@ def sign_from_environment(challenge: object) -> dict[str, str]:
 def main() -> int:
     raw = sys.stdin.buffer.read(_MAX_INPUT_BYTES + 1)
     if len(raw) > _MAX_INPUT_BYTES:
-        print("host release identity challenge is too large", file=sys.stderr)
+        sys.stderr.write("host release identity challenge is too large\n")
         return 1
     try:
         challenge = json.loads(raw)
         result = sign_from_environment(challenge)
     except (UnicodeDecodeError, json.JSONDecodeError, HostAuthorizationError, RuntimeError) as exc:
-        print(f"host release identity authorization failed: {exc}", file=sys.stderr)
+        sys.stderr.write(f"host release identity authorization failed: {exc}\n")
         return 1
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
     return 0
 
 
