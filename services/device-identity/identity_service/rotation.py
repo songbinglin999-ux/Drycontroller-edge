@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
+import secrets
+import time
 from pathlib import Path
 from typing import Any, Protocol
 import urllib.error
@@ -14,6 +17,10 @@ from .state import IdentityStateError, IdentityStateStore
 
 class RotationError(RuntimeError):
     pass
+
+
+_ALARM_SCHEMA = "drycontroller.device-identity-alarm.v1"
+_ALARM_EVENT_FIELDS = {"schema", "event_id", "episode_id", "state", "device_id", "occurred_at"}
 
 
 class IdentityCloudClient(Protocol):
@@ -144,7 +151,7 @@ def rotate_from_environment() -> dict[str, str]:
         raise RotationError("credential rotation must run as root")
     private_dir = Path(os.getenv("DRYCONTROLLER_IDENTITY_PRIVATE_DIR", "/var/lib/drycontroller-identity"))
     backend = load_backend(
-        mode=os.getenv("DRYCONTROLLER_IDENTITY_BACKEND", ""),
+        mode="tpm",
         key_path=private_dir / "identity-key.pem",
     )
     store = IdentityStateStore(
@@ -162,12 +169,75 @@ def rotate_from_environment() -> dict[str, str]:
     ).rotate()
 
 
+def _record_rotation_alarm(*, state: str) -> None:
+    device_path = Path(os.getenv("DRYCONTROLLER_DEVICE_IDENTITY_PATH", "/var/lib/drycontroller/device.json"))
+    try:
+        active = json.loads(device_path.read_text(encoding="utf-8"))
+        device_id = active["device_id"]
+        if not isinstance(device_id, str) or not device_id:
+            return
+        alarm_dir = device_path.with_name("device-identity-alarms")
+        alarm_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(alarm_dir, 0o700)
+        parent_fd = os.open(alarm_dir.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        prior = None
+        for prior_path in sorted(alarm_dir.glob("*.json"), reverse=True):
+            candidate = json.loads(prior_path.read_text(encoding="utf-8"))
+            if isinstance(candidate, dict) and set(candidate) == _ALARM_EVENT_FIELDS:
+                prior = candidate
+                break
+        if state == "resolved" and (not prior or prior.get("state") != "firing"):
+            return
+        episode_id = (
+            str(prior["episode_id"])
+            if prior and prior.get("state") == "firing"
+            else secrets.token_hex(16)
+        )
+        event_id = secrets.token_hex(16)
+        payload = {
+            "schema": _ALARM_SCHEMA,
+            "event_id": event_id,
+            "episode_id": episode_id,
+            "state": state,
+            "device_id": device_id,
+            "occurred_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        event_path = alarm_dir / f"{time.time_ns():020d}-{event_id}.json"
+        temporary = alarm_dir / f".{event_path.name}.{os.getpid()}.tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, event_path)
+            os.chmod(event_path, 0o600)
+            directory_fd = os.open(alarm_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            event_path.unlink(missing_ok=True)
+            raise
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return
+
+
 def main() -> int:
     try:
         result = rotate_from_environment()
     except (RotationError, IdentityStateError, RuntimeError) as exc:
+        _record_rotation_alarm(state="firing")
         print(f"device credential rotation failed: {exc}")
         return 1
+    _record_rotation_alarm(state="resolved")
     print(f"device credential active: device_id={result['device_id']} expires={result['credential_expires_at']}")
     return 0
 

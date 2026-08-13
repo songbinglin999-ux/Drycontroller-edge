@@ -59,6 +59,11 @@ class ChallengeRequest(StrictModel):
     expires_at: str
 
 
+class ReRegistrationRequest(StrictModel):
+    request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    device_id: str = Field(pattern=r"^EDGE-[A-F0-9]{12}$")
+
+
 class ConfirmationRequest(StrictModel):
     activation_receipt: dict[str, str]
     activation_receipt_signature: str = Field(min_length=1, max_length=256)
@@ -126,7 +131,30 @@ def create_app(
         ):
             raise HTTPException(status_code=409, detail="factory_identity_request_mismatch")
         try:
-            candidate = store.create_candidate(request_id=payload.request_id, device_id=payload.device_id)
+            candidate = store.create_candidate(
+                request_id=payload.request_id,
+                device_id=payload.device_id,
+                operation="activate",
+            )
+        except IdentityStateError as exc:
+            raise HTTPException(status_code=409, detail="factory_identity_candidate_conflict") from exc
+        return {
+            "request_id": payload.request_id,
+            "device_id": payload.device_id,
+            "runtime_credential_hash": candidate["runtime_credential_hash"],
+        }
+
+    @app.post("/factory-identity/re-registration")
+    async def create_re_registration_candidate(payload: ReRegistrationRequest):
+        state = _unregistered_state()
+        if payload.request_id != state.get("request_id"):
+            raise HTTPException(status_code=409, detail="factory_identity_request_mismatch")
+        try:
+            candidate = store.create_candidate(
+                request_id=payload.request_id,
+                device_id=payload.device_id,
+                operation="re_register",
+            )
         except IdentityStateError as exc:
             raise HTTPException(status_code=409, detail="factory_identity_candidate_conflict") from exc
         return {
@@ -145,7 +173,7 @@ def create_app(
             not candidate
             or challenge["schema"] != CHALLENGE_SCHEMA
             or challenge["domain"] != CHALLENGE_DOMAIN
-            or challenge["operation"] != "activate"
+            or challenge["operation"] != candidate.get("operation", "activate")
             or challenge["request_id"] != candidate.get("request_id")
             or challenge["device_id"] != candidate.get("device_id")
             or challenge["runtime_credential_hash"] != candidate.get("runtime_credential_hash")

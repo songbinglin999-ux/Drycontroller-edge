@@ -19,6 +19,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/drycontroller-identity /var/lib/drycontroller
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
 RestrictAddressFamilies=AF_INET AF_UNIX
 
 [Install]

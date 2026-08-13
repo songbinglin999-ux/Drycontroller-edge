@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,128 @@ class _FakeScalarResult:
         return self._rows
 
 
+@pytest.mark.asyncio
+async def test_identity_rotation_alarm_queue_replays_failure_then_recovery_after_drainer_restart(
+    tmp_path, monkeypatch
+):
+    from app.models import AlarmEvent, CloudSyncOutbox
+    from app.services import outbox_drain as drain_module
+
+    alarm_dir = tmp_path / "device-identity-alarms"
+    alarm_dir.mkdir()
+    episode_id = "ef" * 16
+    events = (
+        ("00000000000000000001", "ab" * 16, "firing", "2026-08-13T01:02:03Z"),
+        ("00000000000000000002", "cd" * 16, "resolved", "2026-08-13T01:03:03Z"),
+    )
+    for sequence, event_id, state, occurred_at in events:
+        (alarm_dir / f"{sequence}-{event_id}.json").write_text(
+            json.dumps(
+                {
+                    "schema": "drycontroller.device-identity-alarm.v1",
+                    "event_id": event_id,
+                    "episode_id": episode_id,
+                    "state": state,
+                    "device_id": "EDGE-ABCDEF123456",
+                    "occurred_at": occurred_at,
+                }
+            ),
+            encoding="utf-8",
+        )
+    partial = alarm_dir / ".00000000000000000003-partial.tmp"
+    partial.write_text("{", encoding="utf-8")
+    monkeypatch.setattr(drain_module.settings, "DEVICE_IDENTITY_PATH", str(tmp_path / "device.json"))
+    session = _FakeSession(rows=[])
+
+    drainer = drain_module.CloudSyncOutboxDrainer()
+    processed = await drainer._ingest_identity_alarm_marker(session)
+
+    assert len(session.added) == 3
+    assert isinstance(session.added[0], AlarmEvent)
+    assert isinstance(session.added[1], CloudSyncOutbox)
+    assert isinstance(session.added[2], CloudSyncOutbox)
+    event = session.added[0]
+    assert event.id == 9
+    assert event.state == "resolved"
+    assert event.severity == "critical"
+    assert event.device_id == "EDGE-ABCDEF123456"
+    assert session.added[1].kind == "alarm"
+    assert session.added[1].payload["edge_alarm_id"] == 9
+    assert session.added[1].payload["state"] == "firing"
+    assert session.added[2].payload["state"] == "resolved"
+    assert event.meta["event_ids"] == ["ab" * 16, "cd" * 16]
+    drainer._compact_identity_alarm_queue(processed)
+    assert partial.exists()
+    assert [path.name for path in alarm_dir.glob("*.json")] == [
+        f"00000000000000000002-{'cd' * 16}.json"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_identity_rotation_alarm_queue_is_idempotent(tmp_path, monkeypatch):
+    from app.models import AlarmEvent, CloudSyncOutbox
+    from app.services import outbox_drain as drain_module
+
+    raised = dt.datetime(2026, 8, 13, 1, 0, tzinfo=dt.timezone.utc)
+    existing = AlarmEvent(
+        device_id="EDGE-ABCDEF123456",
+        node_id="EDGE-ABCDEF123456",
+        severity="critical",
+        source_service="device-identity",
+        alarm_key="device.identity.credential_rotation",
+        message="Device credential rotation failed",
+        state="firing",
+        raised_at=raised,
+        first_seen_at=raised,
+        last_seen_at=raised,
+        occurrence_count=1,
+        meta={"episode_id": "ef" * 16, "event_ids": ["ab" * 16]},
+    )
+    existing.id = 77
+    existing.resolved_at = None
+    alarm_dir = tmp_path / "device-identity-alarms"
+    alarm_dir.mkdir()
+    monkeypatch.setattr(drain_module.settings, "DEVICE_IDENTITY_PATH", str(tmp_path / "device.json"))
+    session = _FakeSession(rows=[existing])
+    drainer = drain_module.CloudSyncOutboxDrainer()
+
+    (alarm_dir / f"00000000000000000001-{'ab' * 16}.json").write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.device-identity-alarm.v1",
+                "event_id": "ab" * 16,
+                "episode_id": "ef" * 16,
+                "state": "firing",
+                "device_id": "EDGE-ABCDEF123456",
+                "occurred_at": "2026-08-13T01:02:03Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    await drainer._ingest_identity_alarm_marker(session)
+    assert session.added == []
+
+    (alarm_dir / f"00000000000000000002-{'cd' * 16}.json").write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.device-identity-alarm.v1",
+                "event_id": "cd" * 16,
+                "episode_id": "ef" * 16,
+                "state": "resolved",
+                "device_id": "EDGE-ABCDEF123456",
+                "occurred_at": "2026-08-13T01:03:03Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    await drainer._ingest_identity_alarm_marker(session)
+    assert existing.state == "resolved"
+    assert existing.resolved_at == dt.datetime(2026, 8, 13, 1, 3, 3, tzinfo=dt.timezone.utc)
+    assert len(session.added) == 1
+    assert isinstance(session.added[0], CloudSyncOutbox)
+    assert session.added[0].payload["state"] == "resolved"
+
+
 class _FakeExecuteResult:
     def __init__(self, rows):
         self._rows = rows
@@ -37,6 +160,7 @@ class _FakeSession:
         self.fail_on_add = fail_on_add
         self.added = []
         self.committed = False
+        self.commit_count = 0
         self.rolled_back = False
         self._bind = SimpleNamespace(dialect=SimpleNamespace(name=dialect))
 
@@ -62,9 +186,36 @@ class _FakeSession:
 
     async def commit(self):
         self.committed = True
+        self.commit_count += 1
 
     async def rollback(self):
         self.rolled_back = True
+
+
+@pytest.mark.asyncio
+async def test_outbox_drain_commits_local_alarm_state_before_cloud_push(tmp_path, monkeypatch):
+    from app.models import CloudSyncOutbox
+    from app.services import outbox_drain as drain_module
+
+    row = CloudSyncOutbox(kind="alarm", payload={"edge_alarm_id": 9}, max_attempts=10)
+    row.id = 1
+    row.status = "pending"
+    row.attempts = 0
+    row.created_at = dt.datetime.now(dt.timezone.utc)
+    row.synced_at = None
+    row.next_retry_at = None
+    session = _FakeSession(rows=[row])
+    monkeypatch.setattr(drain_module.settings, "DEVICE_IDENTITY_PATH", str(tmp_path / "device.json"))
+    drainer = drain_module.CloudSyncOutboxDrainer()
+
+    async def fail_after_cloud_side_effect(_kind, _rows):
+        assert session.commit_count == 1
+        raise RuntimeError("simulated crash after Cloud accepted push")
+
+    monkeypatch.setattr(drainer, "_push", fail_after_cloud_side_effect)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await drainer._drain_locked(session)
+    assert session.commit_count == 1
 
 
 @pytest.mark.asyncio

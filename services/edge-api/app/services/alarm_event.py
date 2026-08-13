@@ -132,7 +132,7 @@ async def write_alarm_event(
         )
 
 
-def _build_outbox_payload(row: AlarmEvent) -> dict[str, Any]:
+def build_alarm_outbox_payload(row: AlarmEvent) -> dict[str, Any]:
     return {
         "edge_alarm_id": row.id,
         "tenant_id": row.tenant_id,
@@ -243,7 +243,7 @@ async def apply_alarm_transition(
                         outbox = CloudSyncOutbox(
                             kind="alarm",
                             max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
-                            payload=_build_outbox_payload(row),
+                            payload=build_alarm_outbox_payload(row),
                         )
                         db.add(outbox)
                         await db.commit()
@@ -267,7 +267,7 @@ async def apply_alarm_transition(
                         CloudSyncOutbox(
                             kind="alarm",
                             max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
-                            payload=_build_outbox_payload(existing_row),
+                            payload=build_alarm_outbox_payload(existing_row),
                         )
                     )
                     await db.commit()
@@ -284,7 +284,7 @@ async def apply_alarm_transition(
                     CloudSyncOutbox(
                         kind="alarm",
                         max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
-                        payload=_build_outbox_payload(existing_row),
+                        payload=build_alarm_outbox_payload(existing_row),
                     )
                 )
                 await db.commit()
@@ -340,7 +340,7 @@ async def ack_alarm_event(
                     CloudSyncOutbox(
                         kind="alarm",
                         max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
-                        payload=_build_outbox_payload(row),
+                        payload=build_alarm_outbox_payload(row),
                     )
                 )
                 await db.commit()

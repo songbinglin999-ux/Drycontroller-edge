@@ -42,10 +42,20 @@ class IdentityStateStore:
     def candidate(self) -> dict[str, Any] | None:
         return self._read_json(self.candidate_path)
 
-    def create_candidate(self, *, request_id: str, device_id: str) -> dict[str, Any]:
+    def create_candidate(
+        self,
+        *,
+        request_id: str,
+        device_id: str,
+        operation: str = "activate",
+    ) -> dict[str, Any]:
         existing = self.candidate()
         if existing:
-            if existing.get("request_id") != request_id or existing.get("device_id") != device_id:
+            if (
+                existing.get("request_id") != request_id
+                or existing.get("device_id") != device_id
+                or existing.get("operation", "activate") != operation
+            ):
                 raise IdentityStateError("a different activation candidate already exists")
             return existing
         credential = secrets.token_urlsafe(48)
@@ -53,6 +63,7 @@ class IdentityStateStore:
             "schema": "drycontroller.runtime-credential-candidate.v1",
             "request_id": request_id,
             "device_id": device_id,
+            "operation": operation,
             "runtime_credential": credential,
             "runtime_credential_hash": hashlib.sha256(credential.encode("utf-8")).hexdigest(),
         }

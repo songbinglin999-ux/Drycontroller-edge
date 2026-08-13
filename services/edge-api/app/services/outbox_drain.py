@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
+import os
+import re
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -13,12 +17,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_identity
-from app.models import CloudSyncOutbox
+from app.models import AlarmEvent, CloudSyncOutbox
+from app.services.alarm_event import build_alarm_outbox_payload
 
 logger = structlog.get_logger(__name__)
 
 # 多 worker 部署时只允许一个 drainer 跑（与 cloud-ops NodeHealthPoller P1-N4 同款 pattern）
 _PG_ADVISORY_LOCK_KEY = 0x4452434F5554424F  # "DRCOUTBO"
+_IDENTITY_ALARM_SCHEMA = "drycontroller.device-identity-alarm.v1"
+_EVENT_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+_IDENTITY_ALARM_FILENAME_RE = re.compile(r"^[0-9]{20}-[a-f0-9]{32}\.json$")
+_IDENTITY_ALARM_FIELDS = {"schema", "event_id", "episode_id", "state", "device_id", "occurred_at"}
 
 
 def _utcnow() -> dt.datetime:
@@ -98,6 +107,11 @@ class CloudSyncOutboxDrainer:
                 await self._release_drain_lock(db)
 
     async def _drain_locked(self, db: AsyncSession) -> int:
+        alarm_paths = await self._ingest_identity_alarm_marker(db)
+        # Alarm transitions must be durable before any Cloud side effect. A
+        # crash after Cloud accepts a push can then retry the same edge_alarm_id.
+        await db.commit()
+        self._compact_identity_alarm_queue(alarm_paths)
         now = _utcnow()
         res = await db.execute(
             select(CloudSyncOutbox)
@@ -123,6 +137,129 @@ class CloudSyncOutboxDrainer:
 
         await db.commit()
         return pushed
+
+    async def _ingest_identity_alarm_marker(self, db: AsyncSession) -> list[Path]:
+        try:
+            alarm_dir = Path(settings.DEVICE_IDENTITY_PATH).with_name("device-identity-alarms")
+            paths = sorted(alarm_dir.glob("*.json"))
+        except OSError:
+            logger.error("device_identity_alarm_queue_unavailable")
+            return []
+        if not paths:
+            return []
+        if len(paths) > 4096:
+            logger.error("device_identity_alarm_queue_too_large", count=len(paths))
+            return []
+        events: list[tuple[dict[str, str], dt.datetime]] = []
+        for path in paths:
+            try:
+                marker = json.loads(path.read_text(encoding="utf-8"))
+                if (
+                    not _IDENTITY_ALARM_FILENAME_RE.fullmatch(path.name)
+                    or not isinstance(marker, dict)
+                    or set(marker) != _IDENTITY_ALARM_FIELDS
+                    or marker.get("schema") != _IDENTITY_ALARM_SCHEMA
+                    or not _EVENT_ID_RE.fullmatch(str(marker.get("event_id") or ""))
+                    or not _EVENT_ID_RE.fullmatch(str(marker.get("episode_id") or ""))
+                    or marker.get("event_id") not in path.name
+                    or marker.get("state") not in {"firing", "resolved"}
+                    or not isinstance(marker.get("device_id"), str)
+                ):
+                    raise ValueError("invalid identity alarm event")
+                occurred_at = dt.datetime.fromisoformat(str(marker["occurred_at"]).replace("Z", "+00:00"))
+                if occurred_at.tzinfo is None:
+                    occurred_at = occurred_at.replace(tzinfo=dt.timezone.utc)
+                events.append((marker, occurred_at.astimezone(dt.timezone.utc)))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                logger.error("device_identity_alarm_event_invalid", file=path.name)
+                return []
+
+        rows_by_device: dict[str, list[AlarmEvent]] = {}
+        for marker, occurred_at in events:
+            device_id = marker["device_id"]
+            if device_id not in rows_by_device:
+                result = await db.execute(
+                    select(AlarmEvent)
+                    .where(
+                        AlarmEvent.alarm_key == "device.identity.credential_rotation",
+                        AlarmEvent.device_id == device_id,
+                    )
+                    .order_by(AlarmEvent.raised_at.asc(), AlarmEvent.id.asc())
+                )
+                rows_by_device[device_id] = list(result.scalars().all())
+            rows = rows_by_device[device_id]
+            if any(marker["event_id"] in (row.meta or {}).get("event_ids", []) for row in rows):
+                continue
+            current = next(
+                (
+                    row
+                    for row in reversed(rows)
+                    if row.resolved_at is None and (row.meta or {}).get("episode_id") == marker["episode_id"]
+                ),
+                None,
+            )
+            if marker["state"] == "firing":
+                if current is None:
+                    current = AlarmEvent(
+                        device_id=device_id,
+                        node_id=device_id,
+                        severity="critical",
+                        source_service="device-identity",
+                        alarm_key="device.identity.credential_rotation",
+                        message="Device credential rotation failed",
+                        state="firing",
+                        raised_at=occurred_at,
+                        first_seen_at=occurred_at,
+                        last_seen_at=occurred_at,
+                        occurrence_count=1,
+                        meta={"episode_id": marker["episode_id"], "event_ids": [marker["event_id"]]},
+                    )
+                    db.add(current)
+                    await db.flush()
+                    rows.append(current)
+                else:
+                    event_ids = list((current.meta or {}).get("event_ids", []))
+                    event_ids.append(marker["event_id"])
+                    current.meta = {"episode_id": marker["episode_id"], "event_ids": event_ids}
+                    current.last_seen_at = occurred_at
+                    current.occurrence_count = int(current.occurrence_count or 0) + 1
+            elif current is not None:
+                event_ids = list((current.meta or {}).get("event_ids", []))
+                event_ids.append(marker["event_id"])
+                current.meta = {"episode_id": marker["episode_id"], "event_ids": event_ids}
+                current.state = "resolved"
+                current.last_seen_at = occurred_at
+                current.resolved_at = occurred_at
+            else:
+                logger.error("device_identity_alarm_resolution_without_firing", event_id=marker["event_id"])
+                return []
+            db.add(
+                CloudSyncOutbox(
+                    kind="alarm",
+                    max_attempts=settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS,
+                    payload=build_alarm_outbox_payload(current),
+                )
+            )
+        return paths
+
+    @staticmethod
+    def _compact_identity_alarm_queue(paths: list[Path]) -> None:
+        if len(paths) <= 1:
+            return
+        for path in paths[:-1]:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.error("device_identity_alarm_event_cleanup_failed", file=path.name)
+                return
+        try:
+            directory_fd = os.open(paths[-1].parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            logger.error("device_identity_alarm_queue_fsync_failed")
 
     async def _push_kind_rows(self, kind: str, rows: list[CloudSyncOutbox]) -> int:
         ok, error = await self._push(kind, rows)

@@ -120,7 +120,7 @@ the six frequency targets through `POST /api/v1/control/manual/set`; `AUTO`
 uses `POST /api/v1/control/auto/dispatch` for a single authorized AUTO tick.
 Per-command confirmation endpoints are not the production AUTO workflow.
 
-## Factory Identity (RB-5A)
+## Factory Identity (RB-5A / RB-5B)
 
 An administrator authorizes one Cloud batch. A root-only factory station then
 connects to exactly one unregistered IPC over the fixed isolated Ethernet tuple
@@ -129,10 +129,31 @@ connects to exactly one unregistered IPC over the fixed isolated Ethernet tuple
 runtime credential hash. The credential plaintext exists only in the Edge
 root-owned state file; Cloud stores only its hash.
 
-RB-5A has an explicit `file-test` key backend for CI/development and the formal
-service unit selects only `tpm`. Because that TPM backend is intentionally not
-implemented until RB-5B, `scripts/build-os-installer-release.sh` and the macOS
-maker fail closed. RB-6 will restore production media with public material only.
+RB-5A has an explicit `file-test` key backend for CI/development. The formal
+service and credential-rotation units select only the RB-5B `tpm` backend and
+allow only `/dev/tpmrm0`. That backend recreates one owner-hierarchy primary on
+every operation from a single fixed ECDSA P-256/SHA-256 template. TPM primary
+derivation therefore returns the same DER SPKI on the same TPM without a
+persistent handle or disk private key. Its temporary context is root-only,
+deleted after use, while the kernel TPM resource manager releases the transient
+object when each short-lived tool exits. It never becomes a portable private key.
+
+A service or IPC restart and an SSD reinstall keep the fingerprint when the TPM
+hierarchy seed is preserved. A TPM clear changes that seed and therefore creates
+a new hardware identity; firmware maintenance that preserves the seed does not.
+Persistent-handle conflicts do not apply because this implementation does not
+claim a persistent handle. Missing/locked/cleared TPM state or signing failure
+blocks registration and credential rotation without selecting `file-test` or
+stopping the already installed active release and local control plane.
+Rotation failure also appends a root-only persistent alarm event; the running
+Edge API commits its local alarm/outbox before Cloud delivery, and a later
+successful rotation appends the matching resolution without overwriting an
+unconsumed failure.
+
+Production media remains fail-closed: RB-6, not RB-5B, restores the OS Installer
+with `tpm2-tools`, public trust material, and the reviewed identity units. No
+device private key, shared bootstrap token, or production file-key fallback is
+permitted in that media.
 
 Tailnet key issuance and product integration are separate RB-7P/RB-7I work and
 are not an identity fallback.
