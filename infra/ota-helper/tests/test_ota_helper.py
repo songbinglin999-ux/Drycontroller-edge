@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -12,10 +13,51 @@ import pytest
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "drycontroller_ota_helper.py"
+if str(MODULE_PATH.parent) not in sys.path:
+    sys.path.insert(0, str(MODULE_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("drycontroller_ota_helper", MODULE_PATH)
 assert SPEC and SPEC.loader
 helper = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(helper)
+
+from release_engine import (  # noqa: E402
+    COSIGN_TOOLCHAIN,
+    RELEASE_JOURNAL_SCHEMA,
+    canonical_manifest_digest,
+)
+
+
+def _idle_journal() -> dict:
+    manifest = {
+        "schema": "drycontroller.software-release.v1",
+        "release_id": "11111111-1111-4111-8111-111111111111",
+        "host_release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "topology_digest": "sha256:" + "1" * 64,
+        "sequence": 1,
+        "version": "1.0.0",
+        "source_commit": "1" * 40,
+        "registry": "registry.example.com",
+        "signing_key_sha256": "sha256:" + "2" * 64,
+        "cosign": COSIGN_TOOLCHAIN,
+        "services": {"edge-api": "registry.example.com/drycontroller/edge-api@sha256:" + "3" * 64},
+        "image_ids": {"edge-api": "sha256:" + "4" * 64},
+    }
+    return {
+        "schema": RELEASE_JOURNAL_SCHEMA,
+        "phase": "idle",
+        "operation_id": None,
+        "last_operation_id": None,
+        "active": {
+            "manifest": manifest,
+            "manifest_digest": canonical_manifest_digest(manifest),
+            "manifest_signature": "signature",
+            "verified_at": "2026-08-13T00:00:00+00:00",
+        },
+        "candidate": None,
+        "previous": None,
+        "effect": None,
+        "error": None,
+    }
 
 
 def _controller(tmp_path: Path, script: str) -> helper.OperationController:
@@ -24,10 +66,13 @@ def _controller(tmp_path: Path, script: str) -> helper.OperationController:
     apply_program.chmod(0o755)
     project_dir = tmp_path / "project"
     project_dir.mkdir()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "release-journal.json").write_text(json.dumps(_idle_journal()), encoding="utf-8")
     return helper.OperationController(
-        state_path=tmp_path / "state" / "operations.json",
-        request_path=tmp_path / "state" / "request.json",
-        release_journal_path=tmp_path / "state" / "release-journal.json",
+        state_path=state_dir / "operations.json",
+        request_path=state_dir / "request.json",
+        release_journal_path=state_dir / "release-journal.json",
         log_path=tmp_path / "log" / "operations.log",
         apply_program=apply_program,
         project_dir=project_dir,
@@ -42,6 +87,16 @@ def _wait_terminal(controller: helper.OperationController, operation_id: str) ->
             return operation
         time.sleep(0.01)
     raise AssertionError("operation did not finish")
+
+
+def _wait_recovery_pending(controller: helper.OperationController, operation_id: str) -> dict:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        operation = controller.get(operation_id)
+        if operation.get("step") == "recovery_pending":
+            return operation
+        time.sleep(0.01)
+    raise AssertionError("operation did not retain recovery-pending state")
 
 
 @pytest.mark.parametrize(
@@ -99,9 +154,140 @@ def test_failure_is_terminal_and_log_uses_one_fixed_file(tmp_path):
     assert finished["exit_code"] == 17
     assert finished["error"] == "fixed_state_machine_failed"
     assert "fixed-output" in logs["data"]
-    assert {path.name for path in (tmp_path / "state").iterdir()} == {"operations.json", "request.json"}
+    assert {path.name for path in (tmp_path / "state").iterdir()} == {
+        "operations.json",
+        "release-journal.json",
+        "request.json",
+    }
     state = json.loads((tmp_path / "state" / "operations.json").read_text(encoding="utf-8"))
     assert set(state["operations"]) == {operation_id}
+
+
+def test_child_sigkill_recovers_non_idle_release_before_terminal_state(tmp_path):
+    marker = tmp_path / "calls"
+    journal = tmp_path / "state" / "release-journal.json"
+    controller = _controller(
+        tmp_path,
+        f"""
+if [ ! -f '{marker}' ]; then
+    printf x > '{marker}'
+    printf '%s' '{{"phase":"candidate_apply_started"}}' > '{journal}'
+    kill -KILL $$
+fi
+printf x >> '{marker}'
+    printf '%s' '{json.dumps(_idle_journal())}' > '{journal}'
+exit 1
+""",
+    )
+    operation_id = "00000000000000010000000000000001"
+
+    controller.start(operation_id)
+    finished = _wait_terminal(controller, operation_id)
+
+    assert finished["status"] == "failed"
+    assert marker.read_text(encoding="utf-8") == "xx"
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "idle"
+
+    duplicate, created = controller.start(operation_id)
+    restarted = helper.OperationController(
+        state_path=controller.state_path,
+        request_path=controller.request_path,
+        release_journal_path=controller.release_journal_path,
+        log_path=controller.log_path,
+        apply_program=controller.apply_program,
+        project_dir=controller.project_dir,
+    ).get(operation_id)
+
+    assert created is False
+    assert duplicate["status"] == restarted["status"] == "failed"
+    assert marker.read_text(encoding="utf-8") == "xx"
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "idle"
+
+
+def test_unfinished_recovery_blocks_new_id_and_same_id_can_resume(tmp_path):
+    journal = tmp_path / "state" / "release-journal.json"
+    controller = _controller(
+        tmp_path,
+        f"printf '%s' '{{\"phase\":\"candidate_apply_started\"}}' > '{journal}'; exit 1",
+    )
+    operation_id = "00000000000000010000000000000001"
+    controller.start(operation_id)
+
+    assert _wait_recovery_pending(controller, operation_id)["status"] == "queued"
+    with pytest.raises(helper.OperationBusy) as raised:
+        controller.start("00000000000000020000000000000001")
+    assert raised.value.operation_id == operation_id
+
+    controller.apply_program.write_text(
+        f"#!/bin/sh\nprintf '%s' '{json.dumps(_idle_journal())}' > '{journal}'\nexit 1\n",
+        encoding="utf-8",
+    )
+    controller.apply_program.chmod(0o755)
+    _, created = controller.start(operation_id)
+
+    assert created is False
+    assert _wait_terminal(controller, operation_id)["status"] == "failed"
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "idle"
+
+
+@pytest.mark.parametrize("journal_body", ["not-json", '{"phase":42}', '{"phase":"idle"}'])
+def test_invalid_release_journal_stays_recovery_pending(tmp_path, journal_body):
+    journal = tmp_path / "state" / "release-journal.json"
+    controller = _controller(tmp_path, f"printf '%s' '{journal_body}' > '{journal}'; exit 1")
+    operation_id = "00000000000000010000000000000001"
+
+    controller.start(operation_id)
+
+    assert _wait_recovery_pending(controller, operation_id)["status"] == "queued"
+    with pytest.raises(helper.OperationBusy):
+        controller.start("00000000000000020000000000000001")
+
+
+@pytest.mark.parametrize("slot_name", ["active", "candidate", "previous"])
+def test_invalid_idle_release_slot_stays_recovery_pending(tmp_path, slot_name):
+    invalid_journal = _idle_journal()
+    invalid_journal[slot_name] = {}
+    journal = tmp_path / "state" / "release-journal.json"
+    controller = _controller(
+        tmp_path,
+        f"printf '%s' '{json.dumps(invalid_journal)}' > '{journal}'; exit 1",
+    )
+    operation_id = "00000000000000010000000000000001"
+
+    controller.start(operation_id)
+
+    assert _wait_recovery_pending(controller, operation_id)["status"] == "queued"
+    with pytest.raises(helper.OperationBusy):
+        controller.start("00000000000000020000000000000001")
+
+
+def test_child_sigkill_terminates_descendant_before_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(helper, "PROCESS_TERMINATE_GRACE_SECONDS", 0.05)
+    marker = tmp_path / "calls"
+    descendant_marker = tmp_path / "descendant"
+    journal = tmp_path / "state" / "release-journal.json"
+    controller = _controller(
+        tmp_path,
+        f"""
+if [ ! -f '{marker}' ]; then
+    printf x > '{marker}'
+    printf '%s' '{{"phase":"candidate_apply_started"}}' > '{journal}'
+    (trap '' TERM; sleep 1; printf x > '{descendant_marker}') &
+    kill -KILL $$
+fi
+sleep 0.1
+test ! -f '{descendant_marker}'
+printf '%s' '{json.dumps(_idle_journal())}' > '{journal}'
+exit 1
+""",
+    )
+    operation_id = "00000000000000010000000000000001"
+
+    controller.start(operation_id)
+
+    assert _wait_terminal(controller, operation_id)["status"] == "failed"
+    time.sleep(1.1)
+    assert not descendant_marker.exists()
 
 
 def test_failed_high_operation_id_does_not_poison_replay_watermark(tmp_path):

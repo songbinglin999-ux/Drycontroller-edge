@@ -12,10 +12,13 @@ import socketserver
 import stat
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from release_engine import ReleaseError, validate_release_journal
 
 
 SOCKET_PATH = Path("/run/drycontroller-ota/helper.sock")
@@ -174,6 +177,14 @@ class OperationController:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, InvalidOperationId):
             return None
 
+    def _release_journal_idle(self) -> bool:
+        try:
+            journal = json.loads(self.release_journal_path.read_text(encoding="utf-8"))
+            journal = validate_release_journal(journal)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ReleaseError):
+            return False
+        return journal["phase"] == "idle"
+
     def _recover_interrupted_operation(self) -> None:
         state = self._read_state()
         interrupted = [
@@ -270,7 +281,26 @@ class OperationController:
             if existing is None:
                 existing = state["tombstones"].get(operation_id)
             if existing is not None:
+                if (
+                    existing.get("status") == "queued"
+                    and existing.get("step") == "recovery_pending"
+                    and self._active_operation_id is None
+                    and self._request_operation_id() == operation_id
+                ):
+                    self._active_operation_id = operation_id
+                    worker = threading.Thread(target=self._run, args=(operation_id,), daemon=True)
+                    worker.start()
                 return dict(existing), False
+            persisted_active = next(
+                (
+                    operation.get("operation_id")
+                    for operation in state["operations"].values()
+                    if operation.get("status") in {"queued", "running"}
+                ),
+                None,
+            )
+            if isinstance(persisted_active, str):
+                raise OperationBusy(persisted_active)
             if self._active_operation_id is not None:
                 raise OperationBusy(self._active_operation_id)
             sequence = operation_sequence(operation_id)
@@ -368,48 +398,79 @@ class OperationController:
         self._write_state(state)
 
     @staticmethod
-    def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    def _process_group_exists(group_id: int) -> bool:
         try:
-            os.killpg(process.pid, signal.SIGTERM)
+            os.killpg(group_id, 0)
         except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+        group_id = process.pid
+        try:
+            os.killpg(group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            if process.poll() is None:
+                process.wait()
             return
         except OSError:
             process.terminate()
-        try:
-            process.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
-            return
-        except subprocess.TimeoutExpired:
-            pass
+
+        deadline = time.monotonic() + PROCESS_TERMINATE_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=min(0.05, max(0.01, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
+            if not OperationController._process_group_exists(group_id):
+                return
+            time.sleep(0.01)
 
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(group_id, signal.SIGKILL)
         except ProcessLookupError:
-            return
+            pass
         except OSError:
-            process.kill()
-        process.wait()
+            if process.poll() is None:
+                process.kill()
+        if process.poll() is None:
+            process.wait()
+
+    @staticmethod
+    def _write_log_bounded(log_handle: Any, data: bytes, log_limit: int) -> None:
+        remaining = max(0, log_limit - log_handle.tell())
+        if remaining:
+            log_handle.write(data[:remaining])
 
     @staticmethod
     def _copy_process_output(
         process: subprocess.Popen[bytes],
         log_handle: Any,
         errors: list[Exception],
+        log_limit: int,
     ) -> None:
         assert process.stdout is not None
-        written = 0
         truncated = False
         try:
             while True:
                 chunk = process.stdout.read(64 * 1024)
                 if not chunk:
                     break
-                remaining = max(0, MAX_OPERATION_LOG_BYTES - written)
-                if remaining:
-                    kept = chunk[:remaining]
-                    log_handle.write(kept)
-                    written += len(kept)
-                if len(chunk) > remaining and not truncated:
-                    log_handle.write(b"\n[ota-helper] process output truncated\n")
+                remaining = max(0, log_limit - log_handle.tell())
+                if len(chunk) <= remaining:
+                    log_handle.write(chunk)
+                    continue
+                if not truncated and remaining:
+                    marker = b"\n[ota-helper] process output truncated\n"
+                    if remaining >= len(marker):
+                        log_handle.write(chunk[: remaining - len(marker)])
+                        log_handle.write(marker)
+                    else:
+                        log_handle.write(chunk[:remaining])
                     truncated = True
         except (OSError, ValueError) as exc:
             errors.append(exc)
@@ -437,9 +498,6 @@ class OperationController:
     def _run(self, operation_id: str) -> None:
         exit_code: int | None = None
         error: str | None = None
-        process: subprocess.Popen[bytes] | None = None
-        reader: threading.Thread | None = None
-        reader_errors: list[Exception] = []
         try:
             with self._lock:
                 self._patch(
@@ -448,43 +506,89 @@ class OperationController:
                     step="apply",
                     started_at=utc_now(),
                 )
+                operation = self._read_state()["operations"][operation_id]
+                log_limit = (
+                    int(operation["log_start"])
+                    + MAX_OPERATION_LOG_BYTES
+                    + LOG_ENTRY_OVERHEAD_BYTES
+                )
             with self.log_path.open("ab", buffering=0) as log_handle:
-                log_handle.write(b"[ota-helper] fixed state machine started\n")
-                process = subprocess.Popen(
-                    [str(self.apply_program)],
-                    cwd=self.project_dir,
-                    env=FIXED_ENV,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    close_fds=True,
-                    start_new_session=True,
-                )
-                reader = threading.Thread(
-                    target=self._copy_process_output,
-                    args=(process, log_handle, reader_errors),
-                    daemon=True,
-                )
-                reader.start()
-                try:
-                    exit_code = process.wait(timeout=APPLY_TIMEOUT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    error = "fixed_state_machine_timeout"
-                    self._terminate_process(process)
-                    exit_code = process.returncode
-                if not self._finish_output_reader(process, reader) and error is None:
-                    error = "fixed_state_machine_log_drain_timeout"
-                if reader_errors and error is None:
-                    error = f"fixed_state_machine_log_error:{type(reader_errors[0]).__name__}"
-                log_handle.write(f"[ota-helper] fixed state machine exited: {exit_code}\n".encode())
+                for attempt in range(2):
+                    process: subprocess.Popen[bytes] | None = None
+                    reader: threading.Thread | None = None
+                    reader_errors: list[Exception] = []
+                    error = None
+                    self._write_log_bounded(
+                        log_handle,
+                        b"[ota-helper] fixed state machine started\n",
+                        log_limit,
+                    )
+                    try:
+                        process = subprocess.Popen(
+                            [str(self.apply_program)],
+                            cwd=self.project_dir,
+                            env=FIXED_ENV,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            close_fds=True,
+                            start_new_session=True,
+                        )
+                        reader = threading.Thread(
+                            target=self._copy_process_output,
+                            args=(process, log_handle, reader_errors, log_limit),
+                            daemon=True,
+                        )
+                        reader.start()
+                        try:
+                            exit_code = process.wait(timeout=APPLY_TIMEOUT_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            error = "fixed_state_machine_timeout"
+                            self._terminate_process(process)
+                            exit_code = process.returncode
+                        if exit_code not in {None, 0}:
+                            self._terminate_process(process)
+                        if not self._finish_output_reader(process, reader) and error is None:
+                            error = "fixed_state_machine_log_drain_timeout"
+                        if reader_errors and error is None:
+                            error = f"fixed_state_machine_log_error:{type(reader_errors[0]).__name__}"
+                    except (OSError, subprocess.SubprocessError) as exc:
+                        error = f"fixed_state_machine_error:{type(exc).__name__}"
+                        if process is not None and process.poll() is None:
+                            self._terminate_process(process)
+                        if process is not None and reader is not None:
+                            self._finish_output_reader(process, reader)
+                    self._write_log_bounded(
+                        log_handle,
+                        f"[ota-helper] fixed state machine exited: {exit_code}\n".encode(),
+                        log_limit,
+                    )
+                    if self._release_journal_idle():
+                        break
+                    if attempt == 0:
+                        self._write_log_bounded(
+                            log_handle,
+                            b"[ota-helper] unfinished release detected; starting recovery\n",
+                            log_limit,
+                        )
+                        with self._lock:
+                            self._patch(operation_id, step="recovery")
                 log_handle.flush()
                 os.fsync(log_handle.fileno())
-        except (OSError, subprocess.SubprocessError) as exc:
+        except OSError as exc:
             error = f"fixed_state_machine_error:{type(exc).__name__}"
-            if process is not None and process.poll() is None:
-                self._terminate_process(process)
-            if process is not None and reader is not None:
-                self._finish_output_reader(process, reader)
+
+        if not self._release_journal_idle():
+            with self._lock:
+                self._patch(
+                    operation_id,
+                    status="queued",
+                    step="recovery_pending",
+                    exit_code=None,
+                    error=error or "fixed_state_machine_recovery_pending",
+                )
+                self._active_operation_id = None
+            return
 
         release_summary = self._release_summary()
         with self._lock:

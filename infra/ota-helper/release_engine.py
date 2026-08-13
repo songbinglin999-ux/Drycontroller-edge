@@ -363,6 +363,49 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def validate_release_slot(slot: object, *, require_verified: bool) -> dict[str, Any]:
+    if not isinstance(slot, dict) or set(slot) != {
+        "manifest",
+        "manifest_digest",
+        "manifest_signature",
+        "verified_at",
+    }:
+        raise ReleaseError("release slot invalid")
+    manifest = validate_manifest(slot.get("manifest"))
+    digest = slot.get("manifest_digest")
+    signature = slot.get("manifest_signature")
+    if digest != canonical_manifest_digest(manifest):
+        raise ReleaseError("release slot manifest digest mismatch")
+    if not isinstance(signature, str) or not signature:
+        raise ReleaseError("release slot signature missing")
+    if require_verified and not isinstance(slot.get("verified_at"), str):
+        raise ReleaseError("release slot verification evidence missing")
+    return slot
+
+
+def validate_release_journal(journal: object) -> dict[str, Any]:
+    if (
+        not isinstance(journal, dict)
+        or set(journal) != _JOURNAL_FIELDS
+        or journal.get("schema") != RELEASE_JOURNAL_SCHEMA
+        or not isinstance(journal.get("phase"), str)
+    ):
+        raise ReleaseError("release journal invalid")
+    if journal.get("active") is None:
+        raise ReleaseError("active release missing")
+    last_operation_id = journal.get("last_operation_id")
+    if last_operation_id is not None and (
+        not isinstance(last_operation_id, str) or _OPERATION_ID.fullmatch(last_operation_id) is None
+    ):
+        raise ReleaseError("release journal last operation invalid")
+    validate_release_slot(journal["active"], require_verified=True)
+    if journal.get("candidate") is not None:
+        validate_release_slot(journal["candidate"], require_verified=False)
+    if journal.get("previous") is not None:
+        validate_release_slot(journal["previous"], require_verified=True)
+    return journal
+
+
 class ReleaseEngine:
     def __init__(
         self,
@@ -509,27 +552,7 @@ class ReleaseEngine:
         return policy
 
     def _load_journal(self) -> dict[str, Any]:
-        journal = _read_json(self.paths.journal)
-        if (
-            not isinstance(journal, dict)
-            or set(journal) != _JOURNAL_FIELDS
-            or journal.get("schema") != RELEASE_JOURNAL_SCHEMA
-            or not isinstance(journal.get("phase"), str)
-        ):
-            raise ReleaseError("release journal invalid")
-        if journal.get("active") is None:
-            raise ReleaseError("active release missing")
-        last_operation_id = journal.get("last_operation_id")
-        if last_operation_id is not None and (
-            not isinstance(last_operation_id, str) or _OPERATION_ID.fullmatch(last_operation_id) is None
-        ):
-            raise ReleaseError("release journal last operation invalid")
-        self._validate_slot(journal["active"], require_verified=True)
-        if journal.get("candidate") is not None:
-            self._validate_slot(journal["candidate"], require_verified=False)
-        if journal.get("previous") is not None:
-            self._validate_slot(journal["previous"], require_verified=True)
-        return journal
+        return validate_release_journal(_read_json(self.paths.journal))
 
     def _persist_journal(self, journal: dict[str, Any]) -> None:
         _atomic_write(
@@ -573,23 +596,7 @@ class ReleaseEngine:
         }
 
     def _validate_slot(self, slot: object, *, require_verified: bool) -> dict[str, Any]:
-        if not isinstance(slot, dict) or set(slot) != {
-            "manifest",
-            "manifest_digest",
-            "manifest_signature",
-            "verified_at",
-        }:
-            raise ReleaseError("release slot invalid")
-        manifest = validate_manifest(slot.get("manifest"))
-        digest = slot.get("manifest_digest")
-        signature = slot.get("manifest_signature")
-        if digest != canonical_manifest_digest(manifest):
-            raise ReleaseError("release slot manifest digest mismatch")
-        if not isinstance(signature, str) or not signature:
-            raise ReleaseError("release slot signature missing")
-        if require_verified and not isinstance(slot.get("verified_at"), str):
-            raise ReleaseError("release slot verification evidence missing")
-        return slot
+        return validate_release_slot(slot, require_verified=require_verified)
 
     def initialize_active(self, seed: object) -> dict[str, Any]:
         with self._transaction_lock():
