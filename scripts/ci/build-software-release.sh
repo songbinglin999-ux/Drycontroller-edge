@@ -445,6 +445,12 @@ with urllib.request.urlopen(request, timeout=30) as response:
 expected_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
 if payload.get("status") != "completed" or payload.get("manifest_digest") != expected_digest:
     raise SystemExit("Cloud did not complete the exact SoftwareRelease manifest")
+output = os.environ.get("SOFTWARE_RELEASE_OUTPUT", "")
+if output:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    output_path.chmod(0o600)
 print(f"SoftwareRelease completed: id={metadata['id']} digest={expected_digest}")
 PY
 }

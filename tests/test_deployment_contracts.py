@@ -96,7 +96,7 @@ def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
     release_engine = (ROOT / "infra/ota-helper/release_engine.py").read_text(encoding="utf-8")
     unit = (ROOT / "infra/ota-helper/drycontroller-ota-helper.service").read_text(encoding="utf-8")
 
-    assert 'APPLY_PROGRAM = Path("/usr/libexec/drycontroller/ota-apply")' in helper
+    assert 'APPLY_PROGRAM = Path("/opt/drycontroller-host/current/infra/ota-helper/ota-apply")' in helper
     assert 'PROJECT_DIR = Path("/opt/Drycontroller-edge")' in helper
     assert 'OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")' in helper
     assert "sys.argv" not in helper
@@ -114,8 +114,22 @@ def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
     assert "os.getenv" not in release_engine
     assert "User=root" in unit
     assert "Group=root" in unit
-    assert "ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py" in unit
+    assert "ExecStart=/usr/bin/python3 /opt/drycontroller-host/current/infra/ota-helper/drycontroller_ota_helper.py" in unit
     assert "ReadWritePaths=/run/drycontroller-ota /var/lib/drycontroller-ota /var/log/drycontroller-ota" in unit
+
+
+def test_host_release_runner_is_outside_its_signed_update_surface():
+    unit = (ROOT / "infra/host-release-runner/drycontroller-host-release-runner.service").read_text(encoding="utf-8")
+    engine = (ROOT / "infra/host-release-runner/host_release_engine.py").read_text(encoding="utf-8")
+    builder = (ROOT / "scripts/prepare-host-release.py").read_text(encoding="utf-8")
+
+    assert "ExecStart=/usr/libexec/drycontroller/host-release-runner" in unit
+    assert "ReadWritePaths=" in unit
+    assert "/usr/libexec" not in next(line for line in unit.splitlines() if line.startswith("ReadWritePaths="))
+    assert '"infra/host-release-runner/' not in builder
+    assert '"configs/keys/"' in engine
+    assert '"--lock-fd"' in engine
+    assert "pass_fds=inherited_fds" in engine
 
 
 def test_source_bundle_excludes_and_rejects_macos_metadata():

@@ -92,7 +92,7 @@ def canonical_challenge(challenge: dict[str, str]) -> bytes:
         raise IdentityChallengeError("identity challenge fields do not match the fixed schema")
     if challenge["schema"] != CHALLENGE_SCHEMA or challenge["domain"] != CHALLENGE_DOMAIN:
         raise IdentityChallengeError("identity challenge domain or schema mismatch")
-    if challenge["operation"] not in {"activate", "rotate", "re_register"}:
+    if challenge["operation"] not in {"activate", "rotate", "re_register", "host_release"}:
         raise IdentityChallengeError("invalid identity operation")
     decode_nonce(challenge["challenge_nonce"])
     for field in ("identity_fingerprint", "runtime_credential_hash"):

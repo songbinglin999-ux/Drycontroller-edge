@@ -1,0 +1,38 @@
+[Unit]
+Description=DryController immutable HostRelease runner
+After=docker.service drycontroller-factory-identity.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/libexec/drycontroller/host-release-runner
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=drycontroller-host-release
+RuntimeDirectoryMode=0755
+StateDirectory=drycontroller-host
+StateDirectoryMode=0700
+LogsDirectory=drycontroller-host
+LogsDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=no
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/run/drycontroller-host-release /var/lib/drycontroller-host /var/lib/drycontroller-ota /var/log/drycontroller-host /opt/drycontroller-host /opt/Drycontroller-edge
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -381,6 +381,25 @@ def test_initializer_can_reuse_the_factory_transaction_lock_descriptor(tmp_path)
     assert result["status"] == "initialized"
 
 
+def test_starter_can_reuse_the_host_transaction_lock_descriptor(tmp_path):
+    paths = _paths(tmp_path)
+    manifest = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, manifest)
+    paths.lock.touch(mode=0o600)
+    descriptor = os.open(paths.lock, os.O_WRONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = ReleaseEngine(
+            paths=paths,
+            command_runner=FakeRuntime().run,
+            health_checker=lambda _url: None,
+        ).start_active_with_lock_fd(descriptor)
+    finally:
+        os.close(descriptor)
+
+    assert result["status"] == "running"
+
+
 def _engine(paths: ReleasePaths, runtime: FakeRuntime, policies: dict[str, dict]) -> ReleaseEngine:
     return ReleaseEngine(
         paths=paths,

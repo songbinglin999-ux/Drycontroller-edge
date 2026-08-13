@@ -630,6 +630,10 @@ class ReleaseEngine:
             return self._initialize_active(seed)
 
     def initialize_active_with_lock_fd(self, seed: object, descriptor: int) -> dict[str, Any]:
+        self._validate_inherited_lock(descriptor)
+        return self._initialize_active(seed)
+
+    def _validate_inherited_lock(self, descriptor: int) -> None:
         try:
             opened = os.fstat(descriptor)
             expected = self.paths.lock.stat()
@@ -641,7 +645,6 @@ class ReleaseEngine:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ReleaseError("inherited release lock descriptor is not held") from exc
-        return self._initialize_active(seed)
 
     def _initialize_active(self, seed: object) -> dict[str, Any]:
         if not isinstance(seed, dict) or set(seed) != {
@@ -703,6 +706,10 @@ class ReleaseEngine:
     def start_active(self) -> dict[str, Any]:
         with self._transaction_lock():
             return self._start_active()
+
+    def start_active_with_lock_fd(self, descriptor: int) -> dict[str, Any]:
+        self._validate_inherited_lock(descriptor)
+        return self._start_active()
 
     def _start_active(self) -> dict[str, Any]:
         journal = self._load_journal()
@@ -848,6 +855,8 @@ class ReleaseEngine:
             "compose",
             "--project-name",
             "drycontroller-edge",
+            "--env-file",
+            "/etc/drycontroller/runtime.env",
             "--file",
             str(self.paths.compose),
             "--file",

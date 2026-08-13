@@ -222,7 +222,7 @@ def _record_rotation_alarm(*, state: str) -> None:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-        except Exception:
+        except Exception:  # noqa: BLE001 - clean partial durable alarm writes before re-raising
             temporary.unlink(missing_ok=True)
             event_path.unlink(missing_ok=True)
             raise

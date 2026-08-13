@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 # 与 cloud-ops 仓库的同名文件保持 byte-identical 同步，CI hash 校验保障一致性。
 # 详见 Drycontroller-cloudserver/docs/architecture/shared-schemas.md。
 from common.schemas.cloud_to_edge import (
+    HostReleaseStartRequest,
     ManualActionRequest,
     MonitorConfigUpdate,
     OtaStartRequest,
@@ -36,6 +37,7 @@ from app.core.config import settings
 from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_identity
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
+from app.services.host_release_ops import HostReleaseOpsClient, get_host_release_ops_client
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 from app.services.registry_credentials import (
     install_registry_credential,
@@ -627,6 +629,42 @@ async def ota_get_operation(
 async def ota_get_logs(
     operation_id: str,
     client: OtaOpsClient = Depends(get_ota_ops_client),
+    _: str = Depends(require_admin_api_key),
+):
+    return await client.get_logs(operation_id)
+
+
+# ==================== HostRelease（immutable runner，仅接收 operation ID） ====================
+
+
+@router.post("/host-release/start")
+async def host_release_start(
+    req: HostReleaseStartRequest,
+    client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
+    _: str = Depends(require_admin_api_key),
+):
+    credential = registry_credential_check()
+    if not credential["ok"]:
+        raise HTTPException(
+            status_code=409,
+            detail={"success": False, "error": credential["reason"], "credential": credential["detail"]},
+        )
+    return await client.start(req.operation_id)
+
+
+@router.get("/host-release/operations/{operation_id}")
+async def host_release_get_operation(
+    operation_id: str,
+    client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
+    _: str = Depends(require_admin_api_key),
+):
+    return await client.get_operation(operation_id)
+
+
+@router.get("/host-release/operations/{operation_id}/logs")
+async def host_release_get_logs(
+    operation_id: str,
+    client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
     _: str = Depends(require_admin_api_key),
 ):
     return await client.get_logs(operation_id)

@@ -20,7 +20,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "127.0.0.1:5432:5432"
     networks:
@@ -199,10 +199,10 @@ services:
       - TS_HOSTNAME=${TS_HOSTNAME:-edge-node}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
-      - ./logs/edge-api:/logs/edge-api
+      - /var/log/drycontroller/edge-api:/logs/edge-api
       - ./configs:/app/configs:ro
       # 运行时可变配置（由云端下发）：例如 PLC 通讯参数（不改网卡，只改应用层）
-      - ./configs-runtime:/app/configs-runtime
+      - /var/lib/drycontroller/configs-runtime:/app/configs-runtime
       # License 文件由云端下发到 edge-api，再由 license-service 只读校验
       - /etc/drycontroller/license:/etc/drycontroller/license
       # P0-N2 audit 2026-05-15：keys 目录挂只读——edge-api 不应该能改 trust anchor。
@@ -214,6 +214,7 @@ services:
       - /var/lib/drycontroller:/var/lib/drycontroller:ro
       # 唯一宿主 mutation 边界：只连接 root-owned 0660 UDS，不挂 Docker socket。
       - /run/drycontroller-ota:/run/drycontroller-ota:ro
+      - /run/drycontroller-host-release:/run/drycontroller-host-release:ro
     ports:
       # P0-N1 audit 2026-05-15：默认绑 127.0.0.1，避免 LAN/PLC 网段直达 license install
       # 端点。生产若真有外部访问需求，由前置 Caddy/Traefik 反代，并显式覆写本变量。
@@ -272,10 +273,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - HEALTH_PORT=8080
     volumes:
-      - ./logs/edge-daq:/logs/edge-daq
+      - /var/log/drycontroller/edge-daq:/logs/edge-daq
       - ./configs:/app/configs:ro
       # 运行时可变配置（只读）：例如 PLC 通讯参数（由 edge-api 落盘后重启生效）
-      - ./configs-runtime:/app/configs-runtime:ro
+      - /var/lib/drycontroller/configs-runtime:/app/configs-runtime:ro
     ports:
       # 仅用于本机健康探针与 OTA 校验（脚本默认通过 localhost 校验）
       # 注意：edge-monitor 默认占用 8080，因此这里默认用 8082
@@ -318,9 +319,9 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - HEALTH_PORT=8080
     volumes:
-      - ./logs/ai-softsensor:/logs/ai-softsensor
+      - /var/log/drycontroller/ai-softsensor:/logs/ai-softsensor
       - ./configs:/app/configs:ro
-      - ./services/ai-softsensor/models:/app/models
+      - /var/lib/drycontroller/models/ai-softsensor:/app/models:ro
     networks:
       - edge-network
     depends_on:
@@ -359,9 +360,9 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - HEALTH_PORT=8080
     volumes:
-      - ./logs/ai-ctrl-optimizer:/logs/ai-ctrl-optimizer
+      - /var/log/drycontroller/ai-ctrl-optimizer:/logs/ai-ctrl-optimizer
       - ./configs:/app/configs:ro
-      - ./services/ai-ctrl-optimizer/models:/app/models
+      - /var/lib/drycontroller/models/ai-ctrl-optimizer:/app/models:ro
     networks:
       - edge-network
     depends_on:
@@ -405,7 +406,7 @@ services:
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
-      - ./logs/license-service:/logs/license-service
+      - /var/log/drycontroller/license-service:/logs/license-service
       - /etc/drycontroller/license:/etc/drycontroller/license:ro
       - /etc/drycontroller/keys:/etc/drycontroller/keys:ro
     ports:
@@ -450,10 +451,10 @@ services:
       - MONITOR_OPS_API_KEYS=${MONITOR_OPS_API_KEYS}
       - ADMIN_API_KEYS=${ADMIN_API_KEYS}
     volumes:
-      - ./logs/edge-monitor:/logs/edge-monitor
-      - ./logs:/logs:ro
+      - /var/log/drycontroller/edge-monitor:/logs/edge-monitor
+      - /var/log/drycontroller:/logs:ro
       - ./configs:/app/configs:ro
-      - ./infra/discovery:/app/bootstrap
+      - /var/lib/drycontroller/discovery:/app/bootstrap
     networks:
       - edge-network
     ports:
