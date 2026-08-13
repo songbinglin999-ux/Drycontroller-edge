@@ -653,7 +653,7 @@ class ReleaseEngine:
             self._record_local_images(slot)
         except ReleaseError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - fail closed on verifier boundary faults
             raise ReleaseError("initial release verification failed") from exc
 
         if not already_initialized:
@@ -831,7 +831,7 @@ class ReleaseEngine:
         self._persist_journal(journal)
         try:
             result = action()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - persist unexpected effect failures before conversion
             journal["effect"] = {"name": name, "status": "failed"}
             journal["error"] = str(exc)[:512]
             self._persist_journal(journal)

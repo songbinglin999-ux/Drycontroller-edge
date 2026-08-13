@@ -6,7 +6,6 @@ from __future__ import annotations
 import datetime as _dt
 import gzip
 import json
-import os
 import plistlib
 import queue
 import re
@@ -918,7 +917,7 @@ class UsbMakerApp(tk.Tk):
             self._append_log("Done.", "info")
         except (AssertionError, OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
             self._append_log(f"ERROR: {exc}", "err")
-            self.after(0, lambda: messagebox.showerror("制作失败", str(exc)))
+            self.after(0, lambda message=str(exc): messagebox.showerror("制作失败", message))
         finally:
             self.running = False
             self.after(0, self._refresh_readiness)
