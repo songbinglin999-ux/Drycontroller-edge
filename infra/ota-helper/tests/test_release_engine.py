@@ -3,12 +3,14 @@ from __future__ import annotations
 import base64
 import fcntl
 import hashlib
+import io
 import json
 import multiprocessing
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -20,26 +22,83 @@ if str(HELPER_DIR) not in sys.path:
 
 from release_engine import (  # noqa: E402
     RELEASE_JOURNAL_SCHEMA,
-    SOFTWARE_RELEASE_SERVICES,
     COSIGN_TOOLCHAIN,
     ReleaseEngine,
     ReleaseError,
     ReleasePaths,
     canonical_manifest_digest,
+    canonical_topology_digest,
+    docker_archive_config_digest,
+    local_image_reference,
     validate_manifest,
 )
 
 
 REGISTRY = "registry.example.test:5443"
+HOST_RELEASE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+HOST_RELEASE_MANIFEST_DIGEST = "sha256:" + "d" * 64
 PUBKEY_BYTES = b"test-cosign-public-key"
 PUBKEY_DIGEST = "sha256:" + hashlib.sha256(PUBKEY_BYTES).hexdigest()
 SIGNATURE = base64.b64encode(b"test-cosign-signature").decode("ascii")
+SERVICES = (
+    "ai-ctrl-optimizer",
+    "ai-softsensor",
+    "alertmanager",
+    "edge-api",
+    "edge-daq",
+    "edge-monitor",
+    "influxdb",
+    "license-service",
+    "mosquitto",
+    "mosquitto-init",
+    "postgres",
+    "prometheus",
+)
+COMPOSE_BYTES = b"services: {}\n"
+COMPOSE_DIGEST = "sha256:" + hashlib.sha256(COMPOSE_BYTES).hexdigest()
+TOPOLOGY_DIGEST = canonical_topology_digest(COMPOSE_DIGEST, sorted(SERVICES))
+
+
+def _write_docker_archive(path: Path, manifest: list[dict], configs: dict[str, bytes] | None = None) -> None:
+    with tarfile.open(path, mode="w") as archive:
+        manifest_bytes = json.dumps(manifest, separators=(",", ":")).encode()
+        manifest_info = tarfile.TarInfo("manifest.json")
+        manifest_info.size = len(manifest_bytes)
+        archive.addfile(manifest_info, io.BytesIO(manifest_bytes))
+        for name, config in (configs or {}).items():
+            config_info = tarfile.TarInfo(name)
+            config_info.size = len(config)
+            archive.addfile(config_info, io.BytesIO(config))
+
+
+def test_docker_archive_config_digest_is_backend_independent_and_fail_closed(tmp_path: Path):
+    config = b'{"architecture":"amd64","rootfs":{"type":"layers","diff_ids":[]}}'
+    archive = tmp_path / "image.tar"
+    _write_docker_archive(
+        archive,
+        [{"Config": "config.json", "RepoTags": ["example:test"]}],
+        {"config.json": config},
+    )
+    assert docker_archive_config_digest(archive) == f"sha256:{hashlib.sha256(config).hexdigest()}"
+
+    _write_docker_archive(
+        archive,
+        [
+            {"Config": "config.json", "RepoTags": ["example:a"]},
+            {"Config": "other.json", "RepoTags": ["example:b"]},
+        ],
+        {"config.json": config, "other.json": b'{"architecture":"arm64"}'},
+    )
+    with pytest.raises(ReleaseError, match="exactly one image"):
+        docker_archive_config_digest(archive)
 
 
 def _manifest(release_id: str, sequence: int, version: str) -> dict:
     return {
         "schema": "drycontroller.software-release.v1",
         "release_id": release_id,
+        "host_release_id": HOST_RELEASE_ID,
+        "topology_digest": TOPOLOGY_DIGEST,
         "sequence": sequence,
         "version": version,
         "source_commit": f"{sequence:x}" * 40,
@@ -48,11 +107,11 @@ def _manifest(release_id: str, sequence: int, version: str) -> dict:
         "cosign": COSIGN_TOOLCHAIN,
         "services": {
             service: f"{REGISTRY}/drycontroller/{service}@sha256:{sequence * 100 + index:064x}"
-            for index, service in enumerate(SOFTWARE_RELEASE_SERVICES, start=1)
+            for index, service in enumerate(SERVICES, start=1)
         },
         "image_ids": {
             service: f"sha256:{sequence * 100 + index:064x}"
-            for index, service in enumerate(SOFTWARE_RELEASE_SERVICES, start=1)
+            for index, service in enumerate(SERVICES, start=1)
         },
     }
 
@@ -84,7 +143,21 @@ def _policy(operation_id: str, manifest: dict) -> dict:
 def _paths(tmp_path: Path) -> ReleasePaths:
     project = tmp_path / "project"
     project.mkdir()
-    (project / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (project / "docker-compose.yml").write_bytes(COMPOSE_BYTES)
+    host_active = tmp_path / "host-active.json"
+    host_active.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.host-active.v1",
+                "host_release_id": HOST_RELEASE_ID,
+                "host_release_manifest_digest": HOST_RELEASE_MANIFEST_DIGEST,
+                "topology_digest": TOPOLOGY_DIGEST,
+                "compose_digest": COMPOSE_DIGEST,
+                "service_inventory": sorted(SERVICES),
+            }
+        ),
+        encoding="utf-8",
+    )
     pubkey = tmp_path / "cosign.pub"
     pubkey.write_bytes(PUBKEY_BYTES)
     registry_status = tmp_path / "registry-status.json"
@@ -121,6 +194,7 @@ def _paths(tmp_path: Path) -> ReleasePaths:
         registry_status=registry_status,
         device=device,
         cloud_config=cloud,
+        host_active=host_active,
     )
 
 
@@ -141,6 +215,30 @@ def _seed(paths: ReleasePaths, active: dict, *, previous: dict | None = None) ->
         ),
         encoding="utf-8",
     )
+    for manifest in (active, previous):
+        if manifest is None:
+            continue
+        digest = canonical_manifest_digest(manifest)
+        directory = paths.releases / digest.removeprefix("sha256:")
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "local-images.json").write_text(
+            json.dumps(
+                {
+                    "manifest_digest": digest,
+                    "images": {
+                        service: {
+                            "reference": local_image_reference(service, image_id),
+                            "image_id": image_id,
+                            "runtime_id": image_id,
+                        }
+                        for service, image_id in manifest["image_ids"].items()
+                    },
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
 
 
 def _initial_seed(manifest: dict) -> dict:
@@ -171,7 +269,11 @@ class FakeRuntime:
     def run(self, args: list[str]) -> str:
         self.calls.append(list(args))
         if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            if args[-1].startswith("drycontroller.local/"):
+                return "sha256:" + args[-1].rsplit(":sha256-", 1)[1]
             return args[-1].rsplit("@", 1)[-1]
+        if args[:2] == ["/usr/bin/docker", "tag"]:
+            return "tagged"
         if args[:2] == ["/usr/bin/docker", "pull"]:
             return "pulled"
         if args[0] == "/usr/local/bin/cosign":
@@ -221,7 +323,9 @@ def test_initial_release_is_verified_and_persisted_only_after_all_images_are_pro
     assert journal["previous"] is None
     assert any(call[:2] == ["/usr/local/bin/cosign", "verify-blob"] for call in runtime.calls)
     inspected = [call[-1] for call in runtime.calls if call[:3] == ["/usr/bin/docker", "image", "inspect"]]
-    assert inspected == [manifest["image_ids"][service] for service in SOFTWARE_RELEASE_SERVICES]
+    assert inspected == [
+        local_image_reference(service, manifest["image_ids"][service]) for service in SERVICES
+    ]
 
     replay = ReleaseEngine(paths=paths, command_runner=runtime.run).initialize_active(_initial_seed(manifest))
     assert replay["status"] == "already_initialized"
@@ -236,7 +340,7 @@ def test_initial_release_failure_never_creates_an_active_journal(tmp_path):
             return "sha256:" + "0" * 64
         return FakeRuntime().run(args)
 
-    with pytest.raises(ReleaseError, match="local release image missing"):
+    with pytest.raises(ReleaseError, match="release image ID mismatch"):
         ReleaseEngine(paths=paths, command_runner=missing_image).initialize_active(_initial_seed(manifest))
 
     assert not paths.journal.exists()
@@ -284,14 +388,20 @@ def _request(paths: ReleasePaths, operation_id: str) -> None:
     paths.request.write_text(json.dumps({"operation_id": operation_id}), encoding="utf-8")
 
 
-def test_manifest_rejects_partial_or_mutable_service_sets():
+def test_manifest_accepts_topology_scoped_sets_and_rejects_mismatched_or_mutable_images():
     manifest = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
     assert validate_manifest(manifest) == manifest
 
     partial = {**manifest, "services": dict(manifest["services"])}
     partial["services"].pop("edge-api")
-    with pytest.raises(ReleaseError, match="complete service set"):
+    with pytest.raises(ReleaseError, match="image ID set must match"):
         validate_manifest(partial)
+
+    scoped = {
+        **partial,
+        "image_ids": {service: manifest["image_ids"][service] for service in partial["services"]},
+    }
+    assert validate_manifest(scoped) == scoped
 
     tagged = {**manifest, "services": dict(manifest["services"])}
     tagged["services"]["edge-api"] = f"{REGISTRY}/drycontroller/edge-api:latest"
@@ -300,7 +410,7 @@ def test_manifest_rejects_partial_or_mutable_service_sets():
 
     missing_image_id = {**manifest, "image_ids": dict(manifest["image_ids"])}
     missing_image_id["image_ids"].pop("edge-api")
-    with pytest.raises(ReleaseError, match="complete image ID set"):
+    with pytest.raises(ReleaseError, match="image ID set must match"):
         validate_manifest(missing_image_id)
 
     unapproved_cosign = {
@@ -309,6 +419,62 @@ def test_manifest_rejects_partial_or_mutable_service_sets():
     }
     with pytest.raises(ReleaseError, match="not approved"):
         validate_manifest(unapproved_cosign)
+
+
+def test_initial_release_rejects_wrong_host_binding_before_runtime_side_effects(tmp_path):
+    paths = _paths(tmp_path)
+    runtime = FakeRuntime()
+    manifest = {
+        **_manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0"),
+        "host_release_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    }
+
+    with pytest.raises(ReleaseError, match="HostRelease binding mismatch"):
+        ReleaseEngine(paths=paths, command_runner=runtime.run).initialize_active(_initial_seed(manifest))
+
+    assert runtime.calls == []
+    assert not paths.journal.exists()
+
+
+@pytest.mark.parametrize("mismatch", ["topology", "inventory"])
+def test_candidate_host_binding_mismatch_is_rejected_before_pull(tmp_path, mismatch):
+    paths = _paths(tmp_path)
+    runtime = FakeRuntime()
+    operation_id = "00000000000000010000000000000002"
+    active = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    candidate = _manifest("22222222-2222-4222-8222-222222222222", 2, "1.1.0")
+    if mismatch == "topology":
+        candidate = {**candidate, "topology_digest": "sha256:" + "e" * 64}
+    else:
+        candidate = {
+            **candidate,
+            "services": {key: value for key, value in candidate["services"].items() if key != "edge-api"},
+            "image_ids": {key: value for key, value in candidate["image_ids"].items() if key != "edge-api"},
+        }
+    _seed(paths, active)
+    before = paths.journal.read_bytes()
+    _request(paths, operation_id)
+
+    with pytest.raises(ReleaseError, match="binding mismatch|service inventory"):
+        _engine(paths, runtime, {operation_id: _policy(operation_id, candidate)}).apply()
+
+    assert not any(call[:2] == ["/usr/bin/docker", "pull"] for call in runtime.calls)
+    assert paths.journal.read_bytes() == before
+
+
+def test_active_compose_digest_drift_is_rejected_before_start(tmp_path):
+    paths = _paths(tmp_path)
+    runtime = FakeRuntime()
+    active = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, active)
+    before = paths.journal.read_bytes()
+    paths.compose.write_text("services:\n  drift: {}\n", encoding="utf-8")
+
+    with pytest.raises(ReleaseError, match="Compose digest mismatch"):
+        _engine(paths, runtime, {}).start_active()
+
+    assert runtime.calls == []
+    assert paths.journal.read_bytes() == before
 
 
 def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
@@ -324,7 +490,10 @@ def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
     assert compose_up[-3:] == ["--pull", "never", "--no-build"]
     assert not any(call[:2] == ["/usr/bin/docker", "pull"] for call in runtime.calls)
     assert runtime.current_override is not None
-    assert runtime._images(runtime.current_override) == active["image_ids"]
+    assert runtime._images(runtime.current_override) == {
+        service: local_image_reference(service, image_id)
+        for service, image_id in active["image_ids"].items()
+    }
     journal = json.loads(paths.journal.read_text(encoding="utf-8"))
     assert journal["phase"] == "idle"
     assert journal["effect"] is None
@@ -771,7 +940,10 @@ def test_candidate_failure_rolls_back_previous_without_registry(tmp_path):
 
     def health(_url: str) -> None:
         assert runtime.current_override is not None
-        if runtime._images(runtime.current_override) == release_b["image_ids"]:
+        if runtime._images(runtime.current_override) == {
+            service: local_image_reference(service, image_id)
+            for service, image_id in release_b["image_ids"].items()
+        }:
             raise ReleaseError("candidate_health_failed")
 
     def sleep(seconds: float) -> None:
@@ -814,7 +986,10 @@ def test_missing_local_previous_image_refuses_before_candidate_mutation(tmp_path
     runtime = FakeRuntime()
 
     def run_with_missing_previous(args: list[str]) -> str:
-        if args[:3] == ["/usr/bin/docker", "image", "inspect"] and args[-1] in release_a["image_ids"].values():
+        if args[:3] == ["/usr/bin/docker", "image", "inspect"] and args[-1] in {
+            local_image_reference(service, image_id)
+            for service, image_id in release_a["image_ids"].items()
+        }:
             raise ReleaseError("local release image missing")
         return runtime.run(args)
 
@@ -845,7 +1020,10 @@ def test_candidate_registry_reference_must_resolve_to_the_signed_image_id(tmp_pa
     runtime = FakeRuntime()
 
     def run_with_wrong_candidate_id(args: list[str]) -> str:
-        if args[:3] == ["/usr/bin/docker", "image", "inspect"] and args[-1] in release_b["services"].values():
+        if args[:3] == ["/usr/bin/docker", "image", "inspect"] and args[-1] in {
+            local_image_reference(service, image_id)
+            for service, image_id in release_b["image_ids"].items()
+        }:
             return "sha256:" + "0" * 64
         return runtime.run(args)
 

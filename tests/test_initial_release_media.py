@@ -47,14 +47,23 @@ def _prepare_module():
     return module
 
 
+def _topology_digest(compose_digest: str, service_inventory: list[str]) -> str:
+    topology = {"compose_digest": compose_digest, "service_inventory": service_inventory}
+    canonical = json.dumps(topology, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
 def test_prepare_initial_release_verifies_and_packages_the_exact_complete_image_set(tmp_path: Path, monkeypatch):
     source_commit = "a" * 40
     public_key = tmp_path / "cosign.pub"
     public_key.write_bytes(b"factory-release-public-key")
     target_cosign_bytes = _linux_amd64_elf()
+    compose_digest = "sha256:" + hashlib.sha256((ROOT / "docker-compose.yml").read_bytes()).hexdigest()
     manifest = {
         "schema": "drycontroller.software-release.v1",
         "release_id": "11111111-1111-4111-8111-111111111111",
+        "host_release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "topology_digest": _topology_digest(compose_digest, sorted(SERVICES)),
         "sequence": 1,
         "version": "1.0.0",
         "source_commit": source_commit,
@@ -115,26 +124,53 @@ fi
     monkeypatch.setenv("COMMAND_LOG", str(log))
     module = _prepare_module()
     monkeypatch.setattr(module, "validate_manifest", lambda value: value)
+    expected_ids = {
+        reference: manifest["image_ids"][service]
+        for service, reference in manifest["services"].items()
+    }
+    monkeypatch.setattr(
+        module,
+        "_portable_image_id",
+        lambda reference, _directory: expected_ids[reference],
+    )
+    host_active = tmp_path / "host-active.json"
+    host_active.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.host-active.v1",
+                "host_release_id": manifest["host_release_id"],
+                "host_release_manifest_digest": "sha256:" + "d" * 64,
+                "topology_digest": manifest["topology_digest"],
+                "compose_digest": compose_digest,
+                "service_inventory": sorted(manifest["services"]),
+            }
+        ),
+        encoding="utf-8",
+    )
 
     module.prepare(
         software_release=release,
         public_key=public_key,
         cosign_linux_amd64=target_cosign,
         source_commit=source_commit,
+        host_active_file=host_active,
         output_dir=output_dir,
         image_bundle=image_bundle,
     )
 
     seed = json.loads((output_dir / "software-release-seed.json").read_text(encoding="utf-8"))
     assert seed["manifest"] == manifest
+    assert (output_dir / "host-active.json").read_bytes() == host_active.read_bytes()
     assert (output_dir / "cosign.pub").read_bytes() == public_key.read_bytes()
     assert (output_dir / "cosign-linux-amd64").read_bytes() == target_cosign.read_bytes()
     assert image_bundle.read_bytes() == b"archive"
     commands = log.read_text(encoding="utf-8")
     assert commands.count("docker pull ") == len(SERVICES)
+    assert commands.count("docker tag ") == len(SERVICES)
     assert commands.count("cosign verify --insecure-ignore-tlog=true") == len(SERVICES)
     assert "cosign verify-blob" in commands
     assert "docker image save" in commands
+    assert "docker image inspect" not in commands
 
 
 def test_prepare_initial_release_rejects_wrong_source_before_running_external_tools(tmp_path: Path):
@@ -152,6 +188,8 @@ def test_prepare_initial_release_rejects_wrong_source_before_running_external_to
             str(tmp_path / "missing-cosign"),
             "--source-commit",
             "b" * 40,
+            "--host-active",
+            str(tmp_path / "missing-host-active.json"),
             "--output-dir",
             str(tmp_path / "out"),
             "--image-bundle",
@@ -171,6 +209,8 @@ def test_prepare_initial_release_requires_explicit_completed_status(status_value
     manifest = {
         "schema": "drycontroller.software-release.v1",
         "release_id": "11111111-1111-4111-8111-111111111111",
+        "host_release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "topology_digest": "sha256:" + "c" * 64,
         "sequence": 1,
         "version": "1.0.0",
         "source_commit": "a" * 40,

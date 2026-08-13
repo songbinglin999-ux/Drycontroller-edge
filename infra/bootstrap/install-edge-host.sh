@@ -19,6 +19,8 @@ INITIAL_IMAGE_BUNDLE=""
 COSIGN_PUBLIC_KEY=""
 COSIGN_BIN=""
 RELEASE_LOCK="/var/lib/drycontroller-ota/release.lock"
+HOST_ACTIVE_SOURCE=""
+HOST_ACTIVE_TARGET="/var/lib/drycontroller-host/active.json"
 COSIGN_APPROVED_VERSION="v3.1.3"
 COSIGN_APPROVED_LINUX_AMD64_SHA256="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
 
@@ -36,6 +38,7 @@ Options:
   --image-bundle FILE    Complete digest-locked Docker image archive for the seed
   --cosign-public-key FILE  Public key bound by the SoftwareRelease manifest
   --cosign-bin FILE      Linux amd64 cosign binary for offline verification
+  --host-active FILE     Fixed root-owned H1/T1 state paired with the SoftwareRelease
   -h, --help             Show this help
 
 Expected follow-up:
@@ -94,6 +97,11 @@ while [ $# -gt 0 ]; do
       [ -n "$COSIGN_BIN" ] || die "--cosign-bin requires a value"
       shift 2
       ;;
+    --host-active)
+      HOST_ACTIVE_SOURCE="${2:-}"
+      [ -n "$HOST_ACTIVE_SOURCE" ] || die "--host-active requires a value"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -113,6 +121,7 @@ command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 [ -f "$INITIAL_IMAGE_BUNDLE" ] || die "complete initial release image bundle is required"
 [ -f "$COSIGN_PUBLIC_KEY" ] || die "initial release cosign public key is required"
 [ -x "$COSIGN_BIN" ] || die "executable Linux amd64 cosign binary is required"
+[ -f "$HOST_ACTIVE_SOURCE" ] || die "fixed active HostRelease state is required"
 
 if [ -z "$REPO_SOURCE" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -139,6 +148,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required"
 source "${REPO_SOURCE}/infra/bootstrap/release-transaction-lock.sh"
 factory_release_lock_acquire "$RELEASE_LOCK" || die "another release or factory install transaction is active"
 [ ! -e /var/lib/drycontroller-ota/release-journal.json ] || die "factory installer refuses an existing release journal"
+[ ! -e "$HOST_ACTIVE_TARGET" ] || die "factory installer refuses existing active HostRelease state"
 
 actual_cosign_sha256="$(sha256sum "$COSIGN_BIN" | awk '{print $1}')"
 [ "$actual_cosign_sha256" = "$COSIGN_APPROVED_LINUX_AMD64_SHA256" ] || die "Linux amd64 cosign binary checksum is not approved"
@@ -148,12 +158,18 @@ grep -Eq "GitVersion:[[:space:]]+${COSIGN_APPROVED_VERSION//./\\.}([[:space:]]|$
 grep -Eq 'Platform:[[:space:]]+linux/amd64([[:space:]]|$)' <<<"$cosign_version_output" \
   || die "cosign binary platform is not linux/amd64"
 PYTHONPATH="${REPO_SOURCE}/infra/ota-helper" python3 - \
-  "$INITIAL_RELEASE" "$COSIGN_APPROVED_VERSION" "sha256:${COSIGN_APPROVED_LINUX_AMD64_SHA256}" <<'PY'
+  "$INITIAL_RELEASE" "$COSIGN_APPROVED_VERSION" "sha256:${COSIGN_APPROVED_LINUX_AMD64_SHA256}" \
+  "$HOST_ACTIVE_SOURCE" "${REPO_SOURCE}/docker-compose.yml" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-from release_engine import canonical_manifest_digest, validate_manifest
+from release_engine import (
+    assert_software_release_host_binding,
+    canonical_manifest_digest,
+    validate_host_active,
+    validate_manifest,
+)
 
 seed = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 if not isinstance(seed, dict) or set(seed) != {"manifest", "manifest_digest", "manifest_signature"}:
@@ -163,6 +179,11 @@ if seed["manifest_digest"] != canonical_manifest_digest(manifest):
     raise SystemExit("initial release seed digest mismatch")
 if manifest["cosign"] != {"version": sys.argv[2], "linux_amd64_sha256": sys.argv[3]}:
     raise SystemExit("initial release cosign toolchain is not approved")
+host_active = validate_host_active(
+    json.loads(Path(sys.argv[4]).read_text(encoding="utf-8")),
+    Path(sys.argv[5]).read_bytes(),
+)
+assert_software_release_host_binding(manifest, host_active)
 PY
 
 install_base_packages_apt() {
@@ -337,8 +358,13 @@ install_host_services() {
   /usr/local/bin/cosign version >/dev/null
   log "loading complete initial release image bundle"
   docker image load -i "$INITIAL_IMAGE_BUNDLE"
+  install -d -o root -g root -m 0700 "$(dirname "$HOST_ACTIVE_TARGET")"
+  install -o root -g root -m 0600 "$HOST_ACTIVE_SOURCE" "$HOST_ACTIVE_TARGET"
   log "verifying and initializing signed active release"
-  /usr/libexec/drycontroller/initialize-active-release --lock-fd 9 "$INITIAL_RELEASE"
+  if ! /usr/libexec/drycontroller/initialize-active-release --lock-fd 9 "$INITIAL_RELEASE"; then
+    rm -f "$HOST_ACTIVE_TARGET"
+    die "signed active release initialization failed"
+  fi
 
   systemctl daemon-reload
   systemctl enable drycontroller-tailnet.service drycontroller-activation.service

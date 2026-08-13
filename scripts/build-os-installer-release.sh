@@ -24,6 +24,7 @@ FORCE=false
 SOFTWARE_RELEASE="dist/initial-release/software-release.json"
 COSIGN_PUBLIC_KEY="dist/initial-release/cosign.pub"
 COSIGN_LINUX_AMD64="dist/initial-release/cosign-linux-amd64"
+HOST_ACTIVE="dist/initial-release/host-active.json"
 
 usage() {
   cat <<'EOF'
@@ -31,7 +32,7 @@ Usage:
   bash scripts/build-os-installer-release.sh [--channel NAME] [--output dist/OSYYYYMMDD-NAME.iso]
                                                 [--password-env-file FILE | --password-hash-file FILE | --password-hash HASH]
                                                 [--software-release FILE] [--cosign-public-key FILE]
-                                                [--cosign-linux-amd64 FILE]
+                                                [--cosign-linux-amd64 FILE] [--host-active FILE]
                                                 [--apt-mirror URI] [--include-wifi] [--force]
 
 Builds a full clean-room OS Installer release:
@@ -132,6 +133,11 @@ while [ $# -gt 0 ]; do
       [ -n "$COSIGN_LINUX_AMD64" ] || { usage >&2; exit 2; }
       shift 2
       ;;
+    --host-active)
+      HOST_ACTIVE="${2:-}"
+      [ -n "$HOST_ACTIVE" ] || { usage >&2; exit 2; }
+      shift 2
+      ;;
     --include-wifi)
       INCLUDE_WIFI=true
       shift
@@ -225,6 +231,7 @@ run python3 scripts/prepare-initial-release.py \
   --software-release "$SOFTWARE_RELEASE" \
   --cosign-public-key "$COSIGN_PUBLIC_KEY" \
   --cosign-linux-amd64 "$COSIGN_LINUX_AMD64" \
+  --host-active "$HOST_ACTIVE" \
   --source-commit "$(git rev-parse HEAD)" \
   --output-dir dist/autoinstall \
   --image-bundle dist/bundle-images.tar
@@ -264,6 +271,7 @@ require_file "dist/autoinstall/drycontroller-apt/Packages"
 require_file "dist/autoinstall/drycontroller-apt/Packages.gz"
 require_file "dist/autoinstall/activation-bundle.json"
 require_file "dist/autoinstall/software-release-seed.json"
+require_file "dist/autoinstall/host-active.json"
 require_file "dist/autoinstall/cosign.pub"
 require_file "dist/autoinstall/cosign-linux-amd64"
 
@@ -376,6 +384,7 @@ source_bundle = Path("dist/drycontroller-edge.tar.gz")
 image_bundle = Path("dist/bundle-images.tar")
 activation_bundle = Path("dist/autoinstall/activation-bundle.json")
 initial_release_seed = Path("dist/autoinstall/software-release-seed.json")
+host_active_file = Path("dist/autoinstall/host-active.json")
 release_cosign_pub = Path("dist/autoinstall/cosign.pub")
 release_cosign_bin = Path("dist/autoinstall/cosign-linux-amd64")
 wifi_env = Path("dist/autoinstall/wifi.env")
@@ -383,6 +392,7 @@ apt_pool = Path("dist/autoinstall/drycontroller-apt/pool")
 status = git("status", "--porcelain=v1")
 initial_release = json.loads(initial_release_seed.read_text(encoding="utf-8"))
 initial_manifest = initial_release["manifest"]
+host_active = json.loads(host_active_file.read_text(encoding="utf-8"))
 
 manifest = {
     "schema": "drycontroller.os-installer-release.v1",
@@ -434,6 +444,10 @@ manifest = {
             "source_commit": initial_manifest["source_commit"],
             "manifest_digest": initial_release["manifest_digest"],
             "seed_sha256": sha256(initial_release_seed),
+            "host_release_id": initial_manifest["host_release_id"],
+            "topology_digest": initial_manifest["topology_digest"],
+            "host_active_sha256": sha256(host_active_file),
+            "host_release_manifest_digest": host_active["host_release_manifest_digest"],
             "cosign_public_key_sha256": sha256(release_cosign_pub),
             "cosign_version": initial_manifest["cosign"]["version"],
             "cosign_linux_amd64_sha256": sha256(release_cosign_bin),

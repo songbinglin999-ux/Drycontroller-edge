@@ -10,6 +10,7 @@ LOG_FILE="/var/log/drycontroller-autoinstall.log"
 BUNDLE="/opt/drycontroller-edge.tar.gz"
 IMAGE_BUNDLE="/opt/drycontroller-images/bundle-images.tar"
 INITIAL_RELEASE="/opt/drycontroller-release/software-release-seed.json"
+HOST_ACTIVE="/opt/drycontroller-release/host-active.json"
 COSIGN_PUBLIC_KEY="/opt/drycontroller-release/cosign.pub"
 COSIGN_BIN="/opt/drycontroller-release/cosign-linux-amd64"
 SOURCE_ROOT="/opt/drycontroller-edge-source"
@@ -28,6 +29,7 @@ die() {
 [ -f "$BUNDLE" ] || die "missing edge bundle: $BUNDLE"
 [ -f "$IMAGE_BUNDLE" ] || die "missing complete initial image bundle: $IMAGE_BUNDLE"
 [ -f "$INITIAL_RELEASE" ] || die "missing signed initial SoftwareRelease: $INITIAL_RELEASE"
+[ -f "$HOST_ACTIVE" ] || die "missing fixed active HostRelease state: $HOST_ACTIVE"
 [ -f "$COSIGN_PUBLIC_KEY" ] || die "missing initial release cosign public key: $COSIGN_PUBLIC_KEY"
 [ -f "$COSIGN_BIN" ] || die "missing Linux amd64 cosign binary: $COSIGN_BIN"
 
@@ -76,11 +78,12 @@ log "running install-edge-host.sh"
 bash "${SOURCE_ROOT}/infra/bootstrap/install-edge-host.sh" \
   --source "$SOURCE_ROOT" \
   --initial-release "$INITIAL_RELEASE" \
+  --host-active "$HOST_ACTIVE" \
   --image-bundle "$IMAGE_BUNDLE" \
   --cosign-public-key "$COSIGN_PUBLIC_KEY" \
   --cosign-bin "$COSIGN_BIN"
 
-rm -f "$IMAGE_BUNDLE" "$INITIAL_RELEASE" "$COSIGN_PUBLIC_KEY" "$COSIGN_BIN"
+rm -f "$IMAGE_BUNDLE" "$INITIAL_RELEASE" "$HOST_ACTIVE" "$COSIGN_PUBLIC_KEY" "$COSIGN_BIN"
 log "signed initial active release installed"
 
 systemctl disable drycontroller-edge-post-install.service >/dev/null 2>&1 || true

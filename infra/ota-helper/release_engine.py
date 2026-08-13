@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import subprocess
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -25,30 +26,18 @@ from typing import Any, Callable, Iterator
 
 SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"
 RELEASE_JOURNAL_SCHEMA = "drycontroller.release-journal.v1"
+HOST_ACTIVE_SCHEMA = "drycontroller.host-active.v1"
 COSIGN_VERSION = "v3.1.3"
 COSIGN_LINUX_AMD64_SHA256 = "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
 COSIGN_TOOLCHAIN = {
     "version": COSIGN_VERSION,
     "linux_amd64_sha256": COSIGN_LINUX_AMD64_SHA256,
 }
-SOFTWARE_RELEASE_SERVICES = (
-    "ai-ctrl-optimizer",
-    "ai-softsensor",
-    "alertmanager",
-    "edge-api",
-    "edge-daq",
-    "edge-monitor",
-    "influxdb",
-    "license-service",
-    "mosquitto",
-    "mosquitto-init",
-    "postgres",
-    "prometheus",
-)
-_LONG_RUNNING_SERVICES = set(SOFTWARE_RELEASE_SERVICES) - {"mosquitto-init"}
 _MANIFEST_FIELDS = {
     "schema",
     "release_id",
+    "host_release_id",
+    "topology_digest",
     "sequence",
     "version",
     "source_commit",
@@ -57,6 +46,14 @@ _MANIFEST_FIELDS = {
     "cosign",
     "services",
     "image_ids",
+}
+_HOST_ACTIVE_FIELDS = {
+    "schema",
+    "host_release_id",
+    "host_release_manifest_digest",
+    "topology_digest",
+    "compose_digest",
+    "service_inventory",
 }
 _POLICY_FIELDS = {
     "operation_id",
@@ -87,6 +84,7 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REGISTRY = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$")
 _REPOSITORY_PATH = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$")
+_SERVICE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _HEALTH_URLS = (
     "http://127.0.0.1:8000/ready",
     "http://127.0.0.1:8082/ready",
@@ -120,6 +118,7 @@ class ReleasePaths:
     registry_status: Path
     device: Path
     cloud_config: Path
+    host_active: Path
 
     @classmethod
     def production(cls) -> "ReleasePaths":
@@ -134,6 +133,7 @@ class ReleasePaths:
             registry_status=Path("/etc/drycontroller/registry/status.json"),
             device=Path("/var/lib/drycontroller/device.json"),
             cloud_config=Path("/etc/drycontroller/tailnet.env"),
+            host_active=Path("/var/lib/drycontroller-host/active.json"),
         )
 
 
@@ -154,10 +154,91 @@ def canonical_manifest_digest(manifest: dict[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(canonical_manifest_bytes(manifest)).hexdigest()}"
 
 
+def docker_archive_config_digests(path: Path) -> dict[str, str]:
+    try:
+        with tarfile.open(path, mode="r:*") as archive:
+            manifest_file = archive.extractfile("manifest.json")
+            if manifest_file is None:
+                raise ReleaseError("Docker image archive manifest missing")
+            manifest_bytes = manifest_file.read(_MAX_JSON_BYTES + 1)
+            if len(manifest_bytes) > _MAX_JSON_BYTES:
+                raise ReleaseError("Docker image archive manifest too large")
+            manifest = json.loads(manifest_bytes)
+            if (
+                not isinstance(manifest, list)
+                or not manifest
+                or len(manifest) > 128
+                or not all(isinstance(item, dict) for item in manifest)
+            ):
+                raise ReleaseError("Docker image archive manifest invalid")
+            digests: dict[str, str] = {}
+            for item in manifest:
+                config_name = item.get("Config")
+                repo_tags = item.get("RepoTags")
+                if (
+                    not isinstance(config_name, str)
+                    or not config_name
+                    or not isinstance(repo_tags, list)
+                    or not repo_tags
+                    or not all(isinstance(tag, str) and tag for tag in repo_tags)
+                ):
+                    raise ReleaseError("Docker image archive entry invalid")
+                config_file = archive.extractfile(config_name)
+                if config_file is None:
+                    raise ReleaseError("Docker image archive config missing")
+                config_bytes = config_file.read(_MAX_JSON_BYTES + 1)
+                if len(config_bytes) > _MAX_JSON_BYTES:
+                    raise ReleaseError("Docker image archive config too large")
+                if not isinstance(json.loads(config_bytes), dict):
+                    raise ReleaseError("Docker image archive config invalid")
+                digest = f"sha256:{hashlib.sha256(config_bytes).hexdigest()}"
+                for tag in repo_tags:
+                    if tag in digests and digests[tag] != digest:
+                        raise ReleaseError("Docker image archive tag is ambiguous")
+                    digests[tag] = digest
+    except ReleaseError:
+        raise
+    except (OSError, tarfile.TarError, KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseError("Docker image archive invalid") from exc
+    return digests
+
+
+def docker_archive_config_digest(path: Path) -> str:
+    digests = set(docker_archive_config_digests(path).values())
+    if len(digests) != 1:
+        raise ReleaseError("Docker image archive must contain exactly one image")
+    return digests.pop()
+
+
+def local_image_reference(service: str, image_id: str) -> str:
+    if _SERVICE_NAME.fullmatch(service) is None or _DIGEST.fullmatch(image_id) is None:
+        raise ReleaseError("local release image identity invalid")
+    return f"drycontroller.local/{service}:sha256-{image_id.removeprefix('sha256:')}"
+
+
+def canonical_topology_digest(compose_digest: str, service_inventory: list[str]) -> str:
+    topology = {
+        "compose_digest": compose_digest,
+        "service_inventory": service_inventory,
+    }
+    return f"sha256:{hashlib.sha256(canonical_manifest_bytes(topology)).hexdigest()}"
+
+
 def _text(data: dict[str, Any], key: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value:
         raise ReleaseError(f"manifest {key} must be a non-empty string")
+    return value
+
+
+def _canonical_uuid(data: dict[str, Any], key: str) -> str:
+    value = _text(data, key)
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as exc:
+        raise ReleaseError(f"{key} must be a canonical UUID") from exc
+    if str(parsed) != value:
+        raise ReleaseError(f"{key} must be a canonical UUID")
     return value
 
 
@@ -167,13 +248,10 @@ def validate_manifest(manifest: object) -> dict[str, Any]:
     if manifest.get("schema") != SOFTWARE_RELEASE_SCHEMA:
         raise ReleaseError("unsupported software release schema")
 
-    release_id = _text(manifest, "release_id")
-    try:
-        parsed_release_id = uuid.UUID(release_id)
-    except ValueError as exc:
-        raise ReleaseError("manifest release_id must be a canonical UUID") from exc
-    if str(parsed_release_id) != release_id:
-        raise ReleaseError("manifest release_id must be a canonical UUID")
+    _canonical_uuid(manifest, "release_id")
+    _canonical_uuid(manifest, "host_release_id")
+    if not _DIGEST.fullmatch(_text(manifest, "topology_digest")):
+        raise ReleaseError("manifest topology_digest must be a sha256 digest")
 
     sequence = manifest.get("sequence")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
@@ -191,12 +269,14 @@ def validate_manifest(manifest: object) -> dict[str, Any]:
         raise ReleaseError("manifest cosign toolchain is not approved")
 
     services = manifest.get("services")
-    if not isinstance(services, dict) or set(services) != set(SOFTWARE_RELEASE_SERVICES):
-        raise ReleaseError("manifest must contain the complete service set")
+    if not isinstance(services, dict) or not services or len(services) > 128:
+        raise ReleaseError("manifest must contain a bounded service set")
+    if not all(isinstance(service, str) and _SERVICE_NAME.fullmatch(service) for service in services):
+        raise ReleaseError("manifest service name invalid")
     image_ids = manifest.get("image_ids")
-    if not isinstance(image_ids, dict) or set(image_ids) != set(SOFTWARE_RELEASE_SERVICES):
-        raise ReleaseError("manifest must contain the complete image ID set")
-    for service in SOFTWARE_RELEASE_SERVICES:
+    if not isinstance(image_ids, dict) or set(image_ids) != set(services):
+        raise ReleaseError("manifest image ID set must match the service set")
+    for service in sorted(services):
         reference = services.get(service)
         if not isinstance(reference, str) or "@" not in reference:
             raise ReleaseError(f"service {service} image must be digest locked")
@@ -210,6 +290,45 @@ def validate_manifest(manifest: object) -> dict[str, Any]:
         if not isinstance(image_id, str) or not _DIGEST.fullmatch(image_id):
             raise ReleaseError(f"service {service} image ID must be digest locked")
     return manifest
+
+
+def validate_host_active(host_active: object, compose_bytes: bytes) -> dict[str, Any]:
+    if not isinstance(host_active, dict) or set(host_active) != _HOST_ACTIVE_FIELDS:
+        raise ReleaseError("active HostRelease fields invalid")
+    if host_active.get("schema") != HOST_ACTIVE_SCHEMA:
+        raise ReleaseError("active HostRelease schema invalid")
+    _canonical_uuid(host_active, "host_release_id")
+    for key in ("host_release_manifest_digest", "topology_digest", "compose_digest"):
+        if not _DIGEST.fullmatch(_text(host_active, key)):
+            raise ReleaseError(f"active HostRelease {key} must be a sha256 digest")
+    inventory = host_active.get("service_inventory")
+    if (
+        not isinstance(inventory, list)
+        or not inventory
+        or len(inventory) > 128
+        or not all(isinstance(service, str) and _SERVICE_NAME.fullmatch(service) for service in inventory)
+        or inventory != sorted(set(inventory))
+    ):
+        raise ReleaseError("active HostRelease service inventory invalid")
+    actual_compose_digest = f"sha256:{hashlib.sha256(compose_bytes).hexdigest()}"
+    if host_active["compose_digest"] != actual_compose_digest:
+        raise ReleaseError("active HostRelease Compose digest mismatch")
+    if host_active["topology_digest"] != canonical_topology_digest(actual_compose_digest, inventory):
+        raise ReleaseError("active HostRelease topology digest mismatch")
+    return host_active
+
+
+def assert_software_release_host_binding(
+    manifest: dict[str, Any],
+    host_active: dict[str, Any],
+) -> None:
+    if (
+        manifest["host_release_id"] != host_active["host_release_id"]
+        or manifest["topology_digest"] != host_active["topology_digest"]
+    ):
+        raise ReleaseError("SoftwareRelease HostRelease binding mismatch")
+    if sorted(manifest["services"]) != host_active["service_inventory"]:
+        raise ReleaseError("SoftwareRelease service inventory does not match active topology")
 
 
 def _read_json(path: Path) -> Any:
@@ -254,6 +373,7 @@ class ReleaseEngine:
         policy_fetcher: Callable[[str], dict[str, Any]] | None = None,
         health_checker: Callable[[str], None] | None = None,
         runtime_health_checker: Callable[[str, float], None] | None = None,
+        image_set_verifier: Callable[[dict[str, str]], dict[str, str]] | None = None,
         monotonic: Callable[[], float] | None = None,
         sleeper: Callable[[float], None] | None = None,
         runtime_ready_timeout: float = _RUNTIME_READY_TIMEOUT_SECONDS,
@@ -271,6 +391,9 @@ class ReleaseEngine:
             (lambda url, timeout: self._check_health(url, timeout=timeout))
             if health_checker is None
             else (lambda url, _timeout: health_checker(url))
+        )
+        self._image_set_verifier = image_set_verifier or (
+            self._verify_portable_image_set if command_runner is None else self._verify_inspected_image_set
         )
         self._monotonic = monotonic or time.monotonic
         self._sleeper = sleeper or time.sleep
@@ -414,6 +537,23 @@ class ReleaseEngine:
             json.dumps(journal, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"),
         )
 
+    def _load_host_active(self) -> dict[str, Any]:
+        try:
+            compose_bytes = self.paths.compose.read_bytes()
+        except OSError as exc:
+            raise ReleaseError("active HostRelease Compose unavailable") from exc
+        return validate_host_active(_read_json(self.paths.host_active), compose_bytes)
+
+    def _assert_host_binding(
+        self,
+        manifest: dict[str, Any],
+        host_active: dict[str, Any] | None = None,
+    ) -> None:
+        assert_software_release_host_binding(
+            manifest,
+            host_active if host_active is not None else self._load_host_active(),
+        )
+
     def _read_operation_id(self) -> str:
         request = _read_json(self.paths.request)
         if not isinstance(request, dict) or set(request) != {"operation_id"}:
@@ -477,6 +617,7 @@ class ReleaseEngine:
         }:
             raise ReleaseError("initial release seed fields invalid")
         manifest = validate_manifest(seed.get("manifest"))
+        self._assert_host_binding(manifest)
         digest = canonical_manifest_digest(manifest)
         if seed.get("manifest_digest") != digest:
             raise ReleaseError("initial release seed digest mismatch")
@@ -509,8 +650,7 @@ class ReleaseEngine:
 
         try:
             self._materialize_and_verify_manifest(slot)
-            for service in SOFTWARE_RELEASE_SERVICES:
-                self._assert_local_image(manifest["image_ids"][service])
+            self._record_local_images(slot)
         except ReleaseError:
             raise
         except Exception as exc:
@@ -535,6 +675,7 @@ class ReleaseEngine:
         if journal["phase"] != "idle":
             self._recover_interrupted(journal)
         active = self._validate_slot(journal["active"], require_verified=True)
+        self._assert_host_binding(active["manifest"])
         journal.update({"phase": "active_starting", "effect": None, "error": None})
         self._persist_journal(journal)
         try:
@@ -629,6 +770,7 @@ class ReleaseEngine:
     def _materialize_and_verify_manifest(self, slot: dict[str, Any]) -> Path:
         slot = self._validate_slot(slot, require_verified=False)
         manifest = slot["manifest"]
+        self._assert_host_binding(manifest)
         self._verify_key_binding(manifest)
         try:
             signature = base64.b64decode(slot["manifest_signature"], validate=True)
@@ -643,11 +785,11 @@ class ReleaseEngine:
         _atomic_write(manifest_path, canonical_manifest_bytes(manifest))
         _atomic_write(signature_path, signature)
         override_lines = ["services:"]
-        for service in SOFTWARE_RELEASE_SERVICES:
+        for service in sorted(manifest["services"]):
             override_lines.extend(
                 [
                     f"  {service}:",
-                    f"    image: {json.dumps(manifest['image_ids'][service])}",
+                    f"    image: {json.dumps(local_image_reference(service, manifest['image_ids'][service]))}",
                 ]
             )
         _atomic_write(override_path, ("\n".join(override_lines) + "\n").encode("utf-8"))
@@ -700,33 +842,104 @@ class ReleaseEngine:
         self._persist_journal(journal)
         return result
 
-    def _assert_local_image(self, image_id: str) -> None:
-        output = self._command_runner(
-            [_DOCKER, "image", "inspect", "--format", "{{.Id}}", image_id]
-        )
-        if output.strip() != image_id:
-            raise ReleaseError("local release image missing")
+    def _verify_inspected_image_set(self, images: dict[str, str]) -> dict[str, str]:
+        runtime_ids: dict[str, str] = {}
+        for reference, expected_image_id in images.items():
+            output = self._command_runner(
+                [_DOCKER, "image", "inspect", "--format", "{{.Id}}", reference]
+            ).strip()
+            if output != expected_image_id:
+                raise ReleaseError("release image ID mismatch")
+            runtime_ids[reference] = output
+        return runtime_ids
 
-    def _assert_reference_image_id(self, reference: str, expected_image_id: str) -> None:
-        output = self._command_runner(
-            [_DOCKER, "image", "inspect", "--format", "{{.Id}}", reference]
-        )
-        if output.strip() != expected_image_id:
+    def _verify_portable_image_set(self, images: dict[str, str]) -> dict[str, str]:
+        self.paths.releases.mkdir(parents=True, exist_ok=True)
+        archive = self.paths.releases / ".local-image-verification.tar"
+        try:
+            self._command_runner([_DOCKER, "image", "save", "-o", str(archive), *images])
+            actual = docker_archive_config_digests(archive)
+        finally:
+            archive.unlink(missing_ok=True)
+        if any(actual.get(reference) != image_id for reference, image_id in images.items()):
             raise ReleaseError("release image ID mismatch")
+        return {
+            reference: self._command_runner(
+                [_DOCKER, "image", "inspect", "--format", "{{.Id}}", reference]
+            ).strip()
+            for reference in images
+        }
+
+    def _record_local_images(self, slot: dict[str, Any]) -> None:
+        manifest = validate_manifest(slot["manifest"])
+        expected = {
+            local_image_reference(service, manifest["image_ids"][service]): manifest["image_ids"][service]
+            for service in sorted(manifest["services"])
+        }
+        runtime_ids = self._image_set_verifier(expected)
+        if set(runtime_ids) != set(expected) or not all(
+            isinstance(runtime_id, str) and _DIGEST.fullmatch(runtime_id)
+            for runtime_id in runtime_ids.values()
+        ):
+            raise ReleaseError("local release image evidence invalid")
+        evidence = {
+            "manifest_digest": slot["manifest_digest"],
+            "images": {
+                service: {
+                    "reference": local_image_reference(service, manifest["image_ids"][service]),
+                    "image_id": manifest["image_ids"][service],
+                    "runtime_id": runtime_ids[
+                        local_image_reference(service, manifest["image_ids"][service])
+                    ],
+                }
+                for service in sorted(manifest["services"])
+            },
+        }
+        _atomic_write(
+            self._release_directory(slot) / "local-images.json",
+            json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        )
 
     def _prove_local_images(self, journal: dict[str, Any], slot: dict[str, Any], prefix: str) -> None:
         manifest = validate_manifest(slot["manifest"])
-        for service in SOFTWARE_RELEASE_SERVICES:
+        evidence = _read_json(self._release_directory(slot) / "local-images.json")
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("manifest_digest") != slot["manifest_digest"]
+            or not isinstance(evidence.get("images"), dict)
+            or set(evidence["images"]) != set(manifest["services"])
+        ):
+            raise ReleaseError("local release image evidence invalid")
+        for service in sorted(manifest["services"]):
             image_id = manifest["image_ids"][service]
+            reference = local_image_reference(service, image_id)
+            record = evidence["images"].get(service)
+            if (
+                not isinstance(record, dict)
+                or record.get("reference") != reference
+                or record.get("image_id") != image_id
+                or not isinstance(record.get("runtime_id"), str)
+                or _DIGEST.fullmatch(record["runtime_id"]) is None
+            ):
+                raise ReleaseError("local release image evidence invalid")
             self._effect(
                 journal,
                 f"{prefix}_inspect_{service}",
-                lambda image_id=image_id: self._assert_local_image(image_id),
+                lambda reference=reference, runtime_id=record["runtime_id"]: self._assert_runtime_image(
+                    reference, runtime_id
+                ),
             )
+
+    def _assert_runtime_image(self, reference: str, runtime_id: str) -> None:
+        output = self._command_runner(
+            [_DOCKER, "image", "inspect", "--format", "{{.Id}}", reference]
+        )
+        if output.strip() != runtime_id:
+            raise ReleaseError("local release image missing")
 
     def _pull_and_verify_candidate(self, journal: dict[str, Any], slot: dict[str, Any]) -> None:
         manifest = validate_manifest(slot["manifest"])
-        for service in SOFTWARE_RELEASE_SERVICES:
+        for service in sorted(manifest["services"]):
             reference = manifest["services"][service]
             self._effect(
                 journal,
@@ -747,14 +960,19 @@ class ReleaseEngine:
                     ]
                 ),
             )
-            expected_image_id = manifest["image_ids"][service]
             self._effect(
                 journal,
-                f"candidate_image_id_{service}",
-                lambda reference=reference, expected_image_id=expected_image_id: self._assert_reference_image_id(
-                    reference, expected_image_id
+                f"candidate_local_tag_{service}",
+                lambda reference=reference, service=service: self._command_runner(
+                    [
+                        _DOCKER,
+                        "tag",
+                        reference,
+                        local_image_reference(service, manifest["image_ids"][service]),
+                    ]
                 ),
             )
+        self._effect(journal, "candidate_image_ids", lambda: self._record_local_images(slot))
         self._prove_local_images(journal, slot, "candidate")
 
     @staticmethod
@@ -788,12 +1006,13 @@ class ReleaseEngine:
                 self._compose_args(override, "ps", "--all", "--format", "json"), remaining()
             )
             records = {str(record.get("Service") or ""): record for record in self._parse_compose_ps(output)}
-            if set(records) != set(SOFTWARE_RELEASE_SERVICES):
+            services = sorted(manifest["services"])
+            if set(records) != set(services):
                 raise ReleaseError("compose service inventory mismatch")
             pending = False
-            for service in SOFTWARE_RELEASE_SERVICES:
+            for service in services:
                 record = records[service]
-                if record.get("Image") != manifest["image_ids"][service]:
+                if record.get("Image") != local_image_reference(service, manifest["image_ids"][service]):
                     raise ReleaseError("running image does not match release manifest")
                 state = str(record.get("State") or "").lower()
                 if service == "mosquitto-init":
@@ -807,9 +1026,9 @@ class ReleaseEngine:
                     else:
                         raise ReleaseError("release service is not running")
                 health = str(record.get("Health") or "").lower()
-                if service in _LONG_RUNNING_SERVICES and health == "starting":
+                if service != "mosquitto-init" and health == "starting":
                     pending = True
-                elif service in _LONG_RUNNING_SERVICES and health not in {"", "healthy"}:
+                elif service != "mosquitto-init" and health not in {"", "healthy"}:
                     raise ReleaseError("release service is unhealthy")
             return not pending
 
@@ -852,6 +1071,7 @@ class ReleaseEngine:
 
     def _rollback(self, journal: dict[str, Any], reason: str) -> None:
         previous = self._validate_slot(journal.get("previous"), require_verified=True)
+        self._assert_host_binding(previous["manifest"])
         journal["phase"] = "rollback_started"
         journal["error"] = reason[:512]
         self._persist_journal(journal)
@@ -926,9 +1146,12 @@ class ReleaseEngine:
             self._recover_interrupted(journal)
 
         active = self._validate_slot(journal["active"], require_verified=True)
+        host_active = self._load_host_active()
+        self._assert_host_binding(active["manifest"], host_active)
         original_previous = journal.get("previous")
         policy = self._policy_fetcher(operation_id)
         candidate = self._validate_policy(policy, operation_id, active)
+        self._assert_host_binding(candidate["manifest"], host_active)
         active_manifest = validate_manifest(active["manifest"])
         candidate_sequence = int(candidate["manifest"]["sequence"])
         active_sequence = int(active_manifest["sequence"])

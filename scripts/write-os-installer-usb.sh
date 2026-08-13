@@ -162,10 +162,13 @@ assert spec.loader is not None
 spec.loader.exec_module(maker)
 
 seed_bytes = maker.extract_iso_file(iso, "software-release-seed.json")
+host_active_bytes = maker.extract_iso_file(iso, "host-active.json")
 public_key_bytes = maker.extract_iso_file(iso, "cosign.pub")
 cosign_bytes = maker.extract_iso_file(iso, "cosign-linux-amd64")
 if hashlib.sha256(seed_bytes).hexdigest() != initial_release.get("seed_sha256"):
     raise SystemExit("embedded SoftwareRelease seed checksum mismatch")
+if hashlib.sha256(host_active_bytes).hexdigest() != initial_release.get("host_active_sha256"):
+    raise SystemExit("embedded active HostRelease state checksum mismatch")
 if hashlib.sha256(public_key_bytes).hexdigest() != initial_release.get("cosign_public_key_sha256"):
     raise SystemExit("embedded cosign public key checksum mismatch")
 if hashlib.sha256(cosign_bytes).hexdigest() != initial_release.get("cosign_linux_amd64_sha256"):
@@ -183,6 +186,16 @@ canonical_seed_manifest = json.dumps(
 seed_manifest_digest = "sha256:" + hashlib.sha256(canonical_seed_manifest).hexdigest()
 if seed.get("manifest_digest") != seed_manifest_digest or initial_release.get("manifest_digest") != seed_manifest_digest:
     raise SystemExit("embedded SoftwareRelease manifest digest mismatch")
+host_active = json.loads(host_active_bytes)
+if (
+    seed_manifest.get("host_release_id") != host_active.get("host_release_id")
+    or seed_manifest.get("topology_digest") != host_active.get("topology_digest")
+    or initial_release.get("host_release_id") != host_active.get("host_release_id")
+    or initial_release.get("topology_digest") != host_active.get("topology_digest")
+    or initial_release.get("host_release_manifest_digest")
+    != host_active.get("host_release_manifest_digest")
+):
+    raise SystemExit("embedded SoftwareRelease and active HostRelease binding mismatch")
 
 
 class App:

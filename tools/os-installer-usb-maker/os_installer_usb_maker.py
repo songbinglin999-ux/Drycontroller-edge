@@ -752,6 +752,7 @@ class UsbMakerApp(tk.Tk):
             required_release_files = (
                 DIST_DIR / "bundle-images.tar",
                 AUTOINSTALL_DIR / "software-release-seed.json",
+                AUTOINSTALL_DIR / "host-active.json",
                 AUTOINSTALL_DIR / "cosign.pub",
                 AUTOINSTALL_DIR / "cosign-linux-amd64",
             )
@@ -860,6 +861,7 @@ class UsbMakerApp(tk.Tk):
         required_release_files = (
             DIST_DIR / "bundle-images.tar",
             AUTOINSTALL_DIR / "software-release-seed.json",
+            AUTOINSTALL_DIR / "host-active.json",
             AUTOINSTALL_DIR / "cosign.pub",
             AUTOINSTALL_DIR / "cosign-linux-amd64",
         )
@@ -1101,6 +1103,7 @@ def build_iso(app: UsbMakerApp, plan: dict[str, object]) -> None:
         maps.extend(
             [
                 ("dist/autoinstall/software-release-seed.json", "/software-release-seed.json"),
+                ("dist/autoinstall/host-active.json", "/host-active.json"),
                 ("dist/autoinstall/cosign.pub", "/cosign.pub"),
                 ("dist/autoinstall/cosign-linux-amd64", "/cosign-linux-amd64"),
             ]
@@ -1193,6 +1196,7 @@ def verify_final_iso(app: UsbMakerApp, iso: Path, *, include_images: bool) -> No
             {
                 "bundle-images.tar",
                 "software-release-seed.json",
+                "host-active.json",
                 "cosign.pub",
                 "cosign-linux-amd64",
             }

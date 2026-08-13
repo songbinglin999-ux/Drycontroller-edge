@@ -36,7 +36,12 @@ def test_release_builder_is_complete_and_completion_is_last():
     assert "release_step_scan \"${inherited_ref}\"" in script
     assert "release_step_verify_image \"${inherited_ref}\"" in script
     assert "inputs.services" not in script
+    assert '"host_release_id": os.environ["HOST_RELEASE_ID"]' in script
+    assert '"topology_digest": os.environ["TOPOLOGY_DIGEST"]' in script
     assert "bash scripts/ci/verify-cosign-toolchain.sh" in script
+    assert "release_step_resolve_portable_image_id" in script
+    assert "docker_archive_config_digest" in script
+    assert "docker image inspect --format '{{.Id}}'" not in script
 
     order = [
         "release_step_build_or_mirror",
@@ -107,6 +112,8 @@ def test_release_workflow_uses_the_fixed_builder_after_tests():
     workflow = (ROOT / ".gitea/workflows/edge-software-release.yml").read_text(encoding="utf-8")
     assert "needs: test" in workflow
     assert "bash scripts/ci/build-software-release.sh" in workflow
+    assert "HOST_RELEASE_ID: ${{ vars.HOST_RELEASE_ID }}" in workflow
+    assert "TOPOLOGY_DIGEST: ${{ vars.TOPOLOGY_DIGEST }}" in workflow
     assert "services:" not in workflow.split("workflow_dispatch:", 1)[1].split("jobs:", 1)[0]
 
 
@@ -183,6 +190,8 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
         manifest = {
             "schema": "drycontroller.software-release.v1",
             "release_id": "11111111-1111-4111-8111-111111111111",
+            "host_release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "topology_digest": "sha256:" + "c" * 64,
             "sequence": 1,
             "version": "1.0.0",
             "source_commit": previous_commit,
@@ -219,6 +228,9 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
             "HARBOR_HOST": "registry.example.com",
             "SIGNING_KEY_SHA256": "sha256:" + "a" * 64,
             "RELEASE_SOURCE_COMMIT": current_commit,
+            "HOST_RELEASE_ID": manifest["host_release_id"],
+            "TOPOLOGY_DIGEST": manifest["topology_digest"],
+            "RELEASE_SERVICE_INVENTORY": "\n".join(services),
         }
         subprocess.run(
             ["python3", "-c", resolver, str(predecessor_path), str(output_path)],

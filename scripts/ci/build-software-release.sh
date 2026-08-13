@@ -16,9 +16,13 @@ SERVICES=(
   "postgres"
   "prometheus"
 )
+RELEASE_SERVICE_INVENTORY="$(printf '%s\n' "${SERVICES[@]}")"
+export RELEASE_SERVICE_INVENTORY
 
 : "${RELEASE_VERSION:?missing RELEASE_VERSION}"
 : "${RELEASE_SOURCE_COMMIT:?missing RELEASE_SOURCE_COMMIT}"
+: "${HOST_RELEASE_ID:?missing HOST_RELEASE_ID}"
+: "${TOPOLOGY_DIGEST:?missing TOPOLOGY_DIGEST}"
 : "${HARBOR_HOST:?missing HARBOR_HOST}"
 : "${HARBOR_PROJECT:?missing HARBOR_PROJECT}"
 : "${HARBOR_USER:?missing HARBOR_USER}"
@@ -31,6 +35,8 @@ SERVICES=(
 
 [[ "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
 [[ "${RELEASE_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+[[ "${HOST_RELEASE_ID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+[[ "${TOPOLOGY_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
 [[ "${HARBOR_HOST}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$ ]]
 [[ "${HARBOR_PROJECT}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]
 [[ "${CLOUD_OPS_RELEASE_API_URL}" == https://* ]]
@@ -135,9 +141,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from release_engine import SOFTWARE_RELEASE_SERVICES, validate_manifest
+from release_engine import validate_manifest
 
-all_services = set(SOFTWARE_RELEASE_SERVICES)
+service_inventory = tuple(os.environ["RELEASE_SERVICE_INVENTORY"].splitlines())
+all_services = set(service_inventory)
 predecessor = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 changed = set(all_services)
 
@@ -156,6 +163,8 @@ if predecessor is not None:
         identity_matches
         and manifest["registry"] == os.environ["HARBOR_HOST"]
         and manifest["signing_key_sha256"] == os.environ["SIGNING_KEY_SHA256"]
+        and manifest["host_release_id"] == os.environ["HOST_RELEASE_ID"]
+        and manifest["topology_digest"] == os.environ["TOPOLOGY_DIGEST"]
     )
     if can_inherit:
         current_commit = os.environ["RELEASE_SOURCE_COMMIT"]
@@ -189,7 +198,7 @@ if predecessor is not None:
                     break
 
 Path(sys.argv[2]).write_text(
-    "".join(f"{service}\n" for service in SOFTWARE_RELEASE_SERVICES if service in changed),
+    "".join(f"{service}\n" for service in service_inventory if service in changed),
     encoding="utf-8",
 )
 PY
@@ -288,6 +297,21 @@ release_step_resolve_digest() {
   printf '%s\n' "${resolved}"
 }
 
+release_step_resolve_portable_image_id() {
+  local target="$1"
+  local archive="${release_work_dir}/portable-image.tar"
+  docker image save -o "${archive}" "${target}"
+  PYTHONPATH="infra/ota-helper" python3 - "${archive}" <<'PY'
+import sys
+from pathlib import Path
+
+from release_engine import docker_archive_config_digest
+
+print(docker_archive_config_digest(Path(sys.argv[1])))
+PY
+  rm -f -- "${archive}"
+}
+
 release_step_sign_image() {
   cosign sign --yes --signing-config "${signing_config}" --key "${signing_key}" "$1"
 }
@@ -311,12 +335,13 @@ import os
 import sys
 from pathlib import Path
 
-from release_engine import SOFTWARE_RELEASE_SERVICES, canonical_manifest_bytes, validate_manifest
+from release_engine import canonical_manifest_bytes, validate_manifest
 
 predecessor = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 changed = set(Path(sys.argv[4]).read_text(encoding="utf-8").splitlines())
+service_inventory = tuple(os.environ["RELEASE_SERVICE_INVENTORY"].splitlines())
 if predecessor is None:
-    if changed != set(SOFTWARE_RELEASE_SERVICES):
+    if changed != set(service_inventory):
         raise SystemExit("a partial release requires a completed predecessor")
     Path(sys.argv[5]).write_text("", encoding="utf-8")
     raise SystemExit(0)
@@ -327,10 +352,15 @@ expected_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
 if predecessor.get("manifest_digest") != expected_digest:
     raise SystemExit("predecessor manifest digest mismatch")
 if manifest["signing_key_sha256"] != os.environ["SIGNING_KEY_SHA256"]:
-    if changed != set(SOFTWARE_RELEASE_SERVICES):
+    if changed != set(service_inventory):
         raise SystemExit("signing-key rotation requires rebuilding every service")
     Path(sys.argv[5]).write_text("", encoding="utf-8")
     raise SystemExit(0)
+if (
+    manifest["host_release_id"] != os.environ["HOST_RELEASE_ID"]
+    or manifest["topology_digest"] != os.environ["TOPOLOGY_DIGEST"]
+):
+    raise SystemExit("predecessor topology binding changed")
 try:
     signature = base64.b64decode(predecessor.get("manifest_signature", ""), validate=True)
 except (binascii.Error, ValueError) as exc:
@@ -342,7 +372,7 @@ Path(sys.argv[3]).write_bytes(signature)
 Path(sys.argv[5]).write_text(
     "".join(
         f"{service}\t{manifest['services'][service]}\t{manifest['image_ids'][service]}\n"
-        for service in SOFTWARE_RELEASE_SERVICES
+        for service in service_inventory
         if service not in changed
     ),
     encoding="utf-8",
@@ -446,7 +476,7 @@ for service in "${SERVICES[@]}"; do
   release_step_sign_image "${digest_ref}"
   release_step_verify_image "${digest_ref}"
   IMAGE_REFS["${service}"]="${digest_ref}"
-  image_id="$(docker image inspect --format '{{.Id}}' "${target}")"
+  image_id="$(release_step_resolve_portable_image_id "${target}")"
   [[ "${image_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
   IMAGE_IDS["${service}"]="${image_id}"
 done
@@ -477,6 +507,8 @@ for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
 manifest = {
     "schema": "drycontroller.software-release.v1",
     "release_id": os.environ["RELEASE_ID"],
+    "host_release_id": os.environ["HOST_RELEASE_ID"],
+    "topology_digest": os.environ["TOPOLOGY_DIGEST"],
     "sequence": int(os.environ["RELEASE_SEQUENCE"]),
     "version": os.environ["RELEASE_VERSION"],
     "source_commit": os.environ["RELEASE_SOURCE_COMMIT"],
