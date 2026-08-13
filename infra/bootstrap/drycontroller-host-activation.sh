@@ -31,18 +31,47 @@ die() {
 }
 
 [ "$(id -u)" -eq 0 ] || die "run as root"
+command -v python3 >/dev/null 2>&1 || die "python3 is not installed"
 if [ ! -f "$BUNDLE_FILE" ]; then
-  log "no activation bundle; skipping activation"
-  exit 0
+  recovery_state="$(python3 - "$STATE_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    print((json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("state") or "").strip())
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    print("")
+PY
+)"
+  if [ "$recovery_state" != "formal_tailnet_joined" ] && [ "$recovery_state" != "formal_license_active" ]; then
+    log "no activation bundle; skipping activation"
+    exit 0
+  fi
+  [ -f "$ENV_FILE" ] && [ -f "$FACTORY_LICENSE_ARCHIVE_PATH" ] \
+    || die "consumed activation bundle recovery state is missing durable identity material"
+  log "activation bundle consumed; resuming state=${recovery_state}"
 fi
 
-command -v python3 >/dev/null 2>&1 || die "python3 is not installed"
+fsync_directory() {
+  python3 - "$1" <<'PY'
+import os
+import sys
 
-durable_secret_replace() {
+descriptor = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
+durable_replace() {
   local target="$1"
+  local mode="$2"
   local parent
   local temporary
-  shift
+  shift 2
   parent="$(dirname "$target")"
   mkdir -p "$parent"
   temporary="$(umask 077; mktemp "${parent}/.$(basename "$target").XXXXXX.tmp")" || return 1
@@ -50,7 +79,7 @@ durable_secret_replace() {
     rm -f "$temporary"
     return 1
   fi
-  if ! chmod 0600 "$temporary"; then
+  if ! chmod "$mode" "$temporary"; then
     rm -f "$temporary"
     return 1
   fi
@@ -72,16 +101,13 @@ PY
     rm -f "$temporary"
     return 1
   fi
-  python3 - "$parent" <<'PY'
-import os
-import sys
+  fsync_directory "$parent"
+}
 
-descriptor = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)
-try:
-    os.fsync(descriptor)
-finally:
-    os.close(descriptor)
-PY
+durable_secret_replace() {
+  local target="$1"
+  shift
+  durable_replace "$target" 0600 "$@"
 }
 
 materialize_activation_bundle() {
@@ -182,8 +208,7 @@ command -v tailscale >/dev/null 2>&1 || die "tailscale CLI is not installed"
 write_state() {
   local state="$1"
   local message="${2:-}"
-  mkdir -p "$(dirname "$STATE_FILE")"
-  STATE_FILE="$STATE_FILE" STATE="$state" MESSAGE="$message" python3 - <<'PY'
+  STATE_FILE="$STATE_FILE" STATE="$state" MESSAGE="$message" durable_secret_replace "$STATE_FILE" python3 - <<'PY'
 import datetime as dt
 import json
 import os
@@ -199,17 +224,12 @@ if path.exists():
 payload["state"] = os.environ["STATE"]
 payload["message"] = os.environ.get("MESSAGE") or payload.get("message") or ""
 payload["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-tmp.replace(path)
+print(json.dumps(payload, ensure_ascii=False, indent=2))
 PY
-  chmod 0600 "$STATE_FILE" || true
 }
 
 mark_bootstrap_complete() {
-  mkdir -p "$(dirname "$BOOTSTRAP_SENTINEL")"
-  : > "$BOOTSTRAP_SENTINEL"
-  chmod 0600 "$BOOTSTRAP_SENTINEL" || true
+  durable_secret_replace "$BOOTSTRAP_SENTINEL" printf ''
 }
 
 tailnet_ip() {
@@ -221,38 +241,42 @@ tailnet_hostname() {
 }
 
 license_fingerprint() {
+  local fingerprint
   ensure_factory_license_archive
-  STATE_FILE="$STATE_FILE" MACHINE_ID="$(machine_id)" python3 - "$FACTORY_LICENSE_ARCHIVE_PATH" <<'PY'
+  fingerprint="$(MACHINE_ID="$(machine_id)" python3 - "$FACTORY_LICENSE_ARCHIVE_PATH" <<'PY'
 import hashlib
 import json
 import os
 import sys
 from pathlib import Path
 
-state_path = Path(os.environ["STATE_FILE"])
 machine_id = os.environ.get("MACHINE_ID", "").strip()
-state = {}
-if state_path.exists():
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        state = {}
-
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 h = hashlib.sha256()
 h.update(raw)
 h.update(b"\0")
 h.update(machine_id.encode("utf-8"))
-fingerprint = h.hexdigest()
-state["factory_license_fingerprint"] = fingerprint
-state_path.parent.mkdir(parents=True, exist_ok=True)
-tmp = state_path.with_suffix(state_path.suffix + ".tmp")
-tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-tmp.replace(state_path)
-print(fingerprint)
+print(h.hexdigest())
 PY
-  chmod 0600 "$STATE_FILE" || true
+)"
+  STATE_FILE="$STATE_FILE" FACTORY_LICENSE_FINGERPRINT="$fingerprint" \
+    durable_secret_replace "$STATE_FILE" python3 - <<'PY' || return 1
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["STATE_FILE"])
+state = {}
+if path.exists():
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        state = {}
+state["factory_license_fingerprint"] = os.environ["FACTORY_LICENSE_FINGERPRINT"]
+print(json.dumps(state, ensure_ascii=False, indent=2))
+PY
+  printf '%s\n' "$fingerprint"
 }
 
 ensure_factory_license_archive() {
@@ -297,10 +321,10 @@ PY
 }
 
 install_license_from_response() {
+  local action
   local response_file="$1"
   ensure_factory_license_archive
-  mkdir -p "$(dirname "$LICENSE_FILE_PATH")" "$(dirname "$LICENSE_PUBLIC_KEY_PATH")"
-  python3 - "$response_file" "$LICENSE_FILE_PATH" "$LICENSE_PUBLIC_KEY_PATH" <<'PY'
+  action="$(python3 - "$response_file" "$LICENSE_FILE_PATH" "$LICENSE_PUBLIC_KEY_PATH" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -310,22 +334,39 @@ license_payload = resp.get("license_payload") or resp.get("license") or resp.get
 public_key = (resp.get("license_public_key") or "").strip()
 if license_payload is None and not public_key:
     if Path(sys.argv[2]).is_file() and Path(sys.argv[3]).is_file():
+        print("reuse")
         raise SystemExit(0)
     raise SystemExit("activation response omitted license and no local license is installed")
 if not isinstance(license_payload, dict) or not license_payload.get("signature"):
     raise SystemExit("activation response missing signed license")
 if not public_key:
     raise SystemExit("activation response missing license_public_key")
-Path(sys.argv[2]).write_text(json.dumps(license_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-Path(sys.argv[3]).write_text(public_key + "\n", encoding="utf-8")
+print("install")
 PY
-  chmod 0640 "$LICENSE_FILE_PATH" "$LICENSE_PUBLIC_KEY_PATH" || true
+)"
+  [ "$action" = "install" ] || return 0
+  RESPONSE_FILE="$response_file" durable_replace "$LICENSE_FILE_PATH" 0640 python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+response = json.loads(Path(os.environ["RESPONSE_FILE"]).read_text(encoding="utf-8"))
+payload = response.get("license_payload") or response.get("license") or response.get("payload")
+print(json.dumps(payload, ensure_ascii=False, indent=2))
+PY
+  RESPONSE_FILE="$response_file" durable_replace "$LICENSE_PUBLIC_KEY_PATH" 0640 python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+response = json.loads(Path(os.environ["RESPONSE_FILE"]).read_text(encoding="utf-8"))
+print((response.get("license_public_key") or "").strip())
+PY
 }
 
 save_device_identity() {
   local response_file="$1"
-  mkdir -p "$(dirname "$DEVICE_JSON")"
-  MACHINE_ID="$(machine_id)" DEVICE_JSON="$DEVICE_JSON" python3 - "$response_file" <<'PY'
+  MACHINE_ID="$(machine_id)" DEVICE_JSON="$DEVICE_JSON" durable_secret_replace "$DEVICE_JSON" python3 - "$response_file" <<'PY'
 import datetime as dt
 import json
 import os
@@ -351,9 +392,8 @@ if path.exists():
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         existing = {}
 existing.update({k: v for k, v in payload.items() if v})
-path.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print(json.dumps(existing, ensure_ascii=False, indent=2))
 PY
-  chmod 0600 "$DEVICE_JSON" || true
 }
 
 save_runtime_credentials() {
@@ -488,6 +528,15 @@ lines = path.read_text(encoding="utf-8").splitlines()
 kept = [line for line in lines if not line.startswith("TS_AUTHKEY=")]
 print("\n".join(kept))
 PY
+}
+
+retire_activation_bundle() {
+  local parent
+  parent="$(dirname "$BUNDLE_FILE")"
+  if ! rm -f -- "$BUNDLE_FILE"; then
+    return 1
+  fi
+  fsync_directory "$parent"
 }
 
 edge_runtime_storage_state() {
@@ -738,8 +787,8 @@ bind_current_tailnet_node() {
   local hostname="$1"
   [ -n "$hostname" ] || hostname="${TS_HOSTNAME:-$(hostname)}"
 
-  rename_current_tailnet_node "$hostname"
-  sync_tailnet_env_after_activation "$hostname"
+  rename_current_tailnet_node "$hostname" || return 1
+  sync_tailnet_env_after_activation "$hostname" || return 1
 
   local current_ip
   current_ip="$(tailnet_ip)"
@@ -747,13 +796,27 @@ bind_current_tailnet_node() {
     log "current tailnet node has no IPv4; cannot bind license identity yet"
     return 1
   }
-  sync_edge_env_after_activation "$current_ip" "$hostname"
-  reapply_edge_compose_binding || return 1
+  sync_edge_env_after_activation "$current_ip" "$hostname" || return 1
   if ! confirm_current_tailnet_binding "$current_ip" "$hostname"; then
     return 75
   fi
-  remove_bootstrap_tailnet_authkey
-  log "current tailnet node bound as ${hostname} ip=${current_ip}; bootstrap TS_AUTHKEY removed from ${ENV_FILE}"
+  if ! write_state "formal_tailnet_joined" "tailnet_node_bound"; then
+    log "tailnet binding confirmed but recovery state could not be persisted; keeping bootstrap material"
+    return 1
+  fi
+  if ! remove_bootstrap_tailnet_authkey; then
+    log "tailnet binding confirmed but bootstrap authkey retirement failed; cleanup will retry"
+    return 76
+  fi
+  if ! retire_activation_bundle; then
+    log "tailnet binding confirmed but activation bundle retirement was not durable; cleanup will retry"
+    return 76
+  fi
+  if ! reapply_edge_compose_binding; then
+    log "tailnet binding confirmed and bootstrap material retired; signed runtime start will retry"
+    return 76
+  fi
+  log "current tailnet node bound as ${hostname} ip=${current_ip}; bootstrap activation material retired"
   return 0
 }
 
@@ -778,6 +841,8 @@ except (OSError, UnicodeDecodeError, json.JSONDecodeError):
 PY
 )"
 if [ "$current_state" = "formal_license_active" ]; then
+  remove_bootstrap_tailnet_authkey || exit 75
+  retire_activation_bundle || exit 75
   sync_edge_env_after_activation "$(tailnet_ip)" "${TS_HOSTNAME:-}"
   reapply_edge_compose_binding || exit 75
   mark_bootstrap_complete
@@ -789,6 +854,8 @@ if [ "$current_state" = "formal_tailnet_joined" ]; then
   current_tailnet_ip="$(tailnet_ip)"
   if confirm_current_tailnet_binding "$current_tailnet_ip" "${TS_HOSTNAME:-}"; then
     sync_edge_env_after_activation "$current_tailnet_ip" "${TS_HOSTNAME:-}"
+    remove_bootstrap_tailnet_authkey
+    retire_activation_bundle
     reapply_edge_compose_binding || exit 75
     write_state "formal_license_active" "activation_complete"
     mark_bootstrap_complete
@@ -848,6 +915,8 @@ if [ "$bind_status" -eq 0 ]; then
   log "activation complete"
 elif [ "$bind_status" -eq 75 ]; then
   write_state "cloud_activated" "tailnet_node_bind_confirm_failed"
+  exit 75
+elif [ "$bind_status" -eq 76 ]; then
   exit 75
 else
   write_state "cloud_activated" "tailnet_node_bind_failed"

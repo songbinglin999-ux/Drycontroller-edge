@@ -41,7 +41,8 @@ def test_host_activation_agent_binds_current_tailnet_node_without_formal_reauth(
 
     assert 'BUNDLE_FILE="${DRYCONTROLLER_ACTIVATION_BUNDLE:-/etc/drycontroller/activation-bundle.json}"' in text
     assert "drycontroller.activation-bundle.v1" in text
-    assert "if not env_path.exists():" in text
+    assert 'if [ ! -f "$ENV_FILE" ]; then' in text
+    assert 'durable_secret_replace "$ENV_FILE"' in text
     assert 'if [ ! -f "$BUNDLE_FILE" ]; then' in text
     assert "no activation bundle; skipping activation" in text
     assert "activation bundle must materialize it" in text
@@ -63,6 +64,7 @@ def test_host_activation_agent_binds_current_tailnet_node_without_formal_reauth(
     assert 'EDGE_ENV_FILE="${EDGE_ENV_FILE:-${EDGE_ROOT}/.env}"' in text
     assert "reapply_edge_compose_binding" in text
     assert "confirm_current_tailnet_binding" in text
+    assert "retire_activation_bundle" in text
     assert "/bind-tailnet-node" in text
     assert 'BOOTSTRAP_SENTINEL="${DRYCONTROLLER_BOOTSTRAP_SENTINEL:-/var/lib/drycontroller/.bootstrapped}"' in text
     assert "mark_bootstrap_complete" in text
@@ -90,6 +92,9 @@ def test_host_activation_syncs_cloud_runtime_env_into_edge_env(tmp_path):
     start = text.index("sync_edge_env_after_activation() {")
     end = text.index("\nreapply_edge_compose_binding() {", start)
     function_text = text[start:end]
+    helper_start = text.index("fsync_directory() {")
+    helper_end = text.index("\nmaterialize_activation_bundle() {", helper_start)
+    helper_text = text[helper_start:helper_end]
 
     tailnet_env = tmp_path / "tailnet.env"
     tailnet_env.write_text(
@@ -112,6 +117,8 @@ def test_host_activation_syncs_cloud_runtime_env_into_edge_env(tmp_path):
                 "UNCHANGED=1",
                 "CLOUD_OPS_BASE_URL=http://old-cloud",
                 "CLOUD_OPS_ENROLL_TOKEN=old-token",
+                'ADMIN_API_KEYS=["admin-strong"]',
+                'CONTROL_API_KEYS=["control-strong"]',
                 "",
             ]
         ),
@@ -123,6 +130,8 @@ def test_host_activation_syncs_cloud_runtime_env_into_edge_env(tmp_path):
             [
                 "set -euo pipefail",
                 "log() { :; }",
+                helper_text,
+                "edge_runtime_storage_state() { printf 'fresh\\n'; }",
                 function_text,
                 f"ENV_FILE={tailnet_env}",
                 f"EDGE_ENV_FILE={edge_env}",
@@ -298,9 +307,9 @@ def test_host_activation_persists_server_compatible_factory_fingerprint_before_p
     assert 'json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))' in text
     assert 'h.update(b"\\0")' in text
     assert 'FACTORY_LICENSE_FINGERPRINT="$(license_fingerprint)"' in text
-    assert 'state["factory_license_fingerprint"] = fingerprint' in text
+    assert 'state["factory_license_fingerprint"] = os.environ["FACTORY_LICENSE_FINGERPRINT"]' in text
     assert text.index("ensure_factory_license_archive") < text.index('install_license_from_response "$response_file"')
-    assert text.index('state["factory_license_fingerprint"] = fingerprint') < text.index(
+    assert text.index('state["factory_license_fingerprint"] = os.environ["FACTORY_LICENSE_FINGERPRINT"]') < text.index(
         'install_license_from_response "$response_file"'
     )
 
@@ -327,10 +336,13 @@ def test_host_activation_removes_bootstrap_key_only_after_tailnet_bind_confirmed
     bind_end = text.index('\nresponse_file="$(mktemp)"', bind_start)
     bind_text = text[bind_start:bind_end]
     confirm = bind_text.index('if ! confirm_current_tailnet_binding "$current_ip" "$hostname"; then')
+    state = bind_text.index('write_state "formal_tailnet_joined" "tailnet_node_bound"', confirm)
     remove = bind_text.index("remove_bootstrap_tailnet_authkey", confirm)
-    done_log = bind_text.index("current tailnet node bound as", remove)
+    retire = bind_text.index("retire_activation_bundle", remove)
+    signed_start = bind_text.index("reapply_edge_compose_binding", retire)
+    done_log = bind_text.index("current tailnet node bound as", signed_start)
 
-    assert confirm < remove < done_log
+    assert confirm < state < remove < retire < signed_start < done_log
 
 
 def test_host_activation_is_idempotent_after_formal_license_active():
@@ -473,4 +485,4 @@ def test_activation_starts_only_the_signed_active_release_without_registry_pull(
     assert 'START_ACTIVE_PROGRAM="${DRYCONTROLLER_START_ACTIVE_PROGRAM:-/usr/libexec/drycontroller/start-active-release}"' in text
     assert '"$START_ACTIVE_PROGRAM"' in text
     assert "docker compose up -d" not in text
-    assert "reapply_edge_compose_binding || return 1" in text
+    assert "if ! reapply_edge_compose_binding; then" in text

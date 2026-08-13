@@ -24,6 +24,7 @@ materialize_activation_bundle() {
   BUNDLE_FILE="$BUNDLE_FILE" ENV_FILE="$ENV_FILE" python3 - <<'PY'
 import json
 import os
+import secrets
 import shlex
 from pathlib import Path
 
@@ -55,9 +56,22 @@ path = Path(os.environ["ENV_FILE"])
 if not path.exists():
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 PY
-  chmod 0600 "$ENV_FILE" || true
   log "materialized tailnet env from activation bundle"
 }
 
@@ -70,6 +84,7 @@ fi
 command -v python3 >/dev/null 2>&1 || die "python3 is not installed"
 materialize_activation_bundle
 [ -f "$ENV_FILE" ] || die "missing tailnet env: $ENV_FILE"
+chmod 0600 "$ENV_FILE" || die "cannot secure tailnet env: $ENV_FILE"
 
 # shellcheck disable=SC1090
 . "$ENV_FILE"
