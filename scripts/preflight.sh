@@ -406,15 +406,16 @@ check_tailnet_identity() {
   fi
 }
 
-check_cloud_enroll_config() {
+check_cloud_device_identity() {
   local detail
-  detail="$(json_detail cloud_ops_base_url "${CLOUD_OPS_BASE_URL:-}" enroll_token_present "$([ -n "${CLOUD_OPS_ENROLL_TOKEN:-}" ] && printf true || printf false)")"
-  if [ -n "${CLOUD_OPS_BASE_URL:-}" ] && [ -n "${CLOUD_OPS_ENROLL_TOKEN:-}" ]; then
-    add_check "cloud.enroll.config" pass configured "" "$detail"
+  local identity_path="${DEVICE_IDENTITY_PATH:-/var/lib/drycontroller/device.json}"
+  detail="$(json_detail cloud_ops_base_url "${CLOUD_OPS_BASE_URL:-}" device_identity_path "$identity_path" device_identity_present "$([ -f "$identity_path" ] && printf true || printf false)")"
+  if [ -n "${CLOUD_OPS_BASE_URL:-}" ] && [ -f "$identity_path" ]; then
+    add_check "cloud.device_identity" pass configured "" "$detail"
   elif [ "$ALLOW_DEGRADED" = true ]; then
-    add_check "cloud.enroll.config" degraded missing_cloud_enroll_config "accepted for local factory checks; required before shipment" "$detail"
+    add_check "cloud.device_identity" degraded missing_cloud_device_identity "accepted for local checks; required before remote operation" "$detail"
   else
-    add_check "cloud.enroll.config" fail missing_cloud_enroll_config "CLOUD_OPS_BASE_URL and CLOUD_OPS_ENROLL_TOKEN must be configured" "$detail"
+    add_check "cloud.device_identity" fail missing_cloud_device_identity "CLOUD_OPS_BASE_URL and active per-device identity must be configured" "$detail"
   fi
 }
 
@@ -459,7 +460,7 @@ else
   add_check "ota_helper.ready" degraded skipped "root OTA helper is not active; pass --check-ota to require it" "{}"
 fi
 check_tailnet_identity
-check_cloud_enroll_config
+check_cloud_device_identity
 
 python3 - "$CHECKS_FILE" "$ALLOW_DEGRADED" <<'PY'
 import datetime as dt

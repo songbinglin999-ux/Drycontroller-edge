@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import os
 from collections import defaultdict
 from typing import Any
 
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_identity
 from app.models import CloudSyncOutbox
 
 logger = structlog.get_logger(__name__)
@@ -203,16 +203,22 @@ class CloudSyncOutboxDrainer:
             return False, f"unsupported_outbox_kind:{kind}"
 
         base_url = (settings.CLOUD_OPS_BASE_URL or "").strip()
-        enroll_token = os.getenv("CLOUD_OPS_ENROLL_TOKEN", "").strip()
-        token_header = (settings.CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER or "X-Enroll-Token").strip() or "X-Enroll-Token"
-        if not base_url or not enroll_token:
+        try:
+            identity = load_runtime_identity()
+        except DeviceIdentityUnavailable:
+            return False, "missing_device_identity"
+        if not base_url:
             return False, "missing_cloud_ops_config"
 
         url = f"{base_url.rstrip('/')}{path}"
         body: dict[str, Any] = {"items": [row.payload for row in rows]}
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(url, json=body, headers={token_header: enroll_token})
+                resp = await client.post(
+                    url,
+                    json=body,
+                    headers={"X-Device-Credential": identity["runtime_credential"]},
+                )
             if 200 <= resp.status_code < 300:
                 return True, ""
             text_body = resp.text[:1000] if resp.text else ""

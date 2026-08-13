@@ -1,0 +1,25 @@
+[Unit]
+Description=DryController isolated factory device identity endpoint
+After=network-pre.target
+Before=docker.service
+ConditionPathExists=!/var/lib/drycontroller-identity/factory-closed.json
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=DRYCONTROLLER_IDENTITY_BACKEND=tpm
+Environment=DRYCONTROLLER_IDENTITY_CLOUD_PUBLIC_KEY_FILE=/etc/drycontroller/trust/device-identity-cloud.pub
+ExecStart=/opt/drycontroller-identity/venv/bin/uvicorn identity_service.api:create_app_from_environment --factory --host 169.254.203.2 --port 8765 --no-access-log
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/drycontroller-identity /var/lib/drycontroller
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

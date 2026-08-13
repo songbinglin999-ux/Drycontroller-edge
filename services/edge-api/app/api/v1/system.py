@@ -4,7 +4,7 @@
 
 # pyright: reportMissingImports=false
 
-import json
+import os
 import time
 from typing import Optional
 from pathlib import Path
@@ -15,6 +15,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.config import settings
+from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_identity
 from app.core.security import require_admin_api_key, require_readonly_http_source
 from app.services.system_status import (
     SystemStatusService,
@@ -44,43 +45,32 @@ def _overall_level(items: list[dict]) -> str:
     return "ok"
 
 
-def _read_activation_state(path: Path) -> str:
-    if not path.is_file():
-        return ""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return ""
-    return str(data.get("state") or "").strip()
-
-
-def _bootstrap_summary(
-    sentinel_path: Path | None = None,
-    activation_state_path: Path | None = None,
+def _identity_summary(
+    device_path: Path | None = None,
+    *,
+    require_root_owner: bool | None = None,
 ) -> dict:
-    sentinel_path = sentinel_path or Path("/var/lib/drycontroller/.bootstrapped")
-    activation_state_path = activation_state_path or Path("/var/lib/drycontroller/activation-state.json")
-    if sentinel_path.is_file():
+    device_path = device_path or Path(settings.DEVICE_IDENTITY_PATH)
+    if require_root_owner is None:
+        require_root_owner = os.geteuid() == 0
+    try:
+        identity = load_runtime_identity(device_path, require_root_owner=require_root_owner)
+    except DeviceIdentityUnavailable:
         return {
-            "key": "bootstrap",
-            "label": "装机",
-            "status": "ok",
-            "message": "已完成",
+            "key": "device_identity",
+            "label": "设备身份",
+            "status": "degraded",
+            "message": "未激活或凭据已过期",
         }
-
-    if _read_activation_state(activation_state_path) == "formal_license_active":
-        return {
-            "key": "bootstrap",
-            "label": "装机",
-            "status": "ok",
-            "message": "正式授权已激活",
-        }
-
     return {
-        "key": "bootstrap",
-        "label": "装机",
-        "status": "degraded",
-        "message": "未检测到完成标记",
+        "key": "device_identity",
+        "label": "设备身份",
+        "status": "ok",
+        "message": "已激活",
+        "detail": {
+            "device_id": identity["device_id"],
+            "credential_expires_at": identity["credential_expires_at"],
+        },
     }
 
 
@@ -241,7 +231,7 @@ async def get_local_status_summary(
                 "ts_hostname": (settings.TS_HOSTNAME or "").strip() or None,
             },
         },
-        _bootstrap_summary(),
+        _identity_summary(),
     ]
     level = _overall_level(items)
     title = {

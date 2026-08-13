@@ -90,7 +90,7 @@ systemctl disable drycontroller-edge-post-install.service >/dev/null 2>&1 || tru
 
 log "autoinstall host preparation complete"
 log "shutting down. Remove OS Installer USB, then power on with network available."
-log "after boot, host tailnet and factory activation services will run if activation-bundle.json is installed"
+log "production identity remains blocked until the RB-5B TPM backend and RB-6 media are complete"
 umount -l /cdrom 2>/dev/null || true
 sync
 sleep 1

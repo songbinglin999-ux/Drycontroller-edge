@@ -4,7 +4,7 @@ API v1 路由
 
 from fastapi import APIRouter
 
-from app.api.v1 import activation, ai, alarms, control, data, ops, system
+from app.api.v1 import ai, alarms, control, data, ops, system
 
 router = APIRouter()
 
@@ -15,5 +15,3 @@ router.include_router(ai.router, prefix="/ai", tags=["AI"])
 router.include_router(alarms.router, prefix="/alarms", tags=["Alarms"])
 router.include_router(system.router, prefix="/system", tags=["System"])
 router.include_router(ops.router, prefix="/ops", tags=["Ops"])
-router.include_router(activation.router, prefix="/activation", tags=["Activation"])
-

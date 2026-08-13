@@ -16,7 +16,7 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
         sys.path.append(entry)
 
 from app.api.v1.ai import router as ai_router, get_ai_softsensor_service
-from app.api.v1.system import _bootstrap_summary, router as system_router, get_system_status_service
+from app.api.v1.system import _identity_summary, router as system_router, get_system_status_service
 from app.api.v1.control import (
     get_control_orchestrator,
     get_control_state_service,
@@ -225,31 +225,11 @@ def test_v1_readonly_routes_reject_non_allowlisted_source():
         settings.READONLY_WS_ALLOWLIST = old_allowlist
 
 
-def test_bootstrap_summary_accepts_legacy_sentinel(tmp_path):
-    sentinel = tmp_path / ".bootstrapped"
-    sentinel.write_text("ok", encoding="utf-8")
-
-    item = _bootstrap_summary(sentinel_path=sentinel, activation_state_path=tmp_path / "missing.json")
-
-    assert item["status"] == "ok"
-    assert item["message"] == "已完成"
-
-
-def test_bootstrap_summary_accepts_formal_activation_state(tmp_path):
-    activation_state = tmp_path / "activation-state.json"
-    activation_state.write_text('{"state":"formal_license_active"}', encoding="utf-8")
-
-    item = _bootstrap_summary(sentinel_path=tmp_path / "missing", activation_state_path=activation_state)
-
-    assert item["status"] == "ok"
-    assert item["message"] == "正式授权已激活"
-
-
-def test_bootstrap_summary_degraded_without_completion(tmp_path):
-    item = _bootstrap_summary(sentinel_path=tmp_path / "missing", activation_state_path=tmp_path / "missing.json")
+def test_identity_summary_degraded_without_active_identity(tmp_path):
+    item = _identity_summary(device_path=tmp_path / "missing.json", require_root_owner=False)
 
     assert item["status"] == "degraded"
-    assert item["message"] == "未检测到完成标记"
+    assert item["message"] == "未激活或凭据已过期"
 
 
 def test_legacy_control_recommend_endpoint_removed():

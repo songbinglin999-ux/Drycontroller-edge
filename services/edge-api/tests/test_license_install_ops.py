@@ -6,6 +6,8 @@ edge-api License 安装闭环测试。
 
 import sys
 import base64
+import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 
@@ -31,6 +33,27 @@ def _client() -> TestClient:
     app = FastAPI()
     app.include_router(ops_module.router, prefix="/api/v1/ops")
     return TestClient(app)
+
+
+def _write_device_identity(path: Path) -> None:
+    credential = "test-device-credential"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.device-identity.v1",
+                "device_id": "EDGE-ABCDEF123456",
+                "tenant_id": "t1",
+                "line_id": "LINE-A",
+                "node_name": "edge-abcdef123456",
+                "identity_fingerprint": "11" * 32,
+                "runtime_credential": credential,
+                "runtime_credential_hash": hashlib.sha256(credential.encode()).hexdigest(),
+                "credential_expires_at": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
 
 
 def _signed_payload() -> dict:
@@ -287,13 +310,10 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     Path(settings.LICENSE_FILE_PATH).write_text("{}", encoding="utf-8")
     Path(settings.LICENSE_PUBLIC_KEY_PATH).write_text("pub", encoding="utf-8")
     device_json = tmp_path / "device.json"
-    device_json.write_text('{"device_id":"d1","tenant_id":"t1","node_name":"n1"}', encoding="utf-8")
-    sentinel = tmp_path / ".bootstrapped"
-    sentinel.write_text("ok", encoding="utf-8")
+    _write_device_identity(device_json)
     monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(device_json))
-    monkeypatch.setenv("PREFLIGHT_BOOTSTRAP_SENTINEL", str(sentinel))
+    monkeypatch.setattr(settings, "DEVICE_IDENTITY_PATH", str(device_json))
     monkeypatch.setattr(settings, "CLOUD_OPS_BASE_URL", "http://cloud")
-    monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "token")
     monkeypatch.setattr(settings, "TS_LOGIN_SERVER", "http://headscale")
 
     async def fake_verify():
@@ -335,13 +355,10 @@ def test_preflight_check_ota_requires_registry_credential(tmp_path: Path, monkey
     Path(settings.LICENSE_FILE_PATH).write_text("{}", encoding="utf-8")
     Path(settings.LICENSE_PUBLIC_KEY_PATH).write_text("pub", encoding="utf-8")
     device_json = tmp_path / "device.json"
-    device_json.write_text('{"device_id":"d1","tenant_id":"t1","node_name":"n1"}', encoding="utf-8")
-    sentinel = tmp_path / ".bootstrapped"
-    sentinel.write_text("ok", encoding="utf-8")
+    _write_device_identity(device_json)
     monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(device_json))
-    monkeypatch.setenv("PREFLIGHT_BOOTSTRAP_SENTINEL", str(sentinel))
+    monkeypatch.setattr(settings, "DEVICE_IDENTITY_PATH", str(device_json))
     monkeypatch.setattr(settings, "CLOUD_OPS_BASE_URL", "http://cloud")
-    monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "token")
     monkeypatch.setattr(settings, "TS_LOGIN_SERVER", "http://headscale")
 
     async def fake_verify():
@@ -375,8 +392,7 @@ def test_preflight_fails_when_required_files_missing(tmp_path: Path, monkeypatch
     settings.LICENSE_FILE_PATH = str(tmp_path / "missing-license.json")
     settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "missing-license.pub")
     monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(tmp_path / "missing-device.json"))
-    monkeypatch.setenv("PREFLIGHT_BOOTSTRAP_SENTINEL", str(tmp_path / "missing-sentinel"))
-    monkeypatch.setenv("PREFLIGHT_ACTIVATION_STATE", str(tmp_path / "missing-activation-state.json"))
+    monkeypatch.setattr(settings, "DEVICE_IDENTITY_PATH", str(tmp_path / "missing-device.json"))
 
     async def fake_verify():
         return {"url": "mock", "status_code": 200, "body": {"valid": False}}
@@ -405,50 +421,6 @@ def test_preflight_fails_when_required_files_missing(tmp_path: Path, monkeypatch
     assert detail["status"] == "fail"
     assert detail["summary"]["fail"] >= 1
     assert recorded[0]["status"] == "fail"
-
-
-def test_preflight_accepts_formal_activation_state_as_bootstrap_completion(tmp_path: Path, monkeypatch):
-    settings.ADMIN_API_KEYS = ["admin-1"]
-    settings.API_KEY_HEADER = "X-API-Key"
-    settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
-    Path(settings.LICENSE_FILE_PATH).write_text("{}", encoding="utf-8")
-    Path(settings.LICENSE_PUBLIC_KEY_PATH).write_text("pub", encoding="utf-8")
-    device_json = tmp_path / "device.json"
-    device_json.write_text('{"device_id":"d1","tenant_id":"t1","node_name":"n1"}', encoding="utf-8")
-    activation_state = tmp_path / "activation-state.json"
-    activation_state.write_text('{"state":"formal_license_active"}', encoding="utf-8")
-    monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(device_json))
-    monkeypatch.setenv("PREFLIGHT_BOOTSTRAP_SENTINEL", str(tmp_path / "missing-sentinel"))
-    monkeypatch.setenv("PREFLIGHT_ACTIVATION_STATE", str(activation_state))
-    monkeypatch.setattr(settings, "CLOUD_OPS_BASE_URL", "http://cloud")
-    monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "token")
-    monkeypatch.setattr(settings, "TS_LOGIN_SERVER", "http://headscale")
-
-    async def fake_verify():
-        return {"url": "mock", "status_code": 200, "body": {"valid": True}}
-
-    async def fake_http_check(checks, check_id, url, *, degraded_ok, allow_degraded, timeout=5.0):
-        ops_module._preflight_check(checks, check_id, "pass", "ok", detail={"url": url})
-
-    monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
-    monkeypatch.setattr(ops_module, "_preflight_http_check", fake_http_check)
-
-    async def fake_record_preflight_run(_payload):
-        return None
-
-    monkeypatch.setattr(ops_module, "record_preflight_run", fake_record_preflight_run)
-
-    resp = _client().post(
-        "/api/v1/ops/preflight",
-        json={"strict": False, "check_ota": False},
-        headers={"X-API-Key": "admin-1"},
-    )
-
-    assert resp.status_code == 200
-    checks = {item["id"]: item for item in resp.json()["checks"]}
-    assert checks["bootstrap.sentinel"]["status"] == "pass"
-    assert checks["bootstrap.sentinel"]["reason"] == "formal_activation_active"
 
 
 def test_plc_config_apply_records_version(monkeypatch):

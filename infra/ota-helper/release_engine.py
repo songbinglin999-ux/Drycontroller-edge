@@ -9,6 +9,7 @@ import contextlib
 import datetime as dt
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -132,7 +133,7 @@ class ReleasePaths:
             cosign_pubkey=Path("/etc/drycontroller/keys/cosign.pub"),
             registry_status=Path("/etc/drycontroller/registry/status.json"),
             device=Path("/var/lib/drycontroller/device.json"),
-            cloud_config=Path("/etc/drycontroller/tailnet.env"),
+            cloud_config=Path("/etc/drycontroller/cloud-ops.env"),
             host_active=Path("/var/lib/drycontroller-host/active.json"),
         )
 
@@ -500,7 +501,7 @@ class ReleaseEngine:
             raise ReleaseError("release health check failed") from exc
 
     def _cloud_credentials(self) -> tuple[str, str]:
-        wanted = {"CLOUD_OPS_BASE_URL", "CLOUD_OPS_ENROLL_TOKEN"}
+        wanted = {"CLOUD_OPS_BASE_URL"}
         values: dict[str, str] = {}
         try:
             lines = self.paths.cloud_config.read_text(encoding="utf-8").splitlines()
@@ -524,13 +525,39 @@ class ReleaseEngine:
             values[key] = tokens[0]
         if set(values) != wanted or not values["CLOUD_OPS_BASE_URL"].startswith("https://"):
             raise ReleaseError("cloud policy configuration incomplete")
-        return values["CLOUD_OPS_BASE_URL"].rstrip("/"), values["CLOUD_OPS_ENROLL_TOKEN"]
+        try:
+            stat = self.paths.device.stat()
+        except OSError as exc:
+            raise ReleaseError("device identity unavailable") from exc
+        if stat.st_mode & 0o077 or (os.geteuid() == 0 and stat.st_uid != 0):
+            raise ReleaseError("device identity must be root-owned 0600")
+        identity = _read_json(self.paths.device)
+        if not isinstance(identity, dict) or identity.get("schema") != "drycontroller.device-identity.v1":
+            raise ReleaseError("device identity invalid")
+        credential = identity.get("runtime_credential")
+        credential_hash = identity.get("runtime_credential_hash")
+        if (
+            not isinstance(credential, str)
+            or not credential
+            or not isinstance(credential_hash, str)
+            or not hmac.compare_digest(hashlib.sha256(credential.encode("utf-8")).hexdigest(), credential_hash)
+        ):
+            raise ReleaseError("device identity invalid")
+        try:
+            expires_at = dt.datetime.fromisoformat(str(identity["credential_expires_at"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError) as exc:
+            raise ReleaseError("device credential expiry invalid") from exc
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=dt.timezone.utc)
+        if expires_at.astimezone(dt.timezone.utc) <= dt.datetime.now(dt.timezone.utc):
+            raise ReleaseError("device credential expired")
+        return values["CLOUD_OPS_BASE_URL"].rstrip("/"), credential
 
     def _fetch_policy(self, operation_id: str) -> dict[str, Any]:
         base_url, token = self._cloud_credentials()
         request = urllib.request.Request(
             f"{base_url}/api/v1/ota/release-policy/{operation_id}",
-            headers={"X-Enroll-Token": token, "Accept": "application/json"},
+            headers={"X-Device-Credential": token, "Accept": "application/json"},
             method="GET",
         )
         try:

@@ -43,16 +43,15 @@ boundaries:
 | `ai-ctrl-optimizer` | Control optimization service |
 | `license-service` | Local signed license verification |
 | `edge-monitor` | Read-only system/service health, metrics, ops log proxy |
-| `edge-enroll` | Cloud enroll/status reporter |
+| `edge-enroll` | Per-device credential authenticated Cloud status reporter |
 | `drycontroller-ota-helper.service` | Root-owned, operation-ID-only host OTA boundary |
 | PostgreSQL, InfluxDB, Mosquitto | Local data and message infrastructure |
 
 ## Quick Start
 
-Use this only for local development or staging simulation. Factory installation
-should use the OS Installer USB with factory activation materials
-(`activation-bundle.json`). Provisioning USB is retired and is not generated
-for new factory media.
+Use this only for local development or staging simulation. RB-5A deliberately
+does not produce deployable factory media; the retired shared factory credential
+path has been removed and production media stays fail-closed until RB-5B/RB-6.
 
 ```bash
 cp env.example .env
@@ -80,7 +79,7 @@ Important runtime files and generated state:
 
 | Path | Purpose |
 |---|---|
-| `.env` | Edge runtime environment, generated/updated by activation in production |
+| `.env` | Non-secret Edge runtime configuration |
 | `configs/tags.yaml` | PLC tag map |
 | `configs/ai-config.yaml` | AI model configuration |
 | `configs/monitor.yaml` | Health and self-heal policy |
@@ -88,7 +87,8 @@ Important runtime files and generated state:
 | `/etc/drycontroller/keys/cosign.pub` | OTA image signature trust root |
 | `/etc/drycontroller/keys/license.pub` | License verification public key |
 | `/etc/drycontroller/license/license.json` | Signed local license |
-| `/var/lib/drycontroller/.bootstrapped` | Host activation completion sentinel written after `formal_license_active` |
+| `/var/lib/drycontroller/device.json` | Root-owned `0600` active per-device runtime identity and 24-hour credential |
+| `/var/lib/drycontroller-identity/` | Root-only identity backend and candidate state; never mounted into business containers |
 
 `configs-runtime/plc.yaml` takes precedence over PLC fields in `.env`. This is
 intentional: Cloud Ops can update Modbus host/port/slave settings without
@@ -120,48 +120,22 @@ the six frequency targets through `POST /api/v1/control/manual/set`; `AUTO`
 uses `POST /api/v1/control/auto/dispatch` for a single authorized AUTO tick.
 Per-command confirmation endpoints are not the production AUTO workflow.
 
-## Installation Media
+## Factory Identity (RB-5A)
 
-DryController uses one mainline installation artifact:
+An administrator authorizes one Cloud batch. A root-only factory station then
+connects to exactly one unregistered IPC over the fixed isolated Ethernet tuple
+`169.254.203.1/30 -> 169.254.203.2:8765`, creates one Device, transfers the
+15-minute one-use bootstrap material in memory, and confirms the Edge-generated
+runtime credential hash. The credential plaintext exists only in the Edge
+root-owned state file; Cloud stores only its hash.
 
-| Artifact | Maintained by | Purpose |
-|---|---|---|
-| OS Installer USB | This repo | Install Ubuntu, Docker, edge repo, host activation services, and product-path `activation-bundle.json` |
+RB-5A has an explicit `file-test` key backend for CI/development and the formal
+service unit selects only `tpm`. Because that TPM backend is intentionally not
+implemented until RB-5B, `scripts/build-os-installer-release.sh` and the macOS
+maker fail closed. RB-6 will restore production media with public material only.
 
-OS Installer USB documentation:
-
-- `docs/ops/edge-os-autoinstall.md`
-- `infra/autoinstall/README.md`
-
-Provisioning USB documentation is kept only to mark the retired path. Do not use
-it as the normal factory path or as an acceptance condition for new installs.
-
-macOS imaging note: use the raw device, for example `/dev/rdisk2`, not
-`/dev/disk2`, when writing installer media with `dd`.
-
-## Bootstrap And Tailnet
-
-The production bootstrap path is activation-bundle first:
-
-High-level sequence:
-
-1. OS Installer copies `activation-bundle.json`.
-2. Host Tailscale joins the bootstrap tailnet.
-3. `drycontroller-activation.service` calls Cloud Ops factory activation.
-4. Cloud Ops auto-approves valid signed factory material and returns the
-   production license, `device_id`, `node_name`, and the node enroll token.
-5. Host activation binds the current tailnet node, syncs `.env`, starts host
-   enroll, and starts the edge stack.
-6. Edge preflight accepts `formal_license_active` as the new mainline completion
-   signal.
-
-Split `tailnet.env` and `factory-license.json` materials are no longer accepted
-as installer inputs. Runtime `tailnet.env` is derived from `activation-bundle.json`
-by the host services.
-
-If tailnet readiness fails, activation must fail closed rather than silently
-falling back to public Cloud Ops. The old `drycontroller-provisioning/`
-bootstrap path has been removed from active installs.
+Tailnet key issuance and product integration are separate RB-7P/RB-7I work and
+are not an identity fallback.
 
 ## Verification
 
@@ -171,16 +145,7 @@ staging/security work include:
 ```bash
 services/edge-api/.venv/bin/python -m pytest services/edge-api/tests -q
 bash -n infra/bootstrap/install-edge-host.sh
-bash -n infra/bootstrap/drycontroller-host-tailnet.sh
-bash -n infra/bootstrap/drycontroller-host-activation.sh
-```
-
-Mainline bootstrap/preflight tests are run from the top-level `DryController`
-workspace:
-
-```bash
-Drycontroller-edge/.venv-test/bin/python -m pytest \
-  Drycontroller-edge/infra/bootstrap/tests/test_drycontroller_bootstrap_headscale_first.py -q
+../scripts/agent-test-env.sh pytest services/device-identity/tests services/edge-api/tests -q
 ```
 
 Run only the relevant subset for a scoped change, but use actual commands before

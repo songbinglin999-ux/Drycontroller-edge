@@ -33,6 +33,7 @@ from common.schemas.cloud_to_edge import (
 
 from app.core.security import require_admin_api_key
 from app.core.config import settings
+from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_identity
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
@@ -200,78 +201,31 @@ def _preflight_file_check(checks: list[dict[str, Any]], check_id: str, path: Pat
         _preflight_check(checks, check_id, "fail", "missing_file", hint=hint, detail={"path": str(path)})
 
 
-def _preflight_bootstrap_completion(checks: list[dict[str, Any]]) -> None:
-    sentinel_path = Path(os.getenv("PREFLIGHT_BOOTSTRAP_SENTINEL", "/var/lib/drycontroller/.bootstrapped"))
-    if sentinel_path.is_file():
-        _preflight_check(checks, "bootstrap.sentinel", "pass", "ok", detail={"path": str(sentinel_path)})
-        return
-
-    activation_state_path = Path(os.getenv("PREFLIGHT_ACTIVATION_STATE", "/var/lib/drycontroller/activation-state.json"))
-    activation_state = ""
-    if activation_state_path.is_file():
-        try:
-            data = json.loads(activation_state_path.read_text(encoding="utf-8"))
-            activation_state = str(data.get("state") or "").strip()
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            activation_state = ""
-    if activation_state == "formal_license_active":
-        _preflight_check(
-            checks,
-            "bootstrap.sentinel",
-            "pass",
-            "formal_activation_active",
-            detail={
-                "path": str(sentinel_path),
-                "activation_state_path": str(activation_state_path),
-                "activation_state": activation_state,
-            },
-        )
-        return
-
-    _preflight_check(
-        checks,
-        "bootstrap.sentinel",
-        "fail",
-        "missing_bootstrap_completion",
-        hint="complete factory activation before shipping",
-        detail={
-            "path": str(sentinel_path),
-            "activation_state_path": str(activation_state_path),
-            "activation_state": activation_state or None,
-        },
-    )
-
-
 def _preflight_device_identity(checks: list[dict[str, Any]]) -> None:
     path = Path(os.getenv("PREFLIGHT_DEVICE_JSON", "/var/lib/drycontroller/device.json"))
-    if not path.is_file():
+    try:
+        data = load_runtime_identity(path, require_root_owner=os.geteuid() == 0)
+    except DeviceIdentityUnavailable as exc:
         _preflight_check(
             checks,
             "device.identity",
             "fail",
-            "missing_device_json",
-            hint=f"bootstrap should create {path}",
-            detail={"path": str(path)},
+            "identity_unavailable",
+            hint="complete per-device identity activation or rotate the expired credential",
+            detail={"path": str(path), "error": str(exc)},
         )
         return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        _preflight_check(checks, "device.identity", "fail", "invalid_json", hint="device.json must be valid JSON", detail={"path": str(path), "error": str(exc)})
-        return
-    missing = [k for k in ("device_id", "tenant_id", "node_name") if not data.get(k)]
     _preflight_check(
         checks,
         "device.identity",
-        "fail" if missing else "pass",
-        "missing_required_fields" if missing else "ok",
-        hint="device.json must contain device_id/tenant_id/node_name" if missing else "",
+        "pass",
+        "active",
         detail={
             "path": str(path),
-            "missing": missing,
             "device_id": data.get("device_id"),
             "tenant_id": data.get("tenant_id"),
             "node_name": data.get("node_name"),
+            "credential_expires_at": data.get("credential_expires_at"),
         },
     )
 
@@ -393,7 +347,6 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
     checks: list[dict[str, Any]] = []
     allow_degraded = not req.strict
 
-    _preflight_bootstrap_completion(checks)
     _preflight_device_identity(checks)
     _preflight_file_check(
         checks,
@@ -464,14 +417,20 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
     )
 
     cloud_ops_base_url = (settings.CLOUD_OPS_BASE_URL or "").strip()
-    enroll_token = os.getenv("CLOUD_OPS_ENROLL_TOKEN", "").strip()
+    try:
+        runtime_identity = load_runtime_identity(require_root_owner=os.geteuid() == 0)
+    except DeviceIdentityUnavailable:
+        runtime_identity = None
     _preflight_check(
         checks,
-        "cloud.enroll.config",
-        "pass" if cloud_ops_base_url and enroll_token else "fail",
-        "configured" if cloud_ops_base_url and enroll_token else "missing_cloud_enroll_config",
-        hint="configure CLOUD_OPS_BASE_URL and CLOUD_OPS_ENROLL_TOKEN",
-        detail={"cloud_ops_base_url_present": bool(cloud_ops_base_url), "enroll_token_present": bool(enroll_token)},
+        "cloud.device_credential",
+        "pass" if cloud_ops_base_url and runtime_identity else "fail",
+        "configured" if cloud_ops_base_url and runtime_identity else "missing_cloud_device_credential",
+        hint="configure CLOUD_OPS_BASE_URL and complete per-device identity activation",
+        detail={
+            "cloud_ops_base_url_present": bool(cloud_ops_base_url),
+            "device_identity_present": bool(runtime_identity),
+        },
     )
 
     summary = _preflight_summary(checks, strict=req.strict)

@@ -137,9 +137,8 @@ async def test_outbox_drain_pushes_new_history_kinds(monkeypatch, kind, path_set
     from app.services.outbox_drain import CloudSyncOutboxDrainer
 
     monkeypatch.setattr(drain_module.settings, "CLOUD_OPS_BASE_URL", "https://cloud.example")
-    monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "tk-history")
+    monkeypatch.setattr(drain_module, "load_runtime_identity", lambda: {"runtime_credential": "tk-history"})
     monkeypatch.setattr(drain_module.settings, path_setting, path)
-    monkeypatch.setattr(drain_module.settings, "CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER", "X-Enroll-Token")
 
     captured: dict = {}
 
@@ -172,4 +171,4 @@ async def test_outbox_drain_pushes_new_history_kinds(monkeypatch, kind, path_set
     assert err == ""
     assert captured["url"] == f"https://cloud.example{path}"
     assert captured["json"] == {"items": [row.payload]}
-    assert captured["headers"]["X-Enroll-Token"] == "tk-history"
+    assert captured["headers"]["X-Device-Credential"] == "tk-history"

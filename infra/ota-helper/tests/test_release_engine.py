@@ -169,18 +169,24 @@ def _paths(tmp_path: Path) -> ReleasePaths:
     device.write_text(
         json.dumps(
             {
+                "schema": "drycontroller.device-identity.v1",
                 "tenant_id": "tenant-a",
                 "line_id": "line-a",
                 "device_id": "EDGE-001",
                 "node_name": "edge-001",
+                "identity_fingerprint": "11" * 32,
+                "runtime_credential": "test-device-credential",
+                "runtime_credential_hash": hashlib.sha256(b"test-device-credential").hexdigest(),
+                "credential_expires_at": "2099-01-01T00:00:00Z",
             }
         ),
         encoding="utf-8",
     )
+    device.chmod(0o600)
     request = tmp_path / "request.json"
-    cloud = tmp_path / "tailnet.env"
+    cloud = tmp_path / "cloud-ops.env"
     cloud.write_text(
-        "CLOUD_OPS_BASE_URL=https://ops.example.test\nCLOUD_OPS_ENROLL_TOKEN=test-node-token\n",
+        "CLOUD_OPS_BASE_URL=https://ops.example.test\n",
         encoding="utf-8",
     )
     return ReleasePaths(

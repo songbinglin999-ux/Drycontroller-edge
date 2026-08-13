@@ -474,9 +474,8 @@ async def test_outbox_drain_pushes_alarm_to_alarm_path(monkeypatch):
     from app.services.outbox_drain import CloudSyncOutboxDrainer
 
     monkeypatch.setattr(drain_module.settings, "CLOUD_OPS_BASE_URL", "https://cloud.example")
-    monkeypatch.setenv("CLOUD_OPS_ENROLL_TOKEN", "tk-alarm")
+    monkeypatch.setattr(drain_module, "load_runtime_identity", lambda: {"runtime_credential": "tk-alarm"})
     monkeypatch.setattr(drain_module.settings, "CLOUD_SYNC_OUTBOX_ALARM_PATH", "/api/v1/alarms/from-edge")
-    monkeypatch.setattr(drain_module.settings, "CLOUD_SYNC_OUTBOX_ENROLL_TOKEN_HEADER", "X-Enroll-Token")
 
     captured: dict = {}
 
@@ -511,4 +510,4 @@ async def test_outbox_drain_pushes_alarm_to_alarm_path(monkeypatch):
     assert err == ""
     assert captured["url"] == "https://cloud.example/api/v1/alarms/from-edge"
     assert captured["json"] == {"items": [row.payload]}
-    assert captured["headers"]["X-Enroll-Token"] == "tk-alarm"
+    assert captured["headers"]["X-Device-Credential"] == "tk-alarm"

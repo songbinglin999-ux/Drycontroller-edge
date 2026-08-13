@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 #
-# Prepare a plain Linux host for Drycontroller edge factory activation.
+# Prepare a plain Linux host for the signed DryController runtime.
 #
 # This script installs the host-level prerequisites and places the edge project
-# plus the host tailnet / activation services where non-developer installers
-# expect them. Device identity and production authorization are issued later by
-# Cloud Ops after the edge first joins the bootstrap tailnet.
+# plus the root-owned OTA helper. Per-device identity is installed only by the
+# later RB-6 media after the RB-5B TPM backend is complete.
 #
 set -euo pipefail
 
@@ -42,8 +41,8 @@ Options:
   -h, --help             Show this help
 
 Expected follow-up:
-  Install activation-bundle.json in the OS image, then boot with network access
-  to Headscale/Cloud Ops tailnet activation.
+  Use the future RB-6 media to install the RB-5B TPM identity backend. This
+  RB-5A branch is deliberately not a deployable production installer.
 EOF
 }
 
@@ -132,9 +131,6 @@ fi
 
 [ -f "${REPO_SOURCE}/docker-compose.yml" ] || die "docker-compose.yml not found in source: ${REPO_SOURCE}"
 [ -f "${REPO_SOURCE}/env.example" ] || die "env.example not found in source: ${REPO_SOURCE}"
-[ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-tailnet.sh" ] || die "host tailnet script missing in source"
-[ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-enroll.sh" ] || die "host enroll script missing in source"
-[ -f "${REPO_SOURCE}/infra/bootstrap/drycontroller-host-activation.sh" ] || die "host activation script missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/drycontroller_ota_helper.py" ] || die "OTA helper missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/release_engine.py" ] || die "OTA release engine missing in source"
 [ -f "${REPO_SOURCE}/infra/ota-helper/ota-apply" ] || die "fixed OTA apply program missing in source"
@@ -336,12 +332,6 @@ install_host_services() {
   chmod 755 /etc/drycontroller /etc/drycontroller/keys
   chmod 750 /etc/drycontroller/license
   chmod 700 /var/lib/drycontroller
-  install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-tailnet.sh" /usr/local/sbin/drycontroller-host-tailnet.sh
-  install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-enroll.sh" /usr/local/sbin/drycontroller-host-enroll.sh
-  install -m 0755 "${EDGE_ROOT}/infra/bootstrap/drycontroller-host-activation.sh" /usr/local/sbin/drycontroller-host-activation.sh
-  install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-tailnet.service" /etc/systemd/system/drycontroller-tailnet.service
-  install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-enroll.service" /etc/systemd/system/drycontroller-enroll.service
-  install -m 0644 "${EDGE_ROOT}/infra/bootstrap/drycontroller-activation.service" /etc/systemd/system/drycontroller-activation.service
   install -d -m 0755 /usr/libexec/drycontroller
   install -o root -g root -m 0755 "${EDGE_ROOT}/infra/ota-helper/drycontroller_ota_helper.py" /usr/libexec/drycontroller/drycontroller_ota_helper.py
   install -o root -g root -m 0644 "${EDGE_ROOT}/infra/ota-helper/release_engine.py" /usr/libexec/drycontroller/release_engine.py
@@ -367,9 +357,8 @@ install_host_services() {
   fi
 
   systemctl daemon-reload
-  systemctl enable drycontroller-tailnet.service drycontroller-activation.service
   systemctl enable --now drycontroller-ota-helper.service
-  log "initialized active release and enabled host identity services and root-owned OTA helper"
+  log "initialized active release and enabled the root-owned OTA helper"
 }
 
 retire_legacy_bootstrap_service() {
@@ -387,9 +376,6 @@ write_host_manifest() {
   "installed_at": "$(date -Is)",
   "edge_root": "${EDGE_ROOT}",
   "source": "${REPO_SOURCE}",
-  "tailnet_service": "drycontroller-tailnet.service",
-  "activation_service": "drycontroller-activation.service",
-  "enroll_service": "drycontroller-enroll.service",
   "ota_helper_service": "drycontroller-ota-helper.service",
   "docker": "$(docker --version 2>/dev/null || true)",
   "compose": "$(docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || true)",
@@ -408,4 +394,4 @@ install_host_services
 write_host_manifest
 
 log "host preparation complete"
-log "next: boot with /etc/drycontroller/activation-bundle.json installed"
+log "production identity installation remains blocked until RB-5B and RB-6"
