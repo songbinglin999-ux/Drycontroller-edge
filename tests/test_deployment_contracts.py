@@ -162,6 +162,8 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert "[ -c /dev/tpmrm0 ]" in installer
     assert 'password: "!"' in user_data
     assert "allow-pw: false" in user_data
+    assert "      all-en:" in user_data
+    assert "      all-eth:" in user_data
     assert "wifi.env" not in user_data
     assert "activation-bundle.json" not in user_data
     assert "host-release-seed.json" in post_install

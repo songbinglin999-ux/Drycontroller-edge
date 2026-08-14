@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from installer_public_config import validate_public_config  # noqa: E402
 
 
 PLACEHOLDER = re.compile(r"change_me_[A-Za-z0-9_]+")
+ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 def _atomic_write(path: Path, data: bytes, mode: int) -> None:
@@ -40,6 +42,96 @@ def _atomic_write(path: Path, data: bytes, mode: int) -> None:
             os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _atomic_create(path: Path, data: bytes, mode: int) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            return False
+        os.chmod(path, mode)
+        temporary.unlink()
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _parse_env(contents: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in contents.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        name, separator, value = line.partition("=")
+        if not separator or ENV_NAME.fullmatch(name) is None or name in fields:
+            raise ValueError("runtime environment structure invalid")
+        fields[name] = value
+    return fields
+
+
+def _validate_placeholder_value(
+    template_value: str,
+    actual_value: str,
+    generated: dict[str, str],
+) -> None:
+    placeholders = list(PLACEHOLDER.finditer(template_value))
+    pattern: list[str] = []
+    offset = 0
+    for placeholder in placeholders:
+        pattern.append(re.escape(template_value[offset : placeholder.start()]))
+        pattern.append("([0-9a-f]{64})")
+        offset = placeholder.end()
+    pattern.append(re.escape(template_value[offset:]))
+    match = re.fullmatch("".join(pattern), actual_value)
+    if match is None:
+        raise ValueError("runtime environment secret value invalid")
+    for placeholder, value in zip(placeholders, match.groups(), strict=True):
+        name = placeholder.group(0)
+        if name in generated and generated[name] != value:
+            raise ValueError("runtime environment repeated secret mismatch")
+        generated[name] = value
+
+
+def _validate_runtime(contents: str, template: str, machine: str, cloud_url: str) -> None:
+    expected = _parse_env(template)
+    if expected.get("LICENSE_MACHINE_ID") != "" or "CLOUD_OPS_BASE_URL" in expected:
+        raise ValueError("runtime environment template fields invalid")
+    actual = _parse_env(contents)
+    if set(actual) != set(expected) | {"CLOUD_OPS_BASE_URL"}:
+        raise ValueError("runtime environment fields invalid")
+    generated: dict[str, str] = {}
+    for name, template_value in expected.items():
+        if name == "LICENSE_MACHINE_ID":
+            if actual[name] != machine:
+                raise ValueError("runtime environment machine-id mismatch")
+        elif PLACEHOLDER.search(template_value):
+            _validate_placeholder_value(template_value, actual[name], generated)
+        elif actual[name] != template_value:
+            raise ValueError("runtime environment fixed value mismatch")
+    if actual["CLOUD_OPS_BASE_URL"] != cloud_url:
+        raise ValueError("runtime environment Cloud URL mismatch")
+
+
+def _read_private_runtime(path: Path) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        metadata = os.fstat(handle.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise ValueError("runtime environment permissions invalid")
+        return handle.read()
 
 
 def initialize(
@@ -63,35 +155,43 @@ def initialize(
     machine = machine_id.read_text(encoding="utf-8").strip()
     if not re.fullmatch(r"[0-9a-f]{32}", machine):
         raise ValueError("host machine-id invalid")
-    generated: dict[str, str] = {}
+    cloud_url = cloud_url.rstrip("/")
+    if runtime_env.exists() or runtime_env.is_symlink():
+        runtime = _read_private_runtime(runtime_env)
+        _validate_runtime(runtime, template, machine, cloud_url)
+    else:
+        generated: dict[str, str] = {}
 
-    def replace(match: re.Match[str]) -> str:
-        name = match.group(0)
-        generated.setdefault(name, secrets.token_hex(32))
-        return generated[name]
+        def replace(match: re.Match[str]) -> str:
+            name = match.group(0)
+            generated.setdefault(name, secrets.token_hex(32))
+            return generated[name]
 
-    runtime = PLACEHOLDER.sub(replace, template)
-    runtime = re.sub(r"(?m)^LICENSE_MACHINE_ID=.*$", f"LICENSE_MACHINE_ID={machine}", runtime)
-    runtime += f"\nCLOUD_OPS_BASE_URL={cloud_url.rstrip('/')}\n"
-    if PLACEHOLDER.search(runtime):
-        raise ValueError("runtime environment still contains secret placeholders")
-    cloud = f"CLOUD_OPS_BASE_URL={cloud_url.rstrip('/')}\n"
+        runtime = PLACEHOLDER.sub(replace, template)
+        runtime = re.sub(r"(?m)^LICENSE_MACHINE_ID=.*$", f"LICENSE_MACHINE_ID={machine}", runtime)
+        runtime += f"\nCLOUD_OPS_BASE_URL={cloud_url}\n"
+        _validate_runtime(runtime, template, machine, cloud_url)
+        if not _atomic_create(runtime_env, runtime.encode("utf-8"), 0o600):
+            runtime = _read_private_runtime(runtime_env)
+            _validate_runtime(runtime, template, machine, cloud_url)
+    cloud = f"CLOUD_OPS_BASE_URL={cloud_url}\n"
     network = (
         "network:\n"
         "  version: 2\n"
         "  ethernets:\n"
-        "    drycontroller-factory:\n"
+        # Netplan names networkd files after this ID. It must sort before the
+        # autoinstall all-en/all-eth DHCP definitions for the factory NIC.
+        "    00-drycontroller-factory:\n"
         f"      match:\n        name: {interface}\n"
         "      dhcp4: false\n"
         "      optional: true\n"
         f"      addresses: [{address}]\n"
         "      link-local: []\n"
     )
-    _atomic_write(runtime_env, runtime.encode("utf-8"), 0o600)
     _atomic_write(cloud_env, cloud.encode("utf-8"), 0o600)
     _atomic_write(netplan, network.encode("utf-8"), 0o600)
     return {
-        "cloud_ops_base_url": cloud_url.rstrip("/"),
+        "cloud_ops_base_url": cloud_url,
         "factory_interface": interface,
         "factory_address": address,
     }

@@ -47,18 +47,79 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
         cloud_env=cloud,
         netplan=netplan,
     )
+    first_runtime = runtime.read_bytes()
+    second_result = _module().initialize(
+        public_config=public,
+        env_template=ROOT / "env.example",
+        machine_id=machine_id,
+        runtime_env=runtime,
+        cloud_env=cloud,
+        netplan=netplan,
+    )
 
     assert result["factory_interface"] == "enp2s0"
+    assert second_result == result
+    assert runtime.read_bytes() == first_runtime
     runtime_text = runtime.read_text(encoding="utf-8")
     assert "change_me_" not in runtime_text
     assert "LICENSE_MACHINE_ID=" + "a" * 32 in runtime_text
     assert "CLOUD_OPS_BASE_URL=https://ops.example.test" in runtime_text
     assert cloud.read_text(encoding="utf-8") == "CLOUD_OPS_BASE_URL=https://ops.example.test\n"
-    assert "name: enp2s0" in netplan.read_text(encoding="utf-8")
-    assert "addresses: [169.254.203.2/30]" in netplan.read_text(encoding="utf-8")
+    netplan_text = netplan.read_text(encoding="utf-8")
+    assert "    00-drycontroller-factory:\n" in netplan_text
+    factory_definition = next(
+        line.strip().removesuffix(":")
+        for line in netplan_text.splitlines()
+        if line.startswith("    ") and not line.startswith("      ") and line.endswith(":")
+    )
+    assert factory_definition < "all-en"
+    assert factory_definition < "all-eth"
+    assert "name: enp2s0" in netplan_text
+    assert "addresses: [169.254.203.2/30]" in netplan_text
     assert stat.S_IMODE(runtime.stat().st_mode) == 0o600
     assert stat.S_IMODE(cloud.stat().st_mode) == 0o600
     assert stat.S_IMODE(netplan.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        (lambda text: text.replace("LICENSE_MACHINE_ID=" + "a" * 32, "LICENSE_MACHINE_ID=" + "b" * 32), "machine-id"),
+        (lambda text: text.replace("POSTGRES_PASSWORD=", "POSTGRES_PASSWORD=short-"), "secret value"),
+        (lambda text: text + "UNEXPECTED=value\n", "fields"),
+    ],
+)
+def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
+    public = tmp_path / "public.json"
+    public.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.os-installer-public-config.v1",
+                "cloud_ops_base_url": "https://ops.example.test",
+                "factory_interface": "enp2s0",
+                "factory_address": "169.254.203.2/30",
+            }
+        ),
+        encoding="utf-8",
+    )
+    machine_id = tmp_path / "machine-id"
+    machine_id.write_text("a" * 32, encoding="utf-8")
+    runtime = tmp_path / "runtime.env"
+    module = _module()
+    arguments = {
+        "public_config": public,
+        "env_template": ROOT / "env.example",
+        "machine_id": machine_id,
+        "runtime_env": runtime,
+        "cloud_env": tmp_path / "cloud.env",
+        "netplan": tmp_path / "factory.yaml",
+    }
+    module.initialize(**arguments)
+    runtime.write_text(mutation(runtime.read_text(encoding="utf-8")), encoding="utf-8")
+    runtime.chmod(0o600)
+
+    with pytest.raises(ValueError, match=error):
+        module.initialize(**arguments)
 
 
 @pytest.mark.parametrize(
