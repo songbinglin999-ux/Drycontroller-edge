@@ -47,8 +47,15 @@ SERVICES = (
 )
 
 
-def _docker_run(args: list[str], cwd: Path, timeout: float | None = None) -> str:
-    actual = [shutil.which("docker") or "docker", *args[1:]]
+def _docker_run(
+    args: list[str],
+    cwd: Path,
+    timeout: float | None = None,
+    *,
+    runtime_env: Path | None = None,
+) -> str:
+    forwarded = [str(runtime_env) if runtime_env and arg == "/etc/drycontroller/runtime.env" else arg for arg in args[1:]]
+    actual = [shutil.which("docker") or "docker", *forwarded]
     completed = subprocess.run(
         actual,
         cwd=cwd,
@@ -174,11 +181,16 @@ def test_release_runtime_waits_for_real_compose_health_start_period(tmp_path: Pa
         cloud_config=tmp_path / "cloud.env",
         host_active=tmp_path / "host-active.json",
     )
+    runtime_env = tmp_path / "runtime.env"
+    runtime_env.write_text("", encoding="utf-8")
     status_checks = 0
 
     def run(args: list[str], timeout: float | None = None) -> str:
         nonlocal status_checks
-        actual = [docker, *args[1:]]
+        actual = [
+            docker,
+            *(str(runtime_env) if arg == "/etc/drycontroller/runtime.env" else arg for arg in args[1:]),
+        ]
         if "ps" in actual:
             status_checks += 1
         completed = subprocess.run(
@@ -255,6 +267,8 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
     signing_config = tmp_path / "signing-config.json"
     project = tmp_path / "project"
     project.mkdir()
+    runtime_env = tmp_path / "runtime.env"
+    runtime_env.write_text("", encoding="utf-8")
     compose = project / "docker-compose.yml"
     compose.write_text(
         "services:\n"
@@ -315,7 +329,7 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
             if completed.returncode != 0:
                 raise ReleaseError("real cosign verification failed")
             return completed.stdout
-        return _docker_run(args, project)
+        return _docker_run(args, project, runtime_env=runtime_env)
 
     try:
         subprocess.run(
@@ -414,7 +428,12 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
         engine = ReleaseEngine(
             paths=paths,
             command_runner=command,
-            runtime_command_runner=lambda args, timeout: _docker_run(args, project, timeout),
+            runtime_command_runner=lambda args, timeout: _docker_run(
+                args,
+                project,
+                timeout,
+                runtime_env=runtime_env,
+            ),
             runtime_health_checker=lambda _url, _timeout: None,
         )
         engine._image_set_verifier = engine._verify_portable_image_set
@@ -510,6 +529,7 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
                     "json",
                 ),
                 project,
+                runtime_env=runtime_env,
             )
         )
         if isinstance(running, dict):
