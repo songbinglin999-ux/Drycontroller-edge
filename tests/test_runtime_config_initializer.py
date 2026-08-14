@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -18,6 +19,14 @@ def _module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _physical_interface(tmp_path: Path, name: str = "enp2s0") -> Path:
+    sys_class_net = tmp_path / "sys-class-net"
+    interface = sys_class_net / name
+    (interface / "device").mkdir(parents=True)
+    (interface / "type").write_text("1\n", encoding="ascii")
+    return sys_class_net
 
 
 def test_public_config_generates_private_runtime_state_and_fixed_factory_channel(tmp_path):
@@ -38,6 +47,9 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
     runtime = tmp_path / "runtime.env"
     cloud = tmp_path / "cloud.env"
     netplan = tmp_path / "factory.yaml"
+    sys_class_net = _physical_interface(tmp_path)
+    for target in (runtime, cloud, netplan):
+        target.with_name(f".{target.name}.{os.getpid()}.tmp").write_bytes(b"interrupted")
 
     result = _module().initialize(
         public_config=public,
@@ -46,6 +58,7 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
         runtime_env=runtime,
         cloud_env=cloud,
         netplan=netplan,
+        sys_class_net=sys_class_net,
     )
     first_runtime = runtime.read_bytes()
     second_result = _module().initialize(
@@ -55,6 +68,7 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
         runtime_env=runtime,
         cloud_env=cloud,
         netplan=netplan,
+        sys_class_net=sys_class_net,
     )
 
     assert result["factory_interface"] == "enp2s0"
@@ -113,6 +127,7 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
         "runtime_env": runtime,
         "cloud_env": tmp_path / "cloud.env",
         "netplan": tmp_path / "factory.yaml",
+        "sys_class_net": _physical_interface(tmp_path),
     }
     module.initialize(**arguments)
     runtime.write_text(mutation(runtime.read_text(encoding="utf-8")), encoding="utf-8")
@@ -134,6 +149,10 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
         ("cloud_ops_base_url", "https://ops.example.test?"),
         ("cloud_ops_base_url", "https://ops.example.test#"),
         ("factory_interface", "enp2s0;bad"),
+        ("factory_interface", "lo"),
+        ("factory_interface", "docker0"),
+        ("factory_interface", "veth1234"),
+        ("factory_interface", "en012345678901234"),
         ("factory_address", "0.0.0.0/0"),
     ],
 )
@@ -158,4 +177,43 @@ def test_public_config_rejects_noncanonical_or_exposed_channel(tmp_path, field, 
             runtime_env=tmp_path / "runtime.env",
             cloud_env=tmp_path / "cloud.env",
             netplan=tmp_path / "factory.yaml",
+        )
+
+
+@pytest.mark.parametrize("interface_state", ["missing", "virtual", "non-ethernet"])
+def test_target_rejects_missing_or_virtual_factory_interface(tmp_path, interface_state):
+    public = tmp_path / "public.json"
+    public.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.os-installer-public-config.v1",
+                "cloud_ops_base_url": "https://ops.example.test",
+                "factory_interface": "enp2s0",
+                "factory_address": "169.254.203.2/30",
+            }
+        ),
+        encoding="utf-8",
+    )
+    machine_id = tmp_path / "machine-id"
+    machine_id.write_text("a" * 32, encoding="utf-8")
+    sys_class_net = tmp_path / "sys-class-net"
+    if interface_state != "missing":
+        interface = sys_class_net / "enp2s0"
+        interface.mkdir(parents=True)
+        (interface / "type").write_text(
+            "1\n" if interface_state == "virtual" else "772\n",
+            encoding="ascii",
+        )
+        if interface_state == "non-ethernet":
+            (interface / "device").mkdir()
+
+    with pytest.raises(ValueError, match="physical Ethernet"):
+        _module().initialize(
+            public_config=public,
+            env_template=ROOT / "env.example",
+            machine_id=machine_id,
+            runtime_env=tmp_path / "runtime.env",
+            cloud_env=tmp_path / "cloud.env",
+            netplan=tmp_path / "factory.yaml",
+            sys_class_net=sys_class_net,
         )

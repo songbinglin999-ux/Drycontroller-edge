@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 SCHEMA = "drycontroller.os-installer-public-config.v1"
 FIELDS = {"schema", "cloud_ops_base_url", "factory_interface", "factory_address"}
-INTERFACE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
+INTERFACE = re.compile(r"^(?=.{3,15}$)(?:en|eth)[A-Za-z0-9_.-]+$")
 HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
@@ -53,7 +53,7 @@ def validate_public_config(payload: object) -> dict[str, Any]:
         raise ValueError("OS Installer public config fields invalid")
     interface = payload["factory_interface"]
     if not isinstance(interface, str) or INTERFACE.fullmatch(interface) is None:
-        raise ValueError("OS Installer factory interface invalid")
+        raise ValueError("OS Installer factory interface must use one predictable Ethernet name")
     if payload["factory_address"] != "169.254.203.2/30":
         raise ValueError("OS Installer factory address must use the frozen link-local channel")
     return {

@@ -10,6 +10,7 @@ import re
 import secrets
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -24,15 +25,33 @@ PLACEHOLDER = re.compile(r"change_me_[A-Za-z0-9_]+")
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
-def _atomic_write(path: Path, data: bytes, mode: int) -> None:
+def _temporary_file(path: Path, data: bytes, mode: int) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    descriptor, name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(name)
     try:
-        with os.fdopen(descriptor, "wb") as handle:
+        os.fchmod(descriptor, mode)
+        handle = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        return temporary
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_write(path: Path, data: bytes, mode: int) -> None:
+    temporary = _temporary_file(path, data, mode)
+    try:
         os.replace(temporary, path)
         os.chmod(path, mode)
         directory = os.open(path.parent, os.O_RDONLY)
@@ -45,14 +64,8 @@ def _atomic_write(path: Path, data: bytes, mode: int) -> None:
 
 
 def _atomic_create(path: Path, data: bytes, mode: int) -> bool:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    temporary = _temporary_file(path, data, mode)
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
         try:
             os.link(temporary, path, follow_symlinks=False)
         except FileExistsError:
@@ -134,6 +147,16 @@ def _read_private_runtime(path: Path) -> str:
         return handle.read()
 
 
+def _validate_physical_ethernet(interface: str, sys_class_net: Path) -> None:
+    interface_path = sys_class_net / interface
+    if (
+        not interface_path.is_dir()
+        or not (interface_path / "device").exists()
+        or (interface_path / "type").read_text(encoding="ascii").strip() != "1"
+    ):
+        raise ValueError("OS Installer factory interface must be one physical Ethernet device")
+
+
 def initialize(
     *,
     public_config: Path,
@@ -142,11 +165,13 @@ def initialize(
     runtime_env: Path,
     cloud_env: Path,
     netplan: Path,
+    sys_class_net: Path = Path("/sys/class/net"),
 ) -> dict[str, str]:
     payload = validate_public_config(json.loads(public_config.read_text(encoding="utf-8")))
     cloud_url = payload["cloud_ops_base_url"]
     interface = payload["factory_interface"]
     address = payload["factory_address"]
+    _validate_physical_ethernet(interface, sys_class_net)
     template = "\n".join(
         line
         for line in env_template.read_text(encoding="utf-8").splitlines()
