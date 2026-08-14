@@ -107,6 +107,7 @@ done
 for path in \
   env.example \
   infra/bootstrap/initialize-runtime-config.py \
+  infra/bootstrap/installer_public_config.py \
   infra/host-release-runner/host_release_engine.py \
   infra/host-release-runner/host_release_runner.py \
   infra/host-release-runner/host-release-runner \

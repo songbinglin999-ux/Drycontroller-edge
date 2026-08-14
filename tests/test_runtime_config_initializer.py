@@ -65,6 +65,13 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
     ("field", "value"),
     [
         ("cloud_ops_base_url", "http://ops.example.test"),
+        ("cloud_ops_base_url", "https://ops.example.test/?tenant=other"),
+        ("cloud_ops_base_url", "https://ops.example.test/#fragment"),
+        ("cloud_ops_base_url", "https://ops..example.test"),
+        ("cloud_ops_base_url", "https://ops.example.test:99999"),
+        ("cloud_ops_base_url", "https://ops.example.test:"),
+        ("cloud_ops_base_url", "https://ops.example.test?"),
+        ("cloud_ops_base_url", "https://ops.example.test#"),
         ("factory_interface", "enp2s0;bad"),
         ("factory_address", "0.0.0.0/0"),
     ],

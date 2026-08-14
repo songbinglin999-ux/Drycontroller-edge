@@ -178,15 +178,24 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert "cosign sign-blob" in release_builder
     assert "cosign verify-blob" in release_builder
     assert "--installer-public-key" in usb_writer
+    assert "signature_verifier=Path(host_cosign)" in usb_writer
     assert "USB raw compare passed" in usb_writer
 
 
-def test_source_bundle_excludes_and_rejects_macos_metadata():
+def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata():
     builder = (ROOT / "tools" / "build-bundle-images.sh").read_text(encoding="utf-8")
 
-    assert "COPYFILE_DISABLE=1 tar -czf" in builder
-    assert "--exclude='._*'" in builder
-    assert "--exclude='__MACOSX'" in builder
+    assert 'git archive --format=tar.gz --output="$BUNDLE" HEAD -- "${SOURCE_BUNDLE_PATHS[@]}"' in builder
+    for required in (
+        "env.example",
+        "infra/bootstrap/install-edge-host.sh",
+        "infra/bootstrap/installer_public_config.py",
+        "infra/host-release-runner/host_release_engine.py",
+        "infra/ota-helper/drycontroller-ota-helper.service",
+        "services/device-identity/identity_service",
+    ):
+        assert required in builder
+    assert "tar -czf" not in builder
     assert 'python3 scripts/validate-source-bundle.py "$BUNDLE"' in builder
     assert "source bundle contains forbidden macOS metadata" in builder
 

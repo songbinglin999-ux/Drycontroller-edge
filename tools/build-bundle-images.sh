@@ -21,6 +21,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${REPO_ROOT}/dist"
 COMPOSE_PROJECT="drycontroller-edge"
+SOURCE_BUNDLE_PATHS=(
+  env.example
+  infra/bootstrap/install-edge-host.sh
+  infra/bootstrap/initialize-runtime-config.py
+  infra/bootstrap/installer_public_config.py
+  infra/bootstrap/drycontroller-factory-identity.service
+  infra/bootstrap/drycontroller-device-credential-rotation.service
+  infra/bootstrap/drycontroller-device-credential-rotation.timer
+  infra/host-release-runner/host_release_engine.py
+  infra/host-release-runner/host_release_runner.py
+  infra/host-release-runner/host-release-runner
+  infra/host-release-runner/host-release-apply
+  infra/host-release-runner/initialize-initial-release
+  infra/host-release-runner/drycontroller-host-release-runner.service
+  infra/ota-helper/drycontroller-ota-helper.service
+  services/device-identity/requirements.txt
+  services/device-identity/identity_service
+)
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -131,31 +149,7 @@ if [ "$BUILD_BUNDLE" = true ]; then
   log "packaging edge source bundle..."
 
   cd "$REPO_ROOT"
-  COPYFILE_DISABLE=1 tar -czf "$BUNDLE" \
-    --exclude='.git' \
-    --exclude='.env' \
-    --exclude='.env.*' \
-    --exclude='edge-local.env' \
-    --exclude='infra/autoinstall/password.env' \
-    --exclude='infra/autoinstall/wifi.env' \
-    --exclude='.venv' \
-    --exclude='.venv-*' \
-    --exclude='.venv*' \
-    --exclude='node_modules' \
-    --exclude='__pycache__' \
-    --exclude='.pytest_cache' \
-    --exclude='.DS_Store' \
-    --exclude='*/.DS_Store' \
-    --exclude='._*' \
-    --exclude='*/._*' \
-    --exclude='__MACOSX' \
-    --exclude='*/__MACOSX' \
-    --exclude='*.pyc' \
-    --exclude='dist' \
-    --exclude='logs' \
-    --exclude='data' \
-    --exclude='tmp' \
-    .
+  git archive --format=tar.gz --output="$BUNDLE" HEAD -- "${SOURCE_BUNDLE_PATHS[@]}"
 
   python3 scripts/validate-source-bundle.py "$BUNDLE" \
     || die "source bundle contains forbidden macOS metadata or cannot be inspected"

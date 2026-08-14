@@ -12,10 +12,13 @@ import sys
 from pathlib import Path
 
 
-SCHEMA = "drycontroller.os-installer-public-config.v1"
-FIELDS = {"schema", "cloud_ops_base_url", "factory_interface", "factory_address"}
-INTERFACE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
-HTTPS_URL = re.compile(r"^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[^\s]*)?$")
+BOOTSTRAP_DIR = Path(__file__).resolve().parent
+if str(BOOTSTRAP_DIR) not in sys.path:
+    sys.path.insert(0, str(BOOTSTRAP_DIR))
+
+from installer_public_config import validate_public_config  # noqa: E402
+
+
 PLACEHOLDER = re.compile(r"change_me_[A-Za-z0-9_]+")
 
 
@@ -48,18 +51,10 @@ def initialize(
     cloud_env: Path,
     netplan: Path,
 ) -> dict[str, str]:
-    payload = json.loads(public_config.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or set(payload) != FIELDS or payload.get("schema") != SCHEMA:
-        raise ValueError("OS Installer public config fields invalid")
+    payload = validate_public_config(json.loads(public_config.read_text(encoding="utf-8")))
     cloud_url = payload["cloud_ops_base_url"]
     interface = payload["factory_interface"]
     address = payload["factory_address"]
-    if not isinstance(cloud_url, str) or HTTPS_URL.fullmatch(cloud_url) is None:
-        raise ValueError("OS Installer Cloud URL must be HTTPS")
-    if not isinstance(interface, str) or INTERFACE.fullmatch(interface) is None:
-        raise ValueError("OS Installer factory interface invalid")
-    if address != "169.254.203.2/30":
-        raise ValueError("OS Installer factory address must use the frozen link-local channel")
     template = "\n".join(
         line
         for line in env_template.read_text(encoding="utf-8").splitlines()

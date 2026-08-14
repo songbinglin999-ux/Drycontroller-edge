@@ -83,3 +83,25 @@ def test_final_seed_verifier_rejects_failed_cosign(tmp_path, monkeypatch):
             public_key=b"public-key",
             cosign=cosign,
         )
+
+
+def test_final_iso_verifier_can_use_host_cosign_without_materializing_linux_binary(tmp_path):
+    module = _module()
+    host_cosign = tmp_path / "cosign-host"
+    host_cosign.write_bytes(b"host-native-cosign")
+    host_cosign.chmod(0o700)
+
+    selected = module._select_signature_verifier(
+        directory=tmp_path,
+        embedded_linux_cosign=b"linux-amd64-cosign",
+        host_verifier=host_cosign,
+    )
+
+    assert selected == host_cosign.resolve()
+    assert not (tmp_path / "cosign-linux-amd64").exists()
+
+
+def test_iso_verifier_reuses_runtime_public_config_validator():
+    module = _module()
+
+    assert module.validate_public_config.__module__ == "installer_public_config"

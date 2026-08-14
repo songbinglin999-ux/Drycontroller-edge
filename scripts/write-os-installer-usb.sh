@@ -143,6 +143,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -187,7 +188,15 @@ class App:
         print(f"[{level}] {message}")
 
 
-maker.verify_final_iso(App(), iso, include_images=True)
+host_cosign = shutil.which("cosign")
+if host_cosign is None:
+    raise SystemExit("host cosign verifier unavailable")
+maker.verify_final_iso(
+    App(),
+    iso,
+    include_images=True,
+    signature_verifier=Path(host_cosign),
+)
 print(f"manifest ok: {manifest_path}")
 print(f"iso sha256: {actual_sha}")
 PY

@@ -22,8 +22,11 @@ TOOL_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOL_DIR.parents[1]
 AUTOINSTALL_DIR = REPO_ROOT / "dist" / "autoinstall"
 RUNNER_DIR = REPO_ROOT / "infra" / "host-release-runner"
+BOOTSTRAP_DIR = REPO_ROOT / "infra" / "bootstrap"
 if str(RUNNER_DIR) not in sys.path:
     sys.path.insert(0, str(RUNNER_DIR))
+if str(BOOTSTRAP_DIR) not in sys.path:
+    sys.path.insert(0, str(BOOTSTRAP_DIR))
 
 from host_release_engine import (  # noqa: E402
     COSIGN_TOOLCHAIN,
@@ -37,6 +40,7 @@ from host_release_engine import (  # noqa: E402
     validate_host_manifest,
     validate_software_manifest,
 )
+from installer_public_config import validate_public_config  # noqa: E402
 
 
 MEDIA_MAPS = (
@@ -216,7 +220,30 @@ def _verify_wheelhouse(iso: Path, entries: set[str]) -> None:
             raise RuntimeError("ISO identity wheel checksum mismatch")
 
 
-def verify_final_iso(app: Any, iso: Path, *, include_images: bool) -> None:
+def _select_signature_verifier(
+    *,
+    directory: Path,
+    embedded_linux_cosign: bytes,
+    host_verifier: Path | None,
+) -> Path:
+    if host_verifier is not None:
+        verifier = host_verifier.resolve()
+        if not verifier.is_file() or not os.access(verifier, os.X_OK):
+            raise RuntimeError("host cosign signature verifier unavailable")
+        return verifier
+    verifier = directory / "cosign-linux-amd64"
+    verifier.write_bytes(embedded_linux_cosign)
+    verifier.chmod(0o700)
+    return verifier
+
+
+def verify_final_iso(
+    app: Any,
+    iso: Path,
+    *,
+    include_images: bool,
+    signature_verifier: Path | None = None,
+) -> None:
     if include_images is not True:
         raise RuntimeError("formal ISO verification requires the complete signed image pair")
     _log(app, "Verifying final RB-6 ISO checklist")
@@ -250,24 +277,10 @@ def verify_final_iso(app: Any, iso: Path, *, include_images: bool) -> None:
         if forbidden_text in user_data:
             raise RuntimeError(f"ISO user-data contains credential path: {forbidden_text}")
 
-    public_config = json.loads(extract_iso_file(iso, "public-config.json"))
-    if (
-        not isinstance(public_config, dict)
-        or set(public_config)
-        != {"schema", "cloud_ops_base_url", "factory_interface", "factory_address"}
-        or public_config.get("schema") != "drycontroller.os-installer-public-config.v1"
-        or not isinstance(public_config.get("cloud_ops_base_url"), str)
-        or re.fullmatch(
-            r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[^\s]*)?",
-            public_config["cloud_ops_base_url"],
-        )
-        is None
-        or not isinstance(public_config.get("factory_interface"), str)
-        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}", public_config["factory_interface"])
-        is None
-        or public_config.get("factory_address") != "169.254.203.2/30"
-    ):
-        raise RuntimeError("ISO public configuration invalid")
+    try:
+        validate_public_config(json.loads(extract_iso_file(iso, "public-config.json")))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError("ISO public configuration invalid") from exc
 
     host, host_digest, _host_signature = _seed(
         extract_iso_file(iso, "host-release-seed.json"), host=True
@@ -296,9 +309,11 @@ def verify_final_iso(app: Any, iso: Path, *, include_images: bool) -> None:
 
     with tempfile.TemporaryDirectory(prefix="drycontroller-iso-verify-") as temporary:
         directory = Path(temporary)
-        cosign_path = directory / "cosign-linux-amd64"
-        cosign_path.write_bytes(cosign)
-        cosign_path.chmod(0o700)
+        cosign_path = _select_signature_verifier(
+            directory=directory,
+            embedded_linux_cosign=cosign,
+            host_verifier=signature_verifier,
+        )
         _verify_seed_signature(
             directory=directory,
             prefix="host",
