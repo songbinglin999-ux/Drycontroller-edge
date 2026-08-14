@@ -640,6 +640,86 @@ def test_initial_pair_archive_tamper_leaves_no_active_state(tmp_path):
     assert not (paths.releases / host["release_id"]).exists()
 
 
+def test_initial_pair_rejects_mismatched_host_and_software_before_mutation(tmp_path):
+    paths, host, software, host_archive, software_archive, command = _blank_initial_fixture(
+        tmp_path
+    )
+    mismatched = {
+        **software,
+        "host_release_id": "22222222-2222-4222-8222-222222222222",
+    }
+    engine = HostReleaseEngine(paths=paths, command_runner=command)
+
+    with pytest.raises(HostReleaseError, match="pair mismatch"):
+        engine.initialize_initial_pair(
+            host_seed={
+                "manifest": host,
+                "manifest_digest": canonical_digest(host),
+                "manifest_signature": SIGNATURE,
+            },
+            software_seed={
+                "manifest": mismatched,
+                "manifest_digest": canonical_digest(mismatched),
+                "manifest_signature": SIGNATURE,
+            },
+            host_image_archive=host_archive,
+            software_image_archive=software_archive,
+        )
+
+    assert not paths.journal.exists()
+    assert not paths.current_link.exists()
+
+
+def test_interrupted_initial_pair_is_cleaned_and_retried_exactly(tmp_path):
+    paths, host, software, host_archive, software_archive, command = _blank_initial_fixture(
+        tmp_path
+    )
+    engine = HostReleaseEngine(paths=paths, command_runner=command)
+    host_seed = {
+        "manifest": host,
+        "manifest_digest": canonical_digest(host),
+        "manifest_signature": SIGNATURE,
+    }
+    software_seed = {
+        "manifest": software,
+        "manifest_digest": canonical_digest(software),
+        "manifest_signature": SIGNATURE,
+    }
+    slot = engine._initial_slot(
+        host=host,
+        host_digest=host_seed["manifest_digest"],
+        host_signature=SIGNATURE,
+        software=software,
+        software_digest=software_seed["manifest_digest"],
+        software_signature=SIGNATURE,
+    )
+    interrupted_root = Path(slot["host_path"])
+    interrupted_root.mkdir()
+    paths.current_link.symlink_to(interrupted_root)
+    paths.host_active.write_text("{}", encoding="utf-8")
+    paths.software_journal.write_text("{}", encoding="utf-8")
+    interrupted_software = paths.software_releases / software_seed[
+        "manifest_digest"
+    ].removeprefix("sha256:")
+    interrupted_software.mkdir()
+    paths.journal.write_text(
+        json.dumps(engine._initial_journal(slot, "initial_activating")),
+        encoding="utf-8",
+    )
+
+    result = engine.initialize_initial_pair(
+        host_seed=host_seed,
+        software_seed=software_seed,
+        host_image_archive=host_archive,
+        software_image_archive=software_archive,
+    )
+
+    assert result["status"] == "initialized"
+    assert paths.current_link.resolve() == interrupted_root
+    assert json.loads(paths.journal.read_text(encoding="utf-8"))["phase"] == "idle"
+    assert any(args[:3] == ["/usr/bin/docker", "compose", "--env-file"] and "down" in args for args in command.commands)
+
+
 def test_portable_image_identity_is_independent_of_containerd_runtime_id(tmp_path):
     paths, _host1, _software1, host2, software2, command = _fixture(tmp_path)
     local_reference = _local_image_reference("edge-api", software2["image_ids"]["edge-api"])
