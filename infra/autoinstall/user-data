@@ -20,17 +20,16 @@ autoinstall:
         dhcp4: true
         optional: true
 
-  # Production media should replace the password hash before use.
-  # Generate a hash:
-  #   openssl passwd -6
+  # Formal media carries no reusable login credential. Factory activation uses
+  # the isolated link-local TPM endpoint, not password SSH.
   identity:
     hostname: drycontroller-edge
     username: dryops
-    password: "$6$REPLACE_WITH_SHA512_CRYPT_HASH"
+    password: "!"
 
   ssh:
     install-server: true
-    allow-pw: true
+    allow-pw: false
 
   apt:
     preserve_sources_list: false
@@ -50,6 +49,11 @@ autoinstall:
   early-commands:
     - test -d /cdrom/dists || (echo "missing /cdrom/dists; OS Installer USB must keep the Ubuntu ISO apt repository at the media root" >&2; exit 1)
     - test -f /cdrom/drycontroller-apt/Packages || (echo "missing /cdrom/drycontroller-apt/Packages; build and copy the offline apt repo before booting the OS Installer USB" >&2; exit 1)
+    - test -f /cdrom/host-release-seed.json || (echo "missing signed initial HostRelease" >&2; exit 1)
+    - test -f /cdrom/software-release-seed.json || (echo "missing signed initial SoftwareRelease" >&2; exit 1)
+    - test -f /cdrom/host-image.tar || (echo "missing initial HostRelease image" >&2; exit 1)
+    - test -f /cdrom/software-images.tar || (echo "missing initial SoftwareRelease images" >&2; exit 1)
+    - test -d /cdrom/identity-wheelhouse || (echo "missing device identity wheelhouse" >&2; exit 1)
     - sh -c 'python3 -m http.server 18080 --bind 127.0.0.1 --directory /cdrom >/run/drycontroller-cdrom-http.log 2>&1 &'
     - sh -c 'for i in $(seq 1 20); do wget -q -O /dev/null http://127.0.0.1:18080/dists/noble/Release && exit 0; sleep 1; done; cat /run/drycontroller-cdrom-http.log >&2; exit 1'
 
@@ -112,9 +116,7 @@ autoinstall:
     - cp -a /cdrom/drycontroller-apt/. /target/opt/drycontroller-apt/
     - sh -c 'echo "deb [trusted=yes] file:/opt/drycontroller-apt ./" > /target/etc/apt/sources.list && rm -f /target/etc/apt/sources.list.d/ubuntu.sources /target/etc/apt/sources.list.d/drycontroller-offline.list'
     - cp -a /cdrom/drycontroller-edge.tar.gz /target/opt/drycontroller-edge.tar.gz
-    - sh -c 'if [ -f /cdrom/bundle-images.tar ]; then mkdir -p /target/opt/drycontroller-images; cp -a /cdrom/bundle-images.tar /target/opt/drycontroller-images/bundle-images.tar; chmod 0600 /target/opt/drycontroller-images/bundle-images.tar; fi'
-    - sh -c 'mkdir -p /target/opt/drycontroller-release; cp -a /cdrom/software-release-seed.json /target/opt/drycontroller-release/software-release-seed.json; cp -a /cdrom/host-active.json /target/opt/drycontroller-release/host-active.json; cp -a /cdrom/cosign.pub /target/opt/drycontroller-release/cosign.pub; cp -a /cdrom/cosign-linux-amd64 /target/opt/drycontroller-release/cosign-linux-amd64; chmod 0600 /target/opt/drycontroller-release/software-release-seed.json /target/opt/drycontroller-release/host-active.json; chmod 0644 /target/opt/drycontroller-release/cosign.pub; chmod 0755 /target/opt/drycontroller-release/cosign-linux-amd64'
-    - sh -c 'if [ -f /cdrom/wifi.env ]; then cp -a /cdrom/wifi.env /target/opt/drycontroller-wifi.env; chmod 0600 /target/opt/drycontroller-wifi.env; fi'
+    - sh -c 'mkdir -p /target/opt/drycontroller-release; cp -a /cdrom/host-release-seed.json /target/opt/drycontroller-release/host-release-seed.json; cp -a /cdrom/software-release-seed.json /target/opt/drycontroller-release/software-release-seed.json; cp -a /cdrom/host-image.tar /target/opt/drycontroller-release/host-image.tar; cp -a /cdrom/software-images.tar /target/opt/drycontroller-release/software-images.tar; cp -a /cdrom/host-release-cosign.pub /target/opt/drycontroller-release/host-release-cosign.pub; cp -a /cdrom/software-release-cosign.pub /target/opt/drycontroller-release/software-release-cosign.pub; cp -a /cdrom/cosign-linux-amd64 /target/opt/drycontroller-release/cosign-linux-amd64; cp -a /cdrom/device-identity-cloud.pub /target/opt/drycontroller-release/device-identity-cloud.pub; cp -a /cdrom/public-config.json /target/opt/drycontroller-release/public-config.json; cp -a /cdrom/identity-wheelhouse /target/opt/drycontroller-release/identity-wheelhouse; chmod 0600 /target/opt/drycontroller-release/host-release-seed.json /target/opt/drycontroller-release/software-release-seed.json /target/opt/drycontroller-release/host-image.tar /target/opt/drycontroller-release/software-images.tar; chmod 0644 /target/opt/drycontroller-release/host-release-cosign.pub /target/opt/drycontroller-release/software-release-cosign.pub /target/opt/drycontroller-release/device-identity-cloud.pub /target/opt/drycontroller-release/public-config.json; chmod 0755 /target/opt/drycontroller-release/cosign-linux-amd64'
     - cp -a /cdrom/post-install.sh /target/usr/local/sbin/drycontroller-edge-post-install.sh
     - cp -a /cdrom/drycontroller-edge-post-install.service /target/etc/systemd/system/drycontroller-edge-post-install.service
     - curtin in-target --target=/target -- chmod 0755 /usr/local/sbin/drycontroller-edge-post-install.sh

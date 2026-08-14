@@ -136,6 +136,51 @@ def test_host_release_runner_is_outside_its_signed_update_surface():
     assert "pass_fds=inherited_fds" in engine
 
 
+def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
+    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+    post_install = (ROOT / "infra/autoinstall/post-install.sh").read_text(encoding="utf-8")
+    user_data = (ROOT / "infra/autoinstall/user-data").read_text(encoding="utf-8")
+    release_builder = (ROOT / "scripts/build-os-installer-release.sh").read_text(encoding="utf-8")
+    usb_writer = (ROOT / "scripts/write-os-installer-usb.sh").read_text(encoding="utf-8")
+
+    for required in (
+        "--host-release",
+        "--host-image-bundle",
+        "--software-release",
+        "--software-image-bundle",
+        "--host-cosign-public-key",
+        "--software-cosign-public-key",
+        "--device-identity-cloud-key",
+        "--identity-wheelhouse",
+        "--public-config",
+        "/usr/libexec/drycontroller/initialize-initial-release",
+        "/usr/libexec/drycontroller/host-release-runner",
+    ):
+        assert required in installer
+    for retired in ("--initial-release", "--host-active", "--cosign-public-key"):
+        assert retired not in installer
+    assert "[ -c /dev/tpmrm0 ]" in installer
+    assert 'password: "!"' in user_data
+    assert "allow-pw: false" in user_data
+    assert "wifi.env" not in user_data
+    assert "activation-bundle.json" not in user_data
+    assert "host-release-seed.json" in post_install
+    assert "software-release-seed.json" in post_install
+    assert "host-active.json" not in post_install
+    assert 'VERSION_ID:-}" = "24.04"' in release_builder
+    assert "release worktree must be clean" in release_builder
+    assert "formal builder cosign checksum is not approved" in release_builder
+    assert 'export PATH="$PINNED_TOOL_DIR:$PATH"' in release_builder
+    assert "scripts/build-device-identity-wheelhouse.sh" in release_builder
+    assert "scripts/build-autoinstall-offline-apt-repo.sh" in release_builder
+    assert "scripts/create-os-installer-manifest.py" in release_builder
+    assert "maker.build_iso" in release_builder
+    assert "cosign sign-blob" in release_builder
+    assert "cosign verify-blob" in release_builder
+    assert "--installer-public-key" in usb_writer
+    assert "USB raw compare passed" in usb_writer
+
+
 def test_source_bundle_excludes_and_rejects_macos_metadata():
     builder = (ROOT / "tools" / "build-bundle-images.sh").read_text(encoding="utf-8")
 

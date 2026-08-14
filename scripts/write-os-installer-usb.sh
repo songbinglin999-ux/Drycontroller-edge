@@ -13,17 +13,22 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 ISO=""
 MANIFEST=""
+SIGNATURE=""
+INSTALLER_PUBLIC_KEY=""
 DISK_ID=""
 YES=false
 
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/write-os-installer-usb.sh dist/OSYYYYMMDD-channel.iso --disk diskN [--yes]
+  bash scripts/write-os-installer-usb.sh dist/OSYYYYMMDD-channel.iso \
+    --installer-public-key FILE --disk diskN [--yes]
 
 Required:
   - ISO path
   - matching .manifest.json next to the ISO, or --manifest FILE
+  - matching .manifest.sigstore.json, or --signature FILE
+  - independently supplied OS Installer verification key
   - explicit external disk id, for example --disk disk3
 
 This command is destructive. It validates the release manifest, re-runs the ISO
@@ -58,6 +63,16 @@ while [ $# -gt 0 ]; do
     --manifest)
       MANIFEST="${2:-}"
       [ -n "$MANIFEST" ] || { usage >&2; exit 2; }
+      shift 2
+      ;;
+    --signature)
+      SIGNATURE="${2:-}"
+      [ -n "$SIGNATURE" ] || { usage >&2; exit 2; }
+      shift 2
+      ;;
+    --installer-public-key)
+      INSTALLER_PUBLIC_KEY="${2:-}"
+      [ -n "$INSTALLER_PUBLIC_KEY" ] || { usage >&2; exit 2; }
       shift 2
       ;;
     --disk)
@@ -96,19 +111,33 @@ ISO="$(cd "$(dirname "$ISO")" && pwd)/$(basename "$ISO")"
 if [ -z "$MANIFEST" ]; then
   MANIFEST="${ISO%.iso}.manifest.json"
 fi
+if [ -z "$SIGNATURE" ]; then
+  SIGNATURE="${ISO%.iso}.manifest.sigstore.json"
+fi
 [ -f "$MANIFEST" ] || die "manifest not found: $MANIFEST"
+[ -f "$SIGNATURE" ] || die "manifest signature not found: $SIGNATURE"
+[ -n "$INSTALLER_PUBLIC_KEY" ] || die "--installer-public-key is required"
+[ -f "$INSTALLER_PUBLIC_KEY" ] || die "installer public key not found: $INSTALLER_PUBLIC_KEY"
 MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
+SIGNATURE="$(cd "$(dirname "$SIGNATURE")" && pwd)/$(basename "$SIGNATURE")"
+INSTALLER_PUBLIC_KEY="$(cd "$(dirname "$INSTALLER_PUBLIC_KEY")" && pwd)/$(basename "$INSTALLER_PUBLIC_KEY")"
 
 require_cmd python3
-require_cmd shasum
 require_cmd bsdtar
 require_cmd diskutil
+require_cmd cosign
 
 export DRYCONTROLLER_RELEASE_WRAPPER=1
 
 cd "$REPO_ROOT"
 
-run python3 - "$ISO" "$MANIFEST" <<'PY'
+run cosign verify-blob \
+  --key "$INSTALLER_PUBLIC_KEY" \
+  --insecure-ignore-tlog=true \
+  --bundle "$SIGNATURE" \
+  "$MANIFEST"
+
+run python3 - "$ISO" "$MANIFEST" "$INSTALLER_PUBLIC_KEY" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -119,6 +148,7 @@ from pathlib import Path
 
 iso = Path(sys.argv[1])
 manifest_path = Path(sys.argv[2])
+installer_public_key = Path(sys.argv[3])
 
 
 def sha256(path: Path) -> str:
@@ -130,7 +160,7 @@ def sha256(path: Path) -> str:
 
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-if manifest.get("schema") != "drycontroller.os-installer-release.v1":
+if manifest.get("schema") != "drycontroller.os-installer-release.v2":
     raise SystemExit("manifest schema mismatch")
 if not manifest.get("checks", {}).get("final_iso_release_checklist", {}).get("passed"):
     raise SystemExit("manifest does not record a passing final ISO checklist")
@@ -138,20 +168,11 @@ expected_sha = manifest.get("artifacts", {}).get("iso", {}).get("sha256")
 actual_sha = sha256(iso)
 if expected_sha != actual_sha:
     raise SystemExit(f"ISO sha256 mismatch: manifest={expected_sha} actual={actual_sha}")
-if not manifest.get("release", {}).get("include_images"):
+if not manifest.get("release", {}).get("include_images") or not manifest.get("release", {}).get("public_material_only"):
     raise SystemExit("release manifest must include bundled Docker images")
-
-approved_cosign = {
-    "version": "v3.1.3",
-    "linux_amd64_sha256": "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
-}
-initial_release = manifest.get("artifacts", {}).get("initial_release")
-if not isinstance(initial_release, dict):
-    raise SystemExit("release manifest initial SoftwareRelease identity missing")
-if initial_release.get("cosign_version") != approved_cosign["version"]:
-    raise SystemExit("release manifest cosign version is not approved")
-if "sha256:" + str(initial_release.get("cosign_linux_amd64_sha256")) != approved_cosign["linux_amd64_sha256"]:
-    raise SystemExit("release manifest cosign checksum is not approved")
+key_digest = "sha256:" + sha256(installer_public_key)
+if manifest.get("installer_signing_key_sha256") != key_digest:
+    raise SystemExit("release manifest signing key mismatch")
 
 spec = importlib.util.spec_from_file_location(
     "maker",
@@ -160,43 +181,6 @@ spec = importlib.util.spec_from_file_location(
 maker = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(maker)
-
-seed_bytes = maker.extract_iso_file(iso, "software-release-seed.json")
-host_active_bytes = maker.extract_iso_file(iso, "host-active.json")
-public_key_bytes = maker.extract_iso_file(iso, "cosign.pub")
-cosign_bytes = maker.extract_iso_file(iso, "cosign-linux-amd64")
-if hashlib.sha256(seed_bytes).hexdigest() != initial_release.get("seed_sha256"):
-    raise SystemExit("embedded SoftwareRelease seed checksum mismatch")
-if hashlib.sha256(host_active_bytes).hexdigest() != initial_release.get("host_active_sha256"):
-    raise SystemExit("embedded active HostRelease state checksum mismatch")
-if hashlib.sha256(public_key_bytes).hexdigest() != initial_release.get("cosign_public_key_sha256"):
-    raise SystemExit("embedded cosign public key checksum mismatch")
-if hashlib.sha256(cosign_bytes).hexdigest() != initial_release.get("cosign_linux_amd64_sha256"):
-    raise SystemExit("embedded cosign binary checksum mismatch")
-seed = json.loads(seed_bytes)
-seed_manifest = seed.get("manifest") if isinstance(seed, dict) else None
-if not isinstance(seed_manifest, dict) or seed_manifest.get("cosign") != approved_cosign:
-    raise SystemExit("embedded SoftwareRelease cosign toolchain is not approved")
-canonical_seed_manifest = json.dumps(
-    seed_manifest,
-    ensure_ascii=False,
-    sort_keys=True,
-    separators=(",", ":"),
-).encode("utf-8")
-seed_manifest_digest = "sha256:" + hashlib.sha256(canonical_seed_manifest).hexdigest()
-if seed.get("manifest_digest") != seed_manifest_digest or initial_release.get("manifest_digest") != seed_manifest_digest:
-    raise SystemExit("embedded SoftwareRelease manifest digest mismatch")
-host_active = json.loads(host_active_bytes)
-if (
-    seed_manifest.get("host_release_id") != host_active.get("host_release_id")
-    or seed_manifest.get("topology_digest") != host_active.get("topology_digest")
-    or initial_release.get("host_release_id") != host_active.get("host_release_id")
-    or initial_release.get("topology_digest") != host_active.get("topology_digest")
-    or initial_release.get("host_release_manifest_digest")
-    != host_active.get("host_release_manifest_digest")
-):
-    raise SystemExit("embedded SoftwareRelease and active HostRelease binding mismatch")
-
 
 class App:
     def _append_log(self, message: str, level: str = "info") -> None:
@@ -228,7 +212,8 @@ RAW_DISK="/dev/r${DISK_ID}"
 run diskutil list external physical
 run diskutil list "$DISK"
 
-run python3 - "$DISK" <<'PY'
+verify_target() {
+python3 - "$DISK" <<'PY'
 from __future__ import annotations
 
 import plistlib
@@ -252,11 +237,14 @@ raw = subprocess.check_output(["diskutil", "info", "-plist", disk])
 payload = plistlib.loads(raw)
 if payload.get("VirtualOrPhysical") != "Physical":
     raise SystemExit(f"refusing to write non-physical disk: {disk}")
-if payload.get("Internal"):
+if payload.get("Internal") is not False:
     raise SystemExit(f"refusing to write internal disk: {disk}")
-if payload.get("WholeDisk") is False:
+if payload.get("WholeDisk") is not True:
     raise SystemExit(f"target must be a whole disk, not a partition: {disk}")
 PY
+}
+
+run verify_target
 
 if [ "$YES" != true ]; then
   printf 'This will erase %s. Type "ERASE %s" to continue: ' "$DISK" "$DISK_ID" >&2
@@ -264,8 +252,34 @@ if [ "$YES" != true ]; then
   [ "$confirmation" = "ERASE ${DISK_ID}" ] || die "confirmation did not match; aborting"
 fi
 
+run verify_target
 run diskutil unmountDisk force "$DISK"
 run sudo /bin/dd "if=$ISO" "of=$RAW_DISK" bs=4m status=progress
 run sync
+run sudo python3 - "$ISO" "$RAW_DISK" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+iso = Path(sys.argv[1])
+raw_disk = Path(sys.argv[2])
+remaining = iso.stat().st_size
+expected_hash = hashlib.sha256()
+with iso.open("rb") as handle:
+    for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+        expected_hash.update(chunk)
+expected = expected_hash.hexdigest()
+actual = hashlib.sha256()
+with raw_disk.open("rb", buffering=0) as handle:
+    while remaining:
+        chunk = handle.read(min(4 * 1024 * 1024, remaining))
+        if not chunk:
+            raise SystemExit("USB raw compare ended before the ISO length")
+        actual.update(chunk)
+        remaining -= len(chunk)
+if actual.hexdigest() != expected:
+    raise SystemExit("USB raw compare sha256 mismatch")
+print(f"USB raw compare passed: {expected}")
+PY
 run diskutil eject "$DISK"
 log "write complete: $ISO -> $DISK"

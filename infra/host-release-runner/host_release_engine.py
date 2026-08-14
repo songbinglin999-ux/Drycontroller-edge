@@ -1093,6 +1093,40 @@ class HostReleaseEngine:
             }
         _atomic_write(release_dir / "local-images.json", canonical_json_bytes(evidence))
 
+    def _stage_initial_software_images(
+        self,
+        software: dict[str, Any],
+        manifest_digest: str,
+        image_archive: Path,
+    ) -> None:
+        expected = {
+            _local_image_reference(service, software["image_ids"][service]): software["image_ids"][service]
+            for service in sorted(software["services"])
+        }
+        actual = _docker_archive_digests(image_archive)
+        if actual != expected:
+            raise HostReleaseError("initial SoftwareRelease image archive mismatch")
+        self._command_runner([_DOCKER, "image", "load", "-i", str(image_archive)], None, None)
+        release_dir = self.paths.software_releases / manifest_digest.removeprefix("sha256:")
+        release_dir.mkdir(parents=True, exist_ok=False)
+        evidence: dict[str, Any] = {"manifest_digest": manifest_digest, "images": {}}
+        for service in sorted(software["services"]):
+            image_id = software["image_ids"][service]
+            reference = _local_image_reference(service, image_id)
+            runtime_id = self._command_runner(
+                [_DOCKER, "image", "inspect", "--format", "{{.Id}}", reference],
+                None,
+                None,
+            ).strip()
+            if not _DIGEST.fullmatch(runtime_id):
+                raise HostReleaseError("initial SoftwareRelease runtime image ID invalid")
+            evidence["images"][service] = {
+                "reference": reference,
+                "image_id": image_id,
+                "runtime_id": runtime_id,
+            }
+        _atomic_write(release_dir / "local-images.json", canonical_json_bytes(evidence))
+
     def _slot(self, policy: dict[str, Any], rootfs: Path) -> dict[str, Any]:
         return {
             "host_manifest": policy["host_manifest"],
@@ -1103,6 +1137,282 @@ class HostReleaseEngine:
             "software_manifest_signature": policy["software_manifest_signature"],
             "host_path": str(rootfs),
         }
+
+    @staticmethod
+    def _initial_seed(
+        seed: object,
+        *,
+        validator: Callable[[object], dict[str, Any]],
+        label: str,
+    ) -> tuple[dict[str, Any], str, str]:
+        if not isinstance(seed, dict) or set(seed) != {
+            "manifest",
+            "manifest_digest",
+            "manifest_signature",
+        }:
+            raise HostReleaseError(f"initial {label} seed fields invalid")
+        manifest = validator(seed["manifest"])
+        manifest_digest = canonical_digest(manifest)
+        if seed["manifest_digest"] != manifest_digest:
+            raise HostReleaseError(f"initial {label} seed digest mismatch")
+        signature = seed["manifest_signature"]
+        if not isinstance(signature, str):
+            raise HostReleaseError(f"initial {label} seed signature invalid")
+        try:
+            signature_bytes = base64.b64decode(signature, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HostReleaseError(f"initial {label} seed signature invalid") from exc
+        if not signature_bytes or len(signature_bytes) > 16 * 1024:
+            raise HostReleaseError(f"initial {label} seed signature invalid")
+        return manifest, manifest_digest, signature
+
+    def _initial_slot(
+        self,
+        *,
+        host: dict[str, Any],
+        host_digest: str,
+        host_signature: str,
+        software: dict[str, Any],
+        software_digest: str,
+        software_signature: str,
+    ) -> dict[str, Any]:
+        return self._validate_slot(
+            {
+                "host_manifest": host,
+                "host_manifest_digest": host_digest,
+                "host_manifest_signature": host_signature,
+                "software_manifest": software,
+                "software_manifest_digest": software_digest,
+                "software_manifest_signature": software_signature,
+                "host_path": str(self._release_dir(host)),
+            }
+        )
+
+    def _initial_journal(self, slot: dict[str, Any], phase: str) -> dict[str, Any]:
+        return {
+            "schema": COORDINATOR_JOURNAL_SCHEMA,
+            "phase": phase,
+            "operation_id": None,
+            "last_operation_id": None,
+            "high_watermark": 0,
+            "active": None,
+            "candidate": slot,
+            "previous": None,
+            "effect": None,
+            "error": None,
+        }
+
+    def _remove_initial_state(self, slot: dict[str, Any]) -> None:
+        rootfs = Path(slot["host_path"])
+        if self.paths.current_link.is_symlink():
+            if self.paths.current_link.readlink() != rootfs:
+                raise HostReleaseError("initial HostRelease current link conflict")
+            self._stop_active(slot)
+            self.paths.current_link.unlink()
+            _fsync_directory(self.paths.current_link.parent)
+        for state_file in (self.paths.host_active, self.paths.software_journal):
+            state_file.unlink(missing_ok=True)
+            _fsync_directory(state_file.parent)
+        for directory in (
+            rootfs,
+            self._staging_dir(slot["host_manifest"]),
+            self.paths.software_releases
+            / slot["software_manifest_digest"].removeprefix("sha256:"),
+        ):
+            if directory.exists():
+                if directory.is_symlink() or not directory.is_dir():
+                    raise HostReleaseError("initial release path conflict")
+                shutil.rmtree(directory)
+                _fsync_directory(directory.parent)
+
+    def _recover_initialization(self, slot: dict[str, Any]) -> None:
+        journal = self._load_journal()
+        if (
+            not journal["phase"].startswith("initial_")
+            or journal["active"] is not None
+            or journal["previous"] is not None
+            or journal["candidate"] != slot
+        ):
+            raise HostReleaseError("existing HostRelease state is not an interrupted initial install")
+        journal["phase"] = "initial_cleanup"
+        self._persist(journal)
+        self._remove_initial_state(slot)
+        self.paths.journal.unlink()
+        _fsync_directory(self.paths.journal.parent)
+
+    def _verify_initial_active_state(self, slot: dict[str, Any]) -> None:
+        if (
+            not self.paths.current_link.is_symlink()
+            or self.paths.current_link.readlink() != Path(slot["host_path"])
+            or not self.paths.compatibility_link.is_symlink()
+            or self.paths.compatibility_link.readlink() != self.paths.current_link
+            or _read_json(self.paths.host_active) != self._host_active(slot)
+        ):
+            raise HostReleaseError("initial active HostRelease state invalid")
+        software_journal = _read_json(self.paths.software_journal)
+        software_active = software_journal.get("active") if isinstance(software_journal, dict) else None
+        if (
+            not isinstance(software_journal, dict)
+            or software_journal.get("schema") != "drycontroller.release-journal.v1"
+            or software_journal.get("phase") != "idle"
+            or software_journal.get("operation_id") is not None
+            or software_journal.get("last_operation_id") is not None
+            or software_journal.get("candidate") is not None
+            or software_journal.get("previous") is not None
+            or software_journal.get("effect") is not None
+            or software_journal.get("error") is not None
+            or not isinstance(software_active, dict)
+            or software_active.get("manifest") != slot["software_manifest"]
+            or software_active.get("manifest_digest") != slot["software_manifest_digest"]
+            or software_active.get("manifest_signature") != slot["software_manifest_signature"]
+            or not isinstance(software_active.get("verified_at"), str)
+        ):
+            raise HostReleaseError("initial active SoftwareRelease state invalid")
+        self._verify_slot_offline(slot)
+
+    def initialize_initial_pair(
+        self,
+        *,
+        host_seed: object,
+        software_seed: object,
+        host_image_archive: Path,
+        software_image_archive: Path,
+    ) -> dict[str, Any]:
+        host, host_digest, host_signature = self._initial_seed(
+            host_seed,
+            validator=validate_host_manifest,
+            label="HostRelease",
+        )
+        software, software_digest, software_signature = self._initial_seed(
+            software_seed,
+            validator=validate_software_manifest,
+            label="SoftwareRelease",
+        )
+        assert_pair(host, software)
+        slot = self._initial_slot(
+            host=host,
+            host_digest=host_digest,
+            host_signature=host_signature,
+            software=software,
+            software_digest=software_digest,
+            software_signature=software_signature,
+        )
+        with self._transaction_lock() as lock_descriptor:
+            if self.paths.journal.exists():
+                journal = self._load_journal()
+                expected_complete = {
+                    **self._initial_journal(slot, "idle"),
+                    "active": slot,
+                    "candidate": None,
+                }
+                if journal == expected_complete:
+                    self._verify_initial_active_state(slot)
+                    return {
+                        "host_release_id": host["release_id"],
+                        "software_release_id": software["release_id"],
+                        "status": "already_initialized",
+                    }
+                self._recover_initialization(slot)
+
+            if any(
+                path.exists() or path.is_symlink()
+                for path in (
+                    self.paths.current_link,
+                    self.paths.host_active,
+                    self.paths.software_journal,
+                    Path(slot["host_path"]),
+                    self.paths.software_releases / software_digest.removeprefix("sha256:"),
+                )
+            ):
+                raise HostReleaseError("initial release requires blank host state")
+            if (
+                not self.paths.compatibility_link.is_symlink()
+                or self.paths.compatibility_link.readlink() != self.paths.current_link
+            ):
+                raise HostReleaseError("HostRelease compatibility link is not the immutable indirection")
+
+            self._verify_key(self.paths.host_cosign_pubkey, host["signing_key_sha256"])
+            self._verify_key(self.paths.software_cosign_pubkey, software["signing_key_sha256"])
+            self._verify_blob_signature(
+                manifest=host,
+                signature=host_signature,
+                public_key=self.paths.host_cosign_pubkey,
+                prefix="host",
+            )
+            self._verify_blob_signature(
+                manifest=software,
+                signature=software_signature,
+                public_key=self.paths.software_cosign_pubkey,
+                prefix="software",
+            )
+
+            journal = self._initial_journal(slot, "initial_staging")
+            self._persist(journal)
+            staging = self._staging_dir(host)
+            try:
+                staging.mkdir(parents=True, mode=0o700)
+                self._effect(
+                    journal,
+                    "initial_host_extract",
+                    lambda: self._extract_bundle(host_image_archive, host, staging),
+                )
+                rootfs = staging / "rootfs"
+                self._effect(
+                    journal,
+                    "initial_compose_verify",
+                    lambda: self._validate_compose(host, software, rootfs),
+                )
+                _atomic_write(rootfs / ".host-release-manifest.json", canonical_json_bytes(host))
+                _atomic_write(rootfs / ".host-release-signature.txt", host_signature.encode())
+                os.replace(rootfs, Path(slot["host_path"]))
+                _fsync_directory(Path(slot["host_path"]).parent)
+                shutil.rmtree(staging)
+                _fsync_directory(staging.parent)
+                self._effect(
+                    journal,
+                    "initial_software_images",
+                    lambda: self._stage_initial_software_images(
+                        software,
+                        software_digest,
+                        software_image_archive,
+                    ),
+                )
+                journal["phase"] = "initial_activating"
+                journal["effect"] = None
+                self._persist(journal)
+                self._atomic_links(Path(slot["host_path"]))
+                _atomic_write(self.paths.host_active, canonical_json_bytes(self._host_active(slot)))
+                self._reset_software_journal(slot)
+                self._verify_slot_offline(slot)
+                journal["phase"] = "initial_starting"
+                self._persist(journal)
+                self._start_slot(slot, lock_descriptor)
+            except (HostReleaseError, OSError) as exc:
+                journal["phase"] = "initial_cleanup"
+                journal["error"] = str(exc)[:512]
+                self._persist(journal)
+                try:
+                    self._remove_initial_state(slot)
+                    self.paths.journal.unlink()
+                    _fsync_directory(self.paths.journal.parent)
+                except (HostReleaseError, OSError) as cleanup_exc:
+                    journal["phase"] = "initial_cleanup_failed"
+                    journal["error"] = str(cleanup_exc)[:512]
+                    self._persist(journal)
+                raise HostReleaseError("initial H1/T1/S1 activation failed") from exc
+
+            self._verify_initial_active_state(slot)
+            journal = {
+                **self._initial_journal(slot, "idle"),
+                "active": slot,
+                "candidate": None,
+            }
+            self._persist(journal)
+            return {
+                "host_release_id": host["release_id"],
+                "software_release_id": software["release_id"],
+                "status": "initialized",
+            }
 
     def _validate_slot(self, slot: object) -> dict[str, Any]:
         fields = {
@@ -1217,14 +1527,19 @@ class HostReleaseEngine:
             raise HostReleaseError("SoftwareRelease local image evidence invalid")
         for service, image_id in slot["software_manifest"]["image_ids"].items():
             record = evidence.get("images", {}).get(service)
-            if not isinstance(record, dict) or record.get("image_id") != image_id:
+            expected_reference = _local_image_reference(service, image_id)
+            if (
+                not isinstance(record, dict)
+                or record.get("reference") != expected_reference
+                or record.get("image_id") != image_id
+            ):
                 raise HostReleaseError("SoftwareRelease local image evidence invalid")
             actual = self._command_runner(
-                [_DOCKER, "image", "inspect", "--format", "{{.Id}}", record["reference"]],
+                [_DOCKER, "image", "inspect", "--format", "{{.Id}}", expected_reference],
                 None,
                 None,
             ).strip()
-            if actual != record.get("runtime_id") or record.get("image_id") != image_id:
+            if actual != record.get("runtime_id"):
                 raise HostReleaseError("SoftwareRelease previous image unavailable")
 
     def _discard_candidate_files(self, host: dict[str, Any], software: dict[str, Any]) -> None:

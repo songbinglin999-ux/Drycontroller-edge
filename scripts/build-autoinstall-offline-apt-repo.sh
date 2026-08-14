@@ -16,17 +16,19 @@ PACKAGES=(
   ca-certificates
   curl
   python3
+  python3-venv
   tar
   iproute2
   lsb-release
   docker.io
-  network-manager
+  netplan.io
+  tpm2-tools
 )
 
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/build-autoinstall-offline-apt-repo.sh [--out DIR] [--suite CODENAME] [--arch ARCH] [--mirror URI] [--extra-deb FILE]
+  bash scripts/build-autoinstall-offline-apt-repo.sh [--suite CODENAME] [--arch ARCH] [--mirror URI] [--extra-deb FILE]
 
 Builds a flat apt repository at DIR, suitable for copying to the root of the
 Ubuntu Server OS Installer USB as:
@@ -45,11 +47,6 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out)
-      OUT_DIR="${2:-}"
-      [ -n "$OUT_DIR" ] || { usage >&2; exit 2; }
-      shift 2
-      ;;
     --suite)
       SUITE="${2:-}"
       [ -n "$SUITE" ] || { usage >&2; exit 2; }
@@ -109,6 +106,32 @@ fi
   echo "could not detect suite; pass --suite noble for current Ubuntu 24.04 media" >&2
   exit 1
 }
+case "$SUITE" in
+  *[!a-z0-9.-]*|"")
+    echo "invalid suite: ${SUITE}" >&2
+    exit 1
+    ;;
+esac
+
+if [ -n "$MIRROR" ]; then
+  python3 - "$MIRROR" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+value = sys.argv[1]
+parsed = urlsplit(value)
+if (
+    parsed.scheme != "https"
+    or not parsed.hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.query
+    or parsed.fragment
+    or any(character.isspace() for character in value)
+):
+    raise SystemExit("apt mirror must be one canonical HTTPS base URL")
+PY
+fi
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {

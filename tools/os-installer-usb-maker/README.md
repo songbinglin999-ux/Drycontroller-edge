@@ -1,8 +1,10 @@
 # OS Installer USB Maker
 
-The retired secret-bearing installer path has been removed in RB-5A. The maker
-is a fail-closed placeholder and exits without building or writing media.
+`os_installer_usb_maker.py` is a non-interactive helper used only by the RB-6
+release wrapper. It remasters the controlled Ubuntu base ISO and verifies the
+public-only media contract, exact H/S pair, both manifest signatures, archive
+contents, offline dependencies, and boot configuration.
 
-Production media returns only in RB-6 after the RB-5B TPM backend is reviewed;
-that media may contain public material only. Do not bypass the wrapper or use an
-older maker from another branch.
+It is not a supported command or GUI and cannot write disks. Build only through
+`scripts/build-os-installer-release.sh`; write only through
+`scripts/write-os-installer-usb.sh`. The workspace audit gates still apply.

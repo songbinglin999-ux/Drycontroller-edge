@@ -523,6 +523,123 @@ def test_paired_host_release_promotes_one_h_t_s_tuple(tmp_path):
     assert software_journal["active"]["manifest"]["release_id"] == software2["release_id"]
 
 
+def _blank_initial_fixture(tmp_path: Path):
+    paths = _paths(tmp_path)
+    host_id = "11111111-1111-4111-8111-111111111111"
+    software_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    files = _files(1)
+    topology = {
+        "compose_digest": f"sha256:{hashlib.sha256(files['docker-compose.yml'][0]).hexdigest()}",
+        "service_inventory": ["edge-api"],
+        "health_contract": HOST_HEALTH_CONTRACT,
+    }
+    software, config = _software(
+        software_id,
+        host_id,
+        canonical_topology_digest(topology),
+        1,
+    )
+    bundle_config = b'{"architecture":"amd64","sequence":1}'
+    host = _host(host_id, software, 1, files, bundle_config)
+    host_archive = tmp_path / "initial-host.tar"
+    _bundle(host_archive, files, bundle_config)
+    local_reference = _local_image_reference("edge-api", software["image_ids"]["edge-api"])
+    software_archive = tmp_path / "initial-software.tar"
+    _image_archive(software_archive, [local_reference], {local_reference: config})
+    command = FakeCommands(
+        bundle_archive=host_archive,
+        host=host,
+        software_configs={local_reference: config},
+    )
+    command.host_path = str(paths.releases / host_id)
+    return paths, host, software, host_archive, software_archive, command
+
+
+def test_initial_pair_is_verified_started_and_idempotent(tmp_path):
+    paths, host, software, host_archive, software_archive, command = _blank_initial_fixture(
+        tmp_path
+    )
+    engine = HostReleaseEngine(paths=paths, command_runner=command)
+    host_seed = {
+        "manifest": host,
+        "manifest_digest": canonical_digest(host),
+        "manifest_signature": SIGNATURE,
+    }
+    software_seed = {
+        "manifest": software,
+        "manifest_digest": canonical_digest(software),
+        "manifest_signature": SIGNATURE,
+    }
+
+    result = engine.initialize_initial_pair(
+        host_seed=host_seed,
+        software_seed=software_seed,
+        host_image_archive=host_archive,
+        software_image_archive=software_archive,
+    )
+
+    assert result == {
+        "host_release_id": host["release_id"],
+        "software_release_id": software["release_id"],
+        "status": "initialized",
+    }
+    journal = json.loads(paths.journal.read_text(encoding="utf-8"))
+    assert journal["phase"] == "idle"
+    assert journal["active"]["host_manifest"] == host
+    assert journal["active"]["software_manifest"] == software
+    assert journal["candidate"] is None
+    assert journal["previous"] is None
+    assert paths.current_link.resolve() == paths.releases / host["release_id"]
+    assert paths.compatibility_link.readlink() == paths.current_link
+    assert json.loads(paths.host_active.read_text(encoding="utf-8"))["host_release_id"] == host[
+        "release_id"
+    ]
+    assert json.loads(paths.software_journal.read_text(encoding="utf-8"))["active"][
+        "manifest"
+    ] == software
+    assert any(args[:4] == ["/usr/bin/docker", "image", "load", "-i"] for args in command.commands)
+    assert any(args and args[0].endswith("start-active-release") for args in command.commands)
+
+    assert engine.initialize_initial_pair(
+        host_seed=host_seed,
+        software_seed=software_seed,
+        host_image_archive=host_archive,
+        software_image_archive=software_archive,
+    )["status"] == "already_initialized"
+
+
+def test_initial_pair_archive_tamper_leaves_no_active_state(tmp_path):
+    paths, host, software, host_archive, software_archive, command = _blank_initial_fixture(
+        tmp_path
+    )
+    tampered_files = _files(1)
+    tampered_files["configs/tags.yaml"] = (b"unsigned\n", 0o644)
+    _bundle(host_archive, tampered_files, b'{"architecture":"amd64","sequence":1}')
+    engine = HostReleaseEngine(paths=paths, command_runner=command)
+
+    with pytest.raises(HostReleaseError, match="initial H1/T1/S1 activation failed"):
+        engine.initialize_initial_pair(
+            host_seed={
+                "manifest": host,
+                "manifest_digest": canonical_digest(host),
+                "manifest_signature": SIGNATURE,
+            },
+            software_seed={
+                "manifest": software,
+                "manifest_digest": canonical_digest(software),
+                "manifest_signature": SIGNATURE,
+            },
+            host_image_archive=host_archive,
+            software_image_archive=software_archive,
+        )
+
+    assert not paths.journal.exists()
+    assert not paths.host_active.exists()
+    assert not paths.software_journal.exists()
+    assert not paths.current_link.exists()
+    assert not (paths.releases / host["release_id"]).exists()
+
+
 def test_portable_image_identity_is_independent_of_containerd_runtime_id(tmp_path):
     paths, _host1, _software1, host2, software2, command = _fixture(tmp_path)
     local_reference = _local_image_reference("edge-api", software2["image_ids"]["edge-api"])

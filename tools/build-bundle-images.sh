@@ -155,9 +155,6 @@ if [ "$BUILD_BUNDLE" = true ]; then
     --exclude='logs' \
     --exclude='data' \
     --exclude='tmp' \
-    --exclude='tools/os-installer-usb-maker/DryController USB Maker.app' \
-    --exclude='tools/os-installer-usb-maker/build_app.sh' \
-    --exclude='tools/os-installer-usb-maker/icon.icns' \
     .
 
   python3 scripts/validate-source-bundle.py "$BUNDLE" \

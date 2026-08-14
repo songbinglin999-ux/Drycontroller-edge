@@ -28,6 +28,14 @@ SERVICES = (
     "postgres",
     "prometheus",
 )
+HOST_FILES = (
+    "docker-compose.yml",
+    "infra/ota-helper/drycontroller_ota_helper.py",
+    "infra/ota-helper/release_engine.py",
+    "infra/ota-helper/ota-apply",
+    "infra/ota-helper/initialize-active-release",
+    "infra/ota-helper/start-active-release",
+)
 
 
 def _linux_amd64_elf() -> bytes:
@@ -47,19 +55,30 @@ def _prepare_module():
     return module
 
 
+def _topology(compose_digest: str, service_inventory: list[str]) -> dict[str, object]:
+    return {
+        "compose_digest": compose_digest,
+        "service_inventory": service_inventory,
+        "health_contract": "drycontroller.edge-health.v1",
+    }
+
+
 def _topology_digest(compose_digest: str, service_inventory: list[str]) -> str:
-    topology = {"compose_digest": compose_digest, "service_inventory": service_inventory}
+    topology = _topology(compose_digest, service_inventory)
     canonical = json.dumps(topology, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
 def test_prepare_initial_release_verifies_and_packages_the_exact_complete_image_set(tmp_path: Path, monkeypatch):
     source_commit = "a" * 40
-    public_key = tmp_path / "cosign.pub"
-    public_key.write_bytes(b"factory-release-public-key")
+    software_public_key = tmp_path / "software-cosign.pub"
+    software_public_key.write_bytes(b"software-release-public-key")
+    host_public_key = tmp_path / "host-cosign.pub"
+    host_public_key.write_bytes(b"host-release-public-key")
     target_cosign_bytes = _linux_amd64_elf()
     compose_digest = "sha256:" + hashlib.sha256((ROOT / "docker-compose.yml").read_bytes()).hexdigest()
-    manifest = {
+    topology = _topology(compose_digest, sorted(SERVICES))
+    software_manifest = {
         "schema": "drycontroller.software-release.v1",
         "release_id": "11111111-1111-4111-8111-111111111111",
         "host_release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -68,7 +87,8 @@ def test_prepare_initial_release_verifies_and_packages_the_exact_complete_image_
         "version": "1.0.0",
         "source_commit": source_commit,
         "registry": "registry.example.test:5443",
-        "signing_key_sha256": "sha256:" + hashlib.sha256(public_key.read_bytes()).hexdigest(),
+        "signing_key_sha256": "sha256:"
+        + hashlib.sha256(software_public_key.read_bytes()).hexdigest(),
         "cosign": {
             "version": "v3.1.3",
             "linux_amd64_sha256": "sha256:" + hashlib.sha256(target_cosign_bytes).hexdigest(),
@@ -79,19 +99,80 @@ def test_prepare_initial_release_verifies_and_packages_the_exact_complete_image_
         },
         "image_ids": {service: f"sha256:{index:064x}" for index, service in enumerate(SERVICES, start=1)},
     }
-    canonical = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    release = tmp_path / "release.json"
-    release.write_text(
+    software_canonical = json.dumps(
+        software_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    software_release = tmp_path / "software-release.json"
+    software_release.write_text(
         json.dumps(
             {
-                "id": manifest["release_id"],
-                "sequence": manifest["sequence"],
-                "version": manifest["version"],
+                "id": software_manifest["release_id"],
+                "sequence": software_manifest["sequence"],
+                "version": software_manifest["version"],
                 "source_commit": source_commit,
                 "status": "completed",
-                "manifest": manifest,
-                "manifest_digest": "sha256:" + hashlib.sha256(canonical).hexdigest(),
+                "manifest": software_manifest,
+                "manifest_digest": "sha256:" + hashlib.sha256(software_canonical).hexdigest(),
                 "manifest_signature": base64.b64encode(b"sigstore-bundle").decode(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    host_bundle_config = b'{"architecture":"amd64"}'
+    host_files = []
+    for relative in HOST_FILES:
+        raw = (ROOT / relative).read_bytes()
+        host_files.append(
+            {
+                "path": relative,
+                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+                "mode": 0o755
+                if relative
+                in {
+                    "infra/ota-helper/ota-apply",
+                    "infra/ota-helper/initialize-active-release",
+                    "infra/ota-helper/start-active-release",
+                }
+                else 0o644,
+            }
+        )
+    host_manifest = {
+        "schema": "drycontroller.host-release.v1",
+        "release_id": software_manifest["host_release_id"],
+        "sequence": 1,
+        "version": "1.0.0",
+        "source_commit": source_commit,
+        "registry": software_manifest["registry"],
+        "signing_key_sha256": "sha256:"
+        + hashlib.sha256(host_public_key.read_bytes()).hexdigest(),
+        "cosign": software_manifest["cosign"],
+        "bundle": {
+            "image": "registry.example.test:5443/drycontroller/host-bundle@sha256:"
+            + "f" * 64,
+            "image_id": "sha256:" + hashlib.sha256(host_bundle_config).hexdigest(),
+        },
+        "topology": topology,
+        "topology_digest": software_manifest["topology_digest"],
+        "software_release_id": software_manifest["release_id"],
+        "software_manifest_digest": "sha256:" + hashlib.sha256(software_canonical).hexdigest(),
+        "files": host_files,
+    }
+    host_canonical = json.dumps(
+        host_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    host_release = tmp_path / "host-release.json"
+    host_release.write_text(
+        json.dumps(
+            {
+                "id": host_manifest["release_id"],
+                "sequence": host_manifest["sequence"],
+                "version": host_manifest["version"],
+                "source_commit": source_commit,
+                "status": "completed",
+                "manifest": host_manifest,
+                "manifest_digest": "sha256:" + hashlib.sha256(host_canonical).hexdigest(),
+                "manifest_signature": base64.b64encode(b"host-sigstore-bundle").decode(),
             }
         ),
         encoding="utf-8",
@@ -119,57 +200,53 @@ fi
     cosign.chmod(0o755)
     docker.chmod(0o755)
     output_dir = tmp_path / "autoinstall"
-    image_bundle = tmp_path / "bundle-images.tar"
+    software_image_bundle = tmp_path / "bundle-images.tar"
+    host_image_bundle = tmp_path / "host-bundle.tar"
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
     monkeypatch.setenv("COMMAND_LOG", str(log))
     module = _prepare_module()
     monkeypatch.setattr(module, "validate_manifest", lambda value: value)
+    monkeypatch.setattr(module, "validate_software_manifest", lambda value: value)
+    monkeypatch.setattr(module, "validate_host_manifest", lambda value: value)
     expected_ids = {
-        reference: manifest["image_ids"][service]
-        for service, reference in manifest["services"].items()
+        reference: software_manifest["image_ids"][service]
+        for service, reference in software_manifest["services"].items()
     }
+    expected_ids[host_manifest["bundle"]["image"]] = host_manifest["bundle"]["image_id"]
     monkeypatch.setattr(
         module,
         "_portable_image_id",
         lambda reference, _directory: expected_ids[reference],
     )
-    host_active = tmp_path / "host-active.json"
-    host_active.write_text(
-        json.dumps(
-            {
-                "schema": "drycontroller.host-active.v1",
-                "host_release_id": manifest["host_release_id"],
-                "host_release_manifest_digest": "sha256:" + "d" * 64,
-                "topology_digest": manifest["topology_digest"],
-                "compose_digest": compose_digest,
-                "service_inventory": sorted(manifest["services"]),
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    module.prepare(
-        software_release=release,
-        public_key=public_key,
+    host_seed, software_seed = module.prepare(
+        software_release=software_release,
+        software_public_key=software_public_key,
+        host_release=host_release,
+        host_public_key=host_public_key,
         cosign_linux_amd64=target_cosign,
         source_commit=source_commit,
-        host_active_file=host_active,
         output_dir=output_dir,
-        image_bundle=image_bundle,
+        software_image_bundle=software_image_bundle,
+        host_image_bundle=host_image_bundle,
     )
 
-    seed = json.loads((output_dir / "software-release-seed.json").read_text(encoding="utf-8"))
-    assert seed["manifest"] == manifest
-    assert (output_dir / "host-active.json").read_bytes() == host_active.read_bytes()
-    assert (output_dir / "cosign.pub").read_bytes() == public_key.read_bytes()
+    assert software_seed["manifest"] == software_manifest
+    assert host_seed["manifest"] == host_manifest
+    assert json.loads(
+        (output_dir / "software-release-seed.json").read_text(encoding="utf-8")
+    ) == software_seed
+    assert json.loads((output_dir / "host-release-seed.json").read_text(encoding="utf-8")) == host_seed
+    assert (output_dir / "software-release-cosign.pub").read_bytes() == software_public_key.read_bytes()
+    assert (output_dir / "host-release-cosign.pub").read_bytes() == host_public_key.read_bytes()
     assert (output_dir / "cosign-linux-amd64").read_bytes() == target_cosign.read_bytes()
-    assert image_bundle.read_bytes() == b"archive"
+    assert software_image_bundle.read_bytes() == b"archive"
+    assert host_image_bundle.read_bytes() == b"archive"
     commands = log.read_text(encoding="utf-8")
-    assert commands.count("docker pull ") == len(SERVICES)
+    assert commands.count("docker pull ") == len(SERVICES) + 1
     assert commands.count("docker tag ") == len(SERVICES)
-    assert commands.count("cosign verify --insecure-ignore-tlog=true") == len(SERVICES)
-    assert "cosign verify-blob" in commands
-    assert "docker image save" in commands
+    assert commands.count("cosign verify --insecure-ignore-tlog=true") == len(SERVICES) + 1
+    assert commands.count("cosign verify-blob") == 2
+    assert commands.count("docker image save") >= 2
     assert "docker image inspect" not in commands
 
 
@@ -182,18 +259,22 @@ def test_prepare_initial_release_rejects_wrong_source_before_running_external_to
             str(PREPARE),
             "--software-release",
             str(release),
-            "--cosign-public-key",
+            "--software-cosign-public-key",
             str(tmp_path / "missing.pub"),
+            "--host-release",
+            str(tmp_path / "missing-host.json"),
+            "--host-cosign-public-key",
+            str(tmp_path / "missing-host.pub"),
             "--cosign-linux-amd64",
             str(tmp_path / "missing-cosign"),
             "--source-commit",
             "b" * 40,
-            "--host-active",
-            str(tmp_path / "missing-host-active.json"),
             "--output-dir",
             str(tmp_path / "out"),
-            "--image-bundle",
+            "--software-image-bundle",
             str(tmp_path / "images.tar"),
+            "--host-image-bundle",
+            str(tmp_path / "host-images.tar"),
         ],
         check=False,
         capture_output=True,

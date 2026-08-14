@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
 #
 # Runs inside the installed Ubuntu target during autoinstall late-commands.
-# It unpacks the bundled edge repository and delegates host preparation to the
-# normal bootstrap installer so manual and autoinstall paths stay aligned.
+# It unpacks the public installer source and delegates the signed H1/T1/S1
+# transaction to the only host installer entrypoint.
 #
 set -euo pipefail
 
 LOG_FILE="/var/log/drycontroller-autoinstall.log"
 BUNDLE="/opt/drycontroller-edge.tar.gz"
-IMAGE_BUNDLE="/opt/drycontroller-images/bundle-images.tar"
-INITIAL_RELEASE="/opt/drycontroller-release/software-release-seed.json"
-HOST_ACTIVE="/opt/drycontroller-release/host-active.json"
-COSIGN_PUBLIC_KEY="/opt/drycontroller-release/cosign.pub"
+SOFTWARE_IMAGE_BUNDLE="/opt/drycontroller-release/software-images.tar"
+HOST_IMAGE_BUNDLE="/opt/drycontroller-release/host-image.tar"
+SOFTWARE_RELEASE="/opt/drycontroller-release/software-release-seed.json"
+HOST_RELEASE="/opt/drycontroller-release/host-release-seed.json"
+SOFTWARE_COSIGN_PUBLIC_KEY="/opt/drycontroller-release/software-release-cosign.pub"
+HOST_COSIGN_PUBLIC_KEY="/opt/drycontroller-release/host-release-cosign.pub"
 COSIGN_BIN="/opt/drycontroller-release/cosign-linux-amd64"
-SOURCE_ROOT="/opt/drycontroller-edge-source"
-WIFI_ENV="/opt/drycontroller-wifi.env"
+DEVICE_IDENTITY_CLOUD_PUBLIC_KEY="/opt/drycontroller-release/device-identity-cloud.pub"
+IDENTITY_WHEELHOUSE="/opt/drycontroller-release/identity-wheelhouse"
+PUBLIC_CONFIG="/opt/drycontroller-release/public-config.json"
+SOURCE_STAGE="/opt/drycontroller-edge-source"
+SOURCE_ROOT="$SOURCE_STAGE"
 
 log() {
   printf '[%s] %s\n' "$(date -Is)" "$*" | tee -a "$LOG_FILE" >/dev/null
@@ -27,41 +32,16 @@ die() {
 
 [ "$(id -u)" -eq 0 ] || die "post-install must run as root"
 [ -f "$BUNDLE" ] || die "missing edge bundle: $BUNDLE"
-[ -f "$IMAGE_BUNDLE" ] || die "missing complete initial image bundle: $IMAGE_BUNDLE"
-[ -f "$INITIAL_RELEASE" ] || die "missing signed initial SoftwareRelease: $INITIAL_RELEASE"
-[ -f "$HOST_ACTIVE" ] || die "missing fixed active HostRelease state: $HOST_ACTIVE"
-[ -f "$COSIGN_PUBLIC_KEY" ] || die "missing initial release cosign public key: $COSIGN_PUBLIC_KEY"
+[ -f "$SOFTWARE_IMAGE_BUNDLE" ] || die "missing complete initial SoftwareRelease image bundle"
+[ -f "$HOST_IMAGE_BUNDLE" ] || die "missing initial HostRelease image bundle"
+[ -f "$SOFTWARE_RELEASE" ] || die "missing signed initial SoftwareRelease"
+[ -f "$HOST_RELEASE" ] || die "missing signed initial HostRelease"
+[ -f "$SOFTWARE_COSIGN_PUBLIC_KEY" ] || die "missing SoftwareRelease trust root"
+[ -f "$HOST_COSIGN_PUBLIC_KEY" ] || die "missing HostRelease trust root"
 [ -f "$COSIGN_BIN" ] || die "missing Linux amd64 cosign binary: $COSIGN_BIN"
-
-configure_wifi() {
-  [ -f "$WIFI_ENV" ] || return 0
-
-  # shellcheck disable=SC1090
-  . "$WIFI_ENV"
-  [ -n "${WIFI_SSID:-}" ] || die "WIFI_SSID missing in $WIFI_ENV"
-  [ -n "${WIFI_PASSWORD:-}" ] || die "WIFI_PASSWORD missing in $WIFI_ENV"
-
-  log "configuring wifi connection for SSID: ${WIFI_SSID}"
-  export DEBIAN_FRONTEND=noninteractive
-  if ! command -v nmcli >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y --no-install-recommends network-manager
-  fi
-
-  systemctl enable NetworkManager.service >/dev/null 2>&1 || true
-  systemctl restart NetworkManager.service
-
-  if [ -n "${WIFI_INTERFACE:-}" ]; then
-    nmcli device set "$WIFI_INTERFACE" managed yes || true
-    nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASSWORD" ifname "$WIFI_INTERFACE"
-  else
-    nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASSWORD"
-  fi
-
-  log "wifi connection configured"
-}
-
-configure_wifi
+[ -f "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" ] || die "missing Cloud device identity trust root"
+[ -d "$IDENTITY_WHEELHOUSE" ] || die "missing offline device identity wheelhouse"
+[ -f "$PUBLIC_CONFIG" ] || die "missing public OS Installer configuration"
 
 log "unpacking edge bundle"
 rm -rf "$SOURCE_ROOT"
@@ -77,20 +57,25 @@ fi
 log "running install-edge-host.sh"
 bash "${SOURCE_ROOT}/infra/bootstrap/install-edge-host.sh" \
   --source "$SOURCE_ROOT" \
-  --initial-release "$INITIAL_RELEASE" \
-  --host-active "$HOST_ACTIVE" \
-  --image-bundle "$IMAGE_BUNDLE" \
-  --cosign-public-key "$COSIGN_PUBLIC_KEY" \
-  --cosign-bin "$COSIGN_BIN"
+  --host-release "$HOST_RELEASE" \
+  --host-image-bundle "$HOST_IMAGE_BUNDLE" \
+  --software-release "$SOFTWARE_RELEASE" \
+  --software-image-bundle "$SOFTWARE_IMAGE_BUNDLE" \
+  --host-cosign-public-key "$HOST_COSIGN_PUBLIC_KEY" \
+  --software-cosign-public-key "$SOFTWARE_COSIGN_PUBLIC_KEY" \
+  --cosign-bin "$COSIGN_BIN" \
+  --device-identity-cloud-key "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" \
+  --identity-wheelhouse "$IDENTITY_WHEELHOUSE" \
+  --public-config "$PUBLIC_CONFIG"
 
-rm -f "$IMAGE_BUNDLE" "$INITIAL_RELEASE" "$HOST_ACTIVE" "$COSIGN_PUBLIC_KEY" "$COSIGN_BIN"
-log "signed initial active release installed"
+rm -rf /opt/drycontroller-release "$SOURCE_STAGE"
+rm -f "$BUNDLE"
+log "signed initial H1/T1/S1 installed"
 
 systemctl disable drycontroller-edge-post-install.service >/dev/null 2>&1 || true
 
 log "autoinstall host preparation complete"
-log "shutting down. Remove OS Installer USB, then power on with network available."
-log "production identity remains blocked until the RB-5B TPM backend and RB-6 media are complete"
+log "shutting down. Remove OS Installer USB, connect the isolated factory link, then power on."
 umount -l /cdrom 2>/dev/null || true
 sync
 sleep 1
