@@ -214,6 +214,11 @@ def test_installer_uses_marking_proxy_instead_of_blind_tcp_proxy() -> None:
 
     assert "systemd-socket-proxyd" not in service
     assert "/usr/local/libexec/drycontroller/tailnet-edge-api-proxy.py" in service
+    assert "DynamicUser=true" in service
+    assert "CapabilityBoundingSet=" in service
+    assert "AmbientCapabilities=" in service
+    assert "ProtectSystem=strict" in service
+    assert "ReadWritePaths=" not in service
     assert (
         'install -o root -g root -m 0755 "${REPO_SOURCE}/infra/bootstrap/tailnet-edge-api-proxy.py"'
         in installer
