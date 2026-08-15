@@ -87,7 +87,7 @@ _REGISTRY = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$")
 _REPOSITORY_PATH = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$")
 _SERVICE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _HEALTH_URLS = (
-    "http://127.0.0.1:8000/ready",
+    "http://127.0.0.1:18080/ready",
     "http://127.0.0.1:8082/ready",
 )
 _DOCKER = "/usr/bin/docker"

@@ -98,6 +98,8 @@ class Settings(BaseSettings):
     CLOUD_SYNC_OUTBOX_PREFLIGHT_PATH: str = "/api/v1/preflight/from-edge"
     CLOUD_SYNC_OUTBOX_CONFIG_PATH: str = "/api/v1/config-versions/from-edge"
     DEVICE_IDENTITY_PATH: str = "/var/lib/drycontroller/device.json"
+    CLOUD_IDENTITY_PUBLIC_KEY_FILE: str = "/etc/drycontroller/trust/device-identity-cloud.pub"
+    CLOUD_REQUEST_NONCE_DB: str = "/var/lib/drycontroller-cloud-request-nonces/nonces.sqlite3"
 
     # Append-only operational mirrors. Retention runs once on startup and then daily.
     DATA_RETENTION_ENABLED: bool = True

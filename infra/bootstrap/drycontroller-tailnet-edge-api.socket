@@ -1,0 +1,12 @@
+[Unit]
+Description=DryController Tailnet-only Edge API listener
+Requires=tailscaled.service
+After=tailscaled.service docker.service
+
+[Socket]
+ListenStream=0.0.0.0:8000
+BindToDevice=tailscale0
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

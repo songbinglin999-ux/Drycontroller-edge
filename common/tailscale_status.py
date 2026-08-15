@@ -71,6 +71,7 @@ def read_tailscale_status(
             "self_online": self_status.get("Online"),
             "node_id": self_status.get("ID"),
             "hostname": self_status.get("HostName"),
+            "tailscale_ips": self_status.get("TailscaleIPs"),
             "login_server": control_url,
         }
     )
@@ -83,12 +84,16 @@ def validate_tailscale_status(
     expected_version: str,
     expected_login_server: str,
     expected_hostname: str,
+    expected_node_id: str | None = None,
+    allow_unbound_node_id: bool = False,
+    require_edge_api_ingress: bool = False,
 ) -> dict[str, object]:
     observed_detail = observation.get("detail")
     detail: dict[str, object] = {
         "expected_version": expected_version,
         "expected_login_server": expected_login_server.rstrip("/"),
         "expected_hostname": expected_hostname,
+        "expected_node_id": expected_node_id,
     }
     if isinstance(observed_detail, dict):
         detail.update(observed_detail)
@@ -101,6 +106,10 @@ def validate_tailscale_status(
         }
     if not expected_version or not expected_login_server or not expected_hostname:
         return {"ok": False, "reason": "tailnet_expectation_missing", "detail": detail}
+    if not expected_node_id and not allow_unbound_node_id:
+        return {"ok": False, "reason": "tailscale_node_binding_missing", "detail": detail}
+    if require_edge_api_ingress and detail.get("edge_api_ingress_active") is not True:
+        return {"ok": False, "reason": "tailnet_edge_api_ingress_inactive", "detail": detail}
     checks = (
         (detail.get("version") == expected_version, "tailscale_version_mismatch"),
         (detail.get("backend_state") == "Running", "tailscale_not_running"),
@@ -108,6 +117,10 @@ def validate_tailscale_status(
         (
             isinstance(detail.get("node_id"), str) and bool(detail.get("node_id")),
             "tailscale_node_identity_missing",
+        ),
+        (
+            expected_node_id is None or detail.get("node_id") == expected_node_id,
+            "tailscale_node_identity_mismatch",
         ),
         (detail.get("hostname") == expected_hostname, "tailscale_hostname_mismatch"),
         (
@@ -127,6 +140,8 @@ def inspect_tailscale_status(
     expected_version: str,
     expected_login_server: str,
     expected_hostname: str,
+    expected_node_id: str | None = None,
+    allow_unbound_node_id: bool = False,
     tailscale_bin: str = TAILSCALE_BIN,
     socket_path: str = TAILSCALE_SOCKET,
     command_reader: CommandReader = _read_command,
@@ -141,6 +156,8 @@ def inspect_tailscale_status(
         expected_version=expected_version,
         expected_login_server=expected_login_server,
         expected_hostname=expected_hostname,
+        expected_node_id=expected_node_id,
+        allow_unbound_node_id=allow_unbound_node_id,
     )
 
 
@@ -161,6 +178,7 @@ def main() -> int:
             expected_version=args.expected_version,
             expected_login_server=args.login_server,
             expected_hostname=hostname,
+            expected_node_id=identity.get("tailnet_node_id"),
             tailscale_bin=args.tailscale_bin,
             socket_path=args.socket,
         )

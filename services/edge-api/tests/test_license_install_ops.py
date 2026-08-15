@@ -383,7 +383,78 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     checks = {item["id"]: item for item in body["checks"]}
     assert checks["tailnet.identity"]["status"] == "degraded"
     assert checks["tailnet.identity"]["reason"] == "tailscale_not_running"
+    assert checks["tailnet.application_e2e"]["status"] == "degraded"
     assert recorded[0]["status"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_strict_preflight_application_probe_requires_both_authenticated_directions(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        content = b"{}"
+
+        @staticmethod
+        def json():
+            return {
+                "success": True,
+                "cloud_to_edge_ready": {
+                    "status_code": 200,
+                    "json": {"success": True},
+                },
+            }
+
+    observed = {}
+
+    class FakeHttpClient:
+        def __init__(self, *, timeout):
+            assert timeout == 10
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, *, json, headers):
+            observed.update({"url": url, "json": json, "headers": headers})
+            return FakeResponse()
+
+    monkeypatch.setattr(settings, "CLOUD_OPS_BASE_URL", "https://ops.example.test")
+    monkeypatch.setattr(
+        ops_module,
+        "load_runtime_identity",
+        lambda **_kwargs: {
+            "node_name": "edge-abcdef123456",
+            "line_id": "LINE-A",
+            "runtime_credential": "per-device-secret",
+        },
+    )
+    monkeypatch.setattr(ops_module.httpx, "AsyncClient", FakeHttpClient)
+    checks = []
+
+    await ops_module._preflight_cloud_application_path(
+        checks,
+        tailnet={
+            "ok": True,
+            "reason": "ok",
+            "detail": {"tailscale_ips": ["100.100.0.22", "fd7a:115c:a1e0::22"]},
+        },
+        allow_degraded=False,
+    )
+
+    assert checks == [
+        {
+            "id": "tailnet.application_e2e",
+            "status": "pass",
+            "reason": "ok",
+            "hint": "",
+            "detail": {"cloud_status_code": 200, "cloud_to_edge_status_code": 200},
+        }
+    ]
+    assert observed["url"] == "https://ops.example.test/api/v1/edge-status"
+    assert observed["json"]["address"] == "100.100.0.22"
+    assert observed["json"]["verify_cloud_to_edge_ready"] is True
+    assert observed["headers"] == {"X-Device-Credential": "per-device-secret"}
 
 
 def test_preflight_check_ota_requires_registry_credential(tmp_path: Path, monkeypatch):

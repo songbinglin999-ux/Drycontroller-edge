@@ -10,6 +10,7 @@ import binascii
 import json
 import os
 import time
+import ipaddress
 from typing import Any
 from pathlib import Path
 
@@ -262,12 +263,14 @@ def _preflight_registry_credential(checks: list[dict[str, Any]]) -> None:
     )
 
 
-async def _preflight_tailnet(checks: list[dict[str, Any]], *, allow_degraded: bool) -> None:
+async def _preflight_tailnet(checks: list[dict[str, Any]], *, allow_degraded: bool) -> dict[str, Any]:
     try:
         identity = load_runtime_identity(require_root_owner=os.geteuid() == 0)
         expected_hostname = str(identity.get("node_name") or "")
+        expected_node_id = str(identity.get("tailnet_node_id") or "")
     except DeviceIdentityUnavailable:
         expected_hostname = ""
+        expected_node_id = ""
     try:
         observation = await get_host_release_ops_client().get_tailnet_status()
     except HTTPException:
@@ -277,6 +280,8 @@ async def _preflight_tailnet(checks: list[dict[str, Any]], *, allow_degraded: bo
         expected_version=(settings.TAILSCALE_EXPECTED_VERSION or "").strip(),
         expected_login_server=(settings.TS_LOGIN_SERVER or "").strip(),
         expected_hostname=expected_hostname,
+        expected_node_id=expected_node_id,
+        require_edge_api_ingress=True,
     )
     passed = result["ok"] is True
     _preflight_check(
@@ -286,6 +291,97 @@ async def _preflight_tailnet(checks: list[dict[str, Any]], *, allow_degraded: bo
         str(result["reason"]),
         hint="restore the pinned tailscaled client and original Device-bound node identity",
         detail=result["detail"],
+    )
+    return result
+
+
+async def _preflight_cloud_application_path(
+    checks: list[dict[str, Any]],
+    *,
+    tailnet: dict[str, Any],
+    allow_degraded: bool,
+) -> None:
+    cloud_ops_base_url = (settings.CLOUD_OPS_BASE_URL or "").strip()
+    try:
+        identity = load_runtime_identity(require_root_owner=os.geteuid() == 0)
+    except DeviceIdentityUnavailable:
+        identity = None
+    detail = tailnet.get("detail") if isinstance(tailnet.get("detail"), dict) else {}
+    addresses = detail.get("tailscale_ips") if isinstance(detail, dict) else None
+    tailnet_address = ""
+    for raw_address in addresses if isinstance(addresses, list) else []:
+        try:
+            address = ipaddress.ip_address(str(raw_address))
+        except ValueError:
+            continue
+        if address.version == 4 and address in ipaddress.ip_network("100.64.0.0/10"):
+            tailnet_address = str(address)
+            break
+    if not cloud_ops_base_url or not identity or not tailnet_address or tailnet.get("ok") is not True:
+        _preflight_check(
+            checks,
+            "tailnet.application_e2e",
+            "degraded" if allow_degraded else "fail",
+            "cloud_application_probe_prerequisite_missing",
+            hint="restore the bound Tailnet identity, Cloud TLS route, and per-device credential",
+            detail={
+                "cloud_ops_base_url_present": bool(cloud_ops_base_url),
+                "device_identity_present": bool(identity),
+                "tailnet_address_present": bool(tailnet_address),
+            },
+        )
+        return
+    system_status = base64.b64encode(
+        json.dumps({"preflight": "rb7i-application-e2e"}, separators=(",", ":")).encode()
+    ).decode("ascii")
+    request_body = {
+        "name": identity["node_name"],
+        "address": tailnet_address,
+        "edge_api_port": 8000,
+        "line_id": identity["line_id"],
+        "system_status_b64": system_status,
+        "meta": {"preflight": "rb7i-application-e2e"},
+        "verify_cloud_to_edge_ready": True,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{cloud_ops_base_url.rstrip('/')}/api/v1/edge-status",
+                json=request_body,
+                headers={"X-Device-Credential": identity["runtime_credential"]},
+            )
+        response_body = response.json() if response.content else None
+    except (httpx.HTTPError, ValueError) as exc:
+        _preflight_check(
+            checks,
+            "tailnet.application_e2e",
+            "degraded" if allow_degraded else "fail",
+            "cloud_application_probe_unreachable",
+            hint="verify Edge-to-Cloud TLS ingress and the Cloud signed readiness callback",
+            detail={"error": str(exc)},
+        )
+        return
+    callback = response_body.get("cloud_to_edge_ready") if isinstance(response_body, dict) else None
+    callback_body = callback.get("json") if isinstance(callback, dict) else None
+    passed = (
+        response.status_code == 200
+        and isinstance(response_body, dict)
+        and response_body.get("success") is True
+        and isinstance(callback, dict)
+        and callback.get("status_code") == 200
+        and isinstance(callback_body, dict)
+        and callback_body.get("success") is True
+    )
+    _preflight_check(
+        checks,
+        "tailnet.application_e2e",
+        "pass" if passed else ("degraded" if allow_degraded else "fail"),
+        "ok" if passed else "cloud_application_probe_failed",
+        hint="verify Edge-to-Cloud TLS ingress and the Cloud signed readiness callback" if not passed else "",
+        detail={
+            "cloud_status_code": response.status_code,
+            "cloud_to_edge_status_code": callback.get("status_code") if isinstance(callback, dict) else None,
+        },
     )
 
 
@@ -452,23 +548,11 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
             hint="registry credential check skipped; set check_ota=true before online OTA",
         )
 
-    await _preflight_tailnet(checks, allow_degraded=allow_degraded)
-
-    cloud_ops_base_url = (settings.CLOUD_OPS_BASE_URL or "").strip()
-    try:
-        runtime_identity = load_runtime_identity(require_root_owner=os.geteuid() == 0)
-    except DeviceIdentityUnavailable:
-        runtime_identity = None
-    _preflight_check(
+    tailnet = await _preflight_tailnet(checks, allow_degraded=allow_degraded)
+    await _preflight_cloud_application_path(
         checks,
-        "cloud.device_credential",
-        "pass" if cloud_ops_base_url and runtime_identity else "fail",
-        "configured" if cloud_ops_base_url and runtime_identity else "missing_cloud_device_credential",
-        hint="configure CLOUD_OPS_BASE_URL and complete per-device identity activation",
-        detail={
-            "cloud_ops_base_url_present": bool(cloud_ops_base_url),
-            "device_identity_present": bool(runtime_identity),
-        },
+        tailnet=tailnet,
+        allow_degraded=allow_degraded,
     )
 
     summary = _preflight_summary(checks, strict=req.strict)

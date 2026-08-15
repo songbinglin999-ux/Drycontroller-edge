@@ -245,11 +245,41 @@ def create_app(
 
     @app.post("/factory-identity/tailnet/status")
     async def tailnet_status(payload: ConfirmationRequest):
+        if store.factory_closed():
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="factory_identity_closed")
         active = _active_for_receipt(payload)
         if tailnet is None:
             raise HTTPException(status_code=503, detail="tailnet_client_unavailable")
+        expected_node_id = active.get("tailnet_node_id")
+        if not isinstance(expected_node_id, str) or not expected_node_id:
+            attempt = store.tailnet_join_attempt()
+            expected_attempt = {
+                "schema": "drycontroller.tailnet-join-attempt.v1",
+                "device_id": active["device_id"],
+                "request_id": active["request_id"],
+                "node_name": active["node_name"],
+                "expected_version": tailnet.expected_version,
+                "login_server": tailnet.login_server,
+            }
+            if attempt != expected_attempt:
+                raise HTTPException(status_code=409, detail="tailnet_node_binding_missing")
+            try:
+                recovered = tailnet.status(
+                    node_name=active["node_name"],
+                    allow_unbound_node_id=True,
+                )
+                node_id = recovered.get("detail", {}).get("node_id")
+                if recovered.get("ok") is not True or not isinstance(node_id, str) or not node_id:
+                    raise TailnetJoinError("tailnet_join_recovery_failed")
+                active = store.bind_tailnet_node_id(node_id)
+                expected_node_id = node_id
+            except (IdentityStateError, TailnetJoinError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from None
         try:
-            result = tailnet.status(node_name=active["node_name"])
+            result = tailnet.status(
+                node_name=active["node_name"],
+                expected_node_id=expected_node_id,
+            )
         except TailnetJoinError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         if result.get("ok") is not True:
@@ -258,21 +288,48 @@ def create_app(
 
     @app.post("/factory-identity/tailnet/join")
     async def join_tailnet(payload: TailnetJoinRequest):
+        if store.factory_closed():
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="factory_identity_closed")
         active = _active_for_receipt(payload)
         if tailnet is None:
             raise HTTPException(status_code=503, detail="tailnet_client_unavailable")
+        if active.get("tailnet_node_id"):
+            raise HTTPException(status_code=409, detail="tailnet_node_already_bound")
         try:
+            store.begin_tailnet_join(
+                node_name=active["node_name"],
+                expected_version=tailnet.expected_version,
+                login_server=tailnet.login_server,
+            )
             result = tailnet.join(node_name=active["node_name"], auth_key=payload.tailnet_auth_key)
-        except TailnetJoinError as exc:
+            node_id = result.get("detail", {}).get("node_id")
+            if not isinstance(node_id, str) or not node_id:
+                raise TailnetJoinError("tailscale_node_identity_missing")
+            active = store.bind_tailnet_node_id(node_id)
+            result = tailnet.status(node_name=active["node_name"], expected_node_id=node_id)
+            if result.get("ok") is not True:
+                raise TailnetJoinError("tailnet_join_verification_failed")
+        except (IdentityStateError, TailnetJoinError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         return {"status": "active", "device_id": active["device_id"], "tailnet": result["detail"]}
 
     @app.post("/factory-identity/close")
     async def close_factory_endpoint(payload: ConfirmationRequest):
         active = _active_for_receipt(payload)
+        if tailnet is None:
+            raise HTTPException(status_code=503, detail="tailnet_client_unavailable")
+        expected_node_id = active.get("tailnet_node_id")
+        if not isinstance(expected_node_id, str) or not expected_node_id:
+            raise HTTPException(status_code=409, detail="tailnet_node_binding_missing")
         try:
+            result = tailnet.status(
+                node_name=active["node_name"],
+                expected_node_id=expected_node_id,
+            )
+            if result.get("ok") is not True:
+                raise TailnetJoinError("tailnet_not_ready")
             store.close_factory_endpoint()
-        except IdentityStateError as exc:
+        except (IdentityStateError, TailnetJoinError) as exc:
             raise HTTPException(status_code=409, detail="factory_identity_close_rejected") from exc
         return {"status": "closed", "device_id": active["device_id"]}
 
@@ -322,6 +379,13 @@ def create_app(
 
     def _active_for_receipt(payload: ConfirmationRequest) -> dict:
         receipt = _verified_receipt(payload)
+        try:
+            if parse_timestamp(receipt["credential_expires_at"]) <= as_utc(
+                dt.datetime.now(dt.timezone.utc)
+            ):
+                raise HTTPException(status_code=409, detail="factory_identity_credential_expired")
+        except (IdentityChallengeError, KeyError):
+            raise HTTPException(status_code=409, detail="factory_identity_confirmation_rejected") from None
         active = store.active()
         if not active or any(
             active.get(field) != receipt.get(field)

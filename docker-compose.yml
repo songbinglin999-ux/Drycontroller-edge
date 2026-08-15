@@ -195,6 +195,8 @@ services:
       # 大屏现场状态摘要只读展示云端/tailnet 配置状态
       - CLOUD_OPS_BASE_URL=${CLOUD_OPS_BASE_URL:-}
       - DEVICE_IDENTITY_PATH=${DEVICE_IDENTITY_PATH:-/var/lib/drycontroller/device.json}
+      - CLOUD_IDENTITY_PUBLIC_KEY_FILE=${CLOUD_IDENTITY_PUBLIC_KEY_FILE:-/etc/drycontroller/trust/device-identity-cloud.pub}
+      - CLOUD_REQUEST_NONCE_DB=/var/lib/drycontroller-cloud-request-nonces/nonces.sqlite3
       - TS_LOGIN_SERVER=${TS_LOGIN_SERVER:-}
       - TAILSCALE_EXPECTED_VERSION=${TAILSCALE_EXPECTED_VERSION:-}
       - LOG_LEVEL=${LOG_LEVEL}
@@ -212,13 +214,15 @@ services:
       - /etc/drycontroller/registry:/etc/drycontroller/registry
       # 只读读取 bootstrap sentinel，供大屏现场状态摘要显示装机状态
       - /var/lib/drycontroller:/var/lib/drycontroller:ro
+      - /var/lib/drycontroller/cloud-request-nonces:/var/lib/drycontroller-cloud-request-nonces
+      - /etc/drycontroller/trust:/etc/drycontroller/trust:ro
       # 唯一宿主 mutation 边界：只连接 root-owned 0660 UDS，不挂 Docker socket。
       - /run/drycontroller-ota:/run/drycontroller-ota:ro
       - /run/drycontroller-host-release:/run/drycontroller-host-release:ro
     ports:
       # P0-N1 audit 2026-05-15：默认绑 127.0.0.1，避免 LAN/PLC 网段直达 license install
       # 端点。生产若真有外部访问需求，由前置 Caddy/Traefik 反代，并显式覆写本变量。
-      - "${EDGE_API_BIND_ADDR:-127.0.0.1}:${EDGE_API_PORT}:8000"
+      - "127.0.0.1:${EDGE_API_LOCAL_PORT:-18080}:8000"
     networks:
       - edge-network
     # P1-N12 audit 2026-05-20：staging 用 SSH 反向隧道把 cloud-ops 暴露在 host 127.0.0.1:18088
@@ -227,6 +231,9 @@ services:
     # 走 host loopback。生产用 tailnet IP/DNS（CLOUD_OPS_BASE_URL 由 bootstrap 写入），不依赖此项。
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # Keep the public TLS server name/SNI while forcing the Cloud path through
+      # the pinned Headscale CGNAT address from OS Installer public config.
+      - "${CLOUD_OPS_TLS_SERVER_NAME:?missing Cloud TLS server name}:${CLOUD_OPS_TAILNET_ADDRESS:?missing Cloud Tailnet address}"
     depends_on:
       postgres:
         condition: service_healthy

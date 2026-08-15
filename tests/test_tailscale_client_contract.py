@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.tailscale_status import inspect_tailscale_status
+from common.tailscale_status import inspect_tailscale_status, validate_tailscale_status
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +80,7 @@ def test_actual_tailscale_status_matches_version_server_identity_and_online_stat
         expected_version="1.98.10",
         expected_login_server="https://headscale.example.test",
         expected_hostname="edge-abcdef123456",
+        expected_node_id="node-7",
         command_reader=reader,
     )
 
@@ -102,10 +103,17 @@ def test_root_runner_exposes_only_sanitized_tailnet_observation(monkeypatch):
         _json=lambda status, payload: response.update(status=status, payload=payload),
     )
     monkeypatch.setattr(host_release_runner, "read_tailscale_status", lambda: observation)
+    monkeypatch.setattr(host_release_runner, "_edge_api_ingress_active", lambda: True)
 
     host_release_runner.RequestHandler.do_GET(handler)
 
-    assert response == {"status": 200, "payload": observation}
+    assert response == {
+        "status": 200,
+        "payload": {
+            **observation,
+            "detail": {**observation["detail"], "edge_api_ingress_active": True},
+        },
+    }
 
 
 @pytest.mark.parametrize(
@@ -142,8 +150,77 @@ def test_actual_tailscale_status_fails_closed_on_runtime_drift(field, value, rea
         expected_version="1.98.10",
         expected_login_server="https://headscale.example.test",
         expected_hostname="edge-abcdef123456",
+        expected_node_id="node-7",
         command_reader=reader,
     )
 
     assert result["ok"] is False
     assert result["reason"] == reason
+
+
+def test_actual_tailscale_status_rejects_replacement_node_identity():
+    def reader(arguments):
+        if arguments[-2:] == ["status", "--json"]:
+            return json.dumps(
+                {
+                    "Version": "1.98.10",
+                    "BackendState": "Running",
+                    "Self": {
+                        "Online": True,
+                        "ID": "replacement-node",
+                        "HostName": "edge-abcdef123456",
+                    },
+                }
+            )
+        return 'Prefs{url="https://headscale.example.test"}'
+
+    result = inspect_tailscale_status(
+        expected_version="1.98.10",
+        expected_login_server="https://headscale.example.test",
+        expected_hostname="edge-abcdef123456",
+        expected_node_id="node-7",
+        command_reader=reader,
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "tailscale_node_identity_mismatch"
+
+
+def test_tailnet_product_ingress_is_interface_bound_and_preflight_gated():
+    socket_unit = (ROOT / "infra/bootstrap/drycontroller-tailnet-edge-api.socket").read_text()
+    service_unit = (ROOT / "infra/bootstrap/drycontroller-tailnet-edge-api.service").read_text()
+    compose = (ROOT / "docker-compose.yml").read_text()
+    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text()
+
+    assert "ListenStream=0.0.0.0:8000" in socket_unit
+    assert "BindToDevice=tailscale0" in socket_unit
+    assert "systemd-socket-proxyd 127.0.0.1:18080" in service_unit
+    assert '"127.0.0.1:${EDGE_API_LOCAL_PORT:-18080}:8000"' in compose
+    assert "EDGE_API_BIND_ADDR" not in compose
+    assert "drycontroller-tailnet-edge-api.socket" in installer
+    assert "drycontroller-tailnet-edge-api.service" in installer
+    assert "systemctl enable drycontroller-tailnet-edge-api.socket" in installer
+
+    observation = {
+        "ok": True,
+        "reason": "observed",
+        "detail": {
+            "version": "1.98.10",
+            "backend_state": "Running",
+            "self_online": True,
+            "node_id": "node-7",
+            "hostname": "edge-abcdef123456",
+            "login_server": "https://headscale.example.test",
+            "edge_api_ingress_active": False,
+        },
+    }
+    result = validate_tailscale_status(
+        observation,
+        expected_version="1.98.10",
+        expected_login_server="https://headscale.example.test",
+        expected_hostname="edge-abcdef123456",
+        expected_node_id="node-7",
+        require_edge_api_ingress=True,
+    )
+    assert result["ok"] is False
+    assert result["reason"] == "tailnet_edge_api_ingress_inactive"

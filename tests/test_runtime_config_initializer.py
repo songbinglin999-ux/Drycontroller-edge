@@ -51,8 +51,9 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
     public.write_text(
         json.dumps(
             {
-                "schema": "drycontroller.os-installer-public-config.v2",
+                "schema": "drycontroller.os-installer-public-config.v3",
                 "cloud_ops_base_url": "https://ops.example.test/",
+                "cloud_ops_tailnet_address": "100.100.0.10",
                 "tailscale_login_server": "https://headscale.example.test/",
                 "factory_interface": "enp2s0",
                 "factory_address": "169.254.203.2/30",
@@ -64,6 +65,8 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
     machine_id.write_text("a" * 32 + "\n", encoding="utf-8")
     runtime = tmp_path / "runtime.env"
     cloud = tmp_path / "cloud.env"
+    hosts = tmp_path / "hosts"
+    hosts.write_text("127.0.0.1 localhost\n", encoding="utf-8")
     netplan = tmp_path / "factory.yaml"
     sys_class_net = _physical_interface(tmp_path)
     for target in (runtime, cloud, netplan):
@@ -77,6 +80,7 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
         runtime_env=runtime,
         cloud_env=cloud,
         netplan=netplan,
+        hosts_file=hosts,
         sys_class_net=sys_class_net,
     )
     first_runtime = runtime.read_bytes()
@@ -88,6 +92,7 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
         runtime_env=runtime,
         cloud_env=cloud,
         netplan=netplan,
+        hosts_file=hosts,
         sys_class_net=sys_class_net,
     )
 
@@ -98,9 +103,18 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
     assert "change_me_" not in runtime_text
     assert "LICENSE_MACHINE_ID=" + "a" * 32 in runtime_text
     assert "CLOUD_OPS_BASE_URL=https://ops.example.test" in runtime_text
+    assert "CLOUD_OPS_TLS_SERVER_NAME=ops.example.test" in runtime_text
+    assert "CLOUD_OPS_TAILNET_ADDRESS=100.100.0.10" in runtime_text
     assert "TS_LOGIN_SERVER=https://headscale.example.test" in runtime_text
     assert "TAILSCALE_EXPECTED_VERSION=1.98.10" in runtime_text
-    assert cloud.read_text(encoding="utf-8") == "CLOUD_OPS_BASE_URL=https://ops.example.test\n"
+    assert cloud.read_text(encoding="utf-8") == (
+        "CLOUD_OPS_BASE_URL=https://ops.example.test\n"
+        "CLOUD_OPS_TLS_SERVER_NAME=ops.example.test\n"
+        "CLOUD_OPS_TAILNET_ADDRESS=100.100.0.10\n"
+    )
+    assert hosts.read_text(encoding="utf-8") == (
+        "127.0.0.1 localhost\n100.100.0.10 ops.example.test # drycontroller-cloud-tailnet\n"
+    )
     netplan_text = netplan.read_text(encoding="utf-8")
     assert "    00-drycontroller-factory:\n" in netplan_text
     factory_definition = next(
@@ -130,8 +144,9 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
     public.write_text(
         json.dumps(
             {
-                "schema": "drycontroller.os-installer-public-config.v2",
+                "schema": "drycontroller.os-installer-public-config.v3",
                 "cloud_ops_base_url": "https://ops.example.test",
+                "cloud_ops_tailnet_address": "100.100.0.10",
                 "tailscale_login_server": "https://headscale.example.test",
                 "factory_interface": "enp2s0",
                 "factory_address": "169.254.203.2/30",
@@ -172,6 +187,9 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
         ("cloud_ops_base_url", "https://ops.example.test:"),
         ("cloud_ops_base_url", "https://ops.example.test?"),
         ("cloud_ops_base_url", "https://ops.example.test#"),
+        ("cloud_ops_base_url", "https://ops.example.test:8443"),
+        ("cloud_ops_tailnet_address", "203.0.113.10"),
+        ("cloud_ops_tailnet_address", "drycontroller-cloud"),
         ("tailscale_login_server", "http://headscale.example.test"),
         ("tailscale_login_server", "https://headscale..example.test"),
         ("factory_interface", "enp2s0;bad"),
@@ -184,8 +202,9 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
 )
 def test_public_config_rejects_noncanonical_or_exposed_channel(tmp_path, field, value):
     payload = {
-        "schema": "drycontroller.os-installer-public-config.v2",
+        "schema": "drycontroller.os-installer-public-config.v3",
         "cloud_ops_base_url": "https://ops.example.test",
+        "cloud_ops_tailnet_address": "100.100.0.10",
         "tailscale_login_server": "https://headscale.example.test",
         "factory_interface": "enp2s0",
         "factory_address": "169.254.203.2/30",
@@ -214,8 +233,9 @@ def test_target_rejects_missing_or_virtual_factory_interface(tmp_path, interface
     public.write_text(
         json.dumps(
             {
-                "schema": "drycontroller.os-installer-public-config.v2",
+                "schema": "drycontroller.os-installer-public-config.v3",
                 "cloud_ops_base_url": "https://ops.example.test",
+                "cloud_ops_tailnet_address": "100.100.0.10",
                 "tailscale_login_server": "https://headscale.example.test",
                 "factory_interface": "enp2s0",
                 "factory_address": "169.254.203.2/30",

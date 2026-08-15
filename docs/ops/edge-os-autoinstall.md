@@ -35,8 +35,9 @@ the one physical NIC reserved for the isolated link-local station channel:
 
 ```json
 {
-  "schema": "drycontroller.os-installer-public-config.v2",
+  "schema": "drycontroller.os-installer-public-config.v3",
   "cloud_ops_base_url": "https://ops.example.invalid",
+  "cloud_ops_tailnet_address": "100.100.0.10",
   "tailscale_login_server": "https://headscale.example.invalid",
   "factory_interface": "enp2s0",
   "factory_address": "169.254.203.2/30"
@@ -49,7 +50,9 @@ version, enables host `tailscaled`, and requires `/var/lib/tailscale` to remain
 a real root-owned mode `0700` directory. Runtime preflight reads actual
 `tailscale status --json` plus the local preferences and compares the running
 version, login server, online state, node ID, and hostname with the TPM-bound
-Device identity. A failed remote-channel check is reported as degraded for
+Device identity. Cloud ingress is a systemd socket bound only to
+`tailscale0:8000`, proxying to the loopback-only Edge API at
+`127.0.0.1:18080`; its active state is part of the same preflight. A failed remote-channel check is reported as degraded for
 local operation and fails strict shipment/OTA preflight. The edge-api container
 reads only the sanitized result through the existing fixed-route root UDS; it
 never receives the host `tailscaled.sock`.

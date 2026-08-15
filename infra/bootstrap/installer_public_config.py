@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any
 from urllib.parse import urlsplit
 
 
-SCHEMA = "drycontroller.os-installer-public-config.v2"
+SCHEMA = "drycontroller.os-installer-public-config.v3"
 FIELDS = {
     "schema",
     "cloud_ops_base_url",
+    "cloud_ops_tailnet_address",
     "tailscale_login_server",
     "factory_interface",
     "factory_address",
@@ -54,6 +56,16 @@ def _canonical_https_base(value: object, label: str) -> str:
     return value.rstrip("/")
 
 
+def _tailnet_ipv4(value: object) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise ValueError("OS Installer Cloud Tailnet address invalid") from exc
+    if address.version != 4 or address not in ipaddress.ip_network("100.64.0.0/10"):
+        raise ValueError("OS Installer Cloud Tailnet address must use CGNAT IPv4")
+    return str(address)
+
+
 def validate_public_config(payload: object) -> dict[str, Any]:
     if not isinstance(payload, dict) or set(payload) != FIELDS or payload.get("schema") != SCHEMA:
         raise ValueError("OS Installer public config fields invalid")
@@ -62,9 +74,15 @@ def validate_public_config(payload: object) -> dict[str, Any]:
         raise ValueError("OS Installer factory interface must use one predictable Ethernet name")
     if payload["factory_address"] != "169.254.203.2/30":
         raise ValueError("OS Installer factory address must use the frozen link-local channel")
+    cloud_url = _canonical_https_base(payload["cloud_ops_base_url"], "Cloud URL")
+    cloud_authority = urlsplit(cloud_url)
+    if cloud_authority.port not in (None, 443):
+        raise ValueError("OS Installer Cloud URL must use TLS port 443")
     return {
         **payload,
-        "cloud_ops_base_url": _canonical_https_base(payload["cloud_ops_base_url"], "Cloud URL"),
+        "cloud_ops_base_url": cloud_url,
+        "cloud_ops_tls_server_name": str(cloud_authority.hostname),
+        "cloud_ops_tailnet_address": _tailnet_ipv4(payload["cloud_ops_tailnet_address"]),
         "tailscale_login_server": _canonical_https_base(
             payload["tailscale_login_server"], "Tailscale login server"
         ),

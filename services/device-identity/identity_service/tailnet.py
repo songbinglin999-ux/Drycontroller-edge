@@ -14,6 +14,7 @@ from common.tailscale_status import inspect_tailscale_status
 
 TAILSCALE_BIN = "/usr/bin/tailscale"
 TAILSCALE_SOCKET = "/var/run/tailscale/tailscaled.sock"
+TAILNET_EDGE_API_SOCKET = "drycontroller-tailnet-edge-api.socket"
 TAILNET_KEY = re.compile(r"^hskey-auth-[A-Za-z0-9_-]{16,192}$")
 TAILSCALE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 CommandRunner = Callable[[list[str]], int]
@@ -76,21 +77,37 @@ class TailnetClient:
         self.run_command = run_command
         self.inspect_status = inspect_status
 
-    def status(self, *, node_name: str) -> dict[str, object]:
+    def status(
+        self,
+        *,
+        node_name: str,
+        expected_node_id: str | None = None,
+        allow_unbound_node_id: bool = False,
+    ) -> dict[str, object]:
         if not node_name or node_name != node_name.lower():
             raise TailnetJoinError("tailnet_device_identity_invalid")
-        return self.inspect_status(
+        result = self.inspect_status(
             expected_version=self.expected_version,
             expected_login_server=self.login_server,
             expected_hostname=node_name,
+            expected_node_id=expected_node_id,
+            allow_unbound_node_id=allow_unbound_node_id,
             tailscale_bin=TAILSCALE_BIN,
             socket_path=TAILSCALE_SOCKET,
         )
+        if result.get("ok") is True and self.run_command(
+            ["/usr/bin/systemctl", "is-active", "--quiet", TAILNET_EDGE_API_SOCKET]
+        ) != 0:
+            return {**result, "ok": False, "reason": "tailnet_edge_api_ingress_inactive"}
+        return result
 
     def join(self, *, node_name: str, auth_key: str) -> dict[str, object]:
-        current = self.status(node_name=node_name)
+        current = self.status(node_name=node_name, allow_unbound_node_id=True)
         if current.get("ok") is True:
-            return current
+            raise TailnetJoinError("tailnet_unexpected_existing_identity")
+        current_detail = current.get("detail")
+        if isinstance(current_detail, dict) and current_detail.get("node_id"):
+            raise TailnetJoinError("tailnet_unexpected_existing_identity")
         if TAILNET_KEY.fullmatch(auth_key) is None:
             raise TailnetJoinError("tailnet_auth_key_rejected")
 
@@ -117,7 +134,11 @@ class TailnetClient:
             ]
             if self.run_command(command) != 0:
                 raise TailnetJoinError("tailnet_auth_key_rejected")
-            result = self.status(node_name=node_name)
+            if self.run_command(
+                ["/usr/bin/systemctl", "start", TAILNET_EDGE_API_SOCKET]
+            ) != 0:
+                raise TailnetJoinError("tailnet_edge_api_ingress_failed")
+            result = self.status(node_name=node_name, allow_unbound_node_id=True)
             if result.get("ok") is not True:
                 raise TailnetJoinError("tailnet_join_verification_failed")
             return result

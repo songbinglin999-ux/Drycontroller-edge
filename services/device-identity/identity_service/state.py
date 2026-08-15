@@ -20,6 +20,7 @@ class IdentityStateStore:
         self.factory_closed_path = private_dir / "factory-closed.json"
         self.candidate_path = private_dir / "credential-candidate.json"
         self.rotation_candidate_path = private_dir / "rotation-candidate.json"
+        self.tailnet_join_attempt_path = private_dir / "tailnet-join-attempt.json"
         self.active_device_path = active_device_path
 
     def initialize(self) -> dict[str, Any]:
@@ -126,6 +127,58 @@ class IdentityStateStore:
 
     def active(self) -> dict[str, Any] | None:
         return self._read_json(self.active_device_path)
+
+    def bind_tailnet_node_id(self, node_id: str) -> dict[str, Any]:
+        active = self.active()
+        if not active or not node_id:
+            raise IdentityStateError("tailnet node identity is unavailable")
+        existing = active.get("tailnet_node_id")
+        if existing and existing != node_id:
+            raise IdentityStateError("tailnet node identity cannot be replaced")
+        if not existing:
+            active = {**active, "tailnet_node_id": node_id}
+            self._write_json(self.active_device_path, active)
+        self.clear_tailnet_join_attempt()
+        return active
+
+    def tailnet_join_attempt(self) -> dict[str, Any] | None:
+        return self._read_json(self.tailnet_join_attempt_path)
+
+    def begin_tailnet_join(
+        self,
+        *,
+        node_name: str,
+        expected_version: str,
+        login_server: str,
+    ) -> dict[str, Any]:
+        active = self.active()
+        if not active or active.get("node_name") != node_name or active.get("tailnet_node_id"):
+            raise IdentityStateError("tailnet join attempt conflicts with active identity")
+        attempt = {
+            "schema": "drycontroller.tailnet-join-attempt.v1",
+            "device_id": active["device_id"],
+            "request_id": active["request_id"],
+            "node_name": node_name,
+            "expected_version": expected_version,
+            "login_server": login_server,
+        }
+        existing = self.tailnet_join_attempt()
+        if existing and existing != attempt:
+            raise IdentityStateError("tailnet join attempt conflicts with active identity")
+        if not existing:
+            self._write_json(self.tailnet_join_attempt_path, attempt)
+        return attempt
+
+    def clear_tailnet_join_attempt(self) -> None:
+        try:
+            self.tailnet_join_attempt_path.unlink()
+        except FileNotFoundError:
+            return
+        directory_fd = os.open(self.tailnet_join_attempt_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     def factory_closed(self) -> dict[str, Any] | None:
         return self._read_json(self.factory_closed_path)

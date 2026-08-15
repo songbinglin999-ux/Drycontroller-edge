@@ -92,15 +92,33 @@ class FakeTailnet:
     def __init__(self):
         self.online = False
         self.keys: list[str] = []
+        self.expected_version = "1.98.10"
+        self.login_server = "https://headscale.example.test"
+        self.fail_after_join = False
 
-    def status(self, *, node_name: str):
+    def status(
+        self,
+        *,
+        node_name: str,
+        expected_node_id: str | None = None,
+        allow_unbound_node_id: bool = False,
+    ):
         if not self.online:
             return {"ok": False, "reason": "tailscale_not_running", "detail": {}}
+        if expected_node_id is not None and expected_node_id != "node-1":
+            return {
+                "ok": False,
+                "reason": "tailscale_node_identity_mismatch",
+                "detail": {"hostname": node_name, "node_id": "node-1"},
+            }
         return {"ok": True, "reason": "ok", "detail": {"hostname": node_name, "node_id": "node-1"}}
 
     def join(self, *, node_name: str, auth_key: str):
         self.keys.append(auth_key)
         self.online = True
+        if self.fail_after_join:
+            self.fail_after_join = False
+            raise TailnetJoinError("tailnet_join_failed")
         return self.status(node_name=node_name)
 
 
@@ -290,7 +308,17 @@ def test_production_identity_units_allow_only_the_kernel_tpm_resource_manager():
         assert "DevicePolicy=closed" in unit
         assert "DeviceAllow=/dev/tpmrm0 rw" in unit
     factory_unit = (infra / "drycontroller-factory-identity.service").read_text(encoding="utf-8")
+    tailnet_source = (
+        Path(__file__).resolve().parents[1] / "identity_service" / "tailnet.py"
+    ).read_text(encoding="utf-8")
+    installer = (infra / "install-edge-host.sh").read_text(encoding="utf-8")
     assert "Environment=DRYCONTROLLER_IDENTITY_BACKEND=tpm" in factory_unit
+    assert "RuntimeDirectory=drycontroller-tailnet-join" in factory_unit
+    assert "RuntimeDirectoryMode=0700" in factory_unit
+    assert "ProtectSystem=strict" in factory_unit
+    assert '["/usr/bin/systemctl", "start", TAILNET_EDGE_API_SOCKET]' in tailnet_source
+    assert '["/usr/bin/systemctl", "enable"' not in tailnet_source
+    assert "systemctl enable drycontroller-tailnet-edge-api.socket" in installer
 
 
 @pytest.mark.asyncio
@@ -392,8 +420,14 @@ async def test_factory_activation_persists_candidate_and_promotes_only_after_clo
         assert joined.json()["tailnet"]["hostname"] == device_id.lower()
         assert tailnet.keys == ["hskey-auth-0123456789abcdef"]
         assert (await client.post("/factory-identity/tailnet/status", json=confirmation)).status_code == 200
+        assert store.active()["tailnet_node_id"] == "node-1"
 
-    restarted_app = create_app(backend=backend, store=store, cloud_public_key=_CLOUD_KEY.public_key())
+    restarted_app = create_app(
+        backend=backend,
+        store=store,
+        cloud_public_key=_CLOUD_KEY.public_key(),
+        tailnet=tailnet,
+    )
     async with AsyncClient(transport=ASGITransport(app=restarted_app), base_url="http://factory-edge") as client:
         status_response = await client.get("/factory-identity/status")
         assert status_response.status_code == 200
@@ -401,6 +435,13 @@ async def test_factory_activation_persists_candidate_and_promotes_only_after_clo
         closed = await client.post("/factory-identity/close", json=confirmation)
         assert closed.status_code == 200
         assert (await client.get("/factory-identity/status")).status_code == 410
+        assert (await client.post("/factory-identity/tailnet/status", json=confirmation)).status_code == 410
+        assert (
+            await client.post(
+                "/factory-identity/tailnet/join",
+                json={**confirmation, "tailnet_auth_key": "hskey-auth-0123456789abcdef"},
+            )
+        ).status_code == 410
         shutdown = await client.post("/factory-identity/shutdown", json=confirmation)
         assert shutdown.status_code == 200
 
@@ -435,6 +476,8 @@ def test_tailnet_join_uses_root_only_file_argument_and_deletes_it(tmp_path):
     def run_command(command):
         nonlocal online
         commands.append(command)
+        if command[0] == "/usr/bin/systemctl":
+            return 0
         key_argument = next(item for item in command if item.startswith("--auth-key=file:"))
         key_path = Path(key_argument.removeprefix("--auth-key=file:"))
         key_paths.append(key_path)
@@ -453,7 +496,8 @@ def test_tailnet_join_uses_root_only_file_argument_and_deletes_it(tmp_path):
     result = client.join(node_name="edge-abcdef123456", auth_key=auth_key)
 
     assert result["ok"] is True
-    assert commands and all(auth_key not in argument for argument in commands[0])
+    assert commands and all(auth_key not in argument for command in commands for argument in command)
+    assert ["/usr/bin/systemctl", "start", "drycontroller-tailnet-edge-api.socket"] in commands
     assert key_paths and not key_paths[0].exists()
     assert (tmp_path / "join").stat().st_mode & 0o777 == 0o700
 
@@ -481,6 +525,119 @@ def test_tailnet_join_failure_deletes_key_and_never_persists_it(tmp_path):
             auth_key="hskey-auth-0123456789abcdef",
         )
     assert observed_key_path is not None and not observed_key_path.exists()
+
+
+def test_tailnet_join_rejects_preexisting_unbound_identity_without_consuming_key(tmp_path):
+    commands = []
+    client = TailnetClient(
+        expected_version="1.98.10",
+        login_server="https://headscale.example.test",
+        temp_root=tmp_path / "join",
+        run_command=lambda command: commands.append(command) or 0,
+        inspect_status=lambda **_kwargs: {
+            "ok": True,
+            "reason": "ok",
+            "detail": {"node_id": "replacement-node"},
+        },
+    )
+
+    with pytest.raises(TailnetJoinError, match="tailnet_unexpected_existing_identity"):
+        client.join(
+            node_name="edge-abcdef123456",
+            auth_key="hskey-auth-0123456789abcdef",
+        )
+    assert commands == [
+        ["/usr/bin/systemctl", "is-active", "--quiet", "drycontroller-tailnet-edge-api.socket"]
+    ]
+    assert not (tmp_path / "join").exists()
+
+
+@pytest.mark.asyncio
+async def test_tailnet_status_recovers_durable_join_attempt_after_daemon_success(tmp_path):
+    backend, store, _active_path = _components(tmp_path)
+    active = _activate_store(backend, store)
+    receipt = {
+        "schema": ACTIVATION_RECEIPT_SCHEMA,
+        "domain": CLOUD_PROOF_DOMAIN,
+        "operation": "activate",
+        "state": "active",
+        "request_id": active["request_id"],
+        "device_id": active["device_id"],
+        "tenant_id": active["tenant_id"],
+        "line_id": active["line_id"],
+        "node_name": active["node_name"],
+        "identity_fingerprint": active["identity_fingerprint"],
+        "runtime_credential_hash": active["runtime_credential_hash"],
+        "credential_expires_at": active["credential_expires_at"],
+    }
+    confirmation = {
+        "activation_receipt": receipt,
+        "activation_receipt_signature": _signed_proof(receipt),
+    }
+    tailnet = FakeTailnet()
+    tailnet.fail_after_join = True
+    app = create_app(
+        backend=backend,
+        store=store,
+        cloud_public_key=_CLOUD_KEY.public_key(),
+        tailnet=tailnet,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://factory-edge") as client:
+        interrupted = await client.post(
+            "/factory-identity/tailnet/join",
+            json={**confirmation, "tailnet_auth_key": "hskey-auth-0123456789abcdef"},
+        )
+        assert interrupted.status_code == 409
+        assert store.tailnet_join_attempt() is not None
+        assert "hskey-auth" not in store.tailnet_join_attempt_path.read_text(encoding="utf-8")
+        recovered = await client.post("/factory-identity/tailnet/status", json=confirmation)
+
+    assert recovered.status_code == 200, recovered.text
+    assert store.active()["tailnet_node_id"] == "node-1"
+    assert store.tailnet_join_attempt() is None
+    assert tailnet.keys == ["hskey-auth-0123456789abcdef"]
+
+
+@pytest.mark.asyncio
+async def test_expired_activation_receipt_cannot_join_or_close_factory_endpoint(tmp_path):
+    backend, store, active_path = _components(tmp_path)
+    active = _activate_store(backend, store)
+    expired = format_timestamp(dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1))
+    store._write_json(active_path, {**active, "credential_expires_at": expired})
+    receipt = {
+        "schema": ACTIVATION_RECEIPT_SCHEMA,
+        "domain": CLOUD_PROOF_DOMAIN,
+        "operation": "activate",
+        "state": "active",
+        "request_id": active["request_id"],
+        "device_id": active["device_id"],
+        "tenant_id": active["tenant_id"],
+        "line_id": active["line_id"],
+        "node_name": active["node_name"],
+        "identity_fingerprint": active["identity_fingerprint"],
+        "runtime_credential_hash": active["runtime_credential_hash"],
+        "credential_expires_at": expired,
+    }
+    confirmation = {
+        "activation_receipt": receipt,
+        "activation_receipt_signature": _signed_proof(receipt),
+    }
+    app = create_app(
+        backend=backend,
+        store=store,
+        cloud_public_key=_CLOUD_KEY.public_key(),
+        tailnet=FakeTailnet(),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://factory-edge") as client:
+        status_response = await client.post("/factory-identity/tailnet/status", json=confirmation)
+        close_response = await client.post("/factory-identity/close", json=confirmation)
+
+    assert status_response.status_code == 409
+    assert status_response.json()["detail"] == "factory_identity_credential_expired"
+    assert close_response.status_code == 409
+    assert close_response.json()["detail"] == "factory_identity_credential_expired"
 
 
 @pytest.mark.asyncio

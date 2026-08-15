@@ -48,6 +48,25 @@ COORDINATOR_JOURNAL_FIELDS = {
     "effect",
     "error",
 }
+
+
+def _edge_api_ingress_active() -> bool:
+    try:
+        completed = subprocess.run(
+            [
+                "/usr/bin/systemctl",
+                "is-active",
+                "--quiet",
+                "drycontroller-tailnet-edge-api.socket",
+            ],
+            check=False,
+            capture_output=True,
+            timeout=5,
+            env={"HOME": "/tmp", "PATH": "/usr/bin:/bin"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
 FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -514,7 +533,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._json(200, {"success": True, "ready": True})
             return
         if path == "/tailnet/status":
-            self._json(200, read_tailscale_status())
+            observation = read_tailscale_status()
+            detail = dict(observation.get("detail") or {})
+            detail["edge_api_ingress_active"] = _edge_api_ingress_active()
+            self._json(200, {**observation, "detail": detail})
             return
         match = re.fullmatch(r"/host-release/operations/([0-9a-f]{32})(/logs)?", path)
         if match is None:

@@ -83,8 +83,10 @@ async def _tailnet_summary() -> dict:
             require_root_owner=os.geteuid() == 0,
         )
         hostname = str(identity.get("node_name") or "")
+        expected_node_id = str(identity.get("tailnet_node_id") or "")
     except DeviceIdentityUnavailable:
         hostname = ""
+        expected_node_id = ""
     try:
         observation = await get_host_release_ops_client().get_tailnet_status()
     except HTTPException:
@@ -94,6 +96,8 @@ async def _tailnet_summary() -> dict:
         expected_version=(settings.TAILSCALE_EXPECTED_VERSION or "").strip(),
         expected_login_server=(settings.TS_LOGIN_SERVER or "").strip(),
         expected_hostname=hostname,
+        expected_node_id=expected_node_id,
+        require_edge_api_ingress=True,
     )
     return {
         "key": "tailnet",

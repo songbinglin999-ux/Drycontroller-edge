@@ -24,6 +24,7 @@ from tailscale_client_lock import validate_tailscale_client_lock  # noqa: E402
 
 PLACEHOLDER = re.compile(r"change_me_[A-Za-z0-9_]+")
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+HOSTS_MARKER = "# drycontroller-cloud-tailnet"
 
 
 def _temporary_file(path: Path, data: bytes, mode: int) -> Path:
@@ -123,12 +124,16 @@ def _validate_runtime(
     template: str,
     machine: str,
     cloud_url: str,
+    cloud_tls_server_name: str,
+    cloud_tailnet_address: str,
     tailscale_login_server: str,
     tailscale_version: str,
 ) -> None:
     expected = _parse_env(template)
     generated_fields = {
         "CLOUD_OPS_BASE_URL": cloud_url,
+        "CLOUD_OPS_TLS_SERVER_NAME": cloud_tls_server_name,
+        "CLOUD_OPS_TAILNET_ADDRESS": cloud_tailnet_address,
         "TS_LOGIN_SERVER": tailscale_login_server,
         "TAILSCALE_EXPECTED_VERSION": tailscale_version,
     }
@@ -180,6 +185,7 @@ def initialize(
     runtime_env: Path,
     cloud_env: Path,
     netplan: Path,
+    hosts_file: Path | None = None,
     sys_class_net: Path = Path("/sys/class/net"),
 ) -> dict[str, str]:
     payload = validate_public_config(json.loads(public_config.read_text(encoding="utf-8")))
@@ -187,6 +193,8 @@ def initialize(
         json.loads(tailscale_client_lock.read_text(encoding="utf-8"))
     )
     cloud_url = payload["cloud_ops_base_url"]
+    cloud_tls_server_name = payload["cloud_ops_tls_server_name"]
+    cloud_tailnet_address = payload["cloud_ops_tailnet_address"]
     tailscale_login_server = payload["tailscale_login_server"]
     tailscale_version = tailscale_lock["version"]
     interface = payload["factory_interface"]
@@ -208,6 +216,8 @@ def initialize(
             template,
             machine,
             cloud_url,
+            cloud_tls_server_name,
+            cloud_tailnet_address,
             tailscale_login_server,
             tailscale_version,
         )
@@ -223,6 +233,8 @@ def initialize(
         runtime = re.sub(r"(?m)^LICENSE_MACHINE_ID=.*$", f"LICENSE_MACHINE_ID={machine}", runtime)
         runtime += (
             f"\nCLOUD_OPS_BASE_URL={cloud_url}\n"
+            f"CLOUD_OPS_TLS_SERVER_NAME={cloud_tls_server_name}\n"
+            f"CLOUD_OPS_TAILNET_ADDRESS={cloud_tailnet_address}\n"
             f"TS_LOGIN_SERVER={tailscale_login_server}\n"
             f"TAILSCALE_EXPECTED_VERSION={tailscale_version}\n"
         )
@@ -231,6 +243,8 @@ def initialize(
             template,
             machine,
             cloud_url,
+            cloud_tls_server_name,
+            cloud_tailnet_address,
             tailscale_login_server,
             tailscale_version,
         )
@@ -241,10 +255,16 @@ def initialize(
                 template,
                 machine,
                 cloud_url,
+                cloud_tls_server_name,
+                cloud_tailnet_address,
                 tailscale_login_server,
                 tailscale_version,
             )
-    cloud = f"CLOUD_OPS_BASE_URL={cloud_url}\n"
+    cloud = (
+        f"CLOUD_OPS_BASE_URL={cloud_url}\n"
+        f"CLOUD_OPS_TLS_SERVER_NAME={cloud_tls_server_name}\n"
+        f"CLOUD_OPS_TAILNET_ADDRESS={cloud_tailnet_address}\n"
+    )
     network = (
         "network:\n"
         "  version: 2\n"
@@ -260,8 +280,15 @@ def initialize(
     )
     _atomic_write(cloud_env, cloud.encode("utf-8"), 0o600)
     _atomic_write(netplan, network.encode("utf-8"), 0o600)
+    if hosts_file is not None:
+        existing_hosts = hosts_file.read_text(encoding="utf-8")
+        retained = [line for line in existing_hosts.splitlines() if HOSTS_MARKER not in line]
+        hosts = "\n".join([*retained, f"{cloud_tailnet_address} {cloud_tls_server_name} {HOSTS_MARKER}"]) + "\n"
+        _atomic_write(hosts_file, hosts.encode("utf-8"), 0o644)
     return {
         "cloud_ops_base_url": cloud_url,
+        "cloud_ops_tls_server_name": cloud_tls_server_name,
+        "cloud_ops_tailnet_address": cloud_tailnet_address,
         "tailscale_login_server": tailscale_login_server,
         "tailscale_version": tailscale_version,
         "factory_interface": interface,
@@ -282,6 +309,7 @@ def main() -> int:
         type=Path,
         default=Path("/etc/netplan/90-drycontroller-factory.yaml"),
     )
+    parser.add_argument("--hosts-file", type=Path, default=Path("/etc/hosts"))
     args = parser.parse_args()
     try:
         result = initialize(
@@ -292,6 +320,7 @@ def main() -> int:
             runtime_env=args.runtime_env,
             cloud_env=args.cloud_env,
             netplan=args.netplan,
+            hosts_file=args.hosts_file,
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         print(f"runtime configuration failed: {exc}", file=sys.stderr)

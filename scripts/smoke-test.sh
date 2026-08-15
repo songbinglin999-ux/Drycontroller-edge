@@ -38,7 +38,7 @@ set -a
 . ./.env
 set +a
 
-EDGE_API_PORT="${EDGE_API_PORT:-8000}"
+EDGE_API_PORT="${EDGE_API_LOCAL_PORT:-18080}"
 LICENSE_SERVICE_PORT="${LICENSE_SERVICE_PORT:-8100}"
 INFLUXDB_PORT="${INFLUXDB_PORT:-8086}"
 
@@ -141,4 +141,3 @@ check_latest_realtime
 check_system_health_ws_cache
 
 printf '\n🎉 烟雾测试全部通过！\n'
-
