@@ -25,8 +25,10 @@ boundaries:
   loopback/local exposure.
 - Edge API stays on host loopback `127.0.0.1:18080`. Successful Device-bound
   Tailnet provisioning enables a systemd socket bound only to `tailscale0:8000`
-  and proxies that fixed product route to loopback; LAN/PLC interfaces never
-  receive the Cloud admin listener.
+  and forwards one HTTP request at a time through the fixed marking proxy to
+  loopback. The proxy strips spoofed ingress markers; marked requests require
+  the Cloud Ed25519 signature or an API key, and Tailnet WebSockets are rejected.
+  LAN/PLC interfaces never receive the Cloud admin listener.
 - WebSocket realtime, AI, and system streams require the current mutual-auth
   handshake: client `hello` nonce, server HMAC proof, client `auth`, then
   `auth_ok`.

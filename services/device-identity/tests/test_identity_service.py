@@ -552,6 +552,29 @@ def test_tailnet_join_rejects_preexisting_unbound_identity_without_consuming_key
     assert not (tmp_path / "join").exists()
 
 
+def test_tailnet_join_refuses_unobservable_state_without_consuming_key(tmp_path):
+    commands = []
+    client = TailnetClient(
+        expected_version="1.98.10",
+        login_server="https://headscale.example.test",
+        temp_root=tmp_path / "join",
+        run_command=lambda command: commands.append(command) or 0,
+        inspect_status=lambda **_kwargs: {
+            "ok": False,
+            "reason": "tailscale_command_failed",
+            "detail": {},
+        },
+    )
+
+    with pytest.raises(TailnetJoinError, match="tailnet_join_state_unknown"):
+        client.join(
+            node_name="edge-abcdef123456",
+            auth_key="hskey-auth-0123456789abcdef",
+        )
+    assert commands == []
+    assert not (tmp_path / "join").exists()
+
+
 @pytest.mark.asyncio
 async def test_tailnet_status_recovers_durable_join_attempt_after_daemon_success(tmp_path):
     backend, store, _active_path = _components(tmp_path)

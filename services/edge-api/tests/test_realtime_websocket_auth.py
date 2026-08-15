@@ -15,7 +15,11 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
 
 from app.api import realtime as realtime_router  # noqa: E402
 from app.core.config import settings  # noqa: E402
-from app.core.security import is_readonly_source_allowed, require_readonly_ws_source  # noqa: E402
+from app.core.security import (  # noqa: E402
+    TAILNET_INGRESS_HEADER,
+    is_readonly_source_allowed,
+    require_readonly_ws_source,
+)
 
 
 def _build_client() -> TestClient:
@@ -70,11 +74,17 @@ def test_readonly_ws_streams_allow_allowlisted_client_without_control_auth(monke
 
 
 class DummyWebSocket:
-    def __init__(self, messages: list[str], client_host: str | None = None):
+    def __init__(
+        self,
+        messages: list[str],
+        client_host: str | None = None,
+        headers: dict[str, str] | None = None,
+    ):
         self.messages = messages
         self.close_code = None
         self.sent: list[dict] = []
         self.client = type("Client", (), {"host": client_host})() if client_host else None
+        self.headers = headers or {}
 
     async def receive_text(self):
         return self.messages.pop(0)
@@ -92,6 +102,23 @@ async def test_readonly_ws_auth_helper_rejects_non_allowlisted_source():
     try:
         settings.READONLY_WS_ALLOWLIST = ["192.168.0.0/16"]
         websocket = DummyWebSocket([], client_host="203.0.113.10")
+
+        assert await require_readonly_ws_source(websocket) is False
+        assert websocket.close_code == 1008
+    finally:
+        settings.READONLY_WS_ALLOWLIST = old_allowlist
+
+
+@pytest.mark.asyncio
+async def test_tailnet_proxy_marker_rejects_allowlisted_websocket_source():
+    old_allowlist = list(settings.READONLY_WS_ALLOWLIST)
+    try:
+        settings.READONLY_WS_ALLOWLIST = ["172.16.0.0/12"]
+        websocket = DummyWebSocket(
+            [],
+            client_host="172.18.0.1",
+            headers={TAILNET_INGRESS_HEADER: "1"},
+        )
 
         assert await require_readonly_ws_source(websocket) is False
         assert websocket.close_code == 1008
@@ -159,3 +186,30 @@ def test_readonly_http_endpoint_allows_allowlisted_source(monkeypatch):
         assert resp.json()["data"] == {"line": "L1", "status": "ok"}
     finally:
         settings.READONLY_WS_ALLOWLIST = old_allowlist
+
+
+def test_tailnet_proxy_marker_disables_private_source_bypass(monkeypatch):
+    old_allowlist = list(settings.READONLY_WS_ALLOWLIST)
+    old_admin = list(settings.ADMIN_API_KEYS)
+    try:
+        settings.READONLY_WS_ALLOWLIST = ["testclient", "172.16.0.0/12"]
+        settings.ADMIN_API_KEYS = ["admin-1"]
+        dummy_stream = DummyWsStream()
+        dummy_stream.latest = {"line": "L1", "status": "ok"}
+        monkeypatch.setattr(realtime_router, "ws_stream", dummy_stream)
+        client = _build_client()
+
+        unsigned = client.get(
+            "/api/system/health",
+            headers={TAILNET_INGRESS_HEADER: "1"},
+        )
+        authenticated = client.get(
+            "/api/system/health",
+            headers={TAILNET_INGRESS_HEADER: "1", settings.API_KEY_HEADER: "admin-1"},
+        )
+
+        assert unsigned.status_code == 403
+        assert authenticated.status_code == 200
+    finally:
+        settings.READONLY_WS_ALLOWLIST = old_allowlist
+        settings.ADMIN_API_KEYS = old_admin

@@ -194,7 +194,8 @@ def test_tailnet_product_ingress_is_interface_bound_and_preflight_gated():
 
     assert "ListenStream=0.0.0.0:8000" in socket_unit
     assert "BindToDevice=tailscale0" in socket_unit
-    assert "systemd-socket-proxyd 127.0.0.1:18080" in service_unit
+    assert "/usr/local/libexec/drycontroller/tailnet-edge-api-proxy.py" in service_unit
+    assert "systemd-socket-proxyd" not in service_unit
     assert '"127.0.0.1:${EDGE_API_LOCAL_PORT:-18080}:8000"' in compose
     assert "EDGE_API_BIND_ADDR" not in compose
     assert "drycontroller-tailnet-edge-api.socket" in installer

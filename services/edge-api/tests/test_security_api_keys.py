@@ -30,7 +30,12 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
         sys.path.append(entry)
 
 from app.core.config import settings  # noqa: E402
-from app.core.security import require_admin_api_key, require_control_api_key  # noqa: E402
+from app.core.security import (  # noqa: E402
+    TAILNET_INGRESS_HEADER,
+    require_admin_api_key,
+    require_control_api_key,
+    require_readonly_http_source,
+)
 
 
 def _create_app() -> FastAPI:
@@ -42,6 +47,10 @@ def _create_app() -> FastAPI:
 
     @app.get("/admin")
     async def admin(_: str = Depends(require_admin_api_key)):
+        return {"ok": True}
+
+    @app.get("/readonly", dependencies=[Depends(require_readonly_http_source)])
+    async def readonly():
         return {"ok": True}
 
     return app
@@ -187,6 +196,25 @@ def test_cloud_signature_is_device_path_body_bound_and_replay_safe(tmp_path, mon
     monkeypatch.setattr(security.dt, "datetime", FixedDateTime)
 
     assert client.get("/admin", headers=headers).status_code == 200
+    readonly_nonce = "d" * 32
+    readonly_canonical = _canonical_cloud_request(
+        device_id=identity["device_id"],
+        method="GET",
+        path="/readonly",
+        query=[],
+        body=None,
+        timestamp=timestamp,
+        nonce=readonly_nonce,
+    )
+    readonly_headers = {
+        **headers,
+        TAILNET_INGRESS_HEADER: "1",
+        "X-Drycontroller-Cloud-Nonce": readonly_nonce,
+        "X-Drycontroller-Cloud-Signature": base64.b64encode(
+            private_key.sign(readonly_canonical)
+        ).decode("ascii"),
+    }
+    assert client.get("/readonly", headers=readonly_headers).status_code == 200
     security._CLOUD_NONCE_LOCK = asyncio.Lock()
     FixedDateTime.current_epoch = now_epoch + 31
     assert client.get("/admin", headers=headers).status_code == 409

@@ -124,6 +124,7 @@ for path in \
   infra/bootstrap/drycontroller-factory-identity.service \
   infra/bootstrap/drycontroller-tailnet-edge-api.socket \
   infra/bootstrap/drycontroller-tailnet-edge-api.service \
+  infra/bootstrap/tailnet-edge-api-proxy.py \
   infra/bootstrap/drycontroller-device-credential-rotation.service \
   infra/bootstrap/drycontroller-device-credential-rotation.timer \
   services/device-identity/requirements.txt; do
@@ -265,6 +266,8 @@ install_identity_service() {
   install -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-factory-identity.service" /etc/systemd/system/drycontroller-factory-identity.service
   install -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-tailnet-edge-api.socket" /etc/systemd/system/drycontroller-tailnet-edge-api.socket
   install -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-tailnet-edge-api.service" /etc/systemd/system/drycontroller-tailnet-edge-api.service
+  install -d -o root -g root -m 0755 /usr/local/libexec/drycontroller
+  install -o root -g root -m 0755 "${REPO_SOURCE}/infra/bootstrap/tailnet-edge-api-proxy.py" /usr/local/libexec/drycontroller/tailnet-edge-api-proxy.py
   install -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-device-credential-rotation.service" /etc/systemd/system/drycontroller-device-credential-rotation.service
   install -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-device-credential-rotation.timer" /etc/systemd/system/drycontroller-device-credential-rotation.timer
 }

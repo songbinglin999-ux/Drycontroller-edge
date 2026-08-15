@@ -4,7 +4,7 @@ Requires=docker.service
 After=docker.service
 
 [Service]
-ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:18080
+ExecStart=/usr/bin/python3 /usr/local/libexec/drycontroller/tailnet-edge-api-proxy.py
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

@@ -52,7 +52,11 @@ a real root-owned mode `0700` directory. Runtime preflight reads actual
 version, login server, online state, node ID, and hostname with the TPM-bound
 Device identity. Cloud ingress is a systemd socket bound only to
 `tailscale0:8000`, proxying to the loopback-only Edge API at
-`127.0.0.1:18080`; its active state is part of the same preflight. A failed remote-channel check is reported as degraded for
+`127.0.0.1:18080`. The fixed proxy strips caller-supplied ingress markers,
+adds the trusted Tailnet marker, forces connection close, and rejects WebSocket
+upgrades; edge-api then requires the Cloud request signature or an API key even
+though Docker rewrites the peer address. Its active state is part of the same
+preflight. A failed remote-channel check is reported as degraded for
 local operation and fails strict shipment/OTA preflight. The edge-api container
 reads only the sanitized result through the existing fixed-route root UDS; it
 never receives the host `tailscaled.sock`.

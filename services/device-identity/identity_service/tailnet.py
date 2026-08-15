@@ -108,6 +108,13 @@ class TailnetClient:
         current_detail = current.get("detail")
         if isinstance(current_detail, dict) and current_detail.get("node_id"):
             raise TailnetJoinError("tailnet_unexpected_existing_identity")
+        if current.get("reason") not in {
+            "tailscale_self_missing",
+            "tailscale_not_running",
+            "tailscale_self_offline",
+            "tailscale_node_identity_missing",
+        }:
+            raise TailnetJoinError("tailnet_join_state_unknown")
         if TAILNET_KEY.fullmatch(auth_key) is None:
             raise TailnetJoinError("tailnet_auth_key_rejected")
 

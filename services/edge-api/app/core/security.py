@@ -26,6 +26,7 @@ from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_ide
 
 
 api_key_scheme = APIKeyHeader(name=settings.API_KEY_HEADER, auto_error=False)
+TAILNET_INGRESS_HEADER = "X-DryController-Tailnet-Ingress"
 _CLOUD_HEADERS = {
     "device_id": "X-Drycontroller-Cloud-Device",
     "timestamp": "X-Drycontroller-Cloud-Timestamp",
@@ -258,6 +259,16 @@ async def require_readonly_http_source(
     api_key: str | None = Depends(api_key_scheme),
 ) -> None:
     host = request.client.host if request.client else ""
+    if request.headers.get(TAILNET_INGRESS_HEADER) == "1":
+        if await _validate_cloud_request(request) is not None:
+            return
+        if api_key:
+            _validate_key(api_key, required="control")
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tailnet read-only access requires application authentication",
+        )
     if is_readonly_source_allowed(host):
         return
     if await _validate_cloud_request(request) is not None:
@@ -272,6 +283,9 @@ async def require_readonly_http_source(
 
 
 async def require_readonly_ws_source(websocket: WebSocket) -> bool:
+    if websocket.headers.get(TAILNET_INGRESS_HEADER) == "1":
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
     host = websocket.client.host if websocket.client else ""
     if is_readonly_source_allowed(host):
         return True
