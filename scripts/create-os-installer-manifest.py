@@ -8,6 +8,7 @@ import datetime as dt
 import hashlib
 import json
 import platform
+import runpy
 import subprocess
 from pathlib import Path
 
@@ -31,6 +32,78 @@ def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
 
+def validated_public_scan_evidence(
+    report_path: Path,
+    *,
+    iso: Path,
+    base_iso: Path,
+    root: Path = ROOT,
+    scanner_path: Path | None = None,
+) -> dict[str, object]:
+    scanner = runpy.run_path(str(scanner_path or root / "scripts/public-material-scan.py"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    expected_top = {"schema", "scanner_version", "policy_sha256", "passed", "artifacts"}
+    if not isinstance(report, dict) or set(report) != expected_top:
+        raise SystemExit("public material scan report fields invalid")
+    if (
+        report.get("schema") != scanner["SCHEMA"]
+        or report.get("scanner_version") != scanner["SCANNER_VERSION"]
+        or report.get("policy_sha256") != scanner["POLICY_SHA256"]
+        or report.get("passed") is not True
+    ):
+        raise SystemExit("public material scan report is not an approved passing policy")
+    artifacts = report.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(scanner["SURFACES"]):
+        raise SystemExit("public material scan report does not cover all five surfaces")
+
+    paths = {
+        "source": {
+            "sha256": root / "dist/drycontroller-edge.tar.gz",
+        },
+        "host": {
+            "sha256": root / "dist/host-image.tar",
+            "seed_sha256": root / "dist/autoinstall/host-release-seed.json",
+            "public_key_sha256": root / "dist/autoinstall/host-release-cosign.pub",
+        },
+        "software": {
+            "sha256": root / "dist/software-images.tar",
+            "seed_sha256": root / "dist/autoinstall/software-release-seed.json",
+            "public_key_sha256": root / "dist/autoinstall/software-release-cosign.pub",
+        },
+        "iso": {
+            "sha256": iso,
+            "base_iso_sha256": base_iso,
+        },
+        "filesystem": {
+            "iso_sha256": iso,
+        },
+    }
+    evidence_artifacts: dict[str, object] = {}
+    for surface, digest_paths in paths.items():
+        record = artifacts.get(surface)
+        expected_fields = {"passed", "findings", *digest_paths}
+        if (
+            not isinstance(record, dict)
+            or set(record) != expected_fields
+            or record.get("passed") is not True
+            or record.get("findings") != []
+        ):
+            raise SystemExit(f"public material {surface} evidence invalid")
+        for field, path in digest_paths.items():
+            if record.get(field) != sha256(path.resolve()):
+                raise SystemExit(f"public material {surface} evidence is stale")
+        evidence_artifacts[surface] = {
+            key: value for key, value in record.items() if key != "findings"
+        }
+    return {
+        "schema": report["schema"],
+        "scanner_version": report["scanner_version"],
+        "policy_sha256": report["policy_sha256"],
+        "report_sha256": sha256(report_path),
+        "artifacts": evidence_artifacts,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--iso", required=True, type=Path)
@@ -38,7 +111,10 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--channel", required=True)
     parser.add_argument("--installer-public-key", required=True, type=Path)
+    parser.add_argument("--public-scan-report", required=True, type=Path)
     args = parser.parse_args()
+    if args.output.exists():
+        raise SystemExit("release manifest output already exists")
     host_seed_path = ROOT / "dist/autoinstall/host-release-seed.json"
     software_seed_path = ROOT / "dist/autoinstall/software-release-seed.json"
     host_seed = json.loads(host_seed_path.read_text(encoding="utf-8"))
@@ -46,9 +122,14 @@ def main() -> int:
     dirty = git("status", "--porcelain=v1")
     if dirty:
         raise SystemExit("release manifest refuses a dirty git worktree")
+    public_scan = validated_public_scan_evidence(
+        args.public_scan_report.resolve(),
+        iso=args.iso.resolve(),
+        base_iso=args.base_iso.resolve(),
+    )
     public_key_digest = sha256(args.installer_public_key)
     payload = {
-        "schema": "drycontroller.os-installer-release.v2",
+        "schema": "drycontroller.os-installer-release.v3",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "release": {
             "channel": args.channel,
@@ -70,6 +151,7 @@ def main() -> int:
             "cosign": subprocess.check_output(["cosign", "version"], text=True).splitlines()[0],
         },
         "installer_signing_key_sha256": "sha256:" + public_key_digest,
+        "public_material_scan": public_scan,
         "artifacts": {
             "iso": artifact(args.iso.resolve()),
             "base_iso": artifact(args.base_iso.resolve()),
@@ -95,6 +177,11 @@ def main() -> int:
             "offline_apt_packages": artifact(ROOT / "dist/autoinstall/drycontroller-apt/Packages"),
         },
         "checks": {
+            "public_material_scan": {
+                "passed": True,
+                "checker": "public-material-scan.py",
+                "policy_sha256": public_scan["policy_sha256"],
+            },
             "final_iso_release_checklist": {
                 "passed": True,
                 "checker": "os_installer_usb_maker.py::verify_final_iso",

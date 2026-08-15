@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHANNEL="release"
 BASE_ISO="dist/drycontroller-os-installer-hybrid.iso"
+BASE_ISO_SHA256=""
 OUTPUT_ISO=""
 HOST_RELEASE="dist/initial-release/host-release.json"
 SOFTWARE_RELEASE="dist/initial-release/software-release.json"
@@ -20,6 +21,7 @@ APT_MIRROR="${DRYCONTROLLER_AUTOINSTALL_APT_MIRROR:-}"
 FORCE=false
 COSIGN_APPROVED_VERSION="v3.1.3"
 COSIGN_APPROVED_LINUX_AMD64_SHA256="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+APPROVED_BASE_ISO_SHA256="e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433"
 PINNED_TOOL_DIR=""
 
 cleanup() {
@@ -37,6 +39,7 @@ Usage:
 
 Options:
   --base-iso FILE
+  --base-iso-sha256 SHA256
   --output FILE
   --channel NAME
   --host-release FILE
@@ -68,6 +71,7 @@ value() { [ -n "${2:-}" ] || die "$1 requires a value"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-iso) value "$1" "${2:-}"; BASE_ISO="$2"; shift 2 ;;
+    --base-iso-sha256) value "$1" "${2:-}"; BASE_ISO_SHA256="$2"; shift 2 ;;
     --output) value "$1" "${2:-}"; OUTPUT_ISO="$2"; shift 2 ;;
     --channel) value "$1" "${2:-}"; CHANNEL="$2"; shift 2 ;;
     --host-release) value "$1" "${2:-}"; HOST_RELEASE="$2"; shift 2 ;;
@@ -88,7 +92,7 @@ done
 
 case "$CHANNEL" in *[!A-Za-z0-9._-]*|"") die "channel contains invalid characters" ;; esac
 cd "$REPO_ROOT"
-for command in git docker python3 pip3 xorriso bsdtar sha256sum; do require_cmd "$command"; done
+for command in git docker python3 pip3 xorriso bsdtar unsquashfs zstd sha256sum; do require_cmd "$command"; done
 [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] \
   || die "formal media requires the fixed Linux amd64 builder"
 # shellcheck disable=SC1091
@@ -111,6 +115,12 @@ for path in \
   "$PUBLIC_CONFIG" "$INSTALLER_PRIVATE_KEY" "$INSTALLER_PUBLIC_KEY"; do
   require_file "$path"
 done
+[[ "$BASE_ISO_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || die "--base-iso-sha256 must be one approved lowercase SHA-256 digest"
+[ "$BASE_ISO_SHA256" = "$APPROVED_BASE_ISO_SHA256" ] \
+  || die "base ISO checksum is not on the reviewed allowlist"
+[ "$(sha256sum "$BASE_ISO" | awk '{print $1}')" = "$BASE_ISO_SHA256" ] \
+  || die "base ISO checksum is not approved"
 PINNED_TOOL_DIR="$(mktemp -d)"
 install -m 0755 "$COSIGN_LINUX_AMD64" "$PINNED_TOOL_DIR/cosign"
 [ "$(sha256sum "$PINNED_TOOL_DIR/cosign" | awk '{print $1}')" = "$COSIGN_APPROVED_LINUX_AMD64_SHA256" ] \
@@ -127,22 +137,23 @@ if [ -z "$OUTPUT_ISO" ]; then
 fi
 MANIFEST="${OUTPUT_ISO%.iso}.manifest.json"
 SIGNATURE="${OUTPUT_ISO%.iso}.manifest.sigstore.json"
-python3 - "$BASE_ISO" "$OUTPUT_ISO" "$MANIFEST" "$SIGNATURE" "$REPO_ROOT/dist" <<'PY'
+PUBLIC_SCAN_REPORT="${OUTPUT_ISO%.iso}.public-scan.json"
+python3 - "$BASE_ISO" "$OUTPUT_ISO" "$MANIFEST" "$SIGNATURE" "$PUBLIC_SCAN_REPORT" "$REPO_ROOT/dist" <<'PY'
 import sys
 from pathlib import Path
-paths = [Path(value).resolve() for value in sys.argv[1:5]]
-dist = Path(sys.argv[5]).resolve()
+paths = [Path(value).resolve() for value in sys.argv[1:6]]
+dist = Path(sys.argv[6]).resolve()
 if len(set(paths)) != len(paths):
-    raise SystemExit("base ISO, output ISO, manifest, and signature paths must differ")
+    raise SystemExit("base ISO and all release output paths must differ")
 if paths[1].suffix != ".iso" or any(path.suffix != ".json" for path in paths[2:]):
     raise SystemExit("release output extensions are invalid")
 for path in paths[1:]:
     if path.parent != dist:
         raise SystemExit("release outputs must be direct files under repository dist/")
 PY
-if [ -e "$OUTPUT_ISO" ] || [ -e "$MANIFEST" ] || [ -e "$SIGNATURE" ]; then
+if [ -e "$OUTPUT_ISO" ] || [ -e "$MANIFEST" ] || [ -e "$SIGNATURE" ] || [ -e "$PUBLIC_SCAN_REPORT" ]; then
   [ "$FORCE" = true ] || die "release output exists; choose another output or pass --force"
-  rm -f "$OUTPUT_ISO" "$MANIFEST" "$SIGNATURE"
+  rm -f "$OUTPUT_ISO" "$MANIFEST" "$SIGNATURE" "$PUBLIC_SCAN_REPORT"
 fi
 
 export DRYCONTROLLER_RELEASE_WRAPPER=1
@@ -157,6 +168,17 @@ run python3 scripts/prepare-initial-release.py \
   --output-dir dist/autoinstall \
   --host-image-bundle dist/host-image.tar \
   --software-image-bundle dist/software-images.tar
+run python3 scripts/public-material-scan.py \
+  --surfaces source host software \
+  --report "$PUBLIC_SCAN_REPORT" \
+  --source dist/drycontroller-edge.tar.gz \
+  --host dist/host-image.tar \
+  --host-seed dist/autoinstall/host-release-seed.json \
+  --host-public-key dist/autoinstall/host-release-cosign.pub \
+  --software dist/software-images.tar \
+  --software-seed dist/autoinstall/software-release-seed.json \
+  --software-public-key dist/autoinstall/software-release-cosign.pub \
+  --cosign "$PINNED_TOOL_DIR/cosign"
 run bash scripts/build-device-identity-wheelhouse.sh
 apt_args=(--suite noble --arch amd64)
 if [ -n "$APT_MIRROR" ]; then apt_args+=(--mirror "$APT_MIRROR"); fi
@@ -177,12 +199,20 @@ class App:
         print(f"[{level}] {message}")
 maker.build_iso(App(), {"base_iso": sys.argv[1], "output_iso": sys.argv[2], "include_images": True})
 PY
+run python3 scripts/public-material-scan.py \
+  --surfaces iso filesystem \
+  --report "$PUBLIC_SCAN_REPORT" \
+  --append \
+  --iso "$OUTPUT_ISO" \
+  --base-iso "$BASE_ISO" \
+  --approved-base-iso-sha256 "$BASE_ISO_SHA256"
 run python3 scripts/create-os-installer-manifest.py \
   --iso "$OUTPUT_ISO" \
   --base-iso "$BASE_ISO" \
   --output "$MANIFEST" \
   --channel "$CHANNEL" \
-  --installer-public-key "$INSTALLER_PUBLIC_KEY"
+  --installer-public-key "$INSTALLER_PUBLIC_KEY" \
+  --public-scan-report "$PUBLIC_SCAN_REPORT"
 SIGNING_CONFIG="$PINNED_TOOL_DIR/signing-config.json"
 run cosign signing-config create \
   --no-default-fulcio \

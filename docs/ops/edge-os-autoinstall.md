@@ -10,11 +10,23 @@ credential, production API key, device private key, or signing private key.
 Formal release flow is fail closed:
 
 1. `scripts/build-os-installer-release.sh` runs on the controlled Ubuntu 24.04
-   amd64 builder, rebuilds all inputs, verifies the final ISO, and signs the
-   adjacent release manifest.
+   amd64 builder, requires `--base-iso-sha256` from the separately approved
+   Ubuntu 24.04.4 live-server checksum, requires it to match the reviewed policy
+   allowlist, and verifies the ISO bytes before using the base as a diff baseline.
+   It then rebuilds all inputs, verifies the final ISO, and signs the adjacent
+   release manifest.
 2. `scripts/write-os-installer-usb.sh` requires an independently supplied
    installer public key, verifies the signed manifest and ISO again, checks an
    external physical whole disk twice, writes it, and raw-compares the result.
+
+Both entrypoints run the same fail-closed content policy over the source bundle,
+signed HostRelease bundle, every SoftwareRelease image config/layer, final ISO,
+and extracted installed filesystem. Nested newc/CPIO initrds and compressed
+members are scanned recursively; unsupported archives fail closed. ISO and real
+SquashFS metadata are counted before extraction, with fixed member, entry,
+expanded-byte, recursion, and wall-clock limits. The policy rejects reusable
+Tailscale auth/API keys as well as private keys, registry credentials, cloud
+access keys, password hashes, and known long-lived tokens.
 
 The public configuration input has exactly this shape; the factory interface is
 the one physical NIC reserved for the isolated link-local station channel:

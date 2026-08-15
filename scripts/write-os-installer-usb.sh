@@ -17,6 +17,17 @@ SIGNATURE=""
 INSTALLER_PUBLIC_KEY=""
 DISK_ID=""
 YES=false
+PUBLIC_SCAN_TMP_DIR=""
+ISO_SOURCE=""
+
+cleanup() {
+  exec 9<&- || true
+  if [ -n "$PUBLIC_SCAN_TMP_DIR" ] && [ -d "$PUBLIC_SCAN_TMP_DIR" ]; then
+    chmod 0700 "$PUBLIC_SCAN_TMP_DIR/snapshot" 2>/dev/null || true
+    rm -rf "$PUBLIC_SCAN_TMP_DIR"
+  fi
+}
+trap cleanup EXIT
 
 usage() {
   cat <<'EOF'
@@ -124,6 +135,8 @@ INSTALLER_PUBLIC_KEY="$(cd "$(dirname "$INSTALLER_PUBLIC_KEY")" && pwd)/$(basena
 
 require_cmd python3
 require_cmd bsdtar
+require_cmd unsquashfs
+require_cmd zstd
 require_cmd diskutil
 require_cmd cosign
 
@@ -131,11 +144,69 @@ export DRYCONTROLLER_RELEASE_WRAPPER=1
 
 cd "$REPO_ROOT"
 
+ISO_SOURCE="$ISO"
+PUBLIC_SCAN_TMP_DIR="$(mktemp -d)"
+SNAPSHOT_DIR="$PUBLIC_SCAN_TMP_DIR/snapshot"
+mkdir -m 0700 "$SNAPSHOT_DIR"
+run python3 scripts/stable-release-artifact.py snapshot \
+  --source "$MANIFEST" \
+  --destination "$SNAPSHOT_DIR/manifest.json" \
+  --maximum-size 16777216 \
+  --timeout-seconds 30
+run python3 scripts/stable-release-artifact.py snapshot \
+  --source "$SIGNATURE" \
+  --destination "$SNAPSHOT_DIR/manifest.sigstore.json" \
+  --maximum-size 1048576 \
+  --timeout-seconds 30
+run python3 scripts/stable-release-artifact.py snapshot \
+  --source "$INSTALLER_PUBLIC_KEY" \
+  --destination "$SNAPSHOT_DIR/installer.pub" \
+  --maximum-size 65536 \
+  --timeout-seconds 30
+MANIFEST="$SNAPSHOT_DIR/manifest.json"
+SIGNATURE="$SNAPSHOT_DIR/manifest.sigstore.json"
+INSTALLER_PUBLIC_KEY="$SNAPSHOT_DIR/installer.pub"
+
 run cosign verify-blob \
   --key "$INSTALLER_PUBLIC_KEY" \
   --insecure-ignore-tlog=true \
   --bundle "$SIGNATURE" \
   "$MANIFEST"
+
+EXPECTED_ISO_METADATA="$(python3 - "$MANIFEST" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+artifact = manifest.get("artifacts", {}).get("iso", {})
+digest = artifact.get("sha256")
+size = artifact.get("size")
+if (
+    manifest.get("schema") != "drycontroller.os-installer-release.v3"
+    or not isinstance(digest, str)
+    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+    or not isinstance(size, int)
+    or isinstance(size, bool)
+    or size < 1
+):
+    raise SystemExit("signed ISO metadata invalid")
+print(f"{size} {digest}")
+PY
+)" || die "could not read signed ISO metadata"
+EXPECTED_ISO_SIZE="${EXPECTED_ISO_METADATA%% *}"
+EXPECTED_ISO_SHA256="${EXPECTED_ISO_METADATA#* }"
+run python3 scripts/stable-release-artifact.py snapshot \
+  --source "$ISO_SOURCE" \
+  --destination "$SNAPSHOT_DIR/installer.iso" \
+  --maximum-size 17179869184 \
+  --timeout-seconds 1800 \
+  --expected-sha256 "$EXPECTED_ISO_SHA256" \
+  --expected-size "$EXPECTED_ISO_SIZE"
+ISO="$SNAPSHOT_DIR/installer.iso"
+chmod 0500 "$SNAPSHOT_DIR"
+exec 9<"$ISO"
 
 run python3 - "$ISO" "$MANIFEST" "$INSTALLER_PUBLIC_KEY" <<'PY'
 from __future__ import annotations
@@ -143,6 +214,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import runpy
 import shutil
 import sys
 from pathlib import Path
@@ -161,7 +233,7 @@ def sha256(path: Path) -> str:
 
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-if manifest.get("schema") != "drycontroller.os-installer-release.v2":
+if manifest.get("schema") != "drycontroller.os-installer-release.v3":
     raise SystemExit("manifest schema mismatch")
 if not manifest.get("checks", {}).get("final_iso_release_checklist", {}).get("passed"):
     raise SystemExit("manifest does not record a passing final ISO checklist")
@@ -171,6 +243,32 @@ if expected_sha != actual_sha:
     raise SystemExit(f"ISO sha256 mismatch: manifest={expected_sha} actual={actual_sha}")
 if not manifest.get("release", {}).get("include_images") or not manifest.get("release", {}).get("public_material_only"):
     raise SystemExit("release manifest must include bundled Docker images")
+public_scan = manifest.get("public_material_scan")
+if not isinstance(public_scan, dict) or set(public_scan) != {
+    "schema",
+    "scanner_version",
+    "policy_sha256",
+    "report_sha256",
+    "artifacts",
+}:
+    raise SystemExit("release manifest public-material evidence invalid")
+scanner = runpy.run_path("scripts/public-material-scan.py")
+if (
+    public_scan.get("schema") != scanner["SCHEMA"]
+    or public_scan.get("scanner_version") != scanner["SCANNER_VERSION"]
+    or public_scan.get("policy_sha256") != scanner["POLICY_SHA256"]
+):
+    raise SystemExit("release manifest public-material policy mismatch")
+scan_artifacts = public_scan.get("artifacts")
+if not isinstance(scan_artifacts, dict) or set(scan_artifacts) != set(scanner["SURFACES"]):
+    raise SystemExit("release manifest public-material evidence is incomplete")
+if any(not isinstance(record, dict) or record.get("passed") is not True for record in scan_artifacts.values()):
+    raise SystemExit("release manifest public-material evidence did not pass")
+if (
+    scan_artifacts["iso"].get("sha256") != actual_sha
+    or scan_artifacts["filesystem"].get("iso_sha256") != actual_sha
+):
+    raise SystemExit("release manifest public-material evidence does not cover this ISO")
 key_digest = "sha256:" + sha256(installer_public_key)
 if manifest.get("installer_signing_key_sha256") != key_digest:
     raise SystemExit("release manifest signing key mismatch")
@@ -199,6 +297,50 @@ maker.verify_final_iso(
 )
 print(f"manifest ok: {manifest_path}")
 print(f"iso sha256: {actual_sha}")
+PY
+
+PUBLIC_SCAN_REPORT="$PUBLIC_SCAN_TMP_DIR/write-time-public-scan.json"
+run python3 scripts/public-material-scan.py \
+  --surfaces iso filesystem \
+  --report "$PUBLIC_SCAN_REPORT" \
+  --iso "$ISO"
+run python3 - "$ISO" "$MANIFEST" "$PUBLIC_SCAN_REPORT" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+iso = Path(sys.argv[1])
+manifest = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+report = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+
+digest = hashlib.sha256()
+with iso.open("rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+iso_sha256 = digest.hexdigest()
+
+signed = manifest["public_material_scan"]
+if (
+    report.get("passed") is not True
+    or report.get("schema") != signed.get("schema")
+    or report.get("scanner_version") != signed.get("scanner_version")
+    or report.get("policy_sha256") != signed.get("policy_sha256")
+):
+    raise SystemExit("write-time public-material scan evidence invalid")
+artifacts = report.get("artifacts")
+if not isinstance(artifacts, dict) or set(artifacts) != {"iso", "filesystem"}:
+    raise SystemExit("write-time public-material scan coverage invalid")
+if (
+    artifacts["iso"].get("passed") is not True
+    or artifacts["filesystem"].get("passed") is not True
+    or artifacts["iso"].get("sha256") != iso_sha256
+    or artifacts["filesystem"].get("iso_sha256") != iso_sha256
+):
+    raise SystemExit("write-time public-material scan does not cover this ISO")
+print("write-time ISO and filesystem public-material scan passed")
 PY
 
 if [ -z "$DISK_ID" ]; then
@@ -262,22 +404,22 @@ if [ "$YES" != true ]; then
 fi
 
 run verify_target
+run python3 scripts/stable-release-artifact.py verify-fd \
+  --fd 9 \
+  --path "$ISO" \
+  --expected-size "$EXPECTED_ISO_SIZE"
 run diskutil unmountDisk force "$DISK"
-run sudo /bin/dd "if=$ISO" "of=$RAW_DISK" bs=4m status=progress
+log "/bin/dd if=/dev/fd/9 | sudo /bin/dd of=$RAW_DISK"
+/bin/dd if=/dev/fd/9 bs=4m status=progress | sudo /bin/dd "of=$RAW_DISK" bs=4m
 run sync
-run sudo python3 - "$ISO" "$RAW_DISK" <<'PY'
+run sudo python3 - "$RAW_DISK" "$EXPECTED_ISO_SIZE" "$EXPECTED_ISO_SHA256" <<'PY'
 import hashlib
 import sys
 from pathlib import Path
 
-iso = Path(sys.argv[1])
-raw_disk = Path(sys.argv[2])
-remaining = iso.stat().st_size
-expected_hash = hashlib.sha256()
-with iso.open("rb") as handle:
-    for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
-        expected_hash.update(chunk)
-expected = expected_hash.hexdigest()
+raw_disk = Path(sys.argv[1])
+remaining = int(sys.argv[2])
+expected = sys.argv[3]
 actual = hashlib.sha256()
 with raw_disk.open("rb", buffering=0) as handle:
     while remaining:
@@ -291,4 +433,4 @@ if actual.hexdigest() != expected:
 print(f"USB raw compare passed: {expected}")
 PY
 run diskutil eject "$DISK"
-log "write complete: $ISO -> $DISK"
+log "write complete: $ISO_SOURCE -> $DISK"

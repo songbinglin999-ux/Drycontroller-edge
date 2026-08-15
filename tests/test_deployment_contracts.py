@@ -178,10 +178,36 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert "scripts/build-device-identity-wheelhouse.sh" in release_builder
     assert "scripts/build-autoinstall-offline-apt-repo.sh" in release_builder
     assert "scripts/create-os-installer-manifest.py" in release_builder
+    assert release_builder.count("scripts/public-material-scan.py") == 2
+    assert "--surfaces source host software" in release_builder
+    assert "--surfaces iso filesystem" in release_builder
+    assert "--public-scan-report" in release_builder
+    assert "unsquashfs" in release_builder
+    assert "zstd" in release_builder
     assert "maker.build_iso" in release_builder
     assert "cosign sign-blob" in release_builder
     assert "cosign verify-blob" in release_builder
     assert "--installer-public-key" in usb_writer
+    assert "scripts/public-material-scan.py" in usb_writer
+    assert usb_writer.count("scripts/stable-release-artifact.py snapshot") == 4
+    assert usb_writer.count("--maximum-size") == 4
+    assert usb_writer.count("--timeout-seconds") == 4
+    assert "--maximum-size 16777216" in usb_writer
+    assert "--maximum-size 1048576" in usb_writer
+    assert "--maximum-size 65536" in usb_writer
+    assert "--maximum-size 17179869184" in usb_writer
+    assert "scripts/stable-release-artifact.py verify-fd" in usb_writer
+    assert "if=/dev/fd/9" in usb_writer
+    assert '"if=$ISO"' not in usb_writer
+    assert '"$EXPECTED_ISO_SIZE" "$EXPECTED_ISO_SHA256"' in usb_writer
+    assert "--surfaces iso filesystem" in usb_writer
+    assert "drycontroller.os-installer-release.v3" in usb_writer
+    assert "--base-iso-sha256" in release_builder
+    assert "--approved-base-iso-sha256" in release_builder
+    assert "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433" in release_builder
+    assert "base ISO checksum is not on the reviewed allowlist" in release_builder
+    assert "require_cmd unsquashfs" in usb_writer
+    assert "require_cmd zstd" in usb_writer
     assert "signature_verifier=Path(host_cosign)" in usb_writer
     assert "USB raw compare passed" in usb_writer
 
