@@ -69,6 +69,12 @@ def test_edge_monitor_ops_auth_contract_supports_edge_api_admin_key_proxy():
     assert edge_monitor_env["ADMIN_API_KEYS"] == "${ADMIN_API_KEYS}"
 
 
+def test_tailnet_cidr_is_transport_not_readonly_authorization():
+    config = (ROOT / "services/edge-api/app/core/config.py").read_text(encoding="utf-8")
+
+    assert '"100.64.0.0/10"' not in config
+
+
 def test_edge_api_entrypoint_uses_runtime_postgres_settings_for_migration_backup():
     entrypoint = (ROOT / "services/edge-api/entrypoint.sh").read_text(encoding="utf-8")
 
@@ -153,6 +159,7 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
         "--device-identity-cloud-key",
         "--identity-wheelhouse",
         "--public-config",
+        "--tailscale-client-lock",
         "/usr/libexec/drycontroller/initialize-initial-release",
         "/usr/libexec/drycontroller/host-release-runner",
     ):
@@ -177,6 +184,9 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert 'export PATH="$PINNED_TOOL_DIR:$PATH"' in release_builder
     assert "scripts/build-device-identity-wheelhouse.sh" in release_builder
     assert "scripts/build-autoinstall-offline-apt-repo.sh" in release_builder
+    assert "--tailscale-versions-lock" in release_builder
+    assert "--tailscale-deb" in release_builder
+    assert 'apt_args+=(--extra-deb "$TAILSCALE_DEB")' in release_builder
     assert "scripts/create-os-installer-manifest.py" in release_builder
     assert release_builder.count("scripts/public-material-scan.py") == 2
     assert "--surfaces source host software" in release_builder
@@ -187,6 +197,11 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert "maker.build_iso" in release_builder
     assert "cosign sign-blob" in release_builder
     assert "cosign verify-blob" in release_builder
+    assert 'tailscale="$TAILSCALE_VERSION"' in installer
+    assert "pinned Tailscale client DEB checksum mismatch" in installer
+    assert "root:root:700" in installer
+    assert "systemctl enable --now tailscaled.service" in installer
+    assert "tailscale-client.json" in user_data
     assert "--installer-public-key" in usb_writer
     assert "scripts/public-material-scan.py" in usb_writer
     assert usb_writer.count("scripts/stable-release-artifact.py snapshot") == 4
@@ -220,6 +235,8 @@ def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata
         "env.example",
         "infra/bootstrap/install-edge-host.sh",
         "infra/bootstrap/installer_public_config.py",
+        "infra/bootstrap/tailscale_client_lock.py",
+        "common/tailscale_status.py",
         "infra/host-release-runner/host_release_engine.py",
         "infra/ota-helper/drycontroller-ota-helper.service",
         "services/device-identity/identity_service",
@@ -228,6 +245,20 @@ def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata
     assert "tar -czf" not in builder
     assert 'python3 scripts/validate-source-bundle.py "$BUNDLE"' in builder
     assert "source bundle contains forbidden macOS metadata" in builder
+
+
+def test_edge_api_tailnet_preflight_uses_fixed_root_observer_without_localapi_socket():
+    services = _compose_services()
+    edge_api = services["edge-api"]
+    edge_api_env = _env_map(edge_api)
+    runner = (ROOT / "infra/host-release-runner/host_release_runner.py").read_text(encoding="utf-8")
+    client = (ROOT / "services/edge-api/app/services/host_release_ops.py").read_text(encoding="utf-8")
+
+    assert edge_api_env["TAILSCALE_EXPECTED_VERSION"] == "${TAILSCALE_EXPECTED_VERSION:-}"
+    assert "TS_HOSTNAME" not in edge_api_env
+    assert all("tailscaled.sock" not in str(volume) for volume in edge_api["volumes"])
+    assert 'path == "/tailnet/status"' in runner
+    assert '"GET", "/tailnet/status"' in client
 
 
 def _write_source_bundle(path: Path, member_name: str) -> None:

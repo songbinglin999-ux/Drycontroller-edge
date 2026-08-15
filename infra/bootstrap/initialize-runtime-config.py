@@ -19,6 +19,7 @@ if str(BOOTSTRAP_DIR) not in sys.path:
     sys.path.insert(0, str(BOOTSTRAP_DIR))
 
 from installer_public_config import validate_public_config  # noqa: E402
+from tailscale_client_lock import validate_tailscale_client_lock  # noqa: E402
 
 
 PLACEHOLDER = re.compile(r"change_me_[A-Za-z0-9_]+")
@@ -117,12 +118,24 @@ def _validate_placeholder_value(
         generated[name] = value
 
 
-def _validate_runtime(contents: str, template: str, machine: str, cloud_url: str) -> None:
+def _validate_runtime(
+    contents: str,
+    template: str,
+    machine: str,
+    cloud_url: str,
+    tailscale_login_server: str,
+    tailscale_version: str,
+) -> None:
     expected = _parse_env(template)
-    if expected.get("LICENSE_MACHINE_ID") != "" or "CLOUD_OPS_BASE_URL" in expected:
+    generated_fields = {
+        "CLOUD_OPS_BASE_URL": cloud_url,
+        "TS_LOGIN_SERVER": tailscale_login_server,
+        "TAILSCALE_EXPECTED_VERSION": tailscale_version,
+    }
+    if expected.get("LICENSE_MACHINE_ID") != "" or set(expected) & set(generated_fields):
         raise ValueError("runtime environment template fields invalid")
     actual = _parse_env(contents)
-    if set(actual) != set(expected) | {"CLOUD_OPS_BASE_URL"}:
+    if set(actual) != set(expected) | set(generated_fields):
         raise ValueError("runtime environment fields invalid")
     generated: dict[str, str] = {}
     for name, template_value in expected.items():
@@ -133,8 +146,9 @@ def _validate_runtime(contents: str, template: str, machine: str, cloud_url: str
             _validate_placeholder_value(template_value, actual[name], generated)
         elif actual[name] != template_value:
             raise ValueError("runtime environment fixed value mismatch")
-    if actual["CLOUD_OPS_BASE_URL"] != cloud_url:
-        raise ValueError("runtime environment Cloud URL mismatch")
+    for name, value in generated_fields.items():
+        if actual[name] != value:
+            raise ValueError(f"runtime environment {name} mismatch")
 
 
 def _read_private_runtime(path: Path) -> str:
@@ -160,6 +174,7 @@ def _validate_physical_ethernet(interface: str, sys_class_net: Path) -> None:
 def initialize(
     *,
     public_config: Path,
+    tailscale_client_lock: Path,
     env_template: Path,
     machine_id: Path,
     runtime_env: Path,
@@ -168,7 +183,12 @@ def initialize(
     sys_class_net: Path = Path("/sys/class/net"),
 ) -> dict[str, str]:
     payload = validate_public_config(json.loads(public_config.read_text(encoding="utf-8")))
+    tailscale_lock = validate_tailscale_client_lock(
+        json.loads(tailscale_client_lock.read_text(encoding="utf-8"))
+    )
     cloud_url = payload["cloud_ops_base_url"]
+    tailscale_login_server = payload["tailscale_login_server"]
+    tailscale_version = tailscale_lock["version"]
     interface = payload["factory_interface"]
     address = payload["factory_address"]
     _validate_physical_ethernet(interface, sys_class_net)
@@ -183,7 +203,14 @@ def initialize(
     cloud_url = cloud_url.rstrip("/")
     if runtime_env.exists() or runtime_env.is_symlink():
         runtime = _read_private_runtime(runtime_env)
-        _validate_runtime(runtime, template, machine, cloud_url)
+        _validate_runtime(
+            runtime,
+            template,
+            machine,
+            cloud_url,
+            tailscale_login_server,
+            tailscale_version,
+        )
     else:
         generated: dict[str, str] = {}
 
@@ -194,11 +221,29 @@ def initialize(
 
         runtime = PLACEHOLDER.sub(replace, template)
         runtime = re.sub(r"(?m)^LICENSE_MACHINE_ID=.*$", f"LICENSE_MACHINE_ID={machine}", runtime)
-        runtime += f"\nCLOUD_OPS_BASE_URL={cloud_url}\n"
-        _validate_runtime(runtime, template, machine, cloud_url)
+        runtime += (
+            f"\nCLOUD_OPS_BASE_URL={cloud_url}\n"
+            f"TS_LOGIN_SERVER={tailscale_login_server}\n"
+            f"TAILSCALE_EXPECTED_VERSION={tailscale_version}\n"
+        )
+        _validate_runtime(
+            runtime,
+            template,
+            machine,
+            cloud_url,
+            tailscale_login_server,
+            tailscale_version,
+        )
         if not _atomic_create(runtime_env, runtime.encode("utf-8"), 0o600):
             runtime = _read_private_runtime(runtime_env)
-            _validate_runtime(runtime, template, machine, cloud_url)
+            _validate_runtime(
+                runtime,
+                template,
+                machine,
+                cloud_url,
+                tailscale_login_server,
+                tailscale_version,
+            )
     cloud = f"CLOUD_OPS_BASE_URL={cloud_url}\n"
     network = (
         "network:\n"
@@ -217,6 +262,8 @@ def initialize(
     _atomic_write(netplan, network.encode("utf-8"), 0o600)
     return {
         "cloud_ops_base_url": cloud_url,
+        "tailscale_login_server": tailscale_login_server,
+        "tailscale_version": tailscale_version,
         "factory_interface": interface,
         "factory_address": address,
     }
@@ -225,6 +272,7 @@ def initialize(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--public-config", required=True, type=Path)
+    parser.add_argument("--tailscale-client-lock", required=True, type=Path)
     parser.add_argument("--env-template", required=True, type=Path)
     parser.add_argument("--machine-id", type=Path, default=Path("/etc/machine-id"))
     parser.add_argument("--runtime-env", type=Path, default=Path("/etc/drycontroller/runtime.env"))
@@ -238,6 +286,7 @@ def main() -> int:
     try:
         result = initialize(
             public_config=args.public_config,
+            tailscale_client_lock=args.tailscale_client_lock,
             env_template=args.env_template,
             machine_id=args.machine_id,
             runtime_env=args.runtime_env,

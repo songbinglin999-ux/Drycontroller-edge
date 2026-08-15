@@ -196,7 +196,7 @@ services:
       - CLOUD_OPS_BASE_URL=${CLOUD_OPS_BASE_URL:-}
       - DEVICE_IDENTITY_PATH=${DEVICE_IDENTITY_PATH:-/var/lib/drycontroller/device.json}
       - TS_LOGIN_SERVER=${TS_LOGIN_SERVER:-}
-      - TS_HOSTNAME=${TS_HOSTNAME:-edge-node}
+      - TAILSCALE_EXPECTED_VERSION=${TAILSCALE_EXPECTED_VERSION:-}
       - LOG_LEVEL=${LOG_LEVEL}
     volumes:
       - /var/log/drycontroller/edge-api:/logs/edge-api

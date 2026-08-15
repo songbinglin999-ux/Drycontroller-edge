@@ -29,13 +29,31 @@ def _physical_interface(tmp_path: Path, name: str = "enp2s0") -> Path:
     return sys_class_net
 
 
+def _tailscale_lock(tmp_path: Path) -> Path:
+    path = tmp_path / "tailscale-client.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.tailscale-client.v1",
+                "version": "1.98.10",
+                "architecture": "amd64",
+                "deb_url": "https://pkgs.tailscale.com/stable/ubuntu/pool/tailscale_1.98.10_amd64.deb",
+                "deb_sha256": "2d94d8e5adbb8bd49efbda9a51358bf8ea28be1bcfc55411c367be813e321907",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_public_config_generates_private_runtime_state_and_fixed_factory_channel(tmp_path):
     public = tmp_path / "public.json"
     public.write_text(
         json.dumps(
             {
-                "schema": "drycontroller.os-installer-public-config.v1",
+                "schema": "drycontroller.os-installer-public-config.v2",
                 "cloud_ops_base_url": "https://ops.example.test/",
+                "tailscale_login_server": "https://headscale.example.test/",
                 "factory_interface": "enp2s0",
                 "factory_address": "169.254.203.2/30",
             }
@@ -53,6 +71,7 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
 
     result = _module().initialize(
         public_config=public,
+        tailscale_client_lock=_tailscale_lock(tmp_path),
         env_template=ROOT / "env.example",
         machine_id=machine_id,
         runtime_env=runtime,
@@ -63,6 +82,7 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
     first_runtime = runtime.read_bytes()
     second_result = _module().initialize(
         public_config=public,
+        tailscale_client_lock=_tailscale_lock(tmp_path),
         env_template=ROOT / "env.example",
         machine_id=machine_id,
         runtime_env=runtime,
@@ -78,6 +98,8 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
     assert "change_me_" not in runtime_text
     assert "LICENSE_MACHINE_ID=" + "a" * 32 in runtime_text
     assert "CLOUD_OPS_BASE_URL=https://ops.example.test" in runtime_text
+    assert "TS_LOGIN_SERVER=https://headscale.example.test" in runtime_text
+    assert "TAILSCALE_EXPECTED_VERSION=1.98.10" in runtime_text
     assert cloud.read_text(encoding="utf-8") == "CLOUD_OPS_BASE_URL=https://ops.example.test\n"
     netplan_text = netplan.read_text(encoding="utf-8")
     assert "    00-drycontroller-factory:\n" in netplan_text
@@ -108,8 +130,9 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
     public.write_text(
         json.dumps(
             {
-                "schema": "drycontroller.os-installer-public-config.v1",
+                "schema": "drycontroller.os-installer-public-config.v2",
                 "cloud_ops_base_url": "https://ops.example.test",
+                "tailscale_login_server": "https://headscale.example.test",
                 "factory_interface": "enp2s0",
                 "factory_address": "169.254.203.2/30",
             }
@@ -122,6 +145,7 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
     module = _module()
     arguments = {
         "public_config": public,
+        "tailscale_client_lock": _tailscale_lock(tmp_path),
         "env_template": ROOT / "env.example",
         "machine_id": machine_id,
         "runtime_env": runtime,
@@ -148,6 +172,8 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
         ("cloud_ops_base_url", "https://ops.example.test:"),
         ("cloud_ops_base_url", "https://ops.example.test?"),
         ("cloud_ops_base_url", "https://ops.example.test#"),
+        ("tailscale_login_server", "http://headscale.example.test"),
+        ("tailscale_login_server", "https://headscale..example.test"),
         ("factory_interface", "enp2s0;bad"),
         ("factory_interface", "lo"),
         ("factory_interface", "docker0"),
@@ -158,8 +184,9 @@ def test_existing_private_runtime_rejects_drift(tmp_path, mutation, error):
 )
 def test_public_config_rejects_noncanonical_or_exposed_channel(tmp_path, field, value):
     payload = {
-        "schema": "drycontroller.os-installer-public-config.v1",
+        "schema": "drycontroller.os-installer-public-config.v2",
         "cloud_ops_base_url": "https://ops.example.test",
+        "tailscale_login_server": "https://headscale.example.test",
         "factory_interface": "enp2s0",
         "factory_address": "169.254.203.2/30",
     }
@@ -172,6 +199,7 @@ def test_public_config_rejects_noncanonical_or_exposed_channel(tmp_path, field, 
     with pytest.raises(ValueError):
         _module().initialize(
             public_config=public,
+            tailscale_client_lock=_tailscale_lock(tmp_path),
             env_template=ROOT / "env.example",
             machine_id=machine_id,
             runtime_env=tmp_path / "runtime.env",
@@ -186,8 +214,9 @@ def test_target_rejects_missing_or_virtual_factory_interface(tmp_path, interface
     public.write_text(
         json.dumps(
             {
-                "schema": "drycontroller.os-installer-public-config.v1",
+                "schema": "drycontroller.os-installer-public-config.v2",
                 "cloud_ops_base_url": "https://ops.example.test",
+                "tailscale_login_server": "https://headscale.example.test",
                 "factory_interface": "enp2s0",
                 "factory_address": "169.254.203.2/30",
             }
@@ -210,6 +239,7 @@ def test_target_rejects_missing_or_virtual_factory_interface(tmp_path, interface
     with pytest.raises(ValueError, match="physical Ethernet"):
         _module().initialize(
             public_config=public,
+            tailscale_client_lock=_tailscale_lock(tmp_path),
             env_template=ROOT / "env.example",
             machine_id=machine_id,
             runtime_env=tmp_path / "runtime.env",

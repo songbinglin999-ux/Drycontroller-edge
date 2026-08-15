@@ -15,6 +15,8 @@ SOFTWARE_PUBLIC_KEY="dist/initial-release/software-release-cosign.pub"
 COSIGN_LINUX_AMD64="dist/initial-release/cosign-linux-amd64"
 DEVICE_IDENTITY_CLOUD_PUBLIC_KEY="dist/initial-release/device-identity-cloud.pub"
 PUBLIC_CONFIG="dist/initial-release/public-config.json"
+TAILSCALE_VERSIONS_LOCK=""
+TAILSCALE_DEB=""
 INSTALLER_PRIVATE_KEY=""
 INSTALLER_PUBLIC_KEY=""
 APT_MIRROR="${DRYCONTROLLER_AUTOINSTALL_APT_MIRROR:-}"
@@ -49,6 +51,8 @@ Options:
   --cosign-linux-amd64 FILE
   --device-identity-cloud-key FILE
   --public-config FILE
+  --tailscale-versions-lock FILE      Cloud infra/headscale/versions.lock.json
+  --tailscale-deb FILE                Exact public Linux amd64 DEB from that lock
   --installer-private-key FILE
   --installer-public-key FILE
   --apt-mirror URI
@@ -81,6 +85,8 @@ while [ $# -gt 0 ]; do
     --cosign-linux-amd64) value "$1" "${2:-}"; COSIGN_LINUX_AMD64="$2"; shift 2 ;;
     --device-identity-cloud-key) value "$1" "${2:-}"; DEVICE_IDENTITY_CLOUD_PUBLIC_KEY="$2"; shift 2 ;;
     --public-config) value "$1" "${2:-}"; PUBLIC_CONFIG="$2"; shift 2 ;;
+    --tailscale-versions-lock) value "$1" "${2:-}"; TAILSCALE_VERSIONS_LOCK="$2"; shift 2 ;;
+    --tailscale-deb) value "$1" "${2:-}"; TAILSCALE_DEB="$2"; shift 2 ;;
     --installer-private-key) value "$1" "${2:-}"; INSTALLER_PRIVATE_KEY="$2"; shift 2 ;;
     --installer-public-key) value "$1" "${2:-}"; INSTALLER_PUBLIC_KEY="$2"; shift 2 ;;
     --apt-mirror) value "$1" "${2:-}"; APT_MIRROR="$2"; shift 2 ;;
@@ -92,7 +98,7 @@ done
 
 case "$CHANNEL" in *[!A-Za-z0-9._-]*|"") die "channel contains invalid characters" ;; esac
 cd "$REPO_ROOT"
-for command in git docker python3 pip3 xorriso bsdtar unsquashfs zstd sha256sum; do require_cmd "$command"; done
+for command in git docker python3 pip3 xorriso bsdtar unsquashfs zstd sha256sum dpkg-deb; do require_cmd "$command"; done
 [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] \
   || die "formal media requires the fixed Linux amd64 builder"
 # shellcheck disable=SC1091
@@ -112,7 +118,8 @@ PY
 for path in \
   "$BASE_ISO" "$HOST_RELEASE" "$SOFTWARE_RELEASE" "$HOST_PUBLIC_KEY" \
   "$SOFTWARE_PUBLIC_KEY" "$COSIGN_LINUX_AMD64" "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" \
-  "$PUBLIC_CONFIG" "$INSTALLER_PRIVATE_KEY" "$INSTALLER_PUBLIC_KEY"; do
+  "$PUBLIC_CONFIG" "$TAILSCALE_VERSIONS_LOCK" "$TAILSCALE_DEB" \
+  "$INSTALLER_PRIVATE_KEY" "$INSTALLER_PUBLIC_KEY"; do
   require_file "$path"
 done
 [[ "$BASE_ISO_SHA256" =~ ^[0-9a-f]{64}$ ]] \
@@ -157,6 +164,39 @@ if [ -e "$OUTPUT_ISO" ] || [ -e "$MANIFEST" ] || [ -e "$SIGNATURE" ] || [ -e "$P
 fi
 
 export DRYCONTROLLER_RELEASE_WRAPPER=1
+mkdir -p dist/autoinstall
+run python3 - "$TAILSCALE_VERSIONS_LOCK" "$TAILSCALE_DEB" dist/autoinstall/tailscale-client.json <<'PY'
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path("infra/bootstrap").resolve()))
+from tailscale_client_lock import from_headscale_versions_lock
+
+versions_path, deb_path, output_path = map(Path, sys.argv[1:])
+client = from_headscale_versions_lock(json.loads(versions_path.read_text(encoding="utf-8")))
+actual_sha256 = hashlib.sha256(deb_path.read_bytes()).hexdigest()
+if actual_sha256 != client["deb_sha256"]:
+    raise SystemExit("Tailscale client DEB checksum does not match the Cloud version lock")
+fields = {
+    field: subprocess.check_output(
+        ["dpkg-deb", "--field", str(deb_path), field], text=True
+    ).strip()
+    for field in ("Package", "Version", "Architecture")
+}
+if fields != {
+    "Package": "tailscale",
+    "Version": client["version"],
+    "Architecture": client["architecture"],
+}:
+    raise SystemExit("Tailscale client DEB metadata does not match the Cloud version lock")
+output_path.write_text(
+    json.dumps(client, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
 run bash tools/build-bundle-images.sh
 run python3 scripts/prepare-initial-release.py \
   --host-release "$HOST_RELEASE" \
@@ -182,6 +222,7 @@ run python3 scripts/public-material-scan.py \
 run bash scripts/build-device-identity-wheelhouse.sh
 apt_args=(--suite noble --arch amd64)
 if [ -n "$APT_MIRROR" ]; then apt_args+=(--mirror "$APT_MIRROR"); fi
+apt_args+=(--extra-deb "$TAILSCALE_DEB")
 run bash scripts/build-autoinstall-offline-apt-repo.sh "${apt_args[@]}"
 run bash scripts/build-autoinstall-bundle.sh --out dist/autoinstall
 install -m 0644 "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" dist/autoinstall/device-identity-cloud.pub

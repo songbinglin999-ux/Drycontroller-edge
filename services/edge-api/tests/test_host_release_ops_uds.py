@@ -94,3 +94,42 @@ async def test_edge_client_sends_only_operation_id_over_validated_uds(monkeypatc
         "/host-release/start",
         {"json": {"operation_id": "a" * 32}},
     )
+
+
+@pytest.mark.asyncio
+async def test_edge_client_uses_fixed_read_only_tailnet_route(monkeypatch):
+    socket_path = Path("/run/drycontroller-host-release/runner.sock")
+    calls: dict[str, object] = {}
+
+    class FakeTransport:
+        def __init__(self, *, uds, retries):
+            calls["uds"] = uds
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "reason": "observed", "detail": {"node_id": "node-7"}}
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def request(self, method, path, **kwargs):
+            calls["request"] = (method, path, kwargs)
+            return FakeResponse()
+
+    monkeypatch.setattr(host_release_ops, "_validated_socket", lambda: socket_path)
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", FakeTransport)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    result = await host_release_ops.HostReleaseOpsClient().get_tailnet_status()
+
+    assert result["detail"]["node_id"] == "node-7"
+    assert calls["request"] == ("GET", "/tailnet/status", {})

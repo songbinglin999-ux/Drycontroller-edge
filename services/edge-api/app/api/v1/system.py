@@ -17,11 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.core.config import settings
 from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_identity
 from app.core.security import require_admin_api_key, require_readonly_http_source
+from app.services.host_release_ops import get_host_release_ops_client
 from app.services.system_status import (
     SystemStatusService,
     get_system_status_service,
 )
 from app.services.health import get_system_readiness
+from common.tailscale_status import validate_tailscale_status
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
@@ -71,6 +73,34 @@ def _identity_summary(
             "device_id": identity["device_id"],
             "credential_expires_at": identity["credential_expires_at"],
         },
+    }
+
+
+async def _tailnet_summary() -> dict:
+    try:
+        identity = load_runtime_identity(
+            Path(settings.DEVICE_IDENTITY_PATH),
+            require_root_owner=os.geteuid() == 0,
+        )
+        hostname = str(identity.get("node_name") or "")
+    except DeviceIdentityUnavailable:
+        hostname = ""
+    try:
+        observation = await get_host_release_ops_client().get_tailnet_status()
+    except HTTPException:
+        observation = {"ok": False, "reason": "tailnet_observer_unavailable", "detail": {}}
+    result = validate_tailscale_status(
+        observation,
+        expected_version=(settings.TAILSCALE_EXPECTED_VERSION or "").strip(),
+        expected_login_server=(settings.TS_LOGIN_SERVER or "").strip(),
+        expected_hostname=hostname,
+    )
+    return {
+        "key": "tailnet",
+        "label": "远程通道",
+        "status": "ok" if result["ok"] else "degraded",
+        "message": "已连接" if result["ok"] else "远程通道不可用，本地控制不受影响",
+        "detail": result,
     }
 
 
@@ -221,16 +251,7 @@ async def get_local_status_summary(
         _plc_summary(status_payload),
         await _license_summary(),
         await _cloud_summary(),
-        {
-            "key": "tailnet",
-            "label": "远程通道",
-            "status": "ok" if (settings.TS_LOGIN_SERVER or "").strip() else "degraded",
-            "message": "已配置" if (settings.TS_LOGIN_SERVER or "").strip() else "未配置",
-            "detail": {
-                "ts_login_server_present": bool((settings.TS_LOGIN_SERVER or "").strip()),
-                "ts_hostname": (settings.TS_HOSTNAME or "").strip() or None,
-            },
-        },
+        await _tailnet_summary(),
         _identity_summary(),
     ]
     level = _overall_level(items)

@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from common.tailscale_status import read_tailscale_status
+
 
 SOCKET_PATH = Path("/run/drycontroller-host-release/runner.sock")
 STATE_PATH = Path("/var/lib/drycontroller-host/operations.json")
@@ -510,6 +512,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/ready":
             self._json(200, {"success": True, "ready": True})
+            return
+        if path == "/tailnet/status":
+            self._json(200, read_tailscale_status())
             return
         match = re.fullmatch(r"/host-release/operations/([0-9a-f]{32})(/logs)?", path)
         if match is None:

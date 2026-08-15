@@ -41,6 +41,7 @@ from host_release_engine import (  # noqa: E402
     validate_software_manifest,
 )
 from installer_public_config import validate_public_config  # noqa: E402
+from tailscale_client_lock import validate_tailscale_client_lock  # noqa: E402
 
 
 MEDIA_MAPS = (
@@ -63,6 +64,7 @@ MEDIA_MAPS = (
     ("dist/autoinstall/cosign-linux-amd64", "/cosign-linux-amd64"),
     ("dist/autoinstall/device-identity-cloud.pub", "/device-identity-cloud.pub"),
     ("dist/autoinstall/public-config.json", "/public-config.json"),
+    ("dist/autoinstall/tailscale-client.json", "/tailscale-client.json"),
 )
 
 
@@ -281,6 +283,42 @@ def verify_final_iso(
         validate_public_config(json.loads(extract_iso_file(iso, "public-config.json")))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise RuntimeError("ISO public configuration invalid") from exc
+
+    try:
+        tailscale_client = validate_tailscale_client_lock(
+            json.loads(extract_iso_file(iso, "tailscale-client.json"))
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError("ISO Tailscale client lock invalid") from exc
+    deb_name = tailscale_client["deb_url"].rsplit("/", 1)[-1]
+    deb_entry = f"drycontroller-apt/pool/{deb_name}"
+    if deb_entry not in entries:
+        raise RuntimeError("ISO pinned Tailscale client DEB missing")
+    if _sha256(extract_iso_file(iso, deb_entry)) != tailscale_client["deb_sha256"]:
+        raise RuntimeError("ISO pinned Tailscale client DEB checksum mismatch")
+    package_stanzas = extract_iso_file(iso, "drycontroller-apt/Packages").decode(
+        "utf-8"
+    ).split("\n\n")
+    expected_package_fields = {
+        "Package": "tailscale",
+        "Version": tailscale_client["version"],
+        "Architecture": tailscale_client["architecture"],
+        "Filename": f"pool/{deb_name}",
+        "SHA256": tailscale_client["deb_sha256"],
+    }
+    package_match = False
+    for stanza in package_stanzas:
+        fields = {
+            name: value
+            for line in stanza.splitlines()
+            if ": " in line
+            for name, value in [line.split(": ", 1)]
+        }
+        if all(fields.get(name) == value for name, value in expected_package_fields.items()):
+            package_match = True
+            break
+    if not package_match:
+        raise RuntimeError("ISO apt metadata does not bind the pinned Tailscale client")
 
     host, host_digest, _host_signature = _seed(
         extract_iso_file(iso, "host-release-seed.json"), host=True

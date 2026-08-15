@@ -18,6 +18,7 @@ COSIGN_BIN="/opt/drycontroller-release/cosign-linux-amd64"
 DEVICE_IDENTITY_CLOUD_PUBLIC_KEY="/opt/drycontroller-release/device-identity-cloud.pub"
 IDENTITY_WHEELHOUSE="/opt/drycontroller-release/identity-wheelhouse"
 PUBLIC_CONFIG="/opt/drycontroller-release/public-config.json"
+TAILSCALE_CLIENT_LOCK="/opt/drycontroller-release/tailscale-client.json"
 SOURCE_STAGE="/opt/drycontroller-edge-source"
 SOURCE_ROOT="$SOURCE_STAGE"
 
@@ -42,6 +43,7 @@ die() {
 [ -f "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" ] || die "missing Cloud device identity trust root"
 [ -d "$IDENTITY_WHEELHOUSE" ] || die "missing offline device identity wheelhouse"
 [ -f "$PUBLIC_CONFIG" ] || die "missing public OS Installer configuration"
+[ -f "$TAILSCALE_CLIENT_LOCK" ] || die "missing pinned Tailscale client lock"
 
 log "unpacking edge bundle"
 rm -rf "$SOURCE_ROOT"
@@ -66,7 +68,8 @@ bash "${SOURCE_ROOT}/infra/bootstrap/install-edge-host.sh" \
   --cosign-bin "$COSIGN_BIN" \
   --device-identity-cloud-key "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" \
   --identity-wheelhouse "$IDENTITY_WHEELHOUSE" \
-  --public-config "$PUBLIC_CONFIG"
+  --public-config "$PUBLIC_CONFIG" \
+  --tailscale-client-lock "$TAILSCALE_CLIENT_LOCK"
 
 rm -rf /opt/drycontroller-release "$SOURCE_STAGE"
 rm -f "$BUNDLE"

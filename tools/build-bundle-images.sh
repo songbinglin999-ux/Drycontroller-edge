@@ -26,6 +26,8 @@ SOURCE_BUNDLE_PATHS=(
   infra/bootstrap/install-edge-host.sh
   infra/bootstrap/initialize-runtime-config.py
   infra/bootstrap/installer_public_config.py
+  infra/bootstrap/tailscale_client_lock.py
+  common/tailscale_status.py
   infra/bootstrap/drycontroller-factory-identity.service
   infra/bootstrap/drycontroller-device-credential-rotation.service
   infra/bootstrap/drycontroller-device-credential-rotation.timer

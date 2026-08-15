@@ -15,7 +15,8 @@ from pathlib import Path
 
 import httpx
 import yaml
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 # 协议 schema 已移到仓库根 common/schemas/cloud_to_edge.py（P1-8 phase B），
@@ -38,6 +39,7 @@ from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_ide
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
 from app.services.host_release_ops import HostReleaseOpsClient, get_host_release_ops_client
+from app.services.health import get_system_readiness
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 from app.services.registry_credentials import (
     install_registry_credential,
@@ -48,6 +50,7 @@ from app.services.config_version import record_config_version
 from app.services.ota_history import record_ota_operation
 from app.services.preflight_history import record_preflight_run
 from common.license_verifier import load_public_key, verify_signature
+from common.tailscale_status import validate_tailscale_status
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
 # 注意：这里需要拿到实际 api_key 以便代理调用 edge-monitor 的 /ops/*
@@ -76,6 +79,21 @@ class PreflightRequest(BaseModel):
 
     strict: bool = Field(False, description="true 时 degraded 也视为失败")
     check_ota: bool = Field(False, description="true 时要求 root-owned OTA helper 可用")
+
+
+@router.get("/ready")
+async def authenticated_readiness(_: str = Depends(require_admin_api_key)):
+    report = await get_system_readiness()
+    healthy = all(dependency.get("status") == "healthy" for dependency in report.values())
+    return JSONResponse(
+        status_code=200 if healthy else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "success": healthy,
+            "status": "ready" if healthy else "degraded",
+            "dependencies": report,
+            "timestamp": int(time.time()),
+        },
+    )
 
 
 def _service_override_payload(o: ServiceOverride) -> dict:
@@ -244,6 +262,33 @@ def _preflight_registry_credential(checks: list[dict[str, Any]]) -> None:
     )
 
 
+async def _preflight_tailnet(checks: list[dict[str, Any]], *, allow_degraded: bool) -> None:
+    try:
+        identity = load_runtime_identity(require_root_owner=os.geteuid() == 0)
+        expected_hostname = str(identity.get("node_name") or "")
+    except DeviceIdentityUnavailable:
+        expected_hostname = ""
+    try:
+        observation = await get_host_release_ops_client().get_tailnet_status()
+    except HTTPException:
+        observation = {"ok": False, "reason": "tailnet_observer_unavailable", "detail": {}}
+    result = validate_tailscale_status(
+        observation,
+        expected_version=(settings.TAILSCALE_EXPECTED_VERSION or "").strip(),
+        expected_login_server=(settings.TS_LOGIN_SERVER or "").strip(),
+        expected_hostname=expected_hostname,
+    )
+    passed = result["ok"] is True
+    _preflight_check(
+        checks,
+        "tailnet.identity",
+        "pass" if passed else ("degraded" if allow_degraded else "fail"),
+        str(result["reason"]),
+        hint="restore the pinned tailscaled client and original Device-bound node identity",
+        detail=result["detail"],
+    )
+
+
 async def _preflight_http_check(
     checks: list[dict[str, Any]],
     check_id: str,
@@ -407,16 +452,7 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
             hint="registry credential check skipped; set check_ota=true before online OTA",
         )
 
-    ts_login_server = (settings.TS_LOGIN_SERVER or "").strip()
-    ts_hostname = (settings.TS_HOSTNAME or "").strip()
-    _preflight_check(
-        checks,
-        "tailnet.identity",
-        "pass" if ts_login_server else ("degraded" if allow_degraded else "fail"),
-        "configured" if ts_login_server else "missing_tailnet_config",
-        hint="configure TS_LOGIN_SERVER/TS_HOSTNAME for remote operations",
-        detail={"ts_login_server_present": bool(ts_login_server), "ts_hostname": ts_hostname or None},
-    )
+    await _preflight_tailnet(checks, allow_degraded=allow_degraded)
 
     cloud_ops_base_url = (settings.CLOUD_OPS_BASE_URL or "").strip()
     try:

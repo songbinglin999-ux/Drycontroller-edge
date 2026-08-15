@@ -76,9 +76,15 @@ def is_readonly_source_allowed(host: str | None) -> bool:
     return False
 
 
-async def require_readonly_http_source(request: Request) -> None:
+async def require_readonly_http_source(
+    request: Request,
+    api_key: str | None = Depends(api_key_scheme),
+) -> None:
     host = request.client.host if request.client else ""
     if is_readonly_source_allowed(host):
+        return
+    if api_key:
+        _validate_key(api_key, required="control")
         return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,

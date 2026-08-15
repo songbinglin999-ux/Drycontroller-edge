@@ -63,7 +63,6 @@ class Settings(BaseSettings):
         "10.0.0.0/8",
         "172.16.0.0/12",
         "192.168.0.0/16",
-        "100.64.0.0/10",
     ]
     
     # 配置文件路径
@@ -108,7 +107,7 @@ class Settings(BaseSettings):
     # 云端 ops 入口与 Tailnet 身份（由 bootstrap 写入 .env）
     CLOUD_OPS_BASE_URL: str = ""
     TS_LOGIN_SERVER: str = ""
-    TS_HOSTNAME: str = ""
+    TAILSCALE_EXPECTED_VERSION: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

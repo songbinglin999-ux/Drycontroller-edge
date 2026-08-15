@@ -28,6 +28,7 @@ from .contract import (
     parse_timestamp,
 )
 from .state import IdentityStateError, IdentityStateStore
+from .tailnet import TailnetClient, TailnetJoinError, load_tailnet_client_from_runtime
 
 
 _REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -69,12 +70,17 @@ class ConfirmationRequest(StrictModel):
     activation_receipt_signature: str = Field(min_length=1, max_length=256)
 
 
+class TailnetJoinRequest(ConfirmationRequest):
+    tailnet_auth_key: str = Field(min_length=1, max_length=256)
+
+
 def create_app(
     *,
     backend: DeviceIdentityBackend,
     store: IdentityStateStore,
     cloud_public_key: Ed25519PublicKey,
     stop_after_confirm: bool = False,
+    tailnet: TailnetClient | None = None,
 ) -> FastAPI:
     app = FastAPI(title="DryController Factory Device Identity", docs_url=None, redoc_url=None)
 
@@ -237,21 +243,33 @@ def create_app(
             "credential_expires_at": active["credential_expires_at"],
         }
 
+    @app.post("/factory-identity/tailnet/status")
+    async def tailnet_status(payload: ConfirmationRequest):
+        active = _active_for_receipt(payload)
+        if tailnet is None:
+            raise HTTPException(status_code=503, detail="tailnet_client_unavailable")
+        try:
+            result = tailnet.status(node_name=active["node_name"])
+        except TailnetJoinError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        if result.get("ok") is not True:
+            raise HTTPException(status_code=409, detail="tailnet_not_ready")
+        return {"status": "active", "device_id": active["device_id"], "tailnet": result["detail"]}
+
+    @app.post("/factory-identity/tailnet/join")
+    async def join_tailnet(payload: TailnetJoinRequest):
+        active = _active_for_receipt(payload)
+        if tailnet is None:
+            raise HTTPException(status_code=503, detail="tailnet_client_unavailable")
+        try:
+            result = tailnet.join(node_name=active["node_name"], auth_key=payload.tailnet_auth_key)
+        except TailnetJoinError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        return {"status": "active", "device_id": active["device_id"], "tailnet": result["detail"]}
+
     @app.post("/factory-identity/close")
     async def close_factory_endpoint(payload: ConfirmationRequest):
-        receipt = _verified_receipt(payload)
-        active = store.active()
-        if not active or any(
-            active.get(field) != receipt.get(field)
-            for field in (
-                "request_id",
-                "device_id",
-                "identity_fingerprint",
-                "runtime_credential_hash",
-                "credential_expires_at",
-            )
-        ):
-            raise HTTPException(status_code=409, detail="factory_identity_close_rejected")
+        active = _active_for_receipt(payload)
         try:
             store.close_factory_endpoint()
         except IdentityStateError as exc:
@@ -302,6 +320,25 @@ def create_app(
             raise HTTPException(status_code=409, detail="factory_identity_confirmation_rejected")
         return receipt
 
+    def _active_for_receipt(payload: ConfirmationRequest) -> dict:
+        receipt = _verified_receipt(payload)
+        active = store.active()
+        if not active or any(
+            active.get(field) != receipt.get(field)
+            for field in (
+                "request_id",
+                "device_id",
+                "tenant_id",
+                "line_id",
+                "node_name",
+                "identity_fingerprint",
+                "runtime_credential_hash",
+                "credential_expires_at",
+            )
+        ):
+            raise HTTPException(status_code=409, detail="factory_identity_confirmation_rejected")
+        return active
+
     return app
 
 
@@ -328,6 +365,9 @@ def create_app_from_environment() -> FastAPI:
         store=store,
         cloud_public_key=cloud_public_key,
         stop_after_confirm=True,
+        tailnet=load_tailnet_client_from_runtime(
+            Path(os.getenv("DRYCONTROLLER_RUNTIME_ENV", "/etc/drycontroller/runtime.env"))
+        ),
     )
 
 

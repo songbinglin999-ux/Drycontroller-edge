@@ -393,16 +393,18 @@ PY
 }
 
 check_tailnet_identity() {
-  if [ -n "${TS_HOSTNAME:-}" ] && [ -n "${TS_LOGIN_SERVER:-}" ]; then
-    add_check "tailnet.identity" pass configured "" "$(json_detail ts_hostname "${TS_HOSTNAME:-}" ts_login_server "${TS_LOGIN_SERVER:-}")"
-    return
-  fi
-  local detail
-  detail="$(json_detail ts_hostname "${TS_HOSTNAME:-}" ts_login_server "${TS_LOGIN_SERVER:-}")"
-  if [ "$ALLOW_DEGRADED" = true ]; then
-    add_check "tailnet.identity" degraded missing_tailnet_config "accepted for local factory checks; required before shipment" "$detail"
+  local result
+  if result="$(python3 common/tailscale_status.py \
+      --expected-version "${TAILSCALE_EXPECTED_VERSION:-}" \
+      --login-server "${TS_LOGIN_SERVER:-}" \
+      --identity-file "$DEVICE_JSON" 2>/dev/null)"; then
+    add_check "tailnet.identity" pass ok "" "$result"
+  elif [ "$ALLOW_DEGRADED" = true ]; then
+    add_check "tailnet.identity" degraded actual_tailnet_unavailable \
+      "remote channel unavailable; local PLC/HMI/control remain independent" "$result"
   else
-    add_check "tailnet.identity" fail missing_tailnet_config "TS_HOSTNAME and TS_LOGIN_SERVER must be configured" "$detail"
+    add_check "tailnet.identity" fail actual_tailnet_unavailable \
+      "restore the pinned client and original Device-bound node identity" "$result"
   fi
 }
 

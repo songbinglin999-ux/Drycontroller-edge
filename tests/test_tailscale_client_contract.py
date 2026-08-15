@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from common.tailscale_status import inspect_tailscale_status
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LOCK_MODULE = ROOT / "infra" / "bootstrap" / "tailscale_client_lock.py"
+RUNNER_DIR = ROOT / "infra" / "host-release-runner"
+if str(RUNNER_DIR) not in sys.path:
+    sys.path.insert(0, str(RUNNER_DIR))
+
+import host_release_runner  # noqa: E402
+
+
+def _lock_module():
+    spec = importlib.util.spec_from_file_location("tailscale_client_lock", LOCK_MODULE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _headscale_lock(**candidate_overrides):
+    candidate = {
+        "version": "1.98.10",
+        "deb_url": "https://pkgs.tailscale.com/stable/ubuntu/pool/tailscale_1.98.10_amd64.deb",
+        "deb_sha256": "2d94d8e5adbb8bd49efbda9a51358bf8ea28be1bcfc55411c367be813e321907",
+    }
+    candidate.update(candidate_overrides)
+    return {"tailscale_client": {"linux_amd64_candidate": candidate}}
+
+
+def test_cloud_versions_lock_becomes_one_public_media_client_lock():
+    result = _lock_module().from_headscale_versions_lock(_headscale_lock())
+
+    assert result == {
+        "schema": "drycontroller.tailscale-client.v1",
+        "version": "1.98.10",
+        "architecture": "amd64",
+        "deb_url": "https://pkgs.tailscale.com/stable/ubuntu/pool/tailscale_1.98.10_amd64.deb",
+        "deb_sha256": "2d94d8e5adbb8bd49efbda9a51358bf8ea28be1bcfc55411c367be813e321907",
+    }
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"version": "stable"},
+        {"deb_url": "https://example.test/tailscale.deb"},
+        {"deb_sha256": "0" * 63},
+    ],
+)
+def test_client_lock_rejects_mutable_or_unverifiable_package(overrides):
+    with pytest.raises(ValueError):
+        _lock_module().from_headscale_versions_lock(_headscale_lock(**overrides))
+
+
+def test_actual_tailscale_status_matches_version_server_identity_and_online_state():
+    responses = {
+        ("status", "--json"): json.dumps({
+            "Version": "1.98.10-tabcdef123-g123456789",
+            "BackendState": "Running",
+            "Self": {"Online": True, "ID": "node-7", "HostName": "edge-abcdef123456"},
+        }),
+        ("prefs", "--pretty"): 'Prefs{ra=false url="https://headscale.example.test/" Persist{n=[redacted]}}',
+    }
+
+    def reader(arguments):
+        return responses[tuple(arguments[-2:])]
+
+    result = inspect_tailscale_status(
+        expected_version="1.98.10",
+        expected_login_server="https://headscale.example.test",
+        expected_hostname="edge-abcdef123456",
+        command_reader=reader,
+    )
+
+    assert result["ok"] is True
+    assert result["detail"]["version"] == "1.98.10"
+    assert result["detail"]["version_long"] == "1.98.10-tabcdef123-g123456789"
+    assert result["detail"]["node_id"] == "node-7"
+    assert "redacted" not in json.dumps(result)
+
+
+def test_root_runner_exposes_only_sanitized_tailnet_observation(monkeypatch):
+    observation = {
+        "ok": True,
+        "reason": "observed",
+        "detail": {"version": "1.98.10", "node_id": "node-7"},
+    }
+    response: dict[str, object] = {}
+    handler = SimpleNamespace(
+        path="/tailnet/status",
+        _json=lambda status, payload: response.update(status=status, payload=payload),
+    )
+    monkeypatch.setattr(host_release_runner, "read_tailscale_status", lambda: observation)
+
+    host_release_runner.RequestHandler.do_GET(handler)
+
+    assert response == {"status": 200, "payload": observation}
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("Version", "1.98.9", "tailscale_version_mismatch"),
+        ("BackendState", "NeedsLogin", "tailscale_not_running"),
+        ("Online", False, "tailscale_self_offline"),
+        ("ID", "", "tailscale_node_identity_missing"),
+        ("HostName", "edge-node", "tailscale_hostname_mismatch"),
+        ("ControlURL", "https://login.tailscale.com", "tailscale_login_server_mismatch"),
+    ],
+)
+def test_actual_tailscale_status_fails_closed_on_runtime_drift(field, value, reason):
+    status = {
+        "Version": "1.98.10",
+        "BackendState": "Running",
+        "Self": {"Online": True, "ID": "node-7", "HostName": "edge-abcdef123456"},
+    }
+    control_url = "https://headscale.example.test"
+    if field in status:
+        status[field] = value
+    elif field in status["Self"]:
+        status["Self"][field] = value
+    else:
+        control_url = value
+
+    def reader(arguments):
+        if arguments[-2:] == ["status", "--json"]:
+            return json.dumps(status)
+        return f'Prefs{{ra=false url="{control_url}" Persist{{n=[redacted]}}}}'
+
+    result = inspect_tailscale_status(
+        expected_version="1.98.10",
+        expected_login_server="https://headscale.example.test",
+        expected_hostname="edge-abcdef123456",
+        command_reader=reader,
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == reason

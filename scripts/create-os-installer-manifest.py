@@ -10,10 +10,14 @@ import json
 import platform
 import runpy
 import subprocess
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "infra/bootstrap"))
+
+from tailscale_client_lock import validate_tailscale_client_lock  # noqa: E402
 
 
 def sha256(path: Path) -> str:
@@ -119,6 +123,15 @@ def main() -> int:
     software_seed_path = ROOT / "dist/autoinstall/software-release-seed.json"
     host_seed = json.loads(host_seed_path.read_text(encoding="utf-8"))
     software_seed = json.loads(software_seed_path.read_text(encoding="utf-8"))
+    tailscale_lock_path = ROOT / "dist/autoinstall/tailscale-client.json"
+    tailscale_client = validate_tailscale_client_lock(
+        json.loads(tailscale_lock_path.read_text(encoding="utf-8"))
+    )
+    tailscale_deb_path = (
+        ROOT
+        / "dist/autoinstall/drycontroller-apt/pool"
+        / tailscale_client["deb_url"].rsplit("/", 1)[-1]
+    )
     dirty = git("status", "--porcelain=v1")
     if dirty:
         raise SystemExit("release manifest refuses a dirty git worktree")
@@ -171,6 +184,12 @@ def main() -> int:
                 "topology_digest": software_seed["manifest"]["topology_digest"],
             },
             "public_config": artifact(ROOT / "dist/autoinstall/public-config.json"),
+            "tailscale_client_lock": artifact(tailscale_lock_path),
+            "tailscale_client_deb": {
+                **artifact(tailscale_deb_path),
+                "version": tailscale_client["version"],
+                "architecture": tailscale_client["architecture"],
+            },
             "identity_wheelhouse_sums": artifact(
                 ROOT / "dist/autoinstall/identity-wheelhouse/SHA256SUMS"
             ),

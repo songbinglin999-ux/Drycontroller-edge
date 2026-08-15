@@ -14,6 +14,7 @@ COSIGN_BIN=""
 DEVICE_IDENTITY_CLOUD_PUBLIC_KEY=""
 IDENTITY_WHEELHOUSE=""
 PUBLIC_CONFIG=""
+TAILSCALE_CLIENT_LOCK=""
 COSIGN_APPROVED_VERSION="v3.1.3"
 COSIGN_APPROVED_LINUX_AMD64_SHA256="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
 
@@ -33,6 +34,7 @@ Required public release inputs:
   --device-identity-cloud-key FILE    Cloud activation receipt verification key
   --identity-wheelhouse DIR           Offline Python wheels for device identity
   --public-config FILE                HTTPS Cloud URL and one fixed factory NIC
+  --tailscale-client-lock FILE        Public pinned Linux amd64 client metadata
 
 Other:
   --source PATH                       Source package containing the installer
@@ -71,6 +73,7 @@ while [ $# -gt 0 ]; do
     --device-identity-cloud-key) required_value "$1" "${2:-}"; DEVICE_IDENTITY_CLOUD_PUBLIC_KEY="$2"; shift 2 ;;
     --identity-wheelhouse) required_value "$1" "${2:-}"; IDENTITY_WHEELHOUSE="$2"; shift 2 ;;
     --public-config) required_value "$1" "${2:-}"; PUBLIC_CONFIG="$2"; shift 2 ;;
+    --tailscale-client-lock) required_value "$1" "${2:-}"; TAILSCALE_CLIENT_LOCK="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
@@ -98,7 +101,8 @@ for path in \
   "$SOFTWARE_COSIGN_PUBLIC_KEY" \
   "$COSIGN_BIN" \
   "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" \
-  "$PUBLIC_CONFIG"; do
+  "$PUBLIC_CONFIG" \
+  "$TAILSCALE_CLIENT_LOCK"; do
   [ -f "$path" ] || die "required release input missing: $path"
 done
 [ -d "$IDENTITY_WHEELHOUSE" ] || die "device identity wheelhouse missing"
@@ -108,6 +112,8 @@ for path in \
   env.example \
   infra/bootstrap/initialize-runtime-config.py \
   infra/bootstrap/installer_public_config.py \
+  infra/bootstrap/tailscale_client_lock.py \
+  common/tailscale_status.py \
   infra/host-release-runner/host_release_engine.py \
   infra/host-release-runner/host_release_runner.py \
   infra/host-release-runner/host-release-runner \
@@ -126,6 +132,23 @@ done
 
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
+command -v dpkg-deb >/dev/null 2>&1 || die "dpkg-deb is required"
+command -v dpkg-query >/dev/null 2>&1 || die "dpkg-query is required"
+IFS=$'\t' read -r TAILSCALE_VERSION TAILSCALE_ARCH TAILSCALE_DEB_URL TAILSCALE_DEB_SHA256 < <(
+  PYTHONPATH="${REPO_SOURCE}/infra/bootstrap" python3 - "$TAILSCALE_CLIENT_LOCK" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from tailscale_client_lock import validate_tailscale_client_lock
+
+value = validate_tailscale_client_lock(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")))
+print(value["version"], value["architecture"], value["deb_url"], value["deb_sha256"], sep="\t")
+PY
+)
+[ -n "$TAILSCALE_VERSION" ] && [ -n "$TAILSCALE_DEB_SHA256" ] \
+  || die "Tailscale client lock could not be read"
+TAILSCALE_DEB="/opt/drycontroller-apt/pool/${TAILSCALE_DEB_URL##*/}"
 actual_cosign_sha256="$(sha256sum "$COSIGN_BIN" | awk '{print $1}')"
 [ "$actual_cosign_sha256" = "$COSIGN_APPROVED_LINUX_AMD64_SHA256" ] \
   || die "Linux amd64 cosign binary checksum is not approved"
@@ -151,18 +174,44 @@ if len(raw) != 32:
 PY
 
 install_packages() {
+  [ -f "$TAILSCALE_DEB" ] && [ ! -L "$TAILSCALE_DEB" ] \
+    || die "pinned Tailscale client DEB is missing from the offline apt repo"
+  [ "$(sha256sum "$TAILSCALE_DEB" | awk '{print $1}')" = "$TAILSCALE_DEB_SHA256" ] \
+    || die "pinned Tailscale client DEB checksum mismatch"
+  [ "$(dpkg-deb --field "$TAILSCALE_DEB" Package)" = "tailscale" ] \
+    || die "pinned Tailscale DEB package name mismatch"
+  [ "$(dpkg-deb --field "$TAILSCALE_DEB" Version)" = "$TAILSCALE_VERSION" ] \
+    || die "pinned Tailscale DEB version mismatch"
+  [ "$(dpkg-deb --field "$TAILSCALE_DEB" Architecture)" = "$TAILSCALE_ARCH" ] \
+    || die "pinned Tailscale DEB architecture mismatch"
+  [ "$(dpkg --print-architecture)" = "$TAILSCALE_ARCH" ] \
+    || die "host architecture does not match the pinned Tailscale client"
   if [ "$INSTALL_PACKAGES" = true ]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
       ca-certificates curl docker.io docker-compose-v2 iproute2 netplan.io \
-      python3 python3-venv tar tpm2-tools
+      python3 python3-venv tailscale="$TAILSCALE_VERSION" tar tpm2-tools
   fi
   command -v docker >/dev/null 2>&1 || die "docker is not installed"
   docker compose version >/dev/null 2>&1 || die "docker compose v2 is not installed"
   command -v netplan >/dev/null 2>&1 || die "netplan is not installed"
   command -v tpm2_createprimary >/dev/null 2>&1 || die "tpm2-tools are not installed"
   python3 -m venv --help >/dev/null 2>&1 || die "python3 venv support is not installed"
+  [ "$(dpkg-query -W -f='${Version}' tailscale 2>/dev/null)" = "$TAILSCALE_VERSION" ] \
+    || die "installed Tailscale client version mismatch"
+  command -v tailscale >/dev/null 2>&1 || die "tailscale CLI is not installed"
+}
+
+prepare_tailscale_state() {
+  if [ -e /var/lib/tailscale ] || [ -L /var/lib/tailscale ]; then
+    [ -d /var/lib/tailscale ] && [ ! -L /var/lib/tailscale ] \
+      || die "Tailscale state path must be a real directory"
+  else
+    install -d -o root -g root -m 0700 /var/lib/tailscale
+  fi
+  [ "$(stat -c '%U:%G:%a' /var/lib/tailscale)" = "root:root:700" ] \
+    || die "Tailscale state directory must be root-owned mode 0700"
 }
 
 configure_docker() {
@@ -178,9 +227,11 @@ configure_docker() {
 
 install_static_runtime() {
   install -d -m 0755 /usr/libexec/drycontroller /etc/drycontroller/keys /etc/drycontroller/trust
+  install -d -m 0755 /usr/libexec/drycontroller/common
   install -d -m 0700 /var/lib/drycontroller /var/lib/drycontroller-host /var/lib/drycontroller-ota
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_engine.py" /usr/libexec/drycontroller/host_release_engine.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_runner.py" /usr/libexec/drycontroller/host_release_runner.py
+  install -o root -g root -m 0644 "${REPO_SOURCE}/common/tailscale_status.py" /usr/libexec/drycontroller/common/tailscale_status.py
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-runner" /usr/libexec/drycontroller/host-release-runner
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-apply" /usr/libexec/drycontroller/host-release-apply
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/initialize-initial-release" /usr/libexec/drycontroller/initialize-initial-release
@@ -196,7 +247,9 @@ install_static_runtime() {
 
 install_identity_service() {
   install -d -m 0755 /opt/drycontroller-identity
-  rm -rf /opt/drycontroller-identity/identity_service /opt/drycontroller-identity/venv
+  rm -rf /opt/drycontroller-identity/common /opt/drycontroller-identity/identity_service /opt/drycontroller-identity/venv
+  install -d -m 0755 /opt/drycontroller-identity/common
+  install -m 0644 "${REPO_SOURCE}/common/tailscale_status.py" /opt/drycontroller-identity/common/tailscale_status.py
   cp -a "${REPO_SOURCE}/services/device-identity/identity_service" /opt/drycontroller-identity/identity_service
   find /opt/drycontroller-identity/identity_service -type d -exec chmod 0755 {} +
   find /opt/drycontroller-identity/identity_service -type f -exec chmod 0644 {} +
@@ -214,6 +267,7 @@ install_identity_service() {
 initialize_configuration() {
   python3 "${REPO_SOURCE}/infra/bootstrap/initialize-runtime-config.py" \
     --public-config "$PUBLIC_CONFIG" \
+    --tailscale-client-lock "$TAILSCALE_CLIENT_LOCK" \
     --env-template "${REPO_SOURCE}/env.example"
   netplan generate
   netplan apply
@@ -234,6 +288,10 @@ initialize_release() {
 
 enable_services() {
   systemctl daemon-reload
+  systemctl enable --now tailscaled.service
+  systemctl is-active --quiet tailscaled.service \
+    || die "pinned Tailscale daemon did not become active"
+  prepare_tailscale_state
   systemctl enable --now drycontroller-factory-identity.service
   identity_healthy=false
   for _ in $(seq 1 30); do
@@ -252,16 +310,17 @@ enable_services() {
 }
 
 write_host_manifest() {
-  python3 - /var/lib/drycontroller/host-install.json "$HOST_RELEASE" "$SOFTWARE_RELEASE" <<'PY'
+  python3 - /var/lib/drycontroller/host-install.json "$HOST_RELEASE" "$SOFTWARE_RELEASE" "$TAILSCALE_CLIENT_LOCK" <<'PY'
 import datetime as dt
 import json
 import os
 import sys
 from pathlib import Path
 
-target, host_path, software_path = map(Path, sys.argv[1:])
+target, host_path, software_path, tailscale_path = map(Path, sys.argv[1:])
 host = json.loads(host_path.read_text(encoding="utf-8"))["manifest"]
 software = json.loads(software_path.read_text(encoding="utf-8"))["manifest"]
+tailscale = json.loads(tailscale_path.read_text(encoding="utf-8"))
 payload = {
     "schema": "drycontroller.host-install.v2",
     "installed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -270,6 +329,8 @@ payload = {
     "topology_digest": host["topology_digest"],
     "software_release_id": software["release_id"],
     "software_sequence": software["sequence"],
+    "tailscale_client_version": tailscale["version"],
+    "tailscale_client_deb_sha256": tailscale["deb_sha256"],
 }
 temporary = target.with_name(".host-install.json.tmp")
 with temporary.open("w", encoding="utf-8") as handle:
@@ -287,7 +348,9 @@ PY
 }
 
 log "preparing one blank DryController Edge host"
+prepare_tailscale_state
 install_packages
+prepare_tailscale_state
 configure_docker
 install_static_runtime
 install_identity_service

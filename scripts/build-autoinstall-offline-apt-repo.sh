@@ -19,6 +19,7 @@ PACKAGES=(
   python3-venv
   tar
   iproute2
+  iptables
   lsb-release
   docker.io
   netplan.io
@@ -86,6 +87,10 @@ command -v apt-get >/dev/null 2>&1 || {
 }
 command -v dpkg-scanpackages >/dev/null 2>&1 || {
   echo "dpkg-scanpackages is required; install dpkg-dev first" >&2
+  exit 1
+}
+command -v sha256sum >/dev/null 2>&1 || {
+  echo "sha256sum is required" >&2
   exit 1
 }
 
@@ -213,11 +218,10 @@ DEB_COUNT="$(find "${OUT_DIR}/pool" -maxdepth 1 -type f -name '*.deb' | wc -l | 
     printf '%s ' "${PACKAGES[@]}"
     echo
     if [ "${#EXTRA_DEBS[@]}" -gt 0 ]; then
-      printf 'extra_debs='
       for deb in "${EXTRA_DEBS[@]}"; do
-        printf '%s ' "$(basename "$deb")"
+        printf 'extra_deb=%s sha256=%s\n' \
+          "$(basename "$deb")" "$(sha256sum "$deb" | awk '{print $1}')"
       done
-      echo
     fi
     date -u '+created_at=%Y-%m-%dT%H:%M:%SZ'
   } > drycontroller-apt-manifest.txt

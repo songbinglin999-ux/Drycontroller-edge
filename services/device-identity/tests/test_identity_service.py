@@ -25,6 +25,7 @@ from identity_service.contract import (
 )
 from identity_service.rotation import CredentialRotator, RotationError
 from identity_service.state import IdentityStateStore
+from identity_service.tailnet import TailnetClient, TailnetJoinError
 
 
 _CLOUD_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
@@ -85,6 +86,22 @@ class FakeTpmTools:
             signature_path.write_bytes(
                 self.signer.sign(message_path.read_bytes(), ec.ECDSA(hashes.SHA256()))
             )
+
+
+class FakeTailnet:
+    def __init__(self):
+        self.online = False
+        self.keys: list[str] = []
+
+    def status(self, *, node_name: str):
+        if not self.online:
+            return {"ok": False, "reason": "tailscale_not_running", "detail": {}}
+        return {"ok": True, "reason": "ok", "detail": {"hostname": node_name, "node_id": "node-1"}}
+
+    def join(self, *, node_name: str, auth_key: str):
+        self.keys.append(auth_key)
+        self.online = True
+        return self.status(node_name=node_name)
 
 
 def _activate_store(backend, store):
@@ -279,7 +296,13 @@ def test_production_identity_units_allow_only_the_kernel_tpm_resource_manager():
 @pytest.mark.asyncio
 async def test_factory_activation_persists_candidate_and_promotes_only_after_cloud_confirmation(tmp_path):
     backend, store, active_path = _components(tmp_path)
-    app = create_app(backend=backend, store=store, cloud_public_key=_CLOUD_KEY.public_key())
+    tailnet = FakeTailnet()
+    app = create_app(
+        backend=backend,
+        store=store,
+        cloud_public_key=_CLOUD_KEY.public_key(),
+        tailnet=tailnet,
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://factory-edge") as client:
         identity_response = await client.get("/factory-identity")
@@ -360,6 +383,15 @@ async def test_factory_activation_persists_candidate_and_promotes_only_after_clo
         confirmed = await client.post("/factory-identity/confirm", json=confirmation)
         assert confirmed.status_code == 200, confirmed.text
         assert (await client.get("/factory-identity")).status_code == 409
+        assert (await client.post("/factory-identity/tailnet/status", json=confirmation)).status_code == 409
+        joined = await client.post(
+            "/factory-identity/tailnet/join",
+            json={**confirmation, "tailnet_auth_key": "hskey-auth-0123456789abcdef"},
+        )
+        assert joined.status_code == 200
+        assert joined.json()["tailnet"]["hostname"] == device_id.lower()
+        assert tailnet.keys == ["hskey-auth-0123456789abcdef"]
+        assert (await client.post("/factory-identity/tailnet/status", json=confirmation)).status_code == 200
 
     restarted_app = create_app(backend=backend, store=store, cloud_public_key=_CLOUD_KEY.public_key())
     async with AsyncClient(transport=ASGITransport(app=restarted_app), base_url="http://factory-edge") as client:
@@ -385,6 +417,70 @@ async def test_factory_activation_persists_candidate_and_promotes_only_after_clo
     restarted_backend = FileTestIdentityBackend(store.private_dir / "identity-key.pem")
     assert restarted_backend.public_key() == backend.public_key()
     assert store.initialize() == {"status": "registered", "device_id": device_id}
+
+
+def test_tailnet_join_uses_root_only_file_argument_and_deletes_it(tmp_path):
+    online = False
+    commands: list[list[str]] = []
+    key_paths: list[Path] = []
+    auth_key = "hskey-auth-0123456789abcdef"
+
+    def inspect_status(**kwargs):
+        return {
+            "ok": online,
+            "reason": "ok" if online else "tailscale_not_running",
+            "detail": {"hostname": kwargs["expected_hostname"], "node_id": "node-1"} if online else {},
+        }
+
+    def run_command(command):
+        nonlocal online
+        commands.append(command)
+        key_argument = next(item for item in command if item.startswith("--auth-key=file:"))
+        key_path = Path(key_argument.removeprefix("--auth-key=file:"))
+        key_paths.append(key_path)
+        assert key_path.read_text(encoding="ascii") == f"{auth_key}\n"
+        assert key_path.stat().st_mode & 0o777 == 0o600
+        online = True
+        return 0
+
+    client = TailnetClient(
+        expected_version="1.98.10",
+        login_server="https://headscale.example.test",
+        temp_root=tmp_path / "join",
+        run_command=run_command,
+        inspect_status=inspect_status,
+    )
+    result = client.join(node_name="edge-abcdef123456", auth_key=auth_key)
+
+    assert result["ok"] is True
+    assert commands and all(auth_key not in argument for argument in commands[0])
+    assert key_paths and not key_paths[0].exists()
+    assert (tmp_path / "join").stat().st_mode & 0o777 == 0o700
+
+
+def test_tailnet_join_failure_deletes_key_and_never_persists_it(tmp_path):
+    observed_key_path: Path | None = None
+
+    def run_command(command):
+        nonlocal observed_key_path
+        key_argument = next(item for item in command if item.startswith("--auth-key=file:"))
+        observed_key_path = Path(key_argument.removeprefix("--auth-key=file:"))
+        return 1
+
+    client = TailnetClient(
+        expected_version="1.98.10",
+        login_server="https://headscale.example.test",
+        temp_root=tmp_path / "join",
+        run_command=run_command,
+        inspect_status=lambda **_kwargs: {"ok": False, "reason": "tailscale_not_running", "detail": {}},
+    )
+
+    with pytest.raises(TailnetJoinError, match="tailnet_auth_key_rejected"):
+        client.join(
+            node_name="edge-abcdef123456",
+            auth_key="hskey-auth-0123456789abcdef",
+        )
+    assert observed_key_path is not None and not observed_key_path.exists()
 
 
 @pytest.mark.asyncio

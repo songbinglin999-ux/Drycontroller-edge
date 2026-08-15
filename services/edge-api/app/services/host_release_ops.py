@@ -86,6 +86,9 @@ class HostReleaseOpsClient:
         operation_id = _operation_id(operation_id)
         return await self._request("GET", f"/host-release/operations/{operation_id}/logs", timeout=10)
 
+    async def get_tailnet_status(self) -> dict:
+        return await self._request("GET", "/tailnet/status", timeout=12)
+
 
 _client: HostReleaseOpsClient | None = None
 

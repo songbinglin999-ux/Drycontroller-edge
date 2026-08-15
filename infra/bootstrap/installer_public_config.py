@@ -7,22 +7,28 @@ from typing import Any
 from urllib.parse import urlsplit
 
 
-SCHEMA = "drycontroller.os-installer-public-config.v1"
-FIELDS = {"schema", "cloud_ops_base_url", "factory_interface", "factory_address"}
+SCHEMA = "drycontroller.os-installer-public-config.v2"
+FIELDS = {
+    "schema",
+    "cloud_ops_base_url",
+    "tailscale_login_server",
+    "factory_interface",
+    "factory_address",
+}
 INTERFACE = re.compile(r"^(?=.{3,15}$)(?:en|eth)[A-Za-z0-9_.-]+$")
 HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
-def _cloud_ops_base_url(value: object) -> str:
+def _canonical_https_base(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.startswith("https://"):
-        raise ValueError("OS Installer Cloud URL must be canonical HTTPS")
+        raise ValueError(f"OS Installer {label} must be canonical HTTPS")
     if any(character.isspace() for character in value) or "?" in value or "#" in value:
-        raise ValueError("OS Installer Cloud URL must not contain whitespace, query, or fragment")
+        raise ValueError(f"OS Installer {label} must not contain whitespace, query, or fragment")
     try:
         parsed = urlsplit(value)
         port = parsed.port
     except ValueError as exc:
-        raise ValueError("OS Installer Cloud URL authority invalid") from exc
+        raise ValueError(f"OS Installer {label} authority invalid") from exc
     hostname = parsed.hostname
     if (
         parsed.scheme != "https"
@@ -33,18 +39,18 @@ def _cloud_ops_base_url(value: object) -> str:
         or parsed.fragment
         or port == 0
     ):
-        raise ValueError("OS Installer Cloud URL must be one canonical HTTPS base URL")
+        raise ValueError(f"OS Installer {label} must be one canonical HTTPS base URL")
     labels = hostname.split(".")
     if len(hostname) > 253 or any(HOST_LABEL.fullmatch(label) is None for label in labels):
-        raise ValueError("OS Installer Cloud URL hostname invalid")
+        raise ValueError(f"OS Installer {label} hostname invalid")
     expected_authority = hostname if port is None else f"{hostname}:{port}"
     if parsed.netloc != expected_authority:
-        raise ValueError("OS Installer Cloud URL authority is not canonical")
+        raise ValueError(f"OS Installer {label} authority is not canonical")
     path_segments = parsed.path.split("/")
     if "//" in parsed.path or "\\" in parsed.path or any(
         segment in {".", ".."} for segment in path_segments
     ):
-        raise ValueError("OS Installer Cloud URL path invalid")
+        raise ValueError(f"OS Installer {label} path invalid")
     return value.rstrip("/")
 
 
@@ -58,5 +64,8 @@ def validate_public_config(payload: object) -> dict[str, Any]:
         raise ValueError("OS Installer factory address must use the frozen link-local channel")
     return {
         **payload,
-        "cloud_ops_base_url": _cloud_ops_base_url(payload["cloud_ops_base_url"]),
+        "cloud_ops_base_url": _canonical_https_base(payload["cloud_ops_base_url"], "Cloud URL"),
+        "tailscale_login_server": _canonical_https_base(
+            payload["tailscale_login_server"], "Tailscale login server"
+        ),
     }

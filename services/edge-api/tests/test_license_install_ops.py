@@ -78,6 +78,33 @@ def _signed_payload() -> dict:
     }
 
 
+def test_cloud_readiness_requires_edge_admin_key_not_tailnet_identity(monkeypatch):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.CONTROL_API_KEYS = ["control-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+
+    async def healthy():
+        return {"postgres": {"status": "healthy"}, "mqtt": {"status": "healthy"}}
+
+    monkeypatch.setattr(ops_module, "get_system_readiness", healthy)
+    client = _client()
+
+    missing = client.get("/api/v1/ops/ready")
+    tailnet_only = client.get(
+        "/api/v1/ops/ready",
+        headers={"Tailscale-User-Login": "operator@example.test"},
+    )
+    authenticated = client.get(
+        "/api/v1/ops/ready",
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert missing.status_code == 401
+    assert tailnet_only.status_code == 401
+    assert authenticated.status_code == 200
+    assert authenticated.json()["status"] == "ready"
+
+
 def test_license_install_success_writes_license_only(tmp_path: Path, monkeypatch):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
@@ -315,6 +342,17 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     monkeypatch.setattr(settings, "DEVICE_IDENTITY_PATH", str(device_json))
     monkeypatch.setattr(settings, "CLOUD_OPS_BASE_URL", "http://cloud")
     monkeypatch.setattr(settings, "TS_LOGIN_SERVER", "http://headscale")
+    monkeypatch.setattr(settings, "TAILSCALE_EXPECTED_VERSION", "1.98.10")
+
+    class FakeHostRunner:
+        async def get_tailnet_status(self):
+            return {
+                "ok": False,
+                "reason": "tailscale_not_running",
+                "detail": {},
+            }
+
+    monkeypatch.setattr(ops_module, "get_host_release_ops_client", lambda: FakeHostRunner())
 
     async def fake_verify():
         return {"url": "mock", "status_code": 200, "body": {"valid": True}}
@@ -342,6 +380,9 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     assert body["success"] is True
     assert body["status"] == "degraded"
     assert body["summary"]["fail"] == 0
+    checks = {item["id"]: item for item in body["checks"]}
+    assert checks["tailnet.identity"]["status"] == "degraded"
+    assert checks["tailnet.identity"]["reason"] == "tailscale_not_running"
     assert recorded[0]["status"] == "degraded"
 
 

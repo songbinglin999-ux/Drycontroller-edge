@@ -15,7 +15,7 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
 
 from app.api import realtime as realtime_router  # noqa: E402
 from app.core.config import settings  # noqa: E402
-from app.core.security import require_readonly_ws_source  # noqa: E402
+from app.core.security import is_readonly_source_allowed, require_readonly_ws_source  # noqa: E402
 
 
 def _build_client() -> TestClient:
@@ -111,6 +111,37 @@ def test_readonly_http_endpoint_rejects_non_allowlisted_source():
         assert resp.json()["detail"] == "Read-only data access is not allowed from this source"
     finally:
         settings.READONLY_WS_ALLOWLIST = old_allowlist
+
+
+def test_tailnet_address_is_not_readonly_authorization_but_api_key_is(monkeypatch):
+    old_allowlist = list(settings.READONLY_WS_ALLOWLIST)
+    old_control = list(settings.CONTROL_API_KEYS)
+    old_admin = list(settings.ADMIN_API_KEYS)
+    try:
+        settings.READONLY_WS_ALLOWLIST = ["127.0.0.1/32", "192.168.0.0/16"]
+        settings.CONTROL_API_KEYS = []
+        settings.ADMIN_API_KEYS = ["admin-1"]
+        assert is_readonly_source_allowed("100.100.0.9") is False
+        dummy_stream = DummyWsStream()
+        dummy_stream.latest = {"line": "L1", "status": "ok"}
+        monkeypatch.setattr(realtime_router, "ws_stream", dummy_stream)
+
+        client = _build_client()
+        tailnet_only = client.get(
+            "/api/system/health",
+            headers={"Tailscale-User-Login": "operator@example.test"},
+        )
+        authenticated = client.get(
+            "/api/system/health",
+            headers={settings.API_KEY_HEADER: "admin-1"},
+        )
+
+        assert tailnet_only.status_code == 403
+        assert authenticated.status_code == 200
+    finally:
+        settings.READONLY_WS_ALLOWLIST = old_allowlist
+        settings.CONTROL_API_KEYS = old_control
+        settings.ADMIN_API_KEYS = old_admin
 
 
 def test_readonly_http_endpoint_allows_allowlisted_source(monkeypatch):
