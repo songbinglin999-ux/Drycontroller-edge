@@ -165,6 +165,8 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert "      all-en:" in user_data
     assert "      all-eth:" in user_data
     assert "wifi.env" not in user_data
+    assert not (ROOT / "infra/autoinstall/password.env.example").exists()
+    assert "infra/autoinstall/password.env" not in (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "activation-bundle.json" not in user_data
     assert "host-release-seed.json" in post_install
     assert "software-release-seed.json" in post_install

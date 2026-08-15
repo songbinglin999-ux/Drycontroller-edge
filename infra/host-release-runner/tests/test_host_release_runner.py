@@ -265,3 +265,112 @@ def test_restart_without_matching_request_fails_closed(tmp_path):
 
     assert recovered["status"] == "failed"
     assert recovered["error"] == "host_release_runner_restarted_without_request"
+
+
+def test_process_output_and_shared_log_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "MAX_OPERATION_LOG_BYTES", 128)
+    monkeypatch.setattr(runner, "LOG_ENTRY_OVERHEAD_BYTES", 64)
+    monkeypatch.setattr(runner, "LOG_FILE_MAX_BYTES", 512)
+    controller = _controller(tmp_path, "yes x | head -c 4096")
+
+    for digit in "12345678":
+        operation_id = digit * 32
+        controller.start(operation_id)
+        _wait_terminal(controller, operation_id)
+
+    state = controller._read_state()["operations"]
+    assert controller.log_path.stat().st_size <= runner.LOG_FILE_MAX_BYTES
+    assert b"process output truncated" in controller.log_path.read_bytes()
+    assert any(not operation.get("log_available", True) for operation in state.values())
+    assert controller.logs("8" * 32)["available"] is True
+
+
+def test_log_rotation_persists_unavailable_state_before_truncation(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "MAX_OPERATION_LOG_BYTES", 8)
+    monkeypatch.setattr(runner, "LOG_ENTRY_OVERHEAD_BYTES", 0)
+    monkeypatch.setattr(runner, "LOG_FILE_MAX_BYTES", 16)
+    controller = _controller(tmp_path, "exit 0")
+    operation_id = "1" * 32
+    state = controller._read_state()
+    state["operations"][operation_id] = {
+        "operation_id": operation_id,
+        "status": "succeeded",
+        "log_available": True,
+        "log_start": 0,
+        "log_end": 16,
+    }
+    controller._write_state(state)
+    controller.log_path.write_bytes(b"x" * 16)
+
+    controller._prepare_log_for_new_operation(state)
+
+    persisted = controller._read_state()["operations"][operation_id]
+    assert persisted["log_available"] is False
+    assert persisted["log_start"] is None
+    assert persisted["log_end"] is None
+    assert controller.log_path.stat().st_size == 0
+    assert controller.logs(operation_id) == {
+        "operation_id": operation_id,
+        "available": False,
+        "data": [],
+    }
+
+
+def test_log_rotation_failure_leaves_persisted_state_conservative(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "MAX_OPERATION_LOG_BYTES", 8)
+    monkeypatch.setattr(runner, "LOG_ENTRY_OVERHEAD_BYTES", 0)
+    monkeypatch.setattr(runner, "LOG_FILE_MAX_BYTES", 16)
+    controller = _controller(tmp_path, "exit 0")
+    operation_id = "1" * 32
+    state = controller._read_state()
+    state["operations"][operation_id] = {
+        "operation_id": operation_id,
+        "status": "succeeded",
+        "log_available": True,
+        "log_start": 0,
+        "log_end": 16,
+    }
+    controller._write_state(state)
+    controller.log_path.write_bytes(b"x" * 16)
+    real_open = Path.open
+
+    def fail_log_truncate(path, mode="r", *args, **kwargs):
+        if path == controller.log_path and mode == "wb":
+            raise OSError("simulated rotation crash")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_log_truncate)
+
+    with pytest.raises(OSError, match="simulated rotation crash"):
+        controller._prepare_log_for_new_operation(state)
+
+    persisted = controller._read_state()["operations"][operation_id]
+    assert persisted["log_available"] is False
+    assert persisted["log_start"] is None
+    assert persisted["log_end"] is None
+    assert controller.log_path.read_bytes() == b"x" * 16
+
+
+def test_output_reader_start_failure_fails_operation_and_terminates_apply(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "PROCESS_TERMINATE_GRACE_SECONDS", 0.05)
+    marker = tmp_path / "apply-survived"
+    controller = _controller(tmp_path, f"sleep 0.3; printf x > '{marker}'")
+    real_start = runner.threading.Thread.start
+    starts = 0
+
+    def fail_reader_start(thread):
+        nonlocal starts
+        starts += 1
+        if starts == 1:
+            return real_start(thread)
+        raise RuntimeError("simulated thread exhaustion")
+
+    monkeypatch.setattr(runner.threading.Thread, "start", fail_reader_start)
+
+    controller.start("9" * 32)
+    finished = _wait_terminal(controller, "9" * 32)
+
+    assert finished["status"] == "failed"
+    assert finished["error"] == "host_release_apply_log_reader_unavailable"
+    time.sleep(0.4)
+    assert not marker.exists()

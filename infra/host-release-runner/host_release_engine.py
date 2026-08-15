@@ -16,10 +16,13 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import tarfile
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -37,6 +40,10 @@ COSIGN_TOOLCHAIN = {
     "version": "v3.1.3",
     "linux_amd64_sha256": "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
 }
+COMMAND_TIMEOUT_SECONDS = 30 * 60
+COMMAND_TERMINATE_GRACE_SECONDS = 10
+COMMAND_OUTPUT_DRAIN_GRACE_SECONDS = 10
+MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
 _HOST_MANIFEST_FIELDS = {
     "schema",
     "release_id",
@@ -502,6 +509,84 @@ class HostReleaseEngine:
             finally:
                 os.close(descriptor)
 
+    @staticmethod
+    def _command_group_exists(group_id: int) -> bool:
+        try:
+            os.killpg(group_id, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+
+    @staticmethod
+    def _terminate_command(process: subprocess.Popen[bytes]) -> None:
+        group_id = process.pid
+        try:
+            os.killpg(group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            if process.poll() is None:
+                process.wait()
+            return
+        except OSError:
+            process.terminate()
+
+        deadline = time.monotonic() + COMMAND_TERMINATE_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=min(0.05, max(0.01, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
+            if not HostReleaseEngine._command_group_exists(group_id):
+                return
+            time.sleep(0.01)
+
+        try:
+            os.killpg(group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            if process.poll() is None:
+                process.kill()
+        if process.poll() is None:
+            process.wait()
+
+    @staticmethod
+    def _read_command_output(
+        process: subprocess.Popen[bytes],
+        output: bytearray,
+        too_large: threading.Event,
+        errors: list[Exception],
+    ) -> None:
+        assert process.stdout is not None
+        try:
+            while True:
+                chunk = process.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                remaining = max(0, MAX_COMMAND_OUTPUT_BYTES - len(output))
+                output.extend(chunk[:remaining])
+                if len(chunk) > remaining and not too_large.is_set():
+                    too_large.set()
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+        except (OSError, ValueError) as exc:
+            errors.append(exc)
+        finally:
+            process.stdout.close()
+
+    @classmethod
+    def _finish_command_output_reader(cls, process: subprocess.Popen[bytes], reader: threading.Thread) -> bool:
+        reader.join(timeout=COMMAND_OUTPUT_DRAIN_GRACE_SECONDS)
+        if not reader.is_alive():
+            return True
+        cls._terminate_command(process)
+        reader.join(timeout=COMMAND_OUTPUT_DRAIN_GRACE_SECONDS)
+        return not reader.is_alive()
+
     def _run_command(self, args: list[str], cwd: Path | None = None, input_bytes: bytes | None = None) -> str:
         inherited_fds: tuple[int, ...] = ()
         if len(args) == 3 and args[0].endswith("/start-active-release") and args[1] == "--lock-fd":
@@ -509,27 +594,70 @@ class HostReleaseEngine:
                 inherited_fds = (int(args[2]),)
             except ValueError as exc:
                 raise HostReleaseError("inherited release lock descriptor invalid") from exc
+        process: subprocess.Popen[bytes] | None = None
+        input_handle: Any = subprocess.DEVNULL
+        output = bytearray()
+        output_too_large = threading.Event()
+        reader_errors: list[Exception] = []
+        reader: threading.Thread | None = None
+        timed_out = False
+        command_succeeded = False
         try:
-            completed = subprocess.run(
+            if input_bytes is not None:
+                input_handle = tempfile.TemporaryFile()
+                input_handle.write(input_bytes)
+                input_handle.seek(0)
+            process = subprocess.Popen(
                 args,
                 cwd=cwd,
                 env=_FIXED_ENV,
-                stdin=subprocess.DEVNULL if input_bytes is None else None,
-                input=input_bytes,
+                stdin=input_handle,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                check=False,
-                timeout=30 * 60,
                 pass_fds=inherited_fds,
+                close_fds=True,
+                start_new_session=True,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            reader = threading.Thread(
+                target=self._read_command_output,
+                args=(process, output, output_too_large, reader_errors),
+                daemon=True,
+            )
+            try:
+                reader.start()
+            except RuntimeError as exc:
+                raise HostReleaseError(f"command output unavailable: {Path(args[0]).name}") from exc
+            try:
+                return_code = process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                self._terminate_command(process)
+                return_code = process.returncode
+            if not self._finish_command_output_reader(process, reader):
+                raise HostReleaseError(f"command output unavailable: {Path(args[0]).name}")
+            if timed_out:
+                raise HostReleaseError(f"command unavailable: {Path(args[0]).name}")
+            if reader_errors:
+                raise HostReleaseError(f"command output unavailable: {Path(args[0]).name}")
+            if output_too_large.is_set():
+                raise HostReleaseError(f"command output too large: {Path(args[0]).name}")
+            if return_code != 0:
+                raise HostReleaseError(f"command failed: {Path(args[0]).name}")
+            try:
+                decoded = output.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise HostReleaseError("command output invalid") from exc
+            command_succeeded = True
+            return decoded
+        except OSError as exc:
             raise HostReleaseError(f"command unavailable: {Path(args[0]).name}") from exc
-        if completed.returncode != 0:
-            raise HostReleaseError(f"command failed: {Path(args[0]).name}")
-        try:
-            return completed.stdout.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise HostReleaseError("command output invalid") from exc
+        finally:
+            if process is not None and not command_succeeded:
+                self._terminate_command(process)
+                if process.stdout is not None and not process.stdout.closed:
+                    process.stdout.close()
+            if input_handle != subprocess.DEVNULL:
+                input_handle.close()
 
     def _cloud_credentials(self) -> tuple[str, str]:
         values: dict[str, str] = {}

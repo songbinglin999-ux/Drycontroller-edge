@@ -27,10 +27,10 @@
 - **已实现**：`edge-monitor` 可对 Influx/MQTT 等做 HTTP/TCP 探测（是否纳入 targets 由 `monitor.yaml` 决定）
 - **规划**：Influx 不可用时本地缓存补写；Postgres 不可用时 edge-api 只读降级；PLC 断链标准化上报
 
-### 2.3 AI/OTA 级（规划）
+### 2.3 AI/OTA 级（部分实现/部分规划）
 
 - AI 模型多版本登记/校验/回滚闭环（当前未形成完整实现）
-- OTA 蓝绿发布与自动判定回滚（当前以脚本人工回滚为主）
+- OTA 已由签名成对 `HostRelease`/`SoftwareRelease`、root-owned 固定状态机、候选健康验收和确定性回滚闭环承载；真正的并行蓝绿与流量切换仍未实现
 
 ---
 
@@ -106,5 +106,4 @@
 
 - **P0（已完成于 RB-3 协调分支）**：`edge-monitor` 无 Docker 能力，socket proxy 已删除；`/ops/*` 继续鉴权并默认只绑定回环。
 - **P1**：AI 模型版本/校验/回滚闭环；Influx/DB 降级策略与补写机制；运维操作审计入库。
-- **P2**：OTA 蓝绿发布与自动回滚；故障注入与演练脚本（断链、磁盘满、MQTT 抖动）。
-
+- **P2**：OTA 并行蓝绿与流量切换；故障注入与演练脚本（断链、磁盘满、MQTT 抖动）。

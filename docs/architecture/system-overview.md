@@ -105,7 +105,7 @@ graph LR
 非 PLC、非控制优化类的产品能力补齐总设计见：`Drycontroller-cloudserver/docs/ops/product-hardening-design.md`。
 
 - **AI 模型版本登记与自动回滚**：当前未形成“多版本登记 + 校验 + 回退”的完整闭环。
-- **OTA 蓝绿发布/自动回滚**：当前脚本以 compose pull/up 为主，未实现蓝绿与自动判定回滚。
+- **OTA 蓝绿发布**：当前签名成对 `HostRelease`/`SoftwareRelease` 已通过 root-owned 固定状态机完成候选健康验收和确定性回滚，但尚未实现并行环境与流量切换意义上的蓝绿发布。
 - **数据级补偿（Influx 不可用时缓存补写）**：当前未形成统一的本地缓存补写机制。
 
 ---

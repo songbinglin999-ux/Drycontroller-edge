@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ RUNNER_DIR = Path(__file__).resolve().parents[1]
 if str(RUNNER_DIR) not in sys.path:
     sys.path.insert(0, str(RUNNER_DIR))
 
+import host_release_engine  # noqa: E402
 from host_release_engine import (  # noqa: E402
     COORDINATOR_JOURNAL_SCHEMA,
     COSIGN_TOOLCHAIN,
@@ -988,3 +990,73 @@ def test_start_helper_receives_the_held_transaction_lock_fd(tmp_path):
         os.close(descriptor)
 
     assert output.splitlines()[-1] == "inherited"
+
+
+def test_command_output_is_bounded_before_it_enters_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(host_release_engine, "MAX_COMMAND_OUTPUT_BYTES", 128)
+    producer = tmp_path / "large-output"
+    producer.write_text("#!/bin/sh\nprintf '%0256d' 0\n", encoding="utf-8")
+    producer.chmod(0o755)
+
+    with pytest.raises(HostReleaseError, match="command output too large"):
+        HostReleaseEngine(paths=_paths(tmp_path))._run_command([str(producer)])
+
+
+def test_command_timeout_terminates_the_complete_process_group(tmp_path, monkeypatch):
+    monkeypatch.setattr(host_release_engine, "COMMAND_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(host_release_engine, "COMMAND_TERMINATE_GRACE_SECONDS", 0.05)
+    descendant_marker = tmp_path / "descendant"
+    producer = tmp_path / "timeout-with-descendant"
+    producer.write_text(
+        f"#!/bin/sh\n(exec >/dev/null 2>&1; trap '' TERM; sleep 0.5; printf x > '{descendant_marker}') &\nwait\n",
+        encoding="utf-8",
+    )
+    producer.chmod(0o755)
+
+    with pytest.raises(HostReleaseError, match="command unavailable"):
+        HostReleaseEngine(paths=_paths(tmp_path))._run_command([str(producer)])
+
+    time.sleep(0.6)
+    assert not descendant_marker.exists()
+
+
+def test_failed_command_terminates_stdout_closed_descendants(tmp_path, monkeypatch):
+    monkeypatch.setattr(host_release_engine, "COMMAND_TERMINATE_GRACE_SECONDS", 0.05)
+    descendant_ready = tmp_path / "descendant-ready"
+    descendant_marker = tmp_path / "descendant"
+    producer = tmp_path / "failure-with-descendant"
+    producer.write_text(
+        "#!/bin/sh\n"
+        f"(exec >/dev/null 2>&1; trap '' TERM; printf x > '{descendant_ready}'; "
+        f"sleep 0.5; printf x > '{descendant_marker}') &\n"
+        f"while [ ! -f '{descendant_ready}' ]; do sleep 0.01; done\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    producer.chmod(0o755)
+
+    with pytest.raises(HostReleaseError, match="command failed"):
+        HostReleaseEngine(paths=_paths(tmp_path))._run_command([str(producer)])
+
+    assert descendant_ready.exists()
+    time.sleep(0.6)
+    assert not descendant_marker.exists()
+
+
+def test_output_reader_start_failure_terminates_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(host_release_engine, "COMMAND_TERMINATE_GRACE_SECONDS", 0.05)
+    marker = tmp_path / "command-survived"
+    producer = tmp_path / "reader-start-failure"
+    producer.write_text(f"#!/bin/sh\nsleep 0.3\nprintf x > '{marker}'\n", encoding="utf-8")
+    producer.chmod(0o755)
+
+    def fail_reader_start(_thread):
+        raise RuntimeError("simulated thread exhaustion")
+
+    monkeypatch.setattr(host_release_engine.threading.Thread, "start", fail_reader_start)
+
+    with pytest.raises(HostReleaseError, match="command output unavailable"):
+        HostReleaseEngine(paths=_paths(tmp_path))._run_command([str(producer)])
+
+    time.sleep(0.4)
+    assert not marker.exists()

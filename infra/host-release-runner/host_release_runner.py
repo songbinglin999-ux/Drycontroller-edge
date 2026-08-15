@@ -29,6 +29,10 @@ TERMINAL = {"succeeded", "failed"}
 MAX_OPERATIONS = 256
 APPLY_TIMEOUT_SECONDS = 60 * 60
 PROCESS_TERMINATE_GRACE_SECONDS = 10
+PROCESS_OUTPUT_DRAIN_GRACE_SECONDS = 10
+MAX_OPERATION_LOG_BYTES = 1024 * 1024
+LOG_FILE_MAX_BYTES = 16 * 1024 * 1024
+LOG_ENTRY_OVERHEAD_BYTES = 512
 COORDINATOR_JOURNAL_SCHEMA = "drycontroller.host-release-coordinator.v1"
 COORDINATOR_JOURNAL_FIELDS = {
     "schema",
@@ -143,6 +147,23 @@ class OperationController:
     def _write_request(self, operation_id: str) -> None:
         self._atomic_write(self.request_path, {"operation_id": operation_id})
 
+    def _prepare_log_for_new_operation(self, state: dict[str, Any]) -> int:
+        reserve = MAX_OPERATION_LOG_BYTES + LOG_ENTRY_OVERHEAD_BYTES
+        current_size = self.log_path.stat().st_size
+        if current_size <= max(0, LOG_FILE_MAX_BYTES - reserve):
+            return current_size
+
+        for operation in state["operations"].values():
+            if operation.get("status") in TERMINAL:
+                operation.update({"log_available": False, "log_start": None, "log_end": None})
+        self._write_state(state)
+        # Persist conservative metadata before removing bytes so a crash can
+        # make logs unavailable, never associate stale bytes with an operation.
+        with self.log_path.open("wb") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+        return 0
+
     def _request_id(self) -> str | None:
         try:
             return operation_id_from_body(json.loads(self.request_path.read_text(encoding="utf-8")))
@@ -209,6 +230,7 @@ class OperationController:
                 raise OperationBusy(persisted_active)
             if self._active is not None:
                 raise OperationBusy(self._active)
+            log_start = self._prepare_log_for_new_operation(state)
             operation = {
                 "operation_id": operation_id,
                 "status": "queued",
@@ -216,7 +238,8 @@ class OperationController:
                 "finished_at": None,
                 "exit_code": None,
                 "error": None,
-                "log_start": self.log_path.stat().st_size,
+                "log_available": True,
+                "log_start": log_start,
                 "log_end": None,
             }
             state["operations"][operation_id] = operation
@@ -278,43 +301,125 @@ class OperationController:
         if process.poll() is None:
             process.wait()
 
+    @staticmethod
+    def _write_log_bounded(log_handle: Any, data: bytes, log_limit: int) -> None:
+        remaining = max(0, log_limit - log_handle.tell())
+        if remaining:
+            log_handle.write(data[:remaining])
+
+    @staticmethod
+    def _copy_process_output(
+        process: subprocess.Popen[bytes],
+        log_handle: Any,
+        errors: list[Exception],
+        log_limit: int,
+    ) -> None:
+        assert process.stdout is not None
+        truncated = False
+        try:
+            while True:
+                chunk = process.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                remaining = max(0, log_limit - log_handle.tell())
+                if len(chunk) <= remaining:
+                    log_handle.write(chunk)
+                    continue
+                if not truncated and remaining:
+                    marker = b"\n[host-release-runner] process output truncated\n"
+                    if remaining >= len(marker):
+                        log_handle.write(chunk[: remaining - len(marker)])
+                        log_handle.write(marker)
+                    else:
+                        log_handle.write(chunk[:remaining])
+                    truncated = True
+        except (OSError, ValueError) as exc:
+            errors.append(exc)
+        finally:
+            process.stdout.close()
+
+    @staticmethod
+    def _finish_output_reader(process: subprocess.Popen[bytes], reader: threading.Thread) -> bool:
+        reader.join(timeout=PROCESS_OUTPUT_DRAIN_GRACE_SECONDS)
+        if not reader.is_alive():
+            return True
+
+        for stop_signal in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, stop_signal)
+            except (ProcessLookupError, OSError):
+                pass
+            reader.join(timeout=PROCESS_OUTPUT_DRAIN_GRACE_SECONDS)
+            if not reader.is_alive():
+                return True
+        return False
+
     def _run(self, operation_id: str) -> None:
         state = self._read_state()
         operation = state["operations"][operation_id]
         operation.update({"status": "running", "started_at": operation.get("started_at") or utc_now()})
         self._write_state(state)
+        log_limit = int(operation["log_start"]) + MAX_OPERATION_LOG_BYTES + LOG_ENTRY_OVERHEAD_BYTES
         exit_code = 1
         error = None
         with self.log_path.open("ab", buffering=0) as log:
             for attempt in range(2):
                 error = None
                 process: subprocess.Popen[bytes] | None = None
+                reader: threading.Thread | None = None
+                reader_errors: list[Exception] = []
                 try:
                     process = subprocess.Popen(
                         [str(self.apply_program)],
                         cwd="/",
                         env=FIXED_ENV,
                         stdin=subprocess.DEVNULL,
-                        stdout=log,
+                        stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         close_fds=True,
                         start_new_session=True,
                     )
+                    reader = threading.Thread(
+                        target=self._copy_process_output,
+                        args=(process, log, reader_errors, log_limit),
+                        daemon=True,
+                    )
+                    try:
+                        reader.start()
+                    except RuntimeError:
+                        reader = None
+                        raise
                     exit_code = process.wait(timeout=APPLY_TIMEOUT_SECONDS)
                     if exit_code != 0:
                         error = "host_release_apply_failed"
-                        self._terminate_process(process)
                 except subprocess.TimeoutExpired:
                     error = "host_release_apply_timeout"
                     assert process is not None
-                    self._terminate_process(process)
-                    exit_code = process.returncode if process.returncode is not None else 1
+                except RuntimeError:
+                    error = "host_release_apply_log_reader_unavailable"
                 except OSError:
                     error = "host_release_apply_unavailable"
+                if process is not None and error is not None:
+                    self._terminate_process(process)
+                    exit_code = process.returncode if process.returncode is not None else 1
+                if process is not None and reader is not None:
+                    if not self._finish_output_reader(process, reader) and error is None:
+                        error = "host_release_apply_log_drain_timeout"
+                    if reader_errors and error is None:
+                        error = f"host_release_apply_log_error:{type(reader_errors[0]).__name__}"
+                if process is not None and error is not None:
+                    self._terminate_process(process)
+                    exit_code = process.returncode if process.returncode is not None else 1
+                    if reader is None and process.stdout is not None and not process.stdout.closed:
+                        process.stdout.close()
                 if self._coordinator_journal_idle():
                     break
                 if attempt == 0:
-                    log.write(b"[host-release-runner] unfinished transaction detected; starting recovery\n")
+                    self._write_log_bounded(
+                        log,
+                        b"[host-release-runner] unfinished transaction detected; starting recovery\n",
+                        log_limit,
+                    )
             log.flush()
             os.fsync(log.fileno())
         if not self._coordinator_journal_idle():
@@ -335,12 +440,13 @@ class OperationController:
         with self._lock:
             state = self._read_state()
             operation = state["operations"][operation_id]
+            succeeded = exit_code == 0 and error is None
             operation.update(
                 {
-                    "status": "succeeded" if exit_code == 0 else "failed",
+                    "status": "succeeded" if succeeded else "failed",
                     "finished_at": utc_now(),
                     "exit_code": exit_code,
-                    "error": error,
+                    "error": error if error is not None else (None if succeeded else "host_release_apply_failed"),
                     "log_end": self.log_path.stat().st_size,
                 }
             )
@@ -355,14 +461,28 @@ class OperationController:
         return dict(operation)
 
     def logs(self, operation_id: str) -> dict[str, Any]:
-        operation = self.get(operation_id)
-        start = operation.get("log_start")
-        end = operation.get("log_end") or self.log_path.stat().st_size
-        if not isinstance(start, int) or not isinstance(end, int) or end < start or end - start > 1024 * 1024:
-            raise RuntimeError("HostRelease operation log bounds invalid")
-        with self.log_path.open("rb") as handle:
-            handle.seek(start)
-            data = handle.read(end - start)
+        operation_id = validate_operation_id(operation_id)
+        with self._lock:
+            operation = self._read_state()["operations"].get(operation_id)
+            if operation is None:
+                raise OperationMissing(operation_id)
+            if not operation.get("log_available", True):
+                return {"operation_id": operation_id, "available": False, "data": []}
+            start = operation.get("log_start")
+            end_value = operation.get("log_end")
+            end = self.log_path.stat().st_size if end_value is None else end_value
+            if (
+                not isinstance(start, int)
+                or not isinstance(end, int)
+                or start < 0
+                or end < start
+                or end > self.log_path.stat().st_size
+                or end - start > MAX_OPERATION_LOG_BYTES + LOG_ENTRY_OVERHEAD_BYTES
+            ):
+                raise RuntimeError("HostRelease operation log bounds invalid")
+            with self.log_path.open("rb") as handle:
+                handle.seek(start)
+                data = handle.read(end - start)
         return {
             "operation_id": operation_id,
             "available": True,

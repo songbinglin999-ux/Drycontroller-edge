@@ -51,7 +51,6 @@ env/
 .env
 edge-local.env
 edge-local.env.*
-infra/autoinstall/password.env
 infra/autoinstall/wifi.env
 infra/bootstrap/provisioning-registry.env
 
