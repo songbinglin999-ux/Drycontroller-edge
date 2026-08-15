@@ -421,8 +421,10 @@ def test_public_keys_sigstore_digest_and_public_config_pass_exact_content_rules(
             "identity-wheelhouse/SHA256SUMS": (b"a" * 64) + b"  package.whl\n",
             "public-config.json": json.dumps(
                 {
-                    "schema": "drycontroller.os-installer-public-config.v1",
+                    "schema": "drycontroller.os-installer-public-config.v3",
                     "cloud_ops_base_url": "https://ops.example.test",
+                    "cloud_ops_tailnet_address": "100.100.0.10",
+                    "tailscale_login_server": "https://headscale.example.test",
                     "factory_interface": "enp1s0",
                     "factory_address": "169.254.203.2/30",
                 }
