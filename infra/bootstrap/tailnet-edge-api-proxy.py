@@ -12,28 +12,48 @@ import socket
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = 18080
 HEADER_LIMIT = 64 * 1024
+BODY_LIMIT = 1024 * 1024
+REQUEST_READ_TIMEOUT = 15
+BACKEND_RESPONSE_TIMEOUT = 120
+MAX_CONCURRENT_REQUESTS = 64
 TAILNET_HEADER = b"x-drycontroller-tailnet-ingress"
+_active_requests = 0
 
 
 class ProxyRequestError(ValueError):
     pass
 
 
-def mark_tailnet_request(header: bytes) -> bytes:
+def _prepare_tailnet_request(header: bytes) -> tuple[bytes, int]:
     if len(header) > HEADER_LIMIT or not header.endswith(b"\r\n\r\n"):
         raise ProxyRequestError("invalid HTTP header framing")
     lines = header[:-4].split(b"\r\n")
-    if not lines or b" " not in lines[0]:
+    request_parts = lines[0].split(b" ") if lines else []
+    if len(request_parts) != 3 or request_parts[2] not in {b"HTTP/1.0", b"HTTP/1.1"}:
         raise ProxyRequestError("invalid HTTP request line")
 
     forwarded = [lines[0]]
+    content_length: int | None = None
     for line in lines[1:]:
         if not line or line[:1] in {b" ", b"\t"} or b":" not in line:
             raise ProxyRequestError("invalid HTTP request header")
-        name, _value = line.split(b":", 1)
+        name, value = line.split(b":", 1)
         normalized = name.strip().lower()
         if normalized == b"upgrade":
             raise ProxyRequestError("Tailnet websocket ingress is disabled")
+        if normalized in {b"transfer-encoding", b"expect"}:
+            raise ProxyRequestError("unsupported HTTP request framing")
+        if normalized == b"content-length":
+            raw_length = value.strip()
+            if (
+                content_length is not None
+                or not raw_length.isdigit()
+                or len(raw_length) > len(str(BODY_LIMIT))
+            ):
+                raise ProxyRequestError("invalid HTTP content length")
+            content_length = int(raw_length)
+            if content_length > BODY_LIMIT:
+                raise ProxyRequestError("HTTP request body exceeds the limit")
         if normalized in {
             TAILNET_HEADER,
             b"connection",
@@ -48,7 +68,11 @@ def mark_tailnet_request(header: bytes) -> bytes:
             b"Connection: close",
         )
     )
-    return b"\r\n".join(forwarded) + b"\r\n\r\n"
+    return b"\r\n".join(forwarded) + b"\r\n\r\n", content_length or 0
+
+
+def mark_tailnet_request(header: bytes) -> bytes:
+    return _prepare_tailnet_request(header)[0]
 
 
 async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -57,20 +81,45 @@ async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         await writer.drain()
 
 
+async def _read_request(client_reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
+    raw_header = await client_reader.readuntil(b"\r\n\r\n")
+    marked_header, content_length = _prepare_tailnet_request(raw_header)
+    body = await client_reader.readexactly(content_length)
+    return marked_header, body
+
+
 async def _handle(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
+    global _active_requests
+    if _active_requests >= MAX_CONCURRENT_REQUESTS:
+        client_writer.write(
+            b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        )
+        with contextlib.suppress(OSError):
+            await client_writer.drain()
+        client_writer.close()
+        with contextlib.suppress(OSError):
+            await client_writer.wait_closed()
+        return
+
+    _active_requests += 1
     backend_writer: asyncio.StreamWriter | None = None
-    upload: asyncio.Task[None] | None = None
     try:
-        raw_header = await asyncio.wait_for(client_reader.readuntil(b"\r\n\r\n"), timeout=10)
-        marked_header = mark_tailnet_request(raw_header)
+        marked_header, body = await asyncio.wait_for(
+            _read_request(client_reader),
+            timeout=REQUEST_READ_TIMEOUT,
+        )
         backend_reader, backend_writer = await asyncio.wait_for(
             asyncio.open_connection(BACKEND_HOST, BACKEND_PORT),
-            timeout=10,
+            timeout=REQUEST_READ_TIMEOUT,
         )
         backend_writer.write(marked_header)
+        if body:
+            backend_writer.write(body)
         await backend_writer.drain()
-        upload = asyncio.create_task(_copy(client_reader, backend_writer))
-        await _copy(backend_reader, client_writer)
+        await asyncio.wait_for(
+            _copy(backend_reader, client_writer),
+            timeout=BACKEND_RESPONSE_TIMEOUT,
+        )
     except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError, OSError, ProxyRequestError):
         if backend_writer is None:
             client_writer.write(
@@ -79,10 +128,6 @@ async def _handle(client_reader: asyncio.StreamReader, client_writer: asyncio.St
             with contextlib.suppress(OSError):
                 await client_writer.drain()
     finally:
-        if upload is not None:
-            upload.cancel()
-            with contextlib.suppress(asyncio.CancelledError, OSError):
-                await upload
         if backend_writer is not None:
             backend_writer.close()
             with contextlib.suppress(OSError):
@@ -90,6 +135,7 @@ async def _handle(client_reader: asyncio.StreamReader, client_writer: asyncio.St
         client_writer.close()
         with contextlib.suppress(OSError):
             await client_writer.wait_closed()
+        _active_requests -= 1
 
 
 def _socket_activation_listener() -> socket.socket:

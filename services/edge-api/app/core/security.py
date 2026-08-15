@@ -160,6 +160,9 @@ def _reserve_cloud_nonce(*, nonce: str, now: int, expires_at: int) -> bool:
 
 
 async def _validate_cloud_request(request: Request) -> str | None:
+    cached_identity = getattr(request.state, "drycontroller_cloud_identity", None)
+    if isinstance(cached_identity, str):
+        return cached_identity
     values = {name: request.headers.get(header) for name, header in _CLOUD_HEADERS.items()}
     if not any(values.values()):
         return None
@@ -210,7 +213,28 @@ async def _validate_cloud_request(request: Request) -> str | None:
         ) from None
     if not reserved:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cloud request replay rejected")
-    return f"cloud:{device_id}"
+    identity = f"cloud:{device_id}"
+    request.state.drycontroller_cloud_identity = identity
+    return identity
+
+
+async def require_tailnet_http_auth(
+    request: Request,
+    api_key: str | None = None,
+) -> str | None:
+    if request.headers.get(TAILNET_INGRESS_HEADER) != "1":
+        return None
+    cloud_identity = await _validate_cloud_request(request)
+    if cloud_identity is not None:
+        return cloud_identity
+    if api_key is None:
+        api_key = request.headers.get(settings.API_KEY_HEADER)
+    if api_key:
+        return _validate_key(api_key, required="control")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Tailnet access requires application authentication",
+    )
 
 
 async def _require_role(request: Request, api_key: str | None, *, role: str) -> str:
@@ -260,15 +284,8 @@ async def require_readonly_http_source(
 ) -> None:
     host = request.client.host if request.client else ""
     if request.headers.get(TAILNET_INGRESS_HEADER) == "1":
-        if await _validate_cloud_request(request) is not None:
-            return
-        if api_key:
-            _validate_key(api_key, required="control")
-            return
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tailnet read-only access requires application authentication",
-        )
+        await require_tailnet_http_auth(request, api_key)
+        return
     if is_readonly_source_allowed(host):
         return
     if await _validate_cloud_request(request) is not None:

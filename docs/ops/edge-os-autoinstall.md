@@ -54,8 +54,11 @@ Device identity. Cloud ingress is a systemd socket bound only to
 `tailscale0:8000`, proxying to the loopback-only Edge API at
 `127.0.0.1:18080`. The fixed proxy strips caller-supplied ingress markers,
 adds the trusted Tailnet marker, forces connection close, and rejects WebSocket
-upgrades; edge-api then requires the Cloud request signature or an API key even
-though Docker rewrites the peer address. Its active state is part of the same
+upgrades. It accepts one bounded Content-Length request per connection, rejects
+ambiguous framing and slow/incomplete uploads, and applies fixed body,
+concurrency, and response deadlines. Edge-api then requires the Cloud request
+signature or an API key on every marked HTTP path even though Docker rewrites
+the peer address. Its active state is part of the same
 preflight. A failed remote-channel check is reported as degraded for
 local operation and fails strict shipment/OTA preflight. The edge-api container
 reads only the sanitized result through the existing fixed-route root UDS; it

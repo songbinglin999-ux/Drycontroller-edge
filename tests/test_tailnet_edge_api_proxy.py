@@ -19,6 +19,24 @@ def _module():
     return module
 
 
+class _MemoryWriter:
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.data.extend(data)
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+
 def test_proxy_strips_spoofed_marker_and_forces_single_request_connection() -> None:
     proxy = _module()
     marked = proxy.mark_tailnet_request(
@@ -44,6 +62,107 @@ def test_proxy_rejects_tailnet_websocket_upgrade() -> None:
             b"Upgrade: websocket\r\n"
             b"Connection: Upgrade\r\n\r\n"
         )
+
+
+@pytest.mark.parametrize(
+    "framing",
+    (
+        b"Transfer-Encoding: chunked\r\n",
+        b"Expect: 100-continue\r\n",
+        b"Content-Length: 1\r\nContent-Length: 1\r\n",
+        b"Content-Length: 999999999\r\n",
+    ),
+)
+def test_proxy_rejects_ambiguous_or_unbounded_request_framing(framing: bytes) -> None:
+    proxy = _module()
+    with pytest.raises(proxy.ProxyRequestError):
+        proxy.mark_tailnet_request(
+            b"POST /api/v1/ops/preflight HTTP/1.1\r\n"
+            b"Host: edge.example\r\n"
+            + framing
+            + b"\r\n"
+        )
+
+
+@pytest.mark.asyncio
+async def test_proxy_forwards_only_the_declared_single_request(monkeypatch) -> None:
+    proxy = _module()
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_data(
+        b"POST /api/v1/ops/preflight HTTP/1.1\r\n"
+        b"Host: edge.example\r\n"
+        b"Content-Length: 4\r\n\r\n"
+        b"data"
+        b"GET /metrics HTTP/1.1\r\nHost: edge.example\r\n\r\n"
+    )
+    client_reader.feed_eof()
+    client_writer = _MemoryWriter()
+    backend_reader = asyncio.StreamReader()
+    backend_reader.feed_data(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+    )
+    backend_reader.feed_eof()
+    backend_writer = _MemoryWriter()
+
+    async def open_backend(_host: str, _port: int):
+        return backend_reader, backend_writer
+
+    monkeypatch.setattr(proxy.asyncio, "open_connection", open_backend)
+    await proxy._handle(client_reader, client_writer)
+
+    assert bytes(backend_writer.data).endswith(b"\r\n\r\ndata")
+    assert b"GET /metrics" not in backend_writer.data
+    assert bytes(client_writer.data).endswith(b"ok")
+
+
+@pytest.mark.asyncio
+async def test_proxy_does_not_open_backend_for_truncated_body(monkeypatch) -> None:
+    proxy = _module()
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_data(
+        b"POST /api/v1/ops/preflight HTTP/1.1\r\n"
+        b"Host: edge.example\r\n"
+        b"Content-Length: 1000000\r\n\r\n"
+        b"partial"
+    )
+    client_reader.feed_eof()
+    client_writer = _MemoryWriter()
+    backend_opened = False
+
+    async def open_backend(_host: str, _port: int):
+        nonlocal backend_opened
+        backend_opened = True
+        raise AssertionError("backend must not be opened for an incomplete request")
+
+    monkeypatch.setattr(proxy.asyncio, "open_connection", open_backend)
+    await proxy._handle(client_reader, client_writer)
+
+    assert backend_opened is False
+    assert bytes(client_writer.data).startswith(b"HTTP/1.1 400 Bad Request")
+
+
+@pytest.mark.asyncio
+async def test_proxy_times_out_incomplete_request_and_releases_slot() -> None:
+    proxy = _module()
+    proxy.REQUEST_READ_TIMEOUT = 0.01
+    client_writer = _MemoryWriter()
+
+    await proxy._handle(asyncio.StreamReader(), client_writer)
+
+    assert bytes(client_writer.data).startswith(b"HTTP/1.1 400 Bad Request")
+    assert proxy._active_requests == 0
+
+
+@pytest.mark.asyncio
+async def test_proxy_rejects_connections_over_the_concurrency_limit() -> None:
+    proxy = _module()
+    proxy._active_requests = proxy.MAX_CONCURRENT_REQUESTS
+    client_writer = _MemoryWriter()
+
+    await proxy._handle(asyncio.StreamReader(), client_writer)
+
+    assert bytes(client_writer.data).startswith(b"HTTP/1.1 503 Service Unavailable")
+    assert client_writer.closed is True
 
 
 @pytest.mark.asyncio

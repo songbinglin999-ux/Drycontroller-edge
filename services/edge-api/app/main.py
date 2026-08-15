@@ -3,7 +3,7 @@
 工业烘干智能控制系统
 """
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -17,6 +17,7 @@ from app.api.v1 import router as api_v1_router
 from app.api import realtime as realtime_router
 from app.core.database import engine
 from app.core.mqtt_client import mqtt_manager
+from app.core.security import require_tailnet_http_auth
 from app.services.event_bus import event_bus
 from app.services.health import get_system_readiness
 from app.services.outbox_drain import cloud_sync_outbox_drainer
@@ -129,6 +130,19 @@ app.add_middleware(
 
 # Gzip 压缩中间件
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+@app.middleware("http")
+async def enforce_tailnet_application_auth(request: Request, call_next):
+    try:
+        await require_tailnet_http_auth(request)
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+    return await call_next(request)
 
 
 # 请求日志中间件

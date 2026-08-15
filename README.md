@@ -27,7 +27,9 @@ boundaries:
   Tailnet provisioning enables a systemd socket bound only to `tailscale0:8000`
   and forwards one HTTP request at a time through the fixed marking proxy to
   loopback. The proxy strips spoofed ingress markers; marked requests require
-  the Cloud Ed25519 signature or an API key, and Tailnet WebSockets are rejected.
+  the Cloud Ed25519 signature or an API key. It rejects Tailnet WebSockets,
+  ambiguous/chunked framing, bodies over 1 MiB, pipelined requests, slow reads,
+  and connections above its fixed concurrency limit.
   LAN/PLC interfaces never receive the Cloud admin listener.
 - WebSocket realtime, AI, and system streams require the current mutual-auth
   handshake: client `hello` nonce, server HMAC proof, client `auth`, then

@@ -19,7 +19,8 @@ from pathlib import Path
 import pytest
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 PATH = Path(__file__).resolve()
@@ -35,15 +36,36 @@ from app.core.security import (  # noqa: E402
     require_admin_api_key,
     require_control_api_key,
     require_readonly_http_source,
+    require_tailnet_http_auth,
 )
 
 
 def _create_app() -> FastAPI:
     app = FastAPI()
 
+    @app.middleware("http")
+    async def tailnet_auth(request: Request, call_next):
+        try:
+            await require_tailnet_http_auth(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=exc.headers,
+            )
+        return await call_next(request)
+
+    @app.get("/public")
+    async def public():
+        return {"ok": True}
+
     @app.get("/control")
     async def control(_: str = Depends(require_control_api_key)):
         return {"ok": True}
+
+    @app.post("/control-body")
+    async def control_body(payload: dict, _: str = Depends(require_control_api_key)):
+        return payload
 
     @app.get("/admin")
     async def admin(_: str = Depends(require_admin_api_key)):
@@ -135,6 +157,48 @@ def test_admin_endpoint_rejects_control_key():
     assert resp.status_code == 403
 
 
+def test_tailnet_marker_requires_application_auth_for_unprotected_route():
+    settings.CONTROL_API_KEYS = ["ctl-1"]
+    client = _build_app()
+
+    unsigned = client.get("/public", headers={TAILNET_INGRESS_HEADER: "1"})
+    authenticated = client.get(
+        "/public",
+        headers={TAILNET_INGRESS_HEADER: "1", settings.API_KEY_HEADER: "ctl-1"},
+    )
+
+    assert unsigned.status_code == 403
+    assert authenticated.status_code == 200
+
+
+def test_tailnet_control_key_does_not_gain_admin_role():
+    settings.CONTROL_API_KEYS = ["ctl-1"]
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    client = _build_app()
+
+    response = client.get(
+        "/admin",
+        headers={TAILNET_INGRESS_HEADER: "1", settings.API_KEY_HEADER: "ctl-1"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_main_top_level_routes_enforce_tailnet_auth():
+    from app.main import app as edge_app
+
+    settings.CONTROL_API_KEYS = ["ctl-1"]
+    client = TestClient(edge_app)
+    for path in ("/", "/health", "/metrics", "/openapi.json"):
+        unsigned = client.get(path, headers={TAILNET_INGRESS_HEADER: "1"})
+        authenticated = client.get(
+            path,
+            headers={TAILNET_INGRESS_HEADER: "1", settings.API_KEY_HEADER: "ctl-1"},
+        )
+        assert unsigned.status_code == 403, path
+        assert authenticated.status_code == 200, path
+
+
 def test_cloud_signature_is_device_path_body_bound_and_replay_safe(tmp_path, monkeypatch):
     private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     public_path = tmp_path / "cloud.pub"
@@ -215,6 +279,28 @@ def test_cloud_signature_is_device_path_body_bound_and_replay_safe(tmp_path, mon
         ).decode("ascii"),
     }
     assert client.get("/readonly", headers=readonly_headers).status_code == 200
+    body = {"line": "L1", "value": 31}
+    body_nonce = "e" * 32
+    body_canonical = _canonical_cloud_request(
+        device_id=identity["device_id"],
+        method="POST",
+        path="/control-body",
+        query=[],
+        body=body,
+        timestamp=timestamp,
+        nonce=body_nonce,
+    )
+    body_headers = {
+        **headers,
+        TAILNET_INGRESS_HEADER: "1",
+        "X-Drycontroller-Cloud-Nonce": body_nonce,
+        "X-Drycontroller-Cloud-Signature": base64.b64encode(
+            private_key.sign(body_canonical)
+        ).decode("ascii"),
+    }
+    body_response = client.post("/control-body", headers=body_headers, json=body)
+    assert body_response.status_code == 200
+    assert body_response.json() == body
     security._CLOUD_NONCE_LOCK = asyncio.Lock()
     FixedDateTime.current_epoch = now_epoch + 31
     assert client.get("/admin", headers=headers).status_code == 409
