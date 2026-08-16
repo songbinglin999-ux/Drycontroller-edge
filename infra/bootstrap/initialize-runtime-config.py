@@ -323,9 +323,13 @@ def main() -> int:
             hosts_file=args.hosts_file,
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        print(f"runtime configuration failed: {exc}", file=sys.stderr)
+        print(  # noqa: T201 - CLI failure channel for the systemd bootstrap unit
+            f"runtime configuration failed: {exc}", file=sys.stderr
+        )
         return 1
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    print(  # noqa: T201 - CLI JSON success output for installation evidence
+        json.dumps(result, ensure_ascii=False, sort_keys=True)
+    )
     return 0
 
 

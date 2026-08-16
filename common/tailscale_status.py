@@ -184,7 +184,9 @@ def main() -> int:
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, ValueError) as exc:
         result = {"ok": False, "reason": "device_identity_invalid", "detail": {"error": str(exc)}}
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    print(  # noqa: T201 - CLI JSON protocol output consumed by preflight.sh
+        json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
     return 0 if result["ok"] else 1
 
 

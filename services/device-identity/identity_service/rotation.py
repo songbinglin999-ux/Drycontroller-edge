@@ -235,10 +235,15 @@ def main() -> int:
         result = rotate_from_environment()
     except (RotationError, IdentityStateError, RuntimeError) as exc:
         _record_rotation_alarm(state="firing")
-        print(f"device credential rotation failed: {exc}")
+        print(  # noqa: T201 - CLI status consumed by the rotation systemd unit
+            f"device credential rotation failed: {exc}"
+        )
         return 1
     _record_rotation_alarm(state="resolved")
-    print(f"device credential active: device_id={result['device_id']} expires={result['credential_expires_at']}")
+    print(  # noqa: T201 - CLI status consumed by the rotation systemd unit
+        f"device credential active: device_id={result['device_id']} "
+        f"expires={result['credential_expires_at']}"
+    )
     return 0
 
 

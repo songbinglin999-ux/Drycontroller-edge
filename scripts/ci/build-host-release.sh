@@ -15,6 +15,7 @@ set -euo pipefail
 : "${SOFTWARE_COSIGN_PASSWORD:?missing SOFTWARE_COSIGN_PASSWORD}"
 : "${CLOUD_OPS_RELEASE_API_URL:?missing CLOUD_OPS_RELEASE_API_URL}"
 : "${CLOUD_OPS_RELEASE_API_KEY:?missing CLOUD_OPS_RELEASE_API_KEY}"
+: "${RELEASE_HANDOFF_OUTPUT_DIR:?missing RELEASE_HANDOFF_OUTPUT_DIR}"
 : "${TRIVY_CACHE_DIR:?missing TRIVY_CACHE_DIR}"
 
 [[ "${HOST_RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
@@ -23,6 +24,10 @@ set -euo pipefail
 [[ "${HARBOR_HOST}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$ ]]
 [[ "${HARBOR_PROJECT}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]
 [[ "${CLOUD_OPS_RELEASE_API_URL}" == https://* ]]
+command -v find >/dev/null
+test -d "${RELEASE_HANDOFF_OUTPUT_DIR}"
+test ! -L "${RELEASE_HANDOFF_OUTPUT_DIR}"
+test -z "$(find "${RELEASE_HANDOFF_OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -print -quit)"
 for command in docker trivy cosign python3 tar sha256sum; do
   command -v "${command}" >/dev/null
 done
@@ -68,6 +73,11 @@ chmod 600 "${host_public_key}" "${software_public_key}"
 host_key_digest="$(sha256sum "${host_public_key}" | awk '{print $1}')"
 software_key_digest="$(sha256sum "${software_public_key}" | awk '{print $1}')"
 test "${host_key_digest}" != "${software_key_digest}"
+python3 scripts/ci/prepare-release-handoff.py trust-preflight \
+  --host-public-key "${host_public_key}" \
+  --software-public-key "${software_public_key}" \
+  --cloud-url "${CLOUD_OPS_RELEASE_API_URL}" \
+  --cloud-api-key "${CLOUD_OPS_RELEASE_API_KEY}"
 COSIGN_PASSWORD="${HOST_COSIGN_PASSWORD}" cosign signing-config create \
   --no-default-fulcio \
   --no-default-oidc \
@@ -229,5 +239,22 @@ with urllib.request.urlopen(request, timeout=30) as response:
 expected = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
 if payload.get("status") != "completed" or payload.get("manifest_digest") != expected:
     raise SystemExit("Cloud did not complete the exact HostRelease manifest")
+Path(sys.argv[1]).write_text(
+    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    encoding="utf-8",
+)
+Path(sys.argv[1]).chmod(0o600)
 print(f"HostRelease completed: id={release['id']} digest={expected}")
 PY
+
+unset HOST_COSIGN_PRIVATE_KEY HOST_COSIGN_PASSWORD
+unset SOFTWARE_COSIGN_PRIVATE_KEY SOFTWARE_COSIGN_PASSWORD
+unset COSIGN_PRIVATE_KEY COSIGN_PASSWORD HARBOR_PASSWORD CLOUD_OPS_RELEASE_API_KEY
+rm -f -- "${host_private_key}" "${software_private_key}" "${DOCKER_CONFIG}/config.json"
+python3 scripts/ci/prepare-release-handoff.py pair \
+  --host-release "${host_release_file}" \
+  --software-release "${software_release_file}" \
+  --host-public-key "${host_public_key}" \
+  --software-public-key "${software_public_key}" \
+  --cosign "$(command -v cosign)" \
+  --output-dir "${RELEASE_HANDOFF_OUTPUT_DIR}"

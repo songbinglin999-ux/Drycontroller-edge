@@ -107,7 +107,7 @@ async def main():
     context = ModbusServerContext(slaves={slave_id: slave_ctx}, single=False)
 
     asyncio.create_task(_updater(context, slave_id, interval))
-    print(
+    print(  # noqa: T201 - interactive simulator startup status
         f"[modbus-sim] RTU-over-TCP slave on {host}:{port} slave_id={slave_id} "
         f"D-points={len(ALL_D)} (currents={len(CURRENTS)} "
         f"temp={len(TEMPS)} humidity=1[int32] humidity_status=1) coils={len(COIL_ADDRS)}[料位/限位]",
