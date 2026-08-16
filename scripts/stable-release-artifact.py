@@ -116,7 +116,7 @@ def create_snapshot(
             _check_deadline(deadline)
         finally:
             os.close(directory_fd)
-    except Exception:
+    except (OSError, ValueError):
         if destination_fd >= 0:
             os.close(destination_fd)
             destination_fd = -1
