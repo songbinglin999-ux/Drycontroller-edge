@@ -237,9 +237,10 @@ configure_docker() {
 }
 
 install_static_runtime() {
-  install -d -m 0755 /usr/libexec/drycontroller /etc/drycontroller/keys /etc/drycontroller/trust
+  install -d -o root -g root -m 0755 /usr/libexec/drycontroller /etc/drycontroller/keys /etc/drycontroller/trust /etc/drycontroller/license
   install -d -m 0755 /usr/libexec/drycontroller/common
   install -d -m 0700 /var/lib/drycontroller /var/lib/drycontroller-host /var/lib/drycontroller-ota
+  install -d -o root -g root -m 0700 /var/lib/drycontroller/license-transaction
   install -d -o root -g root -m 0700 /var/lib/drycontroller/cloud-request-nonces
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_engine.py" /usr/libexec/drycontroller/host_release_engine.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_runner.py" /usr/libexec/drycontroller/host_release_runner.py
@@ -291,14 +292,23 @@ initialize_license_trust() {
     initialize "$LICENSE_TRUST"
   /opt/drycontroller-identity/venv/bin/python - <<'PY'
 from pathlib import Path
+import os
 import sys
 
 sys.path.insert(0, "/usr/libexec/drycontroller")
 from common.license_verifier import load_active_license_trust
 
-trust = load_active_license_trust(
-    Path("/etc/drycontroller/keys/license-trust/policy.json")
-)
+root = Path("/etc/drycontroller/keys/license-trust")
+policy = root / "policy.json"
+trust = load_active_license_trust(policy)
+artifact_dir = root / "versions" / trust.key_id
+artifact = artifact_dir / "license-trust.json"
+for directory in (root, root / "versions", artifact_dir):
+    os.chown(directory, 0, 0)
+    os.chmod(directory, 0o755)
+for path in (policy, artifact):
+    os.chown(path, 0, 0)
+    os.chmod(path, 0o444)
 print(f"initialized license trust: {trust.key_id}")
 PY
 }

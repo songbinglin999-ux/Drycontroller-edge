@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import stat
 import sys
 from typing import Any, Callable
@@ -26,8 +25,8 @@ from common.license_verifier import (  # noqa: E402
     LICENSE_TRUST_POLICY_SCHEMA,
     LicenseTrust,
     load_active_license_trust,
-    load_license_trust,
     load_license_trust_policy,
+    parse_license_trust,
     verify_license,
 )
 
@@ -56,15 +55,97 @@ def fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def require_regular(path: Path, expected_uid: int, maximum_size: int) -> os.stat_result:
+def require_regular(
+    path: Path,
+    expected_uid: int,
+    maximum_size: int,
+    *,
+    expected_modes: set[int] | None = None,
+) -> os.stat_result:
     metadata = path.lstat()
-    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+    mode = stat.S_IMODE(metadata.st_mode)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or path.is_symlink()
+        or metadata.st_nlink != 1
+    ):
         raise ValueError(f"path must be a regular file: {path}")
     if metadata.st_uid != expected_uid:
         raise ValueError(f"path owner is not the expected uid: {path}")
+    if mode & 0o022 or (expected_modes is not None and mode not in expected_modes):
+        raise ValueError(f"path mode is invalid: {path}")
     if metadata.st_size <= 0 or metadata.st_size > maximum_size:
         raise ValueError(f"path size is invalid: {path}")
     return metadata
+
+
+def read_regular(
+    path: Path,
+    expected_uid: int,
+    maximum_size: int,
+    *,
+    expected_modes: set[int] | None = None,
+) -> tuple[bytes, os.stat_result]:
+    before = require_regular(
+        path,
+        expected_uid,
+        maximum_size,
+        expected_modes=expected_modes,
+    )
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+            or opened.st_nlink != 1
+        ):
+            raise ValueError(f"path changed while opening: {path}")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(64 * 1024, maximum_size + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > maximum_size:
+                raise ValueError(f"path size is invalid: {path}")
+        return b"".join(chunks), opened
+    finally:
+        os.close(descriptor)
+
+
+def secure_directory(path: Path, expected_uid: int, expected_mode: int) -> os.stat_result:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"path must be a directory: {path}")
+    if (
+        metadata.st_uid != expected_uid
+        or stat.S_IMODE(metadata.st_mode) != expected_mode
+    ):
+        raise ValueError(f"directory ownership/mode is invalid: {path}")
+    return metadata
+
+
+def cleanup_staging_directory(path: Path, expected: os.stat_result) -> None:
+    try:
+        actual = path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        stat.S_ISLNK(actual.st_mode)
+        or not stat.S_ISDIR(actual.st_mode)
+        or actual.st_dev != expected.st_dev
+        or actual.st_ino != expected.st_ino
+    ):
+        raise ValueError("license trust staging directory identity changed")
+    artifact = path / "license-trust.json"
+    if artifact.exists():
+        require_regular(artifact, expected.st_uid, 16 * 1024, expected_modes={0o444})
+        artifact.unlink()
+    os.rmdir(path)
+    fsync_directory(path.parent)
 
 
 def atomic_write(
@@ -162,6 +243,11 @@ class LicenseTransaction:
         state_root: Path,
         lock_path: Path,
         expected_uid: int = 0,
+        trust_parent_mode: int = 0o755,
+        trust_root_mode: int = 0o755,
+        license_parent_mode: int = 0o755,
+        state_parent_mode: int = 0o700,
+        lock_parent_mode: int = 0o700,
         fault: Callable[[str], None] | None = None,
     ) -> None:
         self.trust_root = trust_root
@@ -172,15 +258,39 @@ class LicenseTransaction:
         self.journal_path = state_root / "journal.json"
         self.lock_path = lock_path
         self.expected_uid = expected_uid
+        self.trust_parent_mode = trust_parent_mode
+        self.trust_root_mode = trust_root_mode
+        self.license_parent_mode = license_parent_mode
+        self.state_parent_mode = state_parent_mode
+        self.lock_parent_mode = lock_parent_mode
         self.fault = fault or (lambda _point: None)
 
     def _prepare_roots(self) -> None:
-        self.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.state_root, 0o700)
-        metadata = self.state_root.stat()
-        if metadata.st_uid != self.expected_uid or stat.S_IMODE(metadata.st_mode) != 0o700:
-            raise ValueError("license transaction state root ownership/mode is invalid")
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        secure_directory(
+            self.trust_root.parent, self.expected_uid, self.trust_parent_mode
+        )
+        secure_directory(self.trust_root, self.expected_uid, self.trust_root_mode)
+        secure_directory(
+            self.trust_root / "versions", self.expected_uid, self.trust_root_mode
+        )
+        secure_directory(
+            self.license_path.parent, self.expected_uid, self.license_parent_mode
+        )
+        secure_directory(
+            self.state_root.parent, self.expected_uid, self.state_parent_mode
+        )
+        try:
+            self.state_root.lstat()
+        except FileNotFoundError:
+            self.state_root.mkdir(mode=0o700)
+        secure_directory(self.state_root, self.expected_uid, 0o700)
+        try:
+            self.lock_path.parent.lstat()
+        except FileNotFoundError:
+            self.lock_path.parent.mkdir(mode=self.lock_parent_mode)
+        secure_directory(
+            self.lock_path.parent, self.expected_uid, self.lock_parent_mode
+        )
 
     def _lock(self) -> int:
         self._prepare_roots()
@@ -193,6 +303,7 @@ class LicenseTransaction:
             metadata = os.fstat(descriptor)
             if (
                 not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
                 or metadata.st_uid != self.expected_uid
                 or stat.S_IMODE(metadata.st_mode) != 0o600
             ):
@@ -207,8 +318,12 @@ class LicenseTransaction:
             raise
 
     def _read_object(self, path: Path, schema: str) -> dict[str, Any]:
-        require_regular(path, self.expected_uid, MAX_STATE_BYTES)
-        raw = path.read_bytes()
+        raw, _metadata = read_regular(
+            path,
+            self.expected_uid,
+            MAX_STATE_BYTES,
+            expected_modes={0o600},
+        )
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -239,7 +354,12 @@ class LicenseTransaction:
         )
 
     def _write_policy(self, value: dict[str, Any]) -> None:
-        metadata = require_regular(self.policy_path, self.expected_uid, 16 * 1024)
+        metadata = require_regular(
+            self.policy_path,
+            self.expected_uid,
+            16 * 1024,
+            expected_modes={0o444},
+        )
         atomic_write(
             self.policy_path,
             canonical_json(value),
@@ -249,7 +369,12 @@ class LicenseTransaction:
         )
 
     def _write_license(self, raw: bytes) -> None:
-        metadata = require_regular(self.license_path, self.expected_uid, MAX_LICENSE_BYTES)
+        metadata = require_regular(
+            self.license_path,
+            self.expected_uid,
+            MAX_LICENSE_BYTES,
+            expected_modes={0o640},
+        )
         atomic_write(
             self.license_path,
             raw,
@@ -259,42 +384,65 @@ class LicenseTransaction:
         )
 
     def _stage_trust(self, source: Path) -> LicenseTrust:
-        require_regular(source, self.expected_uid, 16 * 1024)
-        raw = source.read_bytes()
-        trust = load_license_trust(source)
+        raw, _source_metadata = read_regular(source, self.expected_uid, 16 * 1024)
+        trust = parse_license_trust(raw)
         versions = self.trust_root / "versions"
-        versions.mkdir(parents=True, exist_ok=True)
+        versions_metadata = secure_directory(
+            versions, self.expected_uid, self.trust_root_mode
+        )
         target_dir = versions / trust.key_id
         target = target_dir / "license-trust.json"
-        if target_dir.exists():
-            if target_dir.is_symlink() or not target_dir.is_dir() or not target.is_file():
-                raise ValueError("existing license trust version path is invalid")
-            if target.read_bytes() != raw:
+        try:
+            target_dir.lstat()
+        except FileNotFoundError:
+            target_exists = False
+        else:
+            target_exists = True
+        if target_exists:
+            secure_directory(target_dir, self.expected_uid, self.trust_root_mode)
+            existing, _metadata = read_regular(
+                target,
+                self.expected_uid,
+                16 * 1024,
+                expected_modes={0o444},
+            )
+            if existing != raw:
                 raise ValueError("license trust key_id already exists with different bytes")
             return trust
         temporary = versions / f".{trust.key_id}.txn.{os.getpid()}"
+        temporary_metadata: os.stat_result | None = None
         try:
             temporary.mkdir(mode=0o755)
+            temporary_metadata = secure_directory(
+                temporary, self.expected_uid, self.trust_root_mode
+            )
             atomic_write(
                 temporary / "license-trust.json",
                 raw,
                 mode=0o444,
                 uid=self.expected_uid,
-                gid=versions.stat().st_gid,
+                gid=versions_metadata.st_gid,
             )
             os.rename(temporary, target_dir)
             fsync_directory(versions)
         finally:
-            if temporary.exists():
-                shutil.rmtree(temporary)
+            if temporary_metadata is not None:
+                cleanup_staging_directory(temporary, temporary_metadata)
         return trust
 
     def _live_state(self) -> tuple[dict[str, Any], dict[str, Any]]:
-        require_regular(self.policy_path, self.expected_uid, 16 * 1024)
-        license_metadata = require_regular(
-            self.license_path, self.expected_uid, MAX_LICENSE_BYTES
+        require_regular(
+            self.policy_path,
+            self.expected_uid,
+            16 * 1024,
+            expected_modes={0o444},
         )
-        del license_metadata
+        require_regular(
+            self.license_path,
+            self.expected_uid,
+            MAX_LICENSE_BYTES,
+            expected_modes={0o640},
+        )
         live_policy = load_license_trust_policy(self.policy_path)
         trust = load_active_license_trust(self.policy_path)
         raw = self.license_path.read_bytes()
@@ -417,8 +565,9 @@ class LicenseTransaction:
             trust = self._stage_trust(trust_source)
             if trust.key_id == active["key_id"]:
                 raise ValueError("new license trust key_id must differ from active key_id")
-            require_regular(license_source, self.expected_uid, MAX_LICENSE_BYTES)
-            candidate_raw = license_source.read_bytes()
+            candidate_raw, _candidate_metadata = read_regular(
+                license_source, self.expected_uid, MAX_LICENSE_BYTES
+            )
             verify_license(parse_license(candidate_raw), trust)
             target_binding = binding(trust)
             target_state = {

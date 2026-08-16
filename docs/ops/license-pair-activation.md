@@ -28,6 +28,15 @@ operation, not a prompt to retry with a guessed key id. Keep candidate inputs
 root-owned regular files. Do not edit the live policy, live license, transaction
 state, journal, or immutable trust version directories by hand.
 
+The command fails closed unless the production roots keep their installed
+contract: trust and license directories are root-owned mode `0755`; transaction
+state, its `/var/lib/drycontroller` parent, and the shared release-lock directory
+are root-owned mode `0700`. Policy is mode `0444`, live license is mode `0640`,
+and state/journal/lock files are mode `0600`. Inputs and live files must have one
+hard link and no group/other write bits. The license service reloads the policy
+and license for every verification request, so a verified pair switch does not
+require a service restart.
+
 This workflow changes production trust and licensing state. A second agent or a
 human must review the candidate pair, command arguments, and verification
 evidence before staging or production execution.
