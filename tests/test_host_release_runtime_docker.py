@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import os
+import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -230,8 +232,9 @@ def test_signed_host_topology_change_and_failed_candidate_roll_back_offline(tmp_
     if any(project.get("Name") == "drycontroller-edge" for project in projects):
         pytest.fail("isolated Compose project drycontroller-edge is already in use")
 
-    suffix = f"{os.getpid()}"
+    suffix = f"{os.getpid()}-{secrets.token_hex(6)}"
     registry_name = f"drycontroller-rb5c-registry-{suffix}"
+    network_name = f"drycontroller-rb5c-network-{suffix}-{secrets.token_hex(6)}"
     registry_port = 56000 + os.getpid() % 1000
     registry = f"127.0.0.1:{registry_port}"
     signing_config = tmp_path / "signing-config.json"
@@ -241,6 +244,8 @@ def test_signed_host_topology_change_and_failed_candidate_roll_back_offline(tmp_
     created_images: set[str] = set()
     commands: list[list[str]] = []
     registry_offline_at: int | None = None
+    network_created = False
+    network_id: str | None = None
 
     _run(
         [
@@ -379,7 +384,34 @@ def test_signed_host_topology_change_and_failed_candidate_roll_back_offline(tmp_
         raise HostReleaseError("unexpected real E2E command")
 
     try:
-        _run([docker, "run", "-d", "--name", registry_name, "-p", f"{registry_port}:5000", "registry:2"])
+        network_id = _run(
+            [
+                docker,
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--label",
+                "drycontroller.purpose=host-release-e2e",
+                network_name,
+            ]
+        ).strip()
+        network_created = True
+        assert re.fullmatch(r"[0-9a-f]{64}", network_id)
+        _run(
+            [
+                docker,
+                "run",
+                "-d",
+                "--name",
+                registry_name,
+                "--network",
+                network_id,
+                "-p",
+                f"{registry_port}:5000",
+                "registry:2",
+            ]
+        )
         for sequence, services in ((1, ("edge-api",)), (2, ("edge-api", "worker")), (3, ("edge-api", "worker"))):
             host_id = f"{sequence:08d}-1111-4111-8111-{sequence:012d}"
             software_id = f"{sequence:08d}-2222-4222-8222-{sequence:012d}"
@@ -635,3 +667,17 @@ def test_signed_host_topology_change_and_failed_candidate_roll_back_offline(tmp_
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+        if network_created:
+            cleanup_network = (
+                network_id
+                if network_id is not None and re.fullmatch(r"[0-9a-f]{64}", network_id)
+                else network_name
+            )
+            removed = subprocess.run(
+                [docker, "network", "rm", cleanup_network],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if removed.returncode != 0:
+                pytest.fail(f"failed to remove isolated Docker network {network_name}")

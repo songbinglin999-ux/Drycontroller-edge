@@ -4,6 +4,8 @@ import base64
 import hashlib
 import json
 import os
+import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -260,7 +262,9 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
     if any(project.get("Name") == "drycontroller-edge" for project in projects):
         pytest.fail("isolated Compose project drycontroller-edge is already in use")
 
-    registry_name = f"drycontroller-rb4-registry-{os.getpid()}"
+    suffix = f"{os.getpid()}-{secrets.token_hex(6)}"
+    registry_name = f"drycontroller-rb4-registry-{suffix}"
+    network_name = f"drycontroller-rb4-network-{suffix}"
     registry_port = 55000 + os.getpid() % 1000
     registry = f"127.0.0.1:{registry_port}"
     key_prefix = tmp_path / "release-cosign"
@@ -319,6 +323,8 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
     image_ids: dict[str, str] = {}
     references: dict[str, str] = {}
     manifests: list[dict] = []
+    network_created = False
+    network_id: str | None = None
 
     def command(args: list[str]) -> str:
         if args[0] == "/usr/local/bin/cosign":
@@ -332,13 +338,39 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
         return _docker_run(args, project, runtime_env=runtime_env)
 
     try:
+        network_id = subprocess.check_output(
+            [
+                docker,
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--label",
+                "drycontroller.purpose=software-release-e2e",
+                network_name,
+            ],
+            text=True,
+        ).strip()
+        network_created = True
+        assert re.fullmatch(r"[0-9a-f]{64}", network_id)
         subprocess.run(
-            [docker, "run", "-d", "--name", registry_name, "-p", f"{registry_port}:5000", "registry:2"],
+            [
+                docker,
+                "run",
+                "-d",
+                "--name",
+                registry_name,
+                "--network",
+                network_id,
+                "-p",
+                f"{registry_port}:5000",
+                "registry:2",
+            ],
             check=True,
             stdout=subprocess.DEVNULL,
         )
         for sequence, version in enumerate(("1.0.0", "1.1.0", "1.2.0", "1.3.0"), start=1):
-            local = f"drycontroller-rb4-{os.getpid()}:{version}"
+            local = f"drycontroller-rb4-{suffix}:{version}"
             reference = f"{registry}/drycontroller/edge-api:{version}"
             subprocess.run(
                 [docker, "build", "-q", "--build-arg", f"VERSION={version}", "-t", local, "-"],
@@ -546,7 +578,7 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
         )
         for version in ("1.0.0", "1.1.0", "1.2.0", "1.3.0"):
             for reference in (
-                f"drycontroller-rb4-{os.getpid()}:{version}",
+                f"drycontroller-rb4-{suffix}:{version}",
                 f"{registry}/drycontroller/edge-api:{version}",
                 *(
                     [local_image_reference("edge-api", image_ids[version])]
@@ -555,3 +587,17 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
                 ),
             ):
                 subprocess.run([docker, "image", "rm", "-f", reference], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if network_created:
+            cleanup_network = (
+                network_id
+                if network_id is not None and re.fullmatch(r"[0-9a-f]{64}", network_id)
+                else network_name
+            )
+            removed = subprocess.run(
+                [docker, "network", "rm", cleanup_network],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if removed.returncode != 0:
+                pytest.fail(f"failed to remove isolated Docker network {network_name}")
