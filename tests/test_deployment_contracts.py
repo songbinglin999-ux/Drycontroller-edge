@@ -254,6 +254,15 @@ def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata
     assert "source bundle contains forbidden macOS metadata" in builder
 
 
+def test_installer_retires_the_independent_license_trust_writer():
+    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+
+    assert "rm -f /usr/libexec/drycontroller/manage-license-trust.py" in installer
+    assert '"${REPO_SOURCE}/scripts/manage-license-trust.py"' in installer
+    assert "--root /etc/drycontroller/keys/license-trust" in installer
+    assert "install -o root -g root -m 0755 \"${REPO_SOURCE}/scripts/manage-license-trust.py\"" not in installer
+
+
 def test_edge_api_tailnet_preflight_uses_fixed_root_observer_without_localapi_socket():
     services = _compose_services()
     edge_api = services["edge-api"]

@@ -89,7 +89,6 @@ def _fixture(tmp_path: Path):
             str(TRUST_MANAGER),
             "--root",
             str(trust_root),
-            "initialize",
             str(old_trust),
         ],
         check=True,

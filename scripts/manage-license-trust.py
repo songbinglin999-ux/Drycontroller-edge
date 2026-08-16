@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Atomically select one canonical license-trust.v1 artifact."""
+"""Initialize one canonical license-trust.v1 policy on a blank host."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ from common.license_verifier import (  # noqa: E402
     LICENSE_TRUST_POLICY_SCHEMA,
     LicenseTrust,
     load_license_trust,
-    load_license_trust_policy,
 )
 
 
@@ -107,16 +106,6 @@ def write_policy(root: Path, active: dict[str, str], previous: dict[str, str] | 
     atomic_write(root / "policy.json", canonical_json(payload), 0o444)
 
 
-def require_expected(policy: dict[str, object], expected: str) -> dict[str, str]:
-    active = policy["active"]
-    assert isinstance(active, dict)
-    if active["key_id"] != expected:
-        raise ValueError(
-            f"active license trust is {active['key_id']}, expected {expected}"
-        )
-    return active
-
-
 def command_initialize(root: Path, artifact: Path) -> None:
     policy_path = root / "policy.json"
     if policy_path.exists():
@@ -125,62 +114,19 @@ def command_initialize(root: Path, artifact: Path) -> None:
     write_policy(root, binding(trust), None)
 
 
-def command_rotate(root: Path, artifact: Path, expected: str) -> None:
-    policy = load_license_trust_policy(root / "policy.json")
-    active = require_expected(policy, expected)
-    trust = stage_artifact(root, artifact)
-    if trust.key_id == active["key_id"]:
-        raise ValueError("new license trust key_id must differ from active key_id")
-    write_policy(root, binding(trust), active)
-
-
-def command_rollback(root: Path, expected: str) -> None:
-    policy = load_license_trust_policy(root / "policy.json")
-    active = require_expected(policy, expected)
-    previous = policy["previous"]
-    if not isinstance(previous, dict):
-        raise ValueError("license trust rollback target is unavailable")
-    write_policy(root, previous, active)
-
-
-def command_revoke_previous(root: Path, expected: str) -> None:
-    policy = load_license_trust_policy(root / "policy.json")
-    active = require_expected(policy, expected)
-    if policy["previous"] is None:
-        raise ValueError("license trust previous key is already revoked")
-    write_policy(root, active, None)
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Initialize license trust once; later changes require the paired transaction"
+    )
     parser.add_argument(
         "--root",
         type=Path,
         default=Path("/etc/drycontroller/keys/license-trust"),
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    initialize = subparsers.add_parser("initialize")
-    initialize.add_argument("artifact", type=Path)
-    rotate = subparsers.add_parser("rotate")
-    rotate.add_argument("artifact", type=Path)
-    rotate.add_argument("--expected-active", required=True)
-    rollback = subparsers.add_parser("rollback")
-    rollback.add_argument("--expected-active", required=True)
-    revoke = subparsers.add_parser("revoke-previous")
-    revoke.add_argument("--expected-active", required=True)
-    subparsers.add_parser("status")
+    parser.add_argument("artifact", type=Path)
     args = parser.parse_args()
     try:
-        if args.command == "initialize":
-            command_initialize(args.root, args.artifact)
-        elif args.command == "rotate":
-            command_rotate(args.root, args.artifact, args.expected_active)
-        elif args.command == "rollback":
-            command_rollback(args.root, args.expected_active)
-        elif args.command == "revoke-previous":
-            command_revoke_previous(args.root, args.expected_active)
-        else:
-            print((args.root / "policy.json").read_text(encoding="utf-8"))
+        command_initialize(args.root, args.artifact)
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"license trust operation failed: {exc}", file=sys.stderr)
         return 1

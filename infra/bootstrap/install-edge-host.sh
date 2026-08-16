@@ -246,7 +246,7 @@ install_static_runtime() {
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_runner.py" /usr/libexec/drycontroller/host_release_runner.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/common/tailscale_status.py" /usr/libexec/drycontroller/common/tailscale_status.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/common/license_verifier.py" /usr/libexec/drycontroller/common/license_verifier.py
-  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/manage-license-trust.py" /usr/libexec/drycontroller/manage-license-trust.py
+  rm -f /usr/libexec/drycontroller/manage-license-trust.py
   install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/manage-license-transaction.py" /usr/libexec/drycontroller/manage-license-transaction.py
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-runner" /usr/libexec/drycontroller/host-release-runner
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-apply" /usr/libexec/drycontroller/host-release-apply
@@ -287,9 +287,9 @@ install_identity_service() {
 
 initialize_license_trust() {
   /opt/drycontroller-identity/venv/bin/python \
-    /usr/libexec/drycontroller/manage-license-trust.py \
+    "${REPO_SOURCE}/scripts/manage-license-trust.py" \
     --root /etc/drycontroller/keys/license-trust \
-    initialize "$LICENSE_TRUST"
+    "$LICENSE_TRUST"
   /opt/drycontroller-identity/venv/bin/python - <<'PY'
 from pathlib import Path
 import os

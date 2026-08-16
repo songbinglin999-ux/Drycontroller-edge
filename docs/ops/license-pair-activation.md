@@ -5,6 +5,10 @@ release unit. Production activation and rollback use only the root-owned paired
 transaction command; the lower-level trust and license APIs are not release
 workflows.
 
+The installer removes the former deployed `manage-license-trust.py` command.
+Its bundle copy is a blank-host, create-once bootstrap initializer only: it has
+no rotate, rollback, revoke or status command and refuses an existing policy.
+
 ```bash
 sudo /opt/drycontroller-identity/venv/bin/python \
   /usr/libexec/drycontroller/manage-license-transaction.py activate \
