@@ -316,7 +316,7 @@ class LicenseTransaction:
             except BlockingIOError as exc:
                 raise ValueError("another release transaction is running") from exc
             return descriptor
-        except Exception:
+        except Exception:  # noqa: BLE001 - every lock failure must close the fd
             os.close(descriptor)
             raise
 
@@ -554,7 +554,7 @@ class LicenseTransaction:
             self.fault("after_state")
             self.journal_path.unlink()
             fsync_directory(self.state_root)
-        except Exception:
+        except Exception:  # noqa: BLE001 - every transaction failure must roll back
             self._restore_source(journal)
             raise
 
