@@ -24,6 +24,7 @@ for import_root in (Path(__file__).resolve().parents[1], Path(__file__).resolve(
 from common.license_verifier import (  # noqa: E402
     LICENSE_TRUST_POLICY_SCHEMA,
     LicenseTrust,
+    license_runtime_error,
     load_active_license_trust,
     load_license_trust_policy,
     parse_license_trust,
@@ -248,6 +249,7 @@ class LicenseTransaction:
         license_parent_mode: int = 0o755,
         state_parent_mode: int = 0o700,
         lock_parent_mode: int = 0o700,
+        machine_id: str = "",
         fault: Callable[[str], None] | None = None,
     ) -> None:
         self.trust_root = trust_root
@@ -263,6 +265,7 @@ class LicenseTransaction:
         self.license_parent_mode = license_parent_mode
         self.state_parent_mode = state_parent_mode
         self.lock_parent_mode = lock_parent_mode
+        self.machine_id = machine_id
         self.fault = fault or (lambda _point: None)
 
     def _prepare_roots(self) -> None:
@@ -446,7 +449,7 @@ class LicenseTransaction:
         live_policy = load_license_trust_policy(self.policy_path)
         trust = load_active_license_trust(self.policy_path)
         raw = self.license_path.read_bytes()
-        verify_license(parse_license(raw), trust)
+        self._verify_runtime(parse_license(raw), trust)
         active = live_policy["active"]
         assert isinstance(active, dict)
         live = {
@@ -472,7 +475,15 @@ class LicenseTransaction:
         raw = self.license_path.read_bytes()
         if raw != expected_raw:
             raise ValueError("live license bytes do not match transaction target")
-        verify_license(parse_license(raw), trust)
+        self._verify_runtime(parse_license(raw), trust)
+
+    def _verify_runtime(self, payload: dict[str, Any], trust: LicenseTrust) -> None:
+        verify_license(payload, trust)
+        if not self.machine_id:
+            raise ValueError("current machine id is unavailable")
+        runtime_error = license_runtime_error(payload, machine_id=self.machine_id)
+        if runtime_error is not None:
+            raise ValueError(f"license runtime validation failed: {runtime_error}")
 
     def _restore_source(self, journal: dict[str, Any]) -> None:
         if set(journal) != {
@@ -481,8 +492,6 @@ class LicenseTransaction:
             "schema",
             "source_policy",
             "source_state",
-            "target_policy",
-            "target_state",
         }:
             raise ValueError("license transaction journal fields are invalid")
         source_policy = journal["source_policy"]
@@ -527,8 +536,6 @@ class LicenseTransaction:
             "schema": JOURNAL_SCHEMA,
             "source_policy": source_policy,
             "source_state": source_state,
-            "target_policy": target_policy,
-            "target_state": target_state,
         }
         self._write_journal(journal, "prepared")
         self.fault("after_prepared")
@@ -568,7 +575,7 @@ class LicenseTransaction:
             candidate_raw, _candidate_metadata = read_regular(
                 license_source, self.expected_uid, MAX_LICENSE_BYTES
             )
-            verify_license(parse_license(candidate_raw), trust)
+            self._verify_runtime(parse_license(candidate_raw), trust)
             target_binding = binding(trust)
             target_state = {
                 "active": slot(target_binding, candidate_raw),
@@ -617,11 +624,16 @@ class LicenseTransaction:
 
 
 def production_transaction() -> LicenseTransaction:
+    try:
+        machine_id = Path("/etc/machine-id").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        machine_id = ""
     return LicenseTransaction(
         trust_root=Path("/etc/drycontroller/keys/license-trust"),
         license_path=Path("/etc/drycontroller/license/license.json"),
         state_root=Path("/var/lib/drycontroller/license-transaction"),
         lock_path=Path("/var/lib/drycontroller-ota/release.lock"),
+        machine_id=machine_id,
     )
 
 

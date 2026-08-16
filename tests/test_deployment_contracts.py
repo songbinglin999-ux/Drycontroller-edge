@@ -46,12 +46,12 @@ def test_plc_deployment_defaults_match_rtu_over_tcp_contract():
     assert example["MODBUS_FRAMER"] == "rtu"
 
 
-def test_license_install_contract_keeps_atomic_trust_policy_read_only():
+def test_license_pair_contract_keeps_edge_api_fully_read_only():
     services = _compose_services()
     edge_api = services["edge-api"]
     license_service = services["license-service"]
 
-    assert "/etc/drycontroller/license:/etc/drycontroller/license" in edge_api["volumes"]
+    assert "/etc/drycontroller/license:/etc/drycontroller/license:ro" in edge_api["volumes"]
     assert "/etc/drycontroller/keys:/etc/drycontroller/keys:ro" in edge_api["volumes"]
     assert "/etc/drycontroller/license:/etc/drycontroller/license:ro" in license_service["volumes"]
     assert "/etc/drycontroller/keys:/etc/drycontroller/keys:ro" in license_service["volumes"]

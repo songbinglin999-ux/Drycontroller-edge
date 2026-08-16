@@ -8,4 +8,4 @@ Type=oneshot
 ExecStart=/opt/drycontroller-identity/venv/bin/python /usr/libexec/drycontroller/manage-license-transaction.py recover
 
 [Install]
-WantedBy=multi-user.target
+RequiredBy=docker.service

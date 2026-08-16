@@ -18,7 +18,8 @@ sudo /opt/drycontroller-identity/venv/bin/python \
 ```
 
 The command takes the shared host release lock, verifies the candidate with the
-real active-trust loader and Ed25519 verifier, then durably journals each switch.
+real active-trust loader, Ed25519 verifier, and the same issued/expiry/machine
+runtime semantics as `license-service`, then durably journals each switch.
 Any ordinary failure restores the source pair immediately. A process or power
 loss leaves the journal in place; the enabled recovery oneshot restores and
 verifies the source pair before `docker.service` starts.
@@ -36,6 +37,10 @@ and state/journal/lock files are mode `0600`. Inputs and live files must have on
 hard link and no group/other write bits. The license service reloads the policy
 and license for every verification request, so a verified pair switch does not
 require a service restart.
+
+`edge-api` has no License mutation route and mounts both the License directory
+and trust root read-only. Cloud job creation for the retired single-file install
+flow fails explicitly; it must not be used as a fallback for this host workflow.
 
 This workflow changes production trust and licensing state. A second agent or a
 human must review the candidate pair, command arguments, and verification

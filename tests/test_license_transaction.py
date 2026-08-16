@@ -45,15 +45,25 @@ def _trust(private_key: Ed25519PrivateKey, key_id: str) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _license(private_key: Ed25519PrivateKey, key_id: str) -> bytes:
+def _license(
+    private_key: Ed25519PrivateKey,
+    key_id: str,
+    *,
+    machine_id: str = "machine-1",
+    issued_at: str = "2026-01-01T00:00:00Z",
+    expires_at: str = "2099-01-01T00:00:00Z",
+    padding: int = 0,
+) -> bytes:
     unsigned = {
-        "expires_at": "2099-01-01T00:00:00Z",
-        "issued_at": "2026-01-01T00:00:00Z",
+        "expires_at": expires_at,
+        "issued_at": issued_at,
         "key_id": key_id,
         "license_id": f"lic-{key_id}",
-        "machine_id": "machine-1",
+        "machine_id": machine_id,
         "signature_alg": "ed25519",
     }
+    if padding:
+        unsigned["padding"] = "x" * padding
     payload = {
         **unsigned,
         "signature": base64.b64encode(
@@ -96,6 +106,7 @@ def _fixture(tmp_path: Path):
         "lock_path": tmp_path / "release" / "release.lock",
         "expected_uid": os.getuid(),
         "trust_parent_mode": 0o700,
+        "machine_id": "machine-1",
     }
     return kwargs, old_key, new_key, new_trust, candidate_license
 
@@ -194,6 +205,73 @@ def test_candidate_pair_and_expected_active_are_fail_closed(tmp_path: Path):
 
     _assert_live(kwargs, old_license, candidate_license.read_bytes())
     assert not (kwargs["state_root"] / "journal.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reason"),
+    [
+        (
+            {"issued_at": "2099-01-01T00:00:00Z", "expires_at": "2100-01-01T00:00:00Z"},
+            "not_yet_valid",
+        ),
+        (
+            {"issued_at": "2020-01-01T00:00:00Z", "expires_at": "2021-01-01T00:00:00Z"},
+            "expired",
+        ),
+        ({"machine_id": "other-machine"}, "machine_mismatch"),
+    ],
+)
+def test_candidate_reuses_runtime_license_semantics(
+    tmp_path: Path, candidate: dict[str, str], reason: str
+):
+    kwargs, old_key, new_key, new_trust, candidate_license = _fixture(tmp_path)
+    candidate_license.write_bytes(_license(new_key, "license-new", **candidate))
+
+    with pytest.raises(ValueError, match=reason):
+        TRANSACTION.LicenseTransaction(**kwargs).activate(
+            new_trust, candidate_license, "license-old"
+        )
+
+    _assert_live(
+        kwargs,
+        _license(old_key, "license-old"),
+        candidate_license.read_bytes(),
+    )
+    assert not (kwargs["state_root"] / "journal.json").exists()
+
+
+def test_maximum_size_pair_rollback_crash_journal_is_recoverable(tmp_path: Path):
+    kwargs, old_key, new_key, new_trust, candidate_license = _fixture(tmp_path)
+    padding = TRANSACTION.MAX_LICENSE_BYTES - 2048
+    old_license = _license(old_key, "license-old", padding=padding)
+    new_license = _license(new_key, "license-new", padding=padding)
+    assert TRANSACTION.MAX_LICENSE_BYTES - 4096 < len(old_license) <= TRANSACTION.MAX_LICENSE_BYTES
+    assert TRANSACTION.MAX_LICENSE_BYTES - 4096 < len(new_license) <= TRANSACTION.MAX_LICENSE_BYTES
+    kwargs["license_path"].write_bytes(old_license)
+    candidate_license.write_bytes(new_license)
+    TRANSACTION.LicenseTransaction(**kwargs).activate(
+        new_trust, candidate_license, "license-old"
+    )
+
+    def crash(point: str) -> None:
+        if point == "after_state":
+            raise TRANSACTION.InjectedCrash(point)
+
+    with pytest.raises(TRANSACTION.InjectedCrash):
+        TRANSACTION.LicenseTransaction(**kwargs, fault=crash).rollback("license-new")
+
+    journal = kwargs["state_root"] / "journal.json"
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    assert set(payload) == {
+        "operation",
+        "phase",
+        "schema",
+        "source_policy",
+        "source_state",
+    }
+    assert journal.stat().st_size < TRANSACTION.MAX_STATE_BYTES
+    assert TRANSACTION.LicenseTransaction(**kwargs).recover() is True
+    _assert_live(kwargs, new_license, old_license)
 
 
 def test_shared_release_lock_rejects_concurrent_mutation(tmp_path: Path):
@@ -326,6 +404,8 @@ def test_boot_recovery_runs_before_docker_and_is_installed():
         encoding="utf-8"
     )
     assert "Before=docker.service" in unit
+    assert "RequiredBy=docker.service" in unit
+    assert "WantedBy=multi-user.target" not in unit
     assert "manage-license-transaction.py recover" in unit
     assert "install -o root -g root -m 0755" in installer
     assert "/etc/drycontroller/license" in installer

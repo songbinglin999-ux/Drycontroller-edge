@@ -11,7 +11,7 @@ Drycontroller-cloudserver/docs/ops/product-hardening-design.md
 - `scripts/preflight.sh`。状态：已完成第一版。
 - `make preflight`。状态：已完成第一版。
 - `edge-api /api/v1/ops/preflight`。状态：已完成第一版（云端远程只读检查）。
-- `edge-api /api/v1/ops/license/install`。状态：已完成第一版。
+- License 激活。状态：仅保留宿主 root 成对事务，已移除 edge-api 单文件写入。
 - `edge-api /api/v1/alarms/{alarm_id}/acknowledge`
 - root-owned `drycontroller-ota-helper.service` + `0660` UDS（RB-3 已落协调分支）。
 - operation-ID-only、串行幂等的固定 OTA 状态机（RB-3 已落协调分支）。
@@ -31,20 +31,12 @@ RB-4 发布边界：
 
 边端实现必须按“云端人工决策，边端无人值守执行”设计。
 
-License 相关动作的边端职责：
-
-- 接收 cloud-ops 下发的新 signed license 和 public key。
-- 做基础 signed license 形状检查与 public key base64 检查；signed license 为扁平 JSON，必须包含 `signature`、`license_id`、`machine_id`、`issued_at`、`expires_at`。
-- 备份旧 license 与 public key。
-- 原子替换正式文件。
-- 调用 `license-service /verify` 并回报结果。
-- 验签失败时自动恢复旧 license，不停止生产服务。
-
-已落地接口：
+License 和 trust policy 是同一发布单元，只能通过
+`manage-license-transaction.py` 的 root-only activate/rollback 流程成对变更。
+edge-api 只保留只读校验接口：
 
 ```http
 GET  /api/v1/ops/license/verify
-POST /api/v1/ops/license/install
 ```
 
 现场人员默认只负责接电、接网络、接 PLC 线；不应要求现场人员登录机器、复制 license 文件或执行 Docker 命令。

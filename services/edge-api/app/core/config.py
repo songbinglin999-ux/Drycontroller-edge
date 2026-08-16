@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     MONITOR_CONFIG: str = "/app/configs/monitor.yaml"
     MONITOR_API_BASE: str = "http://edge-monitor:8080"
 
-    # License 安装与校验：edge-api 负责受控写入，license-service 负责验签判定
+    # License 只读校验：成对激活只由宿主 root 事务管理器执行
     LICENSE_FILE_PATH: str = "/etc/drycontroller/license/license.json"
     LICENSE_TRUST_POLICY_PATH: str = "/etc/drycontroller/keys/license-trust/policy.json"
     LICENSE_SERVICE_BASE: str = "http://license-service:8000"

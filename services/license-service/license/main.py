@@ -2,7 +2,6 @@
 授权服务
 """
 
-import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -15,7 +14,7 @@ from common.logging import setup_logging
 from license.license_verifier import (
     load_active_license_trust,
     load_json,
-    parse_dt,
+    license_runtime_error,
     verify_license as verify_signed_license,
 )
 
@@ -124,22 +123,12 @@ async def verify_license():
         logger.warning("license_verify_failed", reason="signature_invalid", error=str(exc))
         return _result(False, "signature_invalid", None)
 
-    now = dt.datetime.now(dt.UTC)
-    try:
-        expires_at = parse_dt(str(payload["expires_at"]))
-        issued_at = parse_dt(str(payload["issued_at"]))
-    except (KeyError, TypeError, ValueError) as exc:
-        logger.warning("license_verify_failed", reason="malformed_license", error=str(exc))
-        return _result(False, "malformed_license", None)
-
-    if issued_at > now:
-        return _result(False, "not_yet_valid", payload)
-    if expires_at <= now:
-        return _result(False, "expired", payload)
-
-    expected_machine = str(payload.get("machine_id") or "").strip()
-    current_machine = _machine_id()
-    if expected_machine and current_machine and expected_machine != current_machine:
-        return _result(False, "machine_mismatch", payload)
+    runtime_error = license_runtime_error(payload, machine_id=_machine_id())
+    if runtime_error is not None:
+        return _result(
+            False,
+            runtime_error,
+            None if runtime_error == "malformed_license" else payload,
+        )
 
     return _result(True, "ok", payload)

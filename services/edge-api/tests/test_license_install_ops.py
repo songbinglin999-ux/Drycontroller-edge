@@ -26,7 +26,6 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
 
 from app.api.v1 import ops as ops_module  # noqa: E402
 from app.core.config import settings  # noqa: E402
-from common.license_verifier import canonical_license_bytes  # noqa: E402
 
 
 def _client() -> TestClient:
@@ -54,22 +53,6 @@ def _write_device_identity(path: Path) -> None:
         encoding="utf-8",
     )
     path.chmod(0o600)
-
-
-def _signed_payload() -> dict:
-    private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
-    license_payload = {
-        "key_id": "license-test",
-        "license_id": "lic-1",
-        "machine_id": "machine-1",
-        "issued_at": "2026-01-01T00:00:00Z",
-        "expires_at": "2027-01-01T00:00:00Z",
-        "signature_alg": "ed25519",
-    }
-    signature = private_key.sign(canonical_license_bytes(license_payload))
-    import base64
-
-    return {"license": {**license_payload, "signature": base64.b64encode(signature).decode("ascii")}}
 
 
 def _write_trust_policy(root: Path) -> Path:
@@ -134,128 +117,21 @@ def test_cloud_readiness_requires_edge_admin_key_not_tailnet_identity(monkeypatc
     assert authenticated.json()["status"] == "ready"
 
 
-def test_license_install_success_writes_license_only(tmp_path: Path, monkeypatch):
+def test_license_install_mutation_route_is_removed(tmp_path: Path):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     license_path = tmp_path / "license.json"
-    trust_root = tmp_path / "keys" / "license-trust"
-    trust_policy_path = _write_trust_policy(trust_root)
+    license_path.write_text('{"old":true}\n', encoding="utf-8")
     settings.LICENSE_FILE_PATH = str(license_path)
-    settings.LICENSE_TRUST_POLICY_PATH = str(trust_policy_path)
-    trust_before = trust_policy_path.read_bytes()
-    trust_root.chmod(0o500)
-
-    async def fake_verify():
-        return {"url": "mock", "status_code": 200, "body": {"valid": True}}
-
-    monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
-
-    try:
-        resp = _client().post(
-            "/api/v1/ops/license/install",
-            json=_signed_payload(),
-            headers={"X-API-Key": "admin-1"},
-        )
-    finally:
-        trust_root.chmod(0o700)
-
-    assert resp.status_code == 200
-    assert resp.json()["success"] is True
-    assert "lic-1" in license_path.read_text(encoding="utf-8")
-    assert trust_policy_path.read_bytes() == trust_before
-
-
-def test_license_install_rolls_back_when_verify_fails(tmp_path: Path, monkeypatch):
-    settings.ADMIN_API_KEYS = ["admin-1"]
-    settings.API_KEY_HEADER = "X-API-Key"
-    license_path = tmp_path / "license.json"
-    trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
-    settings.LICENSE_FILE_PATH = str(license_path)
-    settings.LICENSE_TRUST_POLICY_PATH = str(trust_policy_path)
-    license_path.write_text('{"old": true}\n', encoding="utf-8")
-
-    calls = 0
-
-    async def fake_verify():
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return {"url": "mock", "status_code": 200, "body": {"valid": False, "reason": "bad_signature"}}
-        return {"url": "mock", "status_code": 200, "body": {"valid": True}}
-
-    monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
 
     resp = _client().post(
         "/api/v1/ops/license/install",
-        json=_signed_payload(),
+        json={"license": {"key_id": "candidate"}},
         headers={"X-API-Key": "admin-1"},
     )
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "license_verify_failed_after_install"
-    assert license_path.read_text(encoding="utf-8") == '{"old": true}\n'
-    assert trust_policy_path.is_file()
-
-
-def test_license_install_uses_canonical_policy_as_trust_anchor(tmp_path: Path, monkeypatch):
-    payload = _signed_payload()
-    settings.ADMIN_API_KEYS = ["admin-1"]
-    settings.API_KEY_HEADER = "X-API-Key"
-    license_path = tmp_path / "license.json"
-    trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
-    settings.LICENSE_FILE_PATH = str(license_path)
-    settings.LICENSE_TRUST_POLICY_PATH = str(trust_policy_path)
-
-    async def fake_verify():
-        return {"url": "mock", "status_code": 200, "body": {"valid": True}}
-
-    monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
-
-    resp = _client().post(
-        "/api/v1/ops/license/install",
-        json=payload,
-        headers={"X-API-Key": "admin-1"},
-    )
-
-    assert resp.status_code == 200
-    assert "lic-1" in license_path.read_text(encoding="utf-8")
-    assert json.loads(trust_policy_path.read_text(encoding="utf-8"))["active"]["key_id"] == "license-test"
-
-
-def test_license_install_rejects_wrong_key_id(tmp_path: Path):
-    settings.ADMIN_API_KEYS = ["admin-1"]
-    settings.API_KEY_HEADER = "X-API-Key"
-    settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_TRUST_POLICY_PATH = str(_write_trust_policy(tmp_path / "license-trust"))
-    payload = _signed_payload()
-    payload["license"]["key_id"] = "license-other"
-
-    resp = _client().post(
-        "/api/v1/ops/license/install",
-        json=payload,
-        headers={"X-API-Key": "admin-1"},
-    )
-
-    assert resp.status_code == 403
-    assert resp.json()["detail"]["error"] == "license_key_id_not_trusted"
-
-
-def test_license_install_rejects_bad_signature(tmp_path: Path):
-    settings.ADMIN_API_KEYS = ["admin-1"]
-    settings.API_KEY_HEADER = "X-API-Key"
-    settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_TRUST_POLICY_PATH = str(_write_trust_policy(tmp_path / "license-trust"))
-    payload = _signed_payload()
-    payload["license"]["machine_id"] = "tampered"
-
-    resp = _client().post(
-        "/api/v1/ops/license/install",
-        json=payload,
-        headers={"X-API-Key": "admin-1"},
-    )
-
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "license_signature_invalid"
+    assert resp.status_code == 404
+    assert license_path.read_text(encoding="utf-8") == '{"old":true}\n'
 
 
 def test_registry_credential_refresh_writes_docker_config(tmp_path: Path):

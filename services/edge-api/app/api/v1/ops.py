@@ -49,23 +49,12 @@ from app.services.audit import api_key_actor, write_audit
 from app.services.config_version import record_config_version
 from app.services.ota_history import record_ota_operation
 from app.services.preflight_history import record_preflight_run
-from common.license_verifier import load_active_license_trust, verify_license as verify_signed_license
 from common.tailscale_status import validate_tailscale_status
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
 # 注意：这里需要拿到实际 api_key 以便代理调用 edge-monitor 的 /ops/*
 router = APIRouter()
 PLC_CONFIG_RUNTIME_PATH = Path(os.getenv("PLC_CONFIG_RUNTIME_PATH", "/app/configs-runtime/plc.yaml"))
-
-
-class LicenseInstallRequest(BaseModel):
-    """
-    云端签发后的 License 安装请求。
-
-    现场人员不应手工拷贝文件；edge-api 接收云端下发后负责落盘、校验、失败回滚。
-    """
-
-    license: dict[str, Any] = Field(..., description="完整 signed license JSON（扁平结构，包含 signature）")
 
 
 class PreflightRequest(BaseModel):
@@ -140,41 +129,6 @@ def _restore_or_remove(path: Path, old_data: bytes | None, mode: int = 0o640) ->
         path.unlink(missing_ok=True)
         return
     _write_bytes_atomic(path, old_data, mode=mode)
-
-
-def _validate_license_install_shape(req: LicenseInstallRequest) -> None:
-    required_fields = {
-        "signature",
-        "signature_alg",
-        "key_id",
-        "license_id",
-        "machine_id",
-        "issued_at",
-        "expires_at",
-    }
-    missing = sorted(required_fields - set(req.license.keys()))
-    if missing:
-        raise HTTPException(status_code=400, detail={"success": False, "error": "license_missing_fields", "missing": missing})
-    if str(req.license.get("signature_alg") or "").lower() != "ed25519":
-        raise HTTPException(status_code=400, detail={"success": False, "error": "unsupported_signature_alg"})
-    for field in ("signature", "key_id", "license_id", "machine_id", "issued_at", "expires_at"):
-        if not str(req.license.get(field) or "").strip():
-            raise HTTPException(status_code=400, detail={"success": False, "error": "license_payload_missing_field", "field": field})
-
-
-def _verify_license_install_request(req: LicenseInstallRequest, *, trust_policy_path: Path) -> None:
-    try:
-        trust = load_active_license_trust(trust_policy_path)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=409, detail={"success": False, "error": "missing_license_trust_policy"}) from exc
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail={"success": False, "error": "invalid_license_trust_policy"}) from exc
-    if req.license.get("key_id") != trust.key_id:
-        raise HTTPException(status_code=403, detail={"success": False, "error": "license_key_id_not_trusted"})
-    try:
-        verify_signed_license(req.license, trust)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"success": False, "error": "license_signature_invalid"}) from exc
 
 
 async def _call_license_verify() -> dict:
@@ -455,7 +409,7 @@ async def list_alerts(
     return await client.list_alerts(severity=severity, service=service, state=state, api_key=api_key)
 
 
-# ==================== License 安装与校验（云端决策，边端无人值守执行） ====================
+# ==================== License 只读校验 ====================
 
 
 @router.get("/license/verify")
@@ -586,79 +540,6 @@ async def refresh_registry_credential(req: RegistryCredentialRefreshRequest, api
         },
     )
     return {"success": True, "credential": status_payload}
-
-
-@router.post("/license/install")
-async def install_license(req: LicenseInstallRequest, api_key: str = Depends(require_admin_api_key)):
-    """
-    安装云端签发的 License。
-
-    关键保证：
-    - 只写固定 license 文件，不触碰控制/采集服务和只读信任锚；
-    - 文件替换使用 os.replace，避免半写入；
-    - 新 License 验签失败时恢复旧文件，现场运行不因失败安装而丢失旧授权。
-    """
-    _validate_license_install_shape(req)
-
-    license_path = Path(settings.LICENSE_FILE_PATH)
-    trust_policy_path = Path(settings.LICENSE_TRUST_POLICY_PATH)
-    _verify_license_install_request(req, trust_policy_path=trust_policy_path)
-    old_license = license_path.read_bytes() if license_path.exists() else None
-
-    license_bytes = json.dumps(req.license, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
-
-    _write_bytes_atomic(license_path, license_bytes, mode=0o640)
-
-    verify_result = await _call_license_verify()
-    actor = api_key_actor(api_key, role="admin")
-    license_id = str(req.license.get("license_id") or "")
-    if _license_verify_ok(verify_result):
-        await write_audit(
-            actor=actor,
-            action="license.install",
-            resource_type="license",
-            resource_id=license_id,
-            result="success",
-            detail={
-                "machine_id": req.license.get("machine_id"),
-                "expires_at": req.license.get("expires_at"),
-                "verify": verify_result,
-            },
-        )
-        return {
-            "success": True,
-            "license_path": str(license_path),
-            "trust_policy_path": str(trust_policy_path),
-            "key_id": req.license.get("key_id"),
-            "verify": verify_result,
-            "restart_required": False,
-        }
-
-    _restore_or_remove(license_path, old_license, mode=0o640)
-    rollback_verify = await _call_license_verify()
-    await write_audit(
-        actor=actor,
-        action="license.install",
-        resource_type="license",
-        resource_id=license_id,
-        result="failure",
-        error_msg="license_verify_failed_after_install",
-        detail={
-            "machine_id": req.license.get("machine_id"),
-            "expires_at": req.license.get("expires_at"),
-            "verify": verify_result,
-            "rollback_verify": rollback_verify,
-        },
-    )
-    raise HTTPException(
-        status_code=409,
-        detail={
-            "success": False,
-            "error": "license_verify_failed_after_install",
-            "verify": verify_result,
-            "rollback_verify": rollback_verify,
-        },
-    )
 
 
 @router.get("/monitor-config")

@@ -191,3 +191,26 @@ def parse_dt(value: str) -> dt.datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.UTC)
     return parsed.astimezone(dt.UTC)
+
+
+def license_runtime_error(
+    payload: dict[str, Any],
+    *,
+    machine_id: str,
+    now: dt.datetime | None = None,
+) -> str | None:
+    try:
+        expires_at = parse_dt(str(payload["expires_at"]))
+        issued_at = parse_dt(str(payload["issued_at"]))
+    except (KeyError, TypeError, ValueError):
+        return "malformed_license"
+    current = (now or dt.datetime.now(dt.UTC)).astimezone(dt.UTC)
+    if issued_at > current:
+        return "not_yet_valid"
+    if expires_at <= current:
+        return "expired"
+    expected_machine = str(payload.get("machine_id") or "").strip()
+    current_machine = machine_id.strip()
+    if expected_machine and current_machine and expected_machine != current_machine:
+        return "machine_mismatch"
+    return None
