@@ -15,9 +15,6 @@ set -euo pipefail
 : "${SOFTWARE_COSIGN_PASSWORD:?missing SOFTWARE_COSIGN_PASSWORD}"
 : "${CLOUD_OPS_RELEASE_API_URL:?missing CLOUD_OPS_RELEASE_API_URL}"
 : "${CLOUD_OPS_RELEASE_API_KEY:?missing CLOUD_OPS_RELEASE_API_KEY}"
-: "${EXPECTED_CLOUD_HOST_KEY_SHA256:?missing EXPECTED_CLOUD_HOST_KEY_SHA256}"
-: "${EXPECTED_CLOUD_SOFTWARE_KEY_SHA256:?missing EXPECTED_CLOUD_SOFTWARE_KEY_SHA256}"
-: "${CLOUD_TRUST_ACK:?missing CLOUD_TRUST_ACK}"
 : "${RELEASE_HANDOFF_OUTPUT_DIR:?missing RELEASE_HANDOFF_OUTPUT_DIR}"
 : "${TRIVY_CACHE_DIR:?missing TRIVY_CACHE_DIR}"
 
@@ -27,8 +24,6 @@ set -euo pipefail
 [[ "${HARBOR_HOST}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$ ]]
 [[ "${HARBOR_PROJECT}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]
 [[ "${CLOUD_OPS_RELEASE_API_URL}" == https://* ]]
-[[ "${EXPECTED_CLOUD_HOST_KEY_SHA256}" =~ ^sha256:[0-9a-f]{64}$ ]]
-[[ "${EXPECTED_CLOUD_SOFTWARE_KEY_SHA256}" =~ ^sha256:[0-9a-f]{64}$ ]]
 command -v find >/dev/null
 test -d "${RELEASE_HANDOFF_OUTPUT_DIR}"
 test ! -L "${RELEASE_HANDOFF_OUTPUT_DIR}"
@@ -81,10 +76,8 @@ test "${host_key_digest}" != "${software_key_digest}"
 python3 scripts/ci/prepare-release-handoff.py trust-preflight \
   --host-public-key "${host_public_key}" \
   --software-public-key "${software_public_key}" \
-  --expected-host-sha256 "${EXPECTED_CLOUD_HOST_KEY_SHA256}" \
-  --expected-software-sha256 "${EXPECTED_CLOUD_SOFTWARE_KEY_SHA256}" \
-  --acknowledgement "${CLOUD_TRUST_ACK}" \
-  --cloud-url "${CLOUD_OPS_RELEASE_API_URL}"
+  --cloud-url "${CLOUD_OPS_RELEASE_API_URL}" \
+  --cloud-api-key "${CLOUD_OPS_RELEASE_API_KEY}"
 COSIGN_PASSWORD="${HOST_COSIGN_PASSWORD}" cosign signing-config create \
   --no-default-fulcio \
   --no-default-oidc \

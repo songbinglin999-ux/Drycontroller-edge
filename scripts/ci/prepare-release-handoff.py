@@ -40,10 +40,7 @@ KEY_KIND = "release-public-keys"
 PAIR_KIND = "release-pair"
 APPROVED_GITEA_BASE_URL = "https://git.example.com"
 GITEA_OWNER = "example-org"
-PACKAGES = {
-    KEY_KIND: "drycontroller-edge-release-public-keys",
-    PAIR_KIND: "drycontroller-edge-release-handoff",
-}
+GITEA_REPOSITORY = "Drycontroller-edge"
 KEY_PAYLOAD = (
     "host-release-cosign.pub",
     "software-release-cosign.pub",
@@ -64,7 +61,12 @@ MAX_KEY_BYTES = 64 * 1024
 MAX_SIGNATURE_BYTES = 64 * 1024
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-PACKAGE_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+\-]{0,254}$")
+RELEASE_TAG_RE = re.compile(
+    r"^drycontroller-(?:release-public-keys|release-pair)-sha256-[0-9a-f]{64}$"
+)
+RELEASE_ARCHIVE = "release-handoff.tar"
+RELEASE_CHECKSUM = "release-handoff.tar.sha256"
+RELEASE_ASSETS = (RELEASE_ARCHIVE, RELEASE_CHECKSUM, "inventory.json")
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
@@ -73,7 +75,9 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
 
 
 def _canonical_json(data: object) -> bytes:
-    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return json.dumps(
+        data, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
 
 
 def _sha256(raw: bytes) -> str:
@@ -96,7 +100,9 @@ def _load_json(path: Path, maximum: int, label: str) -> object:
         raise ValueError(f"{label} is not valid JSON") from exc
 
 
-def _release_seed(path: Path, *, host: bool) -> tuple[dict[str, object], dict[str, object], bytes]:
+def _release_seed(
+    path: Path, *, host: bool
+) -> tuple[dict[str, object], dict[str, object], bytes]:
     label = "HostRelease" if host else "SoftwareRelease"
     payload = _load_json(path, MAX_RELEASE_BYTES, label)
     if not isinstance(payload, dict):
@@ -138,11 +144,18 @@ def _public_key(path: Path, label: str) -> bytes:
 
 
 def _verify_signature(
-    *, manifest: dict[str, object], signature: bytes, public_key: Path, cosign: Path, label: str
+    *,
+    manifest: dict[str, object],
+    signature: bytes,
+    public_key: Path,
+    cosign: Path,
+    label: str,
 ) -> None:
     if not cosign.is_file():
         raise ValueError("approved cosign executable is unavailable")
-    with tempfile.TemporaryDirectory(prefix="drycontroller-handoff-signature-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="drycontroller-handoff-signature-"
+    ) as temporary:
         root = Path(temporary)
         manifest_path = root / "manifest.json"
         signature_path = root / "manifest.sigstore.json"
@@ -169,7 +182,9 @@ def _verify_signature(
 
 
 def _expected_files(kind: str) -> tuple[str, ...]:
-    payload = KEY_PAYLOAD if kind == KEY_KIND else PAIR_PAYLOAD if kind == PAIR_KIND else None
+    payload = (
+        KEY_PAYLOAD if kind == KEY_KIND else PAIR_PAYLOAD if kind == PAIR_KIND else None
+    )
     if payload is None:
         raise ValueError("release handoff kind is invalid")
     return tuple(sorted((*payload, *BOOKKEEPING)))
@@ -207,9 +222,13 @@ def _inventory_files(root: Path, names: tuple[str, ...]) -> list[dict[str, objec
 
 
 def _finish_package(root: Path, inventory: dict[str, object]) -> None:
-    inventory["files"] = _inventory_files(root, tuple(item["name"] for item in inventory["files"]))
+    inventory["files"] = _inventory_files(
+        root, tuple(item["name"] for item in inventory["files"])
+    )
     _write_file(root / "inventory.json", _canonical_json(inventory) + b"\n")
-    checksum_names = sorted((*[item["name"] for item in inventory["files"]], "inventory.json"))
+    checksum_names = sorted(
+        (*[item["name"] for item in inventory["files"]], "inventory.json")
+    )
     checksums = b"".join(
         f"{hashlib.sha256((root / name).read_bytes()).hexdigest()}  {name}\n".encode()
         for name in checksum_names
@@ -224,7 +243,9 @@ def _scan_public_package(root: Path, kind: str) -> None:
         temporary_root = Path(temporary)
         archive_path = temporary_root / "release-handoff.tar"
         report_path = temporary_root / "public-material-report.json"
-        with tarfile.open(archive_path, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        with tarfile.open(
+            archive_path, mode="w", format=tarfile.USTAR_FORMAT
+        ) as archive:
             for name in _expected_files(kind):
                 raw = (root / name).read_bytes()
                 info = tarfile.TarInfo(name)
@@ -263,7 +284,13 @@ def _install_staged(staging: Path, output_dir: Path, kind: str) -> None:
         os.replace(staging / name, output_dir / name)
 
 
-def prepare_keys(*, host_public_key: Path, software_public_key: Path, source_commit: str, output_dir: Path) -> None:
+def prepare_keys(
+    *,
+    host_public_key: Path,
+    software_public_key: Path,
+    source_commit: str,
+    output_dir: Path,
+) -> None:
     _ensure_empty_output(output_dir)
     if not COMMIT_RE.fullmatch(source_commit):
         raise ValueError("source commit must be one lowercase 40-hex commit")
@@ -309,7 +336,9 @@ def prepare_pair(
     if host_manifest["signing_key_sha256"] != _sha256(host_key):
         raise ValueError("HostRelease public key digest does not match its manifest")
     if software_manifest["signing_key_sha256"] != _sha256(software_key):
-        raise ValueError("SoftwareRelease public key digest does not match its manifest")
+        raise ValueError(
+            "SoftwareRelease public key digest does not match its manifest"
+        )
     _verify_signature(
         manifest=host_manifest,
         signature=host_signature,
@@ -373,7 +402,10 @@ def _verify_checksums(root: Path, expected: tuple[str, ...]) -> None:
             raise ValueError("SHA256SUMS line is invalid")
         digest, name = line.split("  ", 1)
         actual_names.append(name)
-        if name not in expected_names or hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
+        if (
+            name not in expected_names
+            or hashlib.sha256((root / name).read_bytes()).hexdigest() != digest
+        ):
             raise ValueError("SHA256SUMS digest mismatch")
     if actual_names != expected_names:
         raise ValueError("SHA256SUMS names are not canonical")
@@ -382,7 +414,9 @@ def _verify_checksums(root: Path, expected: tuple[str, ...]) -> None:
 def verify_package(root: Path, *, cosign: Path | None = None) -> str:
     if root.is_symlink() or not root.is_dir():
         raise ValueError("release handoff must be one directory")
-    inventory = _load_json(root / "inventory.json", MAX_RELEASE_BYTES, "handoff inventory")
+    inventory = _load_json(
+        root / "inventory.json", MAX_RELEASE_BYTES, "handoff inventory"
+    )
     if not isinstance(inventory, dict) or inventory.get("schema") != SCHEMA:
         raise ValueError("release handoff inventory schema is invalid")
     kind = str(inventory.get("kind") or "")
@@ -397,20 +431,24 @@ def verify_package(root: Path, *, cosign: Path | None = None) -> str:
         raise ValueError("release handoff file inventory does not match payload")
     _verify_checksums(root, expected)
     if kind == KEY_KIND:
-        host_key = _public_key(root / "host-release-cosign.pub", "HostRelease public key")
+        host_key = _public_key(
+            root / "host-release-cosign.pub", "HostRelease public key"
+        )
         software_key = _public_key(
             root / "software-release-cosign.pub", "SoftwareRelease public key"
         )
         if host_key == software_key:
             raise ValueError("HostRelease and SoftwareRelease trust roots must differ")
-        if inventory.get("host_signing_key_sha256") != _sha256(host_key) or inventory.get(
-            "software_signing_key_sha256"
-        ) != _sha256(software_key):
+        if inventory.get("host_signing_key_sha256") != _sha256(
+            host_key
+        ) or inventory.get("software_signing_key_sha256") != _sha256(software_key):
             raise ValueError("release public-key inventory digest mismatch")
     else:
         if cosign is None:
             raise ValueError("cosign is required to verify a completed release handoff")
-        with tempfile.TemporaryDirectory(prefix="drycontroller-handoff-verify-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="drycontroller-handoff-verify-"
+        ) as temporary:
             empty = Path(temporary)
             prepare_pair(
                 host_release=root / "host-release.json",
@@ -433,23 +471,19 @@ def trust_preflight(
     *,
     host_public_key: Path,
     software_public_key: Path,
-    expected_host_sha256: str,
-    expected_software_sha256: str,
-    acknowledgement: str,
     cloud_url: str,
+    cloud_api_key: str,
 ) -> None:
-    if acknowledgement != "installed-and-verified":
-        raise ValueError("Cloud trust installation must be explicitly acknowledged")
-    if not SHA256_RE.fullmatch(expected_host_sha256) or not SHA256_RE.fullmatch(
-        expected_software_sha256
-    ):
-        raise ValueError("Cloud trust fingerprints must be full sha256 digests")
     host_key = _public_key(host_public_key, "HostRelease public key")
     software_key = _public_key(software_public_key, "SoftwareRelease public key")
     if host_key == software_key:
         raise ValueError("HostRelease and SoftwareRelease trust roots must differ")
-    if _sha256(host_key) != expected_host_sha256 or _sha256(software_key) != expected_software_sha256:
-        raise ValueError("operator-confirmed Cloud trust fingerprint does not match CI signing key")
+    if (
+        not cloud_api_key
+        or len(cloud_api_key) > 4096
+        or any(character.isspace() for character in cloud_api_key)
+    ):
+        raise ValueError("Cloud Ops release API key is unavailable or invalid")
     parsed = urllib.parse.urlsplit(cloud_url)
     if (
         parsed.scheme != "https"
@@ -461,48 +495,269 @@ def trust_preflight(
         or parsed.path not in {"", "/"}
     ):
         raise ValueError("Cloud Ops release URL must be one HTTPS origin")
-    request = urllib.request.Request(cloud_url.rstrip("/") + "/ready", method="GET")
+    request = urllib.request.Request(
+        cloud_url.rstrip("/") + "/api/v1/release-trust/attestation",
+        headers={"X-API-Key": cloud_api_key},
+        method="GET",
+    )
+    opener = urllib.request.build_opener(_RejectRedirects())
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with opener.open(request, timeout=15) as response:
             payload = json.loads(response.read(64 * 1024))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("Cloud Ops readiness preflight failed") from exc
-    if payload != {"success": True, "ready": True}:
-        raise ValueError("Cloud Ops readiness preflight did not pass")
+        raise ValueError("Cloud release-trust attestation failed") from exc
+    expected = {
+        "schema": "drycontroller.release-trust-attestation.v1",
+        "host_sha256": _sha256(host_key),
+        "software_sha256": _sha256(software_key),
+    }
+    if payload != expected:
+        raise ValueError(
+            "Cloud release-trust attestation does not match CI signing keys"
+        )
 
 
-def publish(root: Path, *, version: str, token: str, cosign: Path | None) -> None:
-    if not PACKAGE_VERSION_RE.fullmatch(version):
-        raise ValueError("Gitea package version is invalid")
-    if not token or len(token) > 4096 or any(character.isspace() for character in token):
+def _release_archive(root: Path, kind: str) -> bytes:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for name in _expected_files(kind):
+            raw = _read_limited(root / name, MAX_RELEASE_BYTES, name)
+            member = tarfile.TarInfo(name)
+            member.size = len(raw)
+            member.mode = 0o644
+            member.uid = 0
+            member.gid = 0
+            member.uname = ""
+            member.gname = ""
+            member.mtime = 0
+            archive.addfile(member, io.BytesIO(raw))
+    raw = stream.getvalue()
+    if not raw or len(raw) > MAX_RELEASE_BYTES:
+        raise ValueError("release handoff archive size is invalid")
+    return raw
+
+
+def _release_identity(root: Path, kind: str) -> tuple[str, str, dict[str, bytes]]:
+    inventory_raw = _read_limited(
+        root / "inventory.json", MAX_RELEASE_BYTES, "handoff inventory"
+    )
+    inventory = json.loads(inventory_raw)
+    if not isinstance(inventory, dict) or inventory.get("kind") != kind:
+        raise ValueError("release handoff inventory identity is invalid")
+    source_commit = inventory.get("source_commit")
+    if not isinstance(source_commit, str) or COMMIT_RE.fullmatch(source_commit) is None:
+        raise ValueError("release handoff source commit is invalid")
+    inventory_digest = hashlib.sha256(inventory_raw).hexdigest()
+    tag = f"drycontroller-{kind}-sha256-{inventory_digest}"
+    if RELEASE_TAG_RE.fullmatch(tag) is None:
+        raise ValueError("release tag identity is invalid")
+    archive = _release_archive(root, kind)
+    checksum = f"{hashlib.sha256(archive).hexdigest()}  {RELEASE_ARCHIVE}\n".encode()
+    return (
+        tag,
+        source_commit,
+        {
+            RELEASE_ARCHIVE: archive,
+            RELEASE_CHECKSUM: checksum,
+            "inventory.json": inventory_raw,
+        },
+    )
+
+
+def _api_json(
+    opener: urllib.request.OpenerDirector,
+    *,
+    url: str,
+    token: str,
+    method: str,
+    body: dict[str, object] | None = None,
+    expected: set[int],
+) -> tuple[int, object | None]:
+    data = None if body is None else _canonical_json(body)
+    headers = {"Authorization": f"token {token}", "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with opener.open(request, timeout=60) as response:
+            status = response.status
+            raw = response.read(MAX_RELEASE_BYTES)
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        raw = exc.read(MAX_RELEASE_BYTES)
+    except OSError as exc:
+        raise ValueError("Gitea Release API request failed") from exc
+    if status not in expected:
+        raise ValueError(f"Gitea Release API returned unexpected HTTP {status}")
+    if not raw:
+        return status, None
+    try:
+        return status, json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Gitea Release API returned invalid JSON") from exc
+
+
+def _validate_release(
+    value: object, *, tag: str, source_commit: str
+) -> tuple[int, list[object]]:
+    if not isinstance(value, dict):
+        raise ValueError("Gitea release response is invalid")
+    release_id = value.get("id")
+    assets = value.get("assets")
+    if (
+        not isinstance(release_id, int)
+        or isinstance(release_id, bool)
+        or release_id < 1
+        or value.get("tag_name") != tag
+        or value.get("target_commitish") != source_commit
+        or value.get("draft") is not False
+        or value.get("prerelease") is not False
+        or not isinstance(assets, list)
+    ):
+        raise ValueError("Gitea release identity does not match the handoff")
+    return release_id, assets
+
+
+def _multipart(name: str, raw: bytes) -> tuple[bytes, str]:
+    boundary = "drycontroller-" + os.urandom(16).hex()
+    encoded_name = name.replace('"', "")
+    body = (
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="attachment"; filename="{encoded_name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode()
+        + raw
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
+def _same_asset(
+    opener: urllib.request.OpenerDirector,
+    *,
+    asset: object,
+    name: str,
+    expected: bytes,
+    token: str,
+) -> bool:
+    if not isinstance(asset, dict) or asset.get("name") != name:
+        return False
+    url = asset.get("browser_download_url")
+    if not isinstance(url, str) or int(asset.get("size") or -1) != len(expected):
+        raise ValueError(f"existing Gitea release asset differs: {name}")
+    parsed = urllib.parse.urlsplit(url)
+    approved = urllib.parse.urlsplit(APPROVED_GITEA_BASE_URL)
+    if (
+        parsed.scheme != approved.scheme
+        or parsed.netloc != approved.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError("Gitea release asset URL is outside the approved origin")
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"token {token}"}, method="GET"
+    )
+    try:
+        with opener.open(request, timeout=60) as response:
+            observed = response.read(MAX_RELEASE_BYTES + 1)
+    except (OSError, urllib.error.HTTPError) as exc:
+        raise ValueError(f"cannot verify existing Gitea release asset: {name}") from exc
+    if observed != expected:
+        raise ValueError(f"existing Gitea release asset differs: {name}")
+    return True
+
+
+def publish(root: Path, *, token: str, cosign: Path | None) -> str:
+    if (
+        not token
+        or len(token) > 4096
+        or any(character.isspace() for character in token)
+    ):
         raise ValueError("GITEA_TOKEN is unavailable or invalid")
     kind = verify_package(root, cosign=cosign)
-    package = PACKAGES[kind]
-    names = [name for name in _expected_files(kind) if name != "inventory.json"] + [
-        "inventory.json"
-    ]
+    tag, source_commit, payloads = _release_identity(root, kind)
     opener = urllib.request.build_opener(_RejectRedirects())
-    for name in names:
-        url = (
-            f"{APPROVED_GITEA_BASE_URL}/api/packages/{GITEA_OWNER}/generic/"
-            f"{urllib.parse.quote(package, safe='')}/{urllib.parse.quote(version, safe='')}/"
-            f"{urllib.parse.quote(name, safe='')}"
+    repository = (
+        f"{APPROVED_GITEA_BASE_URL}/api/v1/repos/{GITEA_OWNER}/{GITEA_REPOSITORY}"
+    )
+    release_url = f"{repository}/releases/tags/{urllib.parse.quote(tag, safe='')}"
+    status, release = _api_json(
+        opener,
+        url=release_url,
+        token=token,
+        method="GET",
+        expected={200, 404},
+    )
+    if status == 404:
+        _status, release = _api_json(
+            opener,
+            url=f"{repository}/releases",
+            token=token,
+            method="POST",
+            body={
+                "body": "DryController public release handoff; inventory digest is bound in the tag.",
+                "draft": False,
+                "name": tag,
+                "prerelease": False,
+                "tag_name": tag,
+                "target_commitish": source_commit,
+            },
+            expected={201, 409},
         )
+        if _status == 409:
+            _status, release = _api_json(
+                opener,
+                url=release_url,
+                token=token,
+                method="GET",
+                expected={200},
+            )
+    release_id, assets = _validate_release(
+        release, tag=tag, source_commit=source_commit
+    )
+    by_name: dict[str, object] = {}
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            raise ValueError("Gitea release asset inventory is invalid")
+        name = asset["name"]
+        if name in by_name:
+            raise ValueError("Gitea release contains duplicate asset names")
+        by_name[name] = asset
+    unexpected = set(by_name) - set(RELEASE_ASSETS)
+    if unexpected:
+        raise ValueError("Gitea release contains non-handoff assets")
+    if "inventory.json" in by_name and set(by_name) != set(RELEASE_ASSETS):
+        raise ValueError("completed Gitea release is missing handoff assets")
+
+    for name in RELEASE_ASSETS:
+        raw = payloads[name]
+        existing = by_name.get(name)
+        if existing is not None:
+            _same_asset(opener, asset=existing, name=name, expected=raw, token=token)
+            continue
+        body, content_type = _multipart(name, raw)
         request = urllib.request.Request(
-            url,
-            data=(root / name).read_bytes(),
-            headers={"Authorization": f"token {token}", "Content-Type": "application/octet-stream"},
-            method="PUT",
+            f"{repository}/releases/{release_id}/assets?name={urllib.parse.quote(name, safe='')}",
+            data=body,
+            headers={"Authorization": f"token {token}", "Content-Type": content_type},
+            method="POST",
         )
         try:
             with opener.open(request, timeout=60) as response:
                 status = response.status
         except urllib.error.HTTPError as exc:
-            raise ValueError(f"Gitea rejected {name} with HTTP {exc.code}") from exc
+            raise ValueError(
+                f"Gitea rejected release asset {name} with HTTP {exc.code}"
+            ) from exc
         except OSError as exc:
-            raise ValueError(f"Gitea upload failed for {name}") from exc
+            raise ValueError(f"Gitea release asset upload failed: {name}") from exc
         if status != 201:
-            raise ValueError(f"Gitea returned unexpected HTTP {status} for {name}")
+            raise ValueError(
+                f"Gitea returned unexpected HTTP {status} for release asset {name}"
+            )
+    return tag
 
 
 def main() -> int:
@@ -530,14 +785,11 @@ def main() -> int:
     preflight = subparsers.add_parser("trust-preflight")
     preflight.add_argument("--host-public-key", required=True, type=Path)
     preflight.add_argument("--software-public-key", required=True, type=Path)
-    preflight.add_argument("--expected-host-sha256", required=True)
-    preflight.add_argument("--expected-software-sha256", required=True)
-    preflight.add_argument("--acknowledgement", required=True)
     preflight.add_argument("--cloud-url", required=True)
+    preflight.add_argument("--cloud-api-key", required=True)
 
     upload = subparsers.add_parser("publish")
     upload.add_argument("--directory", required=True, type=Path)
-    upload.add_argument("--version", required=True)
     upload.add_argument("--cosign", type=Path)
 
     args = parser.parse_args()
@@ -564,15 +816,12 @@ def main() -> int:
             trust_preflight(
                 host_public_key=args.host_public_key,
                 software_public_key=args.software_public_key,
-                expected_host_sha256=args.expected_host_sha256,
-                expected_software_sha256=args.expected_software_sha256,
-                acknowledgement=args.acknowledgement,
                 cloud_url=args.cloud_url,
+                cloud_api_key=args.cloud_api_key,
             )
         else:
             publish(
                 args.directory,
-                version=args.version,
                 token=os.environ.get("GITEA_TOKEN", ""),
                 cosign=args.cosign,
             )
