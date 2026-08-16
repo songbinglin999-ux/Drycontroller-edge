@@ -29,6 +29,7 @@ required = (
     "disable_suites:",
     "/cdrom/host-release-seed.json",
     "/cdrom/software-release-seed.json",
+    "/cdrom/license-trust.json",
 )
 missing = [item for item in required if item not in text]
 if missing:

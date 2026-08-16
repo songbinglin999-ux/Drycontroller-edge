@@ -46,7 +46,7 @@ def test_plc_deployment_defaults_match_rtu_over_tcp_contract():
     assert example["MODBUS_FRAMER"] == "rtu"
 
 
-def test_license_install_contract_keeps_public_key_anchor_read_only():
+def test_license_install_contract_keeps_atomic_trust_policy_read_only():
     services = _compose_services()
     edge_api = services["edge-api"]
     license_service = services["license-service"]
@@ -58,7 +58,9 @@ def test_license_install_contract_keeps_public_key_anchor_read_only():
 
     edge_api_env = _env_map(edge_api)
     assert edge_api_env["LICENSE_FILE_PATH"] == "${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}"
-    assert edge_api_env["LICENSE_PUBLIC_KEY_PATH"] == "${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}"
+    assert edge_api_env["LICENSE_TRUST_POLICY_PATH"] == (
+        "${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}"
+    )
 
 
 def test_edge_monitor_ops_auth_contract_supports_edge_api_admin_key_proxy():
@@ -157,6 +159,7 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
         "--host-cosign-public-key",
         "--software-cosign-public-key",
         "--device-identity-cloud-key",
+        "--license-trust",
         "--identity-wheelhouse",
         "--public-config",
         "--tailscale-client-lock",
@@ -216,7 +219,7 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert '"if=$ISO"' not in usb_writer
     assert '"$EXPECTED_ISO_SIZE" "$EXPECTED_ISO_SHA256"' in usb_writer
     assert "--surfaces iso filesystem" in usb_writer
-    assert "drycontroller.os-installer-release.v3" in usb_writer
+    assert "drycontroller.os-installer-release.v4" in usb_writer
     assert "--base-iso-sha256" in release_builder
     assert "--approved-base-iso-sha256" in release_builder
     assert "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433" in release_builder
@@ -236,6 +239,8 @@ def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata
         "infra/bootstrap/install-edge-host.sh",
         "infra/bootstrap/installer_public_config.py",
         "infra/bootstrap/tailscale_client_lock.py",
+        "scripts/manage-license-trust.py",
+        "common/license_verifier.py",
         "common/tailscale_status.py",
         "infra/host-release-runner/host_release_engine.py",
         "infra/ota-helper/drycontroller-ota-helper.service",

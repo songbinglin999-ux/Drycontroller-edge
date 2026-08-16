@@ -58,11 +58,8 @@ def _write_device_identity(path: Path) -> None:
 
 def _signed_payload() -> dict:
     private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
-    public_key = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
     license_payload = {
+        "key_id": "license-test",
         "license_id": "lic-1",
         "machine_id": "machine-1",
         "issued_at": "2026-01-01T00:00:00Z",
@@ -72,10 +69,42 @@ def _signed_payload() -> dict:
     signature = private_key.sign(canonical_license_bytes(license_payload))
     import base64
 
-    return {
-        "license": {**license_payload, "signature": base64.b64encode(signature).decode("ascii")},
-        "license_public_key": base64.b64encode(public_key).decode("ascii"),
+    return {"license": {**license_payload, "signature": base64.b64encode(signature).decode("ascii")}}
+
+
+def _write_trust_policy(root: Path) -> Path:
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    der = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    artifact = {
+        "algorithm": "Ed25519",
+        "key_id": "license-test",
+        "public_key_sha256": "sha256:" + hashlib.sha256(der).hexdigest(),
+        "public_key_spki_der_b64": base64.b64encode(der).decode("ascii"),
+        "schema": "drycontroller.license-trust.v1",
     }
+    artifact_bytes = json.dumps(
+        artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    version = root / "versions" / "license-test"
+    version.mkdir(parents=True)
+    (version / "license-trust.json").write_bytes(artifact_bytes)
+    policy = {
+        "active": {
+            "canonical_sha256": "sha256:" + hashlib.sha256(artifact_bytes).hexdigest(),
+            "key_id": "license-test",
+        },
+        "previous": None,
+        "schema": "drycontroller.license-trust-policy.v1",
+    }
+    policy_path = root / "policy.json"
+    policy_path.write_text(
+        json.dumps(policy, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return policy_path
 
 
 def test_cloud_readiness_requires_edge_admin_key_not_tailnet_identity(monkeypatch):
@@ -109,14 +138,12 @@ def test_license_install_success_writes_license_only(tmp_path: Path, monkeypatch
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     license_path = tmp_path / "license.json"
-    public_key_dir = tmp_path / "keys"
-    public_key_dir.mkdir()
-    public_key_path = public_key_dir / "license.pub"
+    trust_root = tmp_path / "keys" / "license-trust"
+    trust_policy_path = _write_trust_policy(trust_root)
     settings.LICENSE_FILE_PATH = str(license_path)
-    settings.LICENSE_PUBLIC_KEY_PATH = str(public_key_path)
-    settings.LICENSE_TRUSTED_PUBLIC_KEY = _signed_payload()["license_public_key"]
-    public_key_path.write_text("old-key\n", encoding="utf-8")
-    public_key_dir.chmod(0o500)
+    settings.LICENSE_TRUST_POLICY_PATH = str(trust_policy_path)
+    trust_before = trust_policy_path.read_bytes()
+    trust_root.chmod(0o500)
 
     async def fake_verify():
         return {"url": "mock", "status_code": 200, "body": {"valid": True}}
@@ -130,24 +157,22 @@ def test_license_install_success_writes_license_only(tmp_path: Path, monkeypatch
             headers={"X-API-Key": "admin-1"},
         )
     finally:
-        public_key_dir.chmod(0o700)
+        trust_root.chmod(0o700)
 
     assert resp.status_code == 200
     assert resp.json()["success"] is True
     assert "lic-1" in license_path.read_text(encoding="utf-8")
-    assert public_key_path.read_text(encoding="utf-8") == "old-key\n"
+    assert trust_policy_path.read_bytes() == trust_before
 
 
 def test_license_install_rolls_back_when_verify_fails(tmp_path: Path, monkeypatch):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     license_path = tmp_path / "license.json"
-    public_key_path = tmp_path / "license.pub"
+    trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
     settings.LICENSE_FILE_PATH = str(license_path)
-    settings.LICENSE_PUBLIC_KEY_PATH = str(public_key_path)
-    settings.LICENSE_TRUSTED_PUBLIC_KEY = _signed_payload()["license_public_key"]
+    settings.LICENSE_TRUST_POLICY_PATH = str(trust_policy_path)
     license_path.write_text('{"old": true}\n', encoding="utf-8")
-    public_key_path.write_text("old-key\n", encoding="utf-8")
 
     calls = 0
 
@@ -169,19 +194,17 @@ def test_license_install_rolls_back_when_verify_fails(tmp_path: Path, monkeypatc
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "license_verify_failed_after_install"
     assert license_path.read_text(encoding="utf-8") == '{"old": true}\n'
-    assert public_key_path.read_text(encoding="utf-8") == "old-key\n"
+    assert trust_policy_path.is_file()
 
 
-def test_license_install_uses_existing_public_key_as_trust_anchor(tmp_path: Path, monkeypatch):
+def test_license_install_uses_canonical_policy_as_trust_anchor(tmp_path: Path, monkeypatch):
     payload = _signed_payload()
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     license_path = tmp_path / "license.json"
-    public_key_path = tmp_path / "license.pub"
+    trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
     settings.LICENSE_FILE_PATH = str(license_path)
-    settings.LICENSE_PUBLIC_KEY_PATH = str(public_key_path)
-    settings.LICENSE_TRUSTED_PUBLIC_KEY = ""
-    public_key_path.write_text(payload["license_public_key"] + "\n", encoding="utf-8")
+    settings.LICENSE_TRUST_POLICY_PATH = str(trust_policy_path)
 
     async def fake_verify():
         return {"url": "mock", "status_code": 200, "body": {"valid": True}}
@@ -196,17 +219,16 @@ def test_license_install_uses_existing_public_key_as_trust_anchor(tmp_path: Path
 
     assert resp.status_code == 200
     assert "lic-1" in license_path.read_text(encoding="utf-8")
-    assert public_key_path.read_text(encoding="utf-8") == payload["license_public_key"] + "\n"
+    assert json.loads(trust_policy_path.read_text(encoding="utf-8"))["active"]["key_id"] == "license-test"
 
 
-def test_license_install_rejects_malformed_public_key(tmp_path: Path):
+def test_license_install_rejects_wrong_key_id(tmp_path: Path):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
-    settings.LICENSE_TRUSTED_PUBLIC_KEY = _signed_payload()["license_public_key"]
+    settings.LICENSE_TRUST_POLICY_PATH = str(_write_trust_policy(tmp_path / "license-trust"))
     payload = _signed_payload()
-    payload["license_public_key"] = "not base64!"
+    payload["license"]["key_id"] = "license-other"
 
     resp = _client().post(
         "/api/v1/ops/license/install",
@@ -214,34 +236,16 @@ def test_license_install_rejects_malformed_public_key(tmp_path: Path):
         headers={"X-API-Key": "admin-1"},
     )
 
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "invalid_license_public_key_base64"
-
-
-def test_license_install_rejects_untrusted_public_key(tmp_path: Path):
-    settings.ADMIN_API_KEYS = ["admin-1"]
-    settings.API_KEY_HEADER = "X-API-Key"
-    settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
-    settings.LICENSE_TRUSTED_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-
-    resp = _client().post(
-        "/api/v1/ops/license/install",
-        json=_signed_payload(),
-        headers={"X-API-Key": "admin-1"},
-    )
-
     assert resp.status_code == 403
-    assert resp.json()["detail"]["error"] == "license_public_key_not_trusted"
+    assert resp.json()["detail"]["error"] == "license_key_id_not_trusted"
 
 
 def test_license_install_rejects_bad_signature(tmp_path: Path):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
+    settings.LICENSE_TRUST_POLICY_PATH = str(_write_trust_policy(tmp_path / "license-trust"))
     payload = _signed_payload()
-    settings.LICENSE_TRUSTED_PUBLIC_KEY = payload["license_public_key"]
     payload["license"]["machine_id"] = "tampered"
 
     resp = _client().post(
@@ -333,9 +337,8 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
+    settings.LICENSE_TRUST_POLICY_PATH = str(_write_trust_policy(tmp_path / "license-trust"))
     Path(settings.LICENSE_FILE_PATH).write_text("{}", encoding="utf-8")
-    Path(settings.LICENSE_PUBLIC_KEY_PATH).write_text("pub", encoding="utf-8")
     device_json = tmp_path / "device.json"
     _write_device_identity(device_json)
     monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(device_json))
@@ -461,11 +464,10 @@ def test_preflight_check_ota_requires_registry_credential(tmp_path: Path, monkey
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
-    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "license.pub")
+    settings.LICENSE_TRUST_POLICY_PATH = str(_write_trust_policy(tmp_path / "license-trust"))
     settings.REGISTRY_DOCKER_CONFIG_PATH = str(tmp_path / "registry" / "config.json")
     settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(tmp_path / "registry" / "status.json")
     Path(settings.LICENSE_FILE_PATH).write_text("{}", encoding="utf-8")
-    Path(settings.LICENSE_PUBLIC_KEY_PATH).write_text("pub", encoding="utf-8")
     device_json = tmp_path / "device.json"
     _write_device_identity(device_json)
     monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(device_json))
@@ -502,7 +504,7 @@ def test_preflight_fails_when_required_files_missing(tmp_path: Path, monkeypatch
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     settings.LICENSE_FILE_PATH = str(tmp_path / "missing-license.json")
-    settings.LICENSE_PUBLIC_KEY_PATH = str(tmp_path / "missing-license.pub")
+    settings.LICENSE_TRUST_POLICY_PATH = str(tmp_path / "missing-license-trust-policy.json")
     monkeypatch.setenv("PREFLIGHT_DEVICE_JSON", str(tmp_path / "missing-device.json"))
     monkeypatch.setattr(settings, "DEVICE_IDENTITY_PATH", str(tmp_path / "missing-device.json"))
 

@@ -65,7 +65,7 @@ STATE_DIR="${PREFLIGHT_STATE_DIR:-/var/lib/drycontroller}"
 SENTINEL="${PREFLIGHT_BOOTSTRAP_SENTINEL:-${STATE_DIR}/.bootstrapped}"
 DEVICE_JSON="${PREFLIGHT_DEVICE_JSON:-${STATE_DIR}/device.json}"
 LICENSE_FILE="${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}"
-LICENSE_PUBLIC_KEY="${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}"
+LICENSE_TRUST_POLICY="${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}"
 COSIGN_PUBKEY="${OTA_COSIGN_PUBKEY_HOST_PATH:-/etc/drycontroller/keys/cosign.pub}"
 if [ ! -f "$COSIGN_PUBKEY" ]; then
   COSIGN_PUBKEY="${ROOT_DIR}/configs/keys/cosign.pub"
@@ -449,7 +449,7 @@ check_ota_helper() {
 check_file_exists "bootstrap.sentinel" "$SENTINEL" "bootstrap must finish before factory release"
 check_device_identity
 check_file_exists "license.file" "$LICENSE_FILE" "signed license must be installed"
-check_file_exists "license.public_key" "$LICENSE_PUBLIC_KEY" "license public key must be installed"
+check_file_exists "license.trust_policy" "$LICENSE_TRUST_POLICY" "license trust policy must be initialized"
 check_license_verify
 check_file_exists "cosign.pubkey" "$COSIGN_PUBKEY" "cosign public key must be installed for OTA image verification"
 check_compose

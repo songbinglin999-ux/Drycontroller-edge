@@ -27,6 +27,8 @@ SOURCE_BUNDLE_PATHS=(
   infra/bootstrap/initialize-runtime-config.py
   infra/bootstrap/installer_public_config.py
   infra/bootstrap/tailscale_client_lock.py
+  scripts/manage-license-trust.py
+  common/license_verifier.py
   common/tailscale_status.py
   infra/bootstrap/drycontroller-factory-identity.service
   infra/bootstrap/drycontroller-device-credential-rotation.service

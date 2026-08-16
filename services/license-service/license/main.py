@@ -2,7 +2,6 @@
 授权服务
 """
 
-import binascii
 import datetime as dt
 import json
 import os
@@ -13,7 +12,12 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import structlog
 
 from common.logging import setup_logging
-from license.license_verifier import load_json, load_public_key, parse_dt, verify_signature
+from license.license_verifier import (
+    load_active_license_trust,
+    load_json,
+    parse_dt,
+    verify_license as verify_signed_license,
+)
 
 event_recorder = setup_logging("license-service")
 logger = structlog.get_logger(__name__)
@@ -29,8 +33,13 @@ def _license_file_path() -> Path:
     return Path(os.getenv("LICENSE_FILE_PATH", "/etc/drycontroller/license/license.json"))
 
 
-def _license_public_key_path() -> Path:
-    return Path(os.getenv("LICENSE_PUBLIC_KEY_PATH", "/etc/drycontroller/keys/license.pub"))
+def _license_trust_policy_path() -> Path:
+    return Path(
+        os.getenv(
+            "LICENSE_TRUST_POLICY_PATH",
+            "/etc/drycontroller/keys/license-trust/policy.json",
+        )
+    )
 
 
 def _machine_id() -> str:
@@ -101,17 +110,17 @@ async def verify_license():
         return _result(True, "license_disabled", None)
 
     license_path = _license_file_path()
-    public_key_path = _license_public_key_path()
+    trust_policy_path = _license_trust_policy_path()
     if not license_path.is_file():
         return _result(False, "missing_license_file", None)
-    if not public_key_path.is_file():
-        return _result(False, "missing_public_key", None)
+    if not trust_policy_path.is_file():
+        return _result(False, "missing_trust_policy", None)
 
     try:
         payload = load_json(license_path)
-        public_key = load_public_key(public_key_path)
-        verify_signature(payload, public_key)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error, ValueError) as exc:
+        trust = load_active_license_trust(trust_policy_path)
+        verify_signed_license(payload, trust)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         logger.warning("license_verify_failed", reason="signature_invalid", error=str(exc))
         return _result(False, "signature_invalid", None)
 

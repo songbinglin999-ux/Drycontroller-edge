@@ -12,6 +12,7 @@ HOST_COSIGN_PUBLIC_KEY=""
 SOFTWARE_COSIGN_PUBLIC_KEY=""
 COSIGN_BIN=""
 DEVICE_IDENTITY_CLOUD_PUBLIC_KEY=""
+LICENSE_TRUST=""
 IDENTITY_WHEELHOUSE=""
 PUBLIC_CONFIG=""
 TAILSCALE_CLIENT_LOCK=""
@@ -32,6 +33,7 @@ Required public release inputs:
   --software-cosign-public-key FILE   SoftwareRelease verification key
   --cosign-bin FILE                   Approved Linux amd64 cosign binary
   --device-identity-cloud-key FILE    Cloud activation receipt verification key
+  --license-trust FILE                Canonical License verification trust artifact
   --identity-wheelhouse DIR           Offline Python wheels for device identity
   --public-config FILE                HTTPS Cloud URL and one fixed factory NIC
   --tailscale-client-lock FILE        Public pinned Linux amd64 client metadata
@@ -71,6 +73,7 @@ while [ $# -gt 0 ]; do
     --software-cosign-public-key) required_value "$1" "${2:-}"; SOFTWARE_COSIGN_PUBLIC_KEY="$2"; shift 2 ;;
     --cosign-bin) required_value "$1" "${2:-}"; COSIGN_BIN="$2"; shift 2 ;;
     --device-identity-cloud-key) required_value "$1" "${2:-}"; DEVICE_IDENTITY_CLOUD_PUBLIC_KEY="$2"; shift 2 ;;
+    --license-trust) required_value "$1" "${2:-}"; LICENSE_TRUST="$2"; shift 2 ;;
     --identity-wheelhouse) required_value "$1" "${2:-}"; IDENTITY_WHEELHOUSE="$2"; shift 2 ;;
     --public-config) required_value "$1" "${2:-}"; PUBLIC_CONFIG="$2"; shift 2 ;;
     --tailscale-client-lock) required_value "$1" "${2:-}"; TAILSCALE_CLIENT_LOCK="$2"; shift 2 ;;
@@ -101,6 +104,7 @@ for path in \
   "$SOFTWARE_COSIGN_PUBLIC_KEY" \
   "$COSIGN_BIN" \
   "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" \
+  "$LICENSE_TRUST" \
   "$PUBLIC_CONFIG" \
   "$TAILSCALE_CLIENT_LOCK"; do
   [ -f "$path" ] || die "required release input missing: $path"
@@ -111,6 +115,8 @@ done
 for path in \
   env.example \
   infra/bootstrap/initialize-runtime-config.py \
+  scripts/manage-license-trust.py \
+  common/license_verifier.py \
   infra/bootstrap/installer_public_config.py \
   infra/bootstrap/tailscale_client_lock.py \
   common/tailscale_status.py \
@@ -236,6 +242,8 @@ install_static_runtime() {
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_engine.py" /usr/libexec/drycontroller/host_release_engine.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_runner.py" /usr/libexec/drycontroller/host_release_runner.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/common/tailscale_status.py" /usr/libexec/drycontroller/common/tailscale_status.py
+  install -o root -g root -m 0644 "${REPO_SOURCE}/common/license_verifier.py" /usr/libexec/drycontroller/common/license_verifier.py
+  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/manage-license-trust.py" /usr/libexec/drycontroller/manage-license-trust.py
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-runner" /usr/libexec/drycontroller/host-release-runner
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-apply" /usr/libexec/drycontroller/host-release-apply
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/initialize-initial-release" /usr/libexec/drycontroller/initialize-initial-release
@@ -270,6 +278,25 @@ install_identity_service() {
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/bootstrap/tailnet-edge-api-proxy.py" /usr/local/libexec/drycontroller/tailnet-edge-api-proxy.py
   install -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-device-credential-rotation.service" /etc/systemd/system/drycontroller-device-credential-rotation.service
   install -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-device-credential-rotation.timer" /etc/systemd/system/drycontroller-device-credential-rotation.timer
+}
+
+initialize_license_trust() {
+  /opt/drycontroller-identity/venv/bin/python \
+    /usr/libexec/drycontroller/manage-license-trust.py \
+    --root /etc/drycontroller/keys/license-trust \
+    initialize "$LICENSE_TRUST"
+  /opt/drycontroller-identity/venv/bin/python - <<'PY'
+from pathlib import Path
+import sys
+
+sys.path.insert(0, "/usr/libexec/drycontroller")
+from common.license_verifier import load_active_license_trust
+
+trust = load_active_license_trust(
+    Path("/etc/drycontroller/keys/license-trust/policy.json")
+)
+print(f"initialized license trust: {trust.key_id}")
+PY
 }
 
 initialize_configuration() {
@@ -363,6 +390,7 @@ prepare_tailscale_state
 configure_docker
 install_static_runtime
 install_identity_service
+initialize_license_trust
 initialize_configuration
 initialize_release
 enable_services

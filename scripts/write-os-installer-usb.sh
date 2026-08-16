@@ -184,7 +184,7 @@ artifact = manifest.get("artifacts", {}).get("iso", {})
 digest = artifact.get("sha256")
 size = artifact.get("size")
 if (
-    manifest.get("schema") != "drycontroller.os-installer-release.v3"
+    manifest.get("schema") != "drycontroller.os-installer-release.v4"
     or not isinstance(digest, str)
     or re.fullmatch(r"[0-9a-f]{64}", digest) is None
     or not isinstance(size, int)
@@ -233,7 +233,7 @@ def sha256(path: Path) -> str:
 
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-if manifest.get("schema") != "drycontroller.os-installer-release.v3":
+if manifest.get("schema") != "drycontroller.os-installer-release.v4":
     raise SystemExit("manifest schema mismatch")
 if not manifest.get("checks", {}).get("final_iso_release_checklist", {}).get("passed"):
     raise SystemExit("manifest does not record a passing final ISO checklist")

@@ -23,6 +23,8 @@ REPO_ROOT = TOOL_DIR.parents[1]
 AUTOINSTALL_DIR = REPO_ROOT / "dist" / "autoinstall"
 RUNNER_DIR = REPO_ROOT / "infra" / "host-release-runner"
 BOOTSTRAP_DIR = REPO_ROOT / "infra" / "bootstrap"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(RUNNER_DIR) not in sys.path:
     sys.path.insert(0, str(RUNNER_DIR))
 if str(BOOTSTRAP_DIR) not in sys.path:
@@ -42,6 +44,7 @@ from host_release_engine import (  # noqa: E402
 )
 from installer_public_config import validate_public_config  # noqa: E402
 from tailscale_client_lock import validate_tailscale_client_lock  # noqa: E402
+from common.license_verifier import parse_license_trust  # noqa: E402
 
 
 MEDIA_MAPS = (
@@ -63,6 +66,7 @@ MEDIA_MAPS = (
     ("dist/autoinstall/software-release-cosign.pub", "/software-release-cosign.pub"),
     ("dist/autoinstall/cosign-linux-amd64", "/cosign-linux-amd64"),
     ("dist/autoinstall/device-identity-cloud.pub", "/device-identity-cloud.pub"),
+    ("dist/autoinstall/license-trust.json", "/license-trust.json"),
     ("dist/autoinstall/public-config.json", "/public-config.json"),
     ("dist/autoinstall/tailscale-client.json", "/tailscale-client.json"),
 )
@@ -283,6 +287,10 @@ def verify_final_iso(
         validate_public_config(json.loads(extract_iso_file(iso, "public-config.json")))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise RuntimeError("ISO public configuration invalid") from exc
+    try:
+        parse_license_trust(extract_iso_file(iso, "license-trust.json"))
+    except ValueError as exc:
+        raise RuntimeError("ISO license trust artifact invalid") from exc
 
     try:
         tailscale_client = validate_tailscale_client_lock(

@@ -15,9 +15,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "infra/bootstrap"))
 
 from tailscale_client_lock import validate_tailscale_client_lock  # noqa: E402
+from common.license_verifier import load_license_trust  # noqa: E402
 
 
 def sha256(path: Path) -> str:
@@ -30,6 +32,20 @@ def sha256(path: Path) -> str:
 
 def artifact(path: Path) -> dict[str, object]:
     return {"path": str(path), "sha256": sha256(path), "size": path.stat().st_size}
+
+
+def validate_distinct_signing_roots(
+    installer_public_key: Path,
+    host_public_key: Path,
+    software_public_key: Path,
+) -> None:
+    digests = {
+        sha256(installer_public_key),
+        sha256(host_public_key),
+        sha256(software_public_key),
+    }
+    if len(digests) != 3:
+        raise SystemExit("Installer/Host/Software signing roots must all differ")
 
 
 def git(*args: str) -> str:
@@ -121,8 +137,12 @@ def main() -> int:
         raise SystemExit("release manifest output already exists")
     host_seed_path = ROOT / "dist/autoinstall/host-release-seed.json"
     software_seed_path = ROOT / "dist/autoinstall/software-release-seed.json"
+    host_public_key_path = ROOT / "dist/autoinstall/host-release-cosign.pub"
+    software_public_key_path = ROOT / "dist/autoinstall/software-release-cosign.pub"
+    license_trust_path = ROOT / "dist/autoinstall/license-trust.json"
     host_seed = json.loads(host_seed_path.read_text(encoding="utf-8"))
     software_seed = json.loads(software_seed_path.read_text(encoding="utf-8"))
+    license_trust = load_license_trust(license_trust_path)
     tailscale_lock_path = ROOT / "dist/autoinstall/tailscale-client.json"
     tailscale_client = validate_tailscale_client_lock(
         json.loads(tailscale_lock_path.read_text(encoding="utf-8"))
@@ -141,8 +161,13 @@ def main() -> int:
         base_iso=args.base_iso.resolve(),
     )
     public_key_digest = sha256(args.installer_public_key)
+    validate_distinct_signing_roots(
+        args.installer_public_key,
+        host_public_key_path,
+        software_public_key_path,
+    )
     payload = {
-        "schema": "drycontroller.os-installer-release.v3",
+        "schema": "drycontroller.os-installer-release.v4",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "release": {
             "channel": args.channel,
@@ -184,6 +209,13 @@ def main() -> int:
                 "topology_digest": software_seed["manifest"]["topology_digest"],
             },
             "public_config": artifact(ROOT / "dist/autoinstall/public-config.json"),
+            "license_trust": {
+                **artifact(license_trust_path),
+                "canonical_sha256": license_trust.canonical_sha256,
+                "key_id": license_trust.key_id,
+                "public_key_sha256": "sha256:"
+                + hashlib.sha256(license_trust.public_key_spki_der).hexdigest(),
+            },
             "tailscale_client_lock": artifact(tailscale_lock_path),
             "tailscale_client_deb": {
                 **artifact(tailscale_deb_path),

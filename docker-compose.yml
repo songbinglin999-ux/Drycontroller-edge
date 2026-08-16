@@ -185,8 +185,7 @@ services:
       - ADMIN_API_KEYS=${ADMIN_API_KEYS}
       # License 安装闭环：edge-api 受管理员鉴权保护，负责写入；license-service 负责验签
       - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
-      - LICENSE_PUBLIC_KEY_PATH=${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}
-      - LICENSE_TRUSTED_PUBLIC_KEY=${LICENSE_TRUSTED_PUBLIC_KEY:-}
+      - LICENSE_TRUST_POLICY_PATH=${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}
       - LICENSE_SERVICE_BASE=${LICENSE_SERVICE_BASE:-http://license-service:8000}
       # Registry pull credential lifecycle: Cloud Ops refresh writes Docker auth + status here.
       - REGISTRY_DOCKER_CONFIG_PATH=${REGISTRY_DOCKER_CONFIG_PATH:-/etc/drycontroller/registry/config.json}
@@ -208,8 +207,8 @@ services:
       # License 文件由云端下发到 edge-api，再由 license-service 只读校验
       - /etc/drycontroller/license:/etc/drycontroller/license
       # P0-N2 audit 2026-05-15：keys 目录挂只读——edge-api 不应该能改 trust anchor。
-      # license install 只写 license 文件本身（上面那行 RW），不写公钥；
-      # 公钥由 bootstrap.sh 一次性写入，或 LICENSE_TRUSTED_PUBLIC_KEY env 提供。
+      # license install 只写 license 文件本身（上面那行 RW），不写信任策略；
+      # 信任根只由宿主 root 的原子 policy 切换器管理。
       - /etc/drycontroller/keys:/etc/drycontroller/keys:ro
       - /etc/drycontroller/registry:/etc/drycontroller/registry
       # 只读读取 bootstrap sentinel，供大屏现场状态摘要显示装机状态
@@ -404,7 +403,7 @@ services:
       - LICENSE_CHECK_ENABLED=${LICENSE_CHECK_ENABLED}
       - LICENSE_EXPIRY_DAYS=${LICENSE_EXPIRY_DAYS}
       - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
-      - LICENSE_PUBLIC_KEY_PATH=${LICENSE_PUBLIC_KEY_PATH:-/etc/drycontroller/keys/license.pub}
+      - LICENSE_TRUST_POLICY_PATH=${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}
       - LICENSE_MACHINE_ID=${LICENSE_MACHINE_ID:-}
       - INFLUXDB_HOST=${INFLUXDB_HOST}
       - INFLUXDB_PORT=${INFLUXDB_PORT}

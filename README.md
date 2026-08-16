@@ -91,7 +91,7 @@ Important runtime files and generated state:
 | `configs/monitor.yaml` | Health and self-heal policy |
 | `configs-runtime/plc.yaml` | Cloud-downloaded PLC communication config |
 | `/etc/drycontroller/keys/cosign.pub` | OTA image signature trust root |
-| `/etc/drycontroller/keys/license.pub` | License verification public key |
+| `/etc/drycontroller/keys/license-trust/policy.json` | Atomic selector for the active canonical License trust root |
 | `/etc/drycontroller/license/license.json` | Signed local license |
 | `/var/lib/drycontroller/device.json` | Root-owned `0600` active per-device runtime identity and 24-hour credential |
 | `/var/lib/drycontroller-identity/` | Root-only identity backend and candidate state; never mounted into business containers |

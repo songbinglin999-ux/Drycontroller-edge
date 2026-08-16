@@ -14,6 +14,7 @@ HOST_PUBLIC_KEY="dist/initial-release/host-release-cosign.pub"
 SOFTWARE_PUBLIC_KEY="dist/initial-release/software-release-cosign.pub"
 COSIGN_LINUX_AMD64="dist/initial-release/cosign-linux-amd64"
 DEVICE_IDENTITY_CLOUD_PUBLIC_KEY="dist/initial-release/device-identity-cloud.pub"
+LICENSE_TRUST="dist/initial-release/license-trust.json"
 PUBLIC_CONFIG="dist/initial-release/public-config.json"
 TAILSCALE_VERSIONS_LOCK=""
 TAILSCALE_DEB=""
@@ -50,6 +51,7 @@ Options:
   --software-public-key FILE
   --cosign-linux-amd64 FILE
   --device-identity-cloud-key FILE
+  --license-trust FILE               Canonical drycontroller.license-trust.v1
   --public-config FILE
   --tailscale-versions-lock FILE      Cloud infra/headscale/versions.lock.json
   --tailscale-deb FILE                Exact public Linux amd64 DEB from that lock
@@ -84,6 +86,7 @@ while [ $# -gt 0 ]; do
     --software-public-key) value "$1" "${2:-}"; SOFTWARE_PUBLIC_KEY="$2"; shift 2 ;;
     --cosign-linux-amd64) value "$1" "${2:-}"; COSIGN_LINUX_AMD64="$2"; shift 2 ;;
     --device-identity-cloud-key) value "$1" "${2:-}"; DEVICE_IDENTITY_CLOUD_PUBLIC_KEY="$2"; shift 2 ;;
+    --license-trust) value "$1" "${2:-}"; LICENSE_TRUST="$2"; shift 2 ;;
     --public-config) value "$1" "${2:-}"; PUBLIC_CONFIG="$2"; shift 2 ;;
     --tailscale-versions-lock) value "$1" "${2:-}"; TAILSCALE_VERSIONS_LOCK="$2"; shift 2 ;;
     --tailscale-deb) value "$1" "${2:-}"; TAILSCALE_DEB="$2"; shift 2 ;;
@@ -118,7 +121,7 @@ PY
 for path in \
   "$BASE_ISO" "$HOST_RELEASE" "$SOFTWARE_RELEASE" "$HOST_PUBLIC_KEY" \
   "$SOFTWARE_PUBLIC_KEY" "$COSIGN_LINUX_AMD64" "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" \
-  "$PUBLIC_CONFIG" "$TAILSCALE_VERSIONS_LOCK" "$TAILSCALE_DEB" \
+  "$LICENSE_TRUST" "$PUBLIC_CONFIG" "$TAILSCALE_VERSIONS_LOCK" "$TAILSCALE_DEB" \
   "$INSTALLER_PRIVATE_KEY" "$INSTALLER_PUBLIC_KEY"; do
   require_file "$path"
 done
@@ -226,6 +229,7 @@ apt_args+=(--extra-deb "$TAILSCALE_DEB")
 run bash scripts/build-autoinstall-offline-apt-repo.sh "${apt_args[@]}"
 run bash scripts/build-autoinstall-bundle.sh --out dist/autoinstall
 install -m 0644 "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" dist/autoinstall/device-identity-cloud.pub
+install -m 0644 "$LICENSE_TRUST" dist/autoinstall/license-trust.json
 install -m 0644 "$PUBLIC_CONFIG" dist/autoinstall/public-config.json
 
 run python3 - "$BASE_ISO" "$OUTPUT_ISO" <<'PY'

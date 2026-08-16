@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import json
 import os
 import time
@@ -50,7 +49,7 @@ from app.services.audit import api_key_actor, write_audit
 from app.services.config_version import record_config_version
 from app.services.ota_history import record_ota_operation
 from app.services.preflight_history import record_preflight_run
-from common.license_verifier import load_public_key, verify_signature
+from common.license_verifier import load_active_license_trust, verify_license as verify_signed_license
 from common.tailscale_status import validate_tailscale_status
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
@@ -67,7 +66,6 @@ class LicenseInstallRequest(BaseModel):
     """
 
     license: dict[str, Any] = Field(..., description="完整 signed license JSON（扁平结构，包含 signature）")
-    license_public_key: str = Field(..., min_length=1, description="base64 编码 Ed25519 公钥")
 
 
 class PreflightRequest(BaseModel):
@@ -145,46 +143,38 @@ def _restore_or_remove(path: Path, old_data: bytes | None, mode: int = 0o640) ->
 
 
 def _validate_license_install_shape(req: LicenseInstallRequest) -> None:
-    required_fields = {"signature", "signature_alg", "license_id", "machine_id", "issued_at", "expires_at"}
+    required_fields = {
+        "signature",
+        "signature_alg",
+        "key_id",
+        "license_id",
+        "machine_id",
+        "issued_at",
+        "expires_at",
+    }
     missing = sorted(required_fields - set(req.license.keys()))
     if missing:
         raise HTTPException(status_code=400, detail={"success": False, "error": "license_missing_fields", "missing": missing})
     if str(req.license.get("signature_alg") or "").lower() != "ed25519":
         raise HTTPException(status_code=400, detail={"success": False, "error": "unsupported_signature_alg"})
-    for field in ("signature", "license_id", "machine_id", "issued_at", "expires_at"):
+    for field in ("signature", "key_id", "license_id", "machine_id", "issued_at", "expires_at"):
         if not str(req.license.get(field) or "").strip():
             raise HTTPException(status_code=400, detail={"success": False, "error": "license_payload_missing_field", "field": field})
+
+
+def _verify_license_install_request(req: LicenseInstallRequest, *, trust_policy_path: Path) -> None:
     try:
-        base64.b64decode(req.license_public_key.strip(), validate=True)
-    except (binascii.Error, ValueError):
-        raise HTTPException(status_code=400, detail={"success": False, "error": "invalid_license_public_key_base64"})
-
-
-def _trusted_license_public_key(public_key_path: Path) -> bytes:
-    configured = str(settings.LICENSE_TRUSTED_PUBLIC_KEY or "").strip()
-    if configured:
-        try:
-            return base64.b64decode(configured, validate=True)
-        except (binascii.Error, ValueError):
-            raise HTTPException(status_code=500, detail={"success": False, "error": "invalid_trusted_license_public_key"})
-    if public_key_path.is_file():
-        try:
-            return load_public_key(public_key_path)
-        except (OSError, binascii.Error, ValueError):
-            raise HTTPException(status_code=500, detail={"success": False, "error": "invalid_existing_license_public_key"})
-    raise HTTPException(status_code=409, detail={"success": False, "error": "missing_trusted_license_public_key"})
-
-
-def _verify_license_install_request(req: LicenseInstallRequest, *, public_key_path: Path) -> bytes:
-    request_public_key = base64.b64decode(req.license_public_key.strip(), validate=True)
-    trusted_public_key = _trusted_license_public_key(public_key_path)
-    if request_public_key != trusted_public_key:
-        raise HTTPException(status_code=403, detail={"success": False, "error": "license_public_key_not_trusted"})
+        trust = load_active_license_trust(trust_policy_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail={"success": False, "error": "missing_license_trust_policy"}) from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail={"success": False, "error": "invalid_license_trust_policy"}) from exc
+    if req.license.get("key_id") != trust.key_id:
+        raise HTTPException(status_code=403, detail={"success": False, "error": "license_key_id_not_trusted"})
     try:
-        verify_signature(req.license, trusted_public_key)
+        verify_signed_license(req.license, trust)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"success": False, "error": "license_signature_invalid"}) from exc
-    return trusted_public_key
 
 
 async def _call_license_verify() -> dict:
@@ -499,9 +489,9 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
     )
     _preflight_file_check(
         checks,
-        "license.public_key",
-        Path(settings.LICENSE_PUBLIC_KEY_PATH),
-        hint="install license public key before shipping",
+        "license.trust_policy",
+        Path(settings.LICENSE_TRUST_POLICY_PATH),
+        hint="initialize the canonical license trust policy before shipping",
     )
 
     verify_result = await _call_license_verify()
@@ -611,8 +601,8 @@ async def install_license(req: LicenseInstallRequest, api_key: str = Depends(req
     _validate_license_install_shape(req)
 
     license_path = Path(settings.LICENSE_FILE_PATH)
-    public_key_path = Path(settings.LICENSE_PUBLIC_KEY_PATH)
-    _verify_license_install_request(req, public_key_path=public_key_path)
+    trust_policy_path = Path(settings.LICENSE_TRUST_POLICY_PATH)
+    _verify_license_install_request(req, trust_policy_path=trust_policy_path)
     old_license = license_path.read_bytes() if license_path.exists() else None
 
     license_bytes = json.dumps(req.license, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
@@ -638,7 +628,8 @@ async def install_license(req: LicenseInstallRequest, api_key: str = Depends(req
         return {
             "success": True,
             "license_path": str(license_path),
-            "public_key_path": str(public_key_path),
+            "trust_policy_path": str(trust_policy_path),
+            "key_id": req.license.get("key_id"),
             "verify": verify_result,
             "restart_required": False,
         }
