@@ -240,10 +240,12 @@ def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata
         "infra/bootstrap/installer_public_config.py",
         "infra/bootstrap/tailscale_client_lock.py",
         "scripts/manage-license-trust.py",
+        "scripts/manage-license-transaction.py",
         "common/license_verifier.py",
         "common/tailscale_status.py",
         "infra/host-release-runner/host_release_engine.py",
         "infra/ota-helper/drycontroller-ota-helper.service",
+        "infra/bootstrap/drycontroller-license-transaction-recovery.service",
         "services/device-identity/identity_service",
     ):
         assert required in builder

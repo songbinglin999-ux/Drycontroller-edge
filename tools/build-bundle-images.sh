@@ -28,11 +28,13 @@ SOURCE_BUNDLE_PATHS=(
   infra/bootstrap/installer_public_config.py
   infra/bootstrap/tailscale_client_lock.py
   scripts/manage-license-trust.py
+  scripts/manage-license-transaction.py
   common/license_verifier.py
   common/tailscale_status.py
   infra/bootstrap/drycontroller-factory-identity.service
   infra/bootstrap/drycontroller-device-credential-rotation.service
   infra/bootstrap/drycontroller-device-credential-rotation.timer
+  infra/bootstrap/drycontroller-license-transaction-recovery.service
   infra/host-release-runner/host_release_engine.py
   infra/host-release-runner/host_release_runner.py
   infra/host-release-runner/host-release-runner

@@ -116,6 +116,7 @@ for path in \
   env.example \
   infra/bootstrap/initialize-runtime-config.py \
   scripts/manage-license-trust.py \
+  scripts/manage-license-transaction.py \
   common/license_verifier.py \
   infra/bootstrap/installer_public_config.py \
   infra/bootstrap/tailscale_client_lock.py \
@@ -133,6 +134,7 @@ for path in \
   infra/bootstrap/tailnet-edge-api-proxy.py \
   infra/bootstrap/drycontroller-device-credential-rotation.service \
   infra/bootstrap/drycontroller-device-credential-rotation.timer \
+  infra/bootstrap/drycontroller-license-transaction-recovery.service \
   services/device-identity/requirements.txt; do
   [ -f "${REPO_SOURCE}/${path}" ] || die "installer source missing: $path"
 done
@@ -244,11 +246,13 @@ install_static_runtime() {
   install -o root -g root -m 0644 "${REPO_SOURCE}/common/tailscale_status.py" /usr/libexec/drycontroller/common/tailscale_status.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/common/license_verifier.py" /usr/libexec/drycontroller/common/license_verifier.py
   install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/manage-license-trust.py" /usr/libexec/drycontroller/manage-license-trust.py
+  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/manage-license-transaction.py" /usr/libexec/drycontroller/manage-license-transaction.py
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-runner" /usr/libexec/drycontroller/host-release-runner
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-apply" /usr/libexec/drycontroller/host-release-apply
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/initialize-initial-release" /usr/libexec/drycontroller/initialize-initial-release
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/drycontroller-host-release-runner.service" /etc/systemd/system/drycontroller-host-release-runner.service
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
+  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-license-transaction-recovery.service" /etc/systemd/system/drycontroller-license-transaction-recovery.service
   install -o root -g root -m 0644 "$HOST_COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/host-release-cosign.pub
   install -o root -g root -m 0644 "$SOFTWARE_COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub
   install -o root -g root -m 0644 "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" /etc/drycontroller/trust/device-identity-cloud.pub
@@ -323,6 +327,7 @@ initialize_release() {
 
 enable_services() {
   systemctl daemon-reload
+  systemctl enable drycontroller-license-transaction-recovery.service
   systemctl enable drycontroller-tailnet-edge-api.socket
   systemctl enable --now tailscaled.service
   systemctl is-active --quiet tailscaled.service \
