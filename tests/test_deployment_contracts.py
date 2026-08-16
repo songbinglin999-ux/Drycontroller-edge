@@ -46,12 +46,12 @@ def test_plc_deployment_defaults_match_rtu_over_tcp_contract():
     assert example["MODBUS_FRAMER"] == "rtu"
 
 
-def test_license_install_contract_keeps_atomic_trust_policy_read_only():
+def test_license_pair_contract_keeps_edge_api_fully_read_only():
     services = _compose_services()
     edge_api = services["edge-api"]
     license_service = services["license-service"]
 
-    assert "/etc/drycontroller/license:/etc/drycontroller/license" in edge_api["volumes"]
+    assert "/etc/drycontroller/license:/etc/drycontroller/license:ro" in edge_api["volumes"]
     assert "/etc/drycontroller/keys:/etc/drycontroller/keys:ro" in edge_api["volumes"]
     assert "/etc/drycontroller/license:/etc/drycontroller/license:ro" in license_service["volumes"]
     assert "/etc/drycontroller/keys:/etc/drycontroller/keys:ro" in license_service["volumes"]
@@ -240,16 +240,27 @@ def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata
         "infra/bootstrap/installer_public_config.py",
         "infra/bootstrap/tailscale_client_lock.py",
         "scripts/manage-license-trust.py",
+        "scripts/manage-license-transaction.py",
         "common/license_verifier.py",
         "common/tailscale_status.py",
         "infra/host-release-runner/host_release_engine.py",
         "infra/ota-helper/drycontroller-ota-helper.service",
+        "infra/bootstrap/drycontroller-license-transaction-recovery.service",
         "services/device-identity/identity_service",
     ):
         assert required in builder
     assert "tar -czf" not in builder
     assert 'python3 scripts/validate-source-bundle.py "$BUNDLE"' in builder
     assert "source bundle contains forbidden macOS metadata" in builder
+
+
+def test_installer_retires_the_independent_license_trust_writer():
+    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+
+    assert "rm -f /usr/libexec/drycontroller/manage-license-trust.py" in installer
+    assert '"${REPO_SOURCE}/scripts/manage-license-trust.py"' in installer
+    assert "--root /etc/drycontroller/keys/license-trust" in installer
+    assert "install -o root -g root -m 0755 \"${REPO_SOURCE}/scripts/manage-license-trust.py\"" not in installer
 
 
 def test_edge_api_tailnet_preflight_uses_fixed_root_observer_without_localapi_socket():

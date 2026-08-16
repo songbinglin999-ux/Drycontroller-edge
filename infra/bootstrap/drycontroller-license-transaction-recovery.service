@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover an interrupted DryController license transaction
+After=local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/drycontroller-identity/venv/bin/python /usr/libexec/drycontroller/manage-license-transaction.py recover
+
+[Install]
+RequiredBy=docker.service

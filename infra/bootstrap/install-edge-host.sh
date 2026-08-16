@@ -116,6 +116,7 @@ for path in \
   env.example \
   infra/bootstrap/initialize-runtime-config.py \
   scripts/manage-license-trust.py \
+  scripts/manage-license-transaction.py \
   common/license_verifier.py \
   infra/bootstrap/installer_public_config.py \
   infra/bootstrap/tailscale_client_lock.py \
@@ -133,6 +134,7 @@ for path in \
   infra/bootstrap/tailnet-edge-api-proxy.py \
   infra/bootstrap/drycontroller-device-credential-rotation.service \
   infra/bootstrap/drycontroller-device-credential-rotation.timer \
+  infra/bootstrap/drycontroller-license-transaction-recovery.service \
   services/device-identity/requirements.txt; do
   [ -f "${REPO_SOURCE}/${path}" ] || die "installer source missing: $path"
 done
@@ -235,20 +237,23 @@ configure_docker() {
 }
 
 install_static_runtime() {
-  install -d -m 0755 /usr/libexec/drycontroller /etc/drycontroller/keys /etc/drycontroller/trust
+  install -d -o root -g root -m 0755 /usr/libexec/drycontroller /etc/drycontroller/keys /etc/drycontroller/trust /etc/drycontroller/license
   install -d -m 0755 /usr/libexec/drycontroller/common
   install -d -m 0700 /var/lib/drycontroller /var/lib/drycontroller-host /var/lib/drycontroller-ota
+  install -d -o root -g root -m 0700 /var/lib/drycontroller/license-transaction
   install -d -o root -g root -m 0700 /var/lib/drycontroller/cloud-request-nonces
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_engine.py" /usr/libexec/drycontroller/host_release_engine.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_runner.py" /usr/libexec/drycontroller/host_release_runner.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/common/tailscale_status.py" /usr/libexec/drycontroller/common/tailscale_status.py
   install -o root -g root -m 0644 "${REPO_SOURCE}/common/license_verifier.py" /usr/libexec/drycontroller/common/license_verifier.py
-  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/manage-license-trust.py" /usr/libexec/drycontroller/manage-license-trust.py
+  rm -f /usr/libexec/drycontroller/manage-license-trust.py
+  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/manage-license-transaction.py" /usr/libexec/drycontroller/manage-license-transaction.py
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-runner" /usr/libexec/drycontroller/host-release-runner
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-apply" /usr/libexec/drycontroller/host-release-apply
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/initialize-initial-release" /usr/libexec/drycontroller/initialize-initial-release
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/drycontroller-host-release-runner.service" /etc/systemd/system/drycontroller-host-release-runner.service
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
+  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-license-transaction-recovery.service" /etc/systemd/system/drycontroller-license-transaction-recovery.service
   install -o root -g root -m 0644 "$HOST_COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/host-release-cosign.pub
   install -o root -g root -m 0644 "$SOFTWARE_COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub
   install -o root -g root -m 0644 "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" /etc/drycontroller/trust/device-identity-cloud.pub
@@ -282,19 +287,28 @@ install_identity_service() {
 
 initialize_license_trust() {
   /opt/drycontroller-identity/venv/bin/python \
-    /usr/libexec/drycontroller/manage-license-trust.py \
+    "${REPO_SOURCE}/scripts/manage-license-trust.py" \
     --root /etc/drycontroller/keys/license-trust \
-    initialize "$LICENSE_TRUST"
+    "$LICENSE_TRUST"
   /opt/drycontroller-identity/venv/bin/python - <<'PY'
 from pathlib import Path
+import os
 import sys
 
 sys.path.insert(0, "/usr/libexec/drycontroller")
 from common.license_verifier import load_active_license_trust
 
-trust = load_active_license_trust(
-    Path("/etc/drycontroller/keys/license-trust/policy.json")
-)
+root = Path("/etc/drycontroller/keys/license-trust")
+policy = root / "policy.json"
+trust = load_active_license_trust(policy)
+artifact_dir = root / "versions" / trust.key_id
+artifact = artifact_dir / "license-trust.json"
+for directory in (root, root / "versions", artifact_dir):
+    os.chown(directory, 0, 0)
+    os.chmod(directory, 0o755)
+for path in (policy, artifact):
+    os.chown(path, 0, 0)
+    os.chmod(path, 0o444)
 print(f"initialized license trust: {trust.key_id}")
 PY
 }
@@ -323,6 +337,7 @@ initialize_release() {
 
 enable_services() {
   systemctl daemon-reload
+  systemctl enable drycontroller-license-transaction-recovery.service
   systemctl enable drycontroller-tailnet-edge-api.socket
   systemctl enable --now tailscaled.service
   systemctl is-active --quiet tailscaled.service \

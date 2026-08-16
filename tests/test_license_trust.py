@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
 import subprocess
@@ -36,25 +37,6 @@ def _trust(private_key: Ed25519PrivateKey, key_id: str) -> bytes:
     ).encode("utf-8")
 
 
-def _signed_license(private_key: Ed25519PrivateKey, key_id: str) -> dict[str, str]:
-    from common.license_verifier import canonical_license_bytes
-
-    payload = {
-        "expires_at": "2099-01-01T00:00:00Z",
-        "issued_at": "2026-01-01T00:00:00Z",
-        "key_id": key_id,
-        "license_id": "lic-1",
-        "machine_id": "machine-1",
-        "signature_alg": "ed25519",
-    }
-    return {
-        **payload,
-        "signature": base64.b64encode(
-            private_key.sign(canonical_license_bytes(payload))
-        ).decode("ascii"),
-    }
-
-
 def test_canonical_license_trust_parses_spki_and_rejects_noncanonical_bytes():
     from common.license_verifier import parse_license_trust
 
@@ -87,9 +69,7 @@ def test_license_trust_rejects_digest_mismatch_and_unknown_field():
         )
 
 
-def test_atomic_policy_rotates_and_rolls_back_without_dual_trust(tmp_path: Path):
-    from common.license_verifier import load_active_license_trust, verify_license
-
+def test_initializer_creates_policy_once_and_exposes_no_mutation_commands(tmp_path: Path):
     old_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     new_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
     old_artifact = tmp_path / "old.json"
@@ -99,81 +79,55 @@ def test_atomic_policy_rotates_and_rolls_back_without_dual_trust(tmp_path: Path)
     root = tmp_path / "license-trust"
 
     subprocess.run(
-        [sys.executable, str(MANAGER), "--root", str(root), "initialize", str(old_artifact)],
+        [sys.executable, str(MANAGER), "--root", str(root), str(old_artifact)],
         check=True,
     )
-    old_license = _signed_license(old_key, "license-old")
-    new_license = _signed_license(new_key, "license-new")
-    verify_license(old_license, load_active_license_trust(root / "policy.json"))
-    with pytest.raises(ValueError, match="key_id"):
-        verify_license(new_license, load_active_license_trust(root / "policy.json"))
-
-    subprocess.run(
+    before = (root / "policy.json").read_bytes()
+    second = subprocess.run(
         [
             sys.executable,
             str(MANAGER),
             "--root",
             str(root),
-            "rotate",
             str(new_artifact),
-            "--expected-active",
-            "license-old",
-        ],
-        check=True,
-    )
-    verify_license(new_license, load_active_license_trust(root / "policy.json"))
-    with pytest.raises(ValueError, match="key_id"):
-        verify_license(old_license, load_active_license_trust(root / "policy.json"))
-
-    subprocess.run(
-        [
-            sys.executable,
-            str(MANAGER),
-            "--root",
-            str(root),
-            "rollback",
-            "--expected-active",
-            "license-new",
-        ],
-        check=True,
-    )
-    verify_license(old_license, load_active_license_trust(root / "policy.json"))
-    with pytest.raises(ValueError, match="key_id"):
-        verify_license(new_license, load_active_license_trust(root / "policy.json"))
-
-    policy = json.loads((root / "policy.json").read_text(encoding="utf-8"))
-    assert policy["active"]["key_id"] == "license-old"
-    assert policy["previous"]["key_id"] == "license-new"
-
-
-def test_rotation_rejects_reusing_key_id_with_different_public_key(tmp_path: Path):
-    old_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
-    replacement_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
-    old_artifact = tmp_path / "old.json"
-    replacement_artifact = tmp_path / "replacement.json"
-    old_artifact.write_bytes(_trust(old_key, "license-prod"))
-    replacement_artifact.write_bytes(_trust(replacement_key, "license-prod"))
-    root = tmp_path / "license-trust"
-
-    subprocess.run(
-        [sys.executable, str(MANAGER), "--root", str(root), "initialize", str(old_artifact)],
-        check=True,
-    )
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(MANAGER),
-            "--root",
-            str(root),
-            "rotate",
-            str(replacement_artifact),
-            "--expected-active",
-            "license-prod",
         ],
         check=False,
         capture_output=True,
         text=True,
     )
+    help_result = subprocess.run(
+        [
+            sys.executable,
+            str(MANAGER),
+            "--help",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    release_lock = tmp_path / "release.lock"
+    with release_lock.open("wb") as lock_handle:
+        fcntl.flock(lock_handle, fcntl.LOCK_EX)
+        retired_rotate = subprocess.run(
+            [
+                sys.executable,
+                str(MANAGER),
+                "--root",
+                str(root),
+                "rotate",
+                str(new_artifact),
+                "--expected-active",
+                "license-old",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
-    assert result.returncode != 0
-    assert "already exists with different bytes" in result.stderr
+    assert second.returncode != 0
+    assert "already initialized" in second.stderr
+    assert (root / "policy.json").read_bytes() == before
+    for retired in ("rotate", "rollback", "revoke-previous", "status"):
+        assert retired not in help_result.stdout
+    assert retired_rotate.returncode != 0
+    assert (root / "policy.json").read_bytes() == before
