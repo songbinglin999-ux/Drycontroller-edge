@@ -506,12 +506,29 @@ def trust_preflight(
             payload = json.loads(response.read(64 * 1024))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("Cloud release-trust attestation failed") from exc
-    expected = {
-        "schema": "drycontroller.release-trust-attestation.v1",
-        "host_sha256": _sha256(host_key),
-        "software_sha256": _sha256(software_key),
-    }
-    if payload != expected:
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema",
+        "pair_id",
+        "handoff_tag",
+        "inventory_sha256",
+        "source_commit",
+        "host_sha256",
+        "software_sha256",
+    }:
+        raise ValueError("Cloud release-trust attestation schema is invalid")
+    pair_id = payload.get("pair_id")
+    if (
+        payload.get("schema") != "drycontroller.release-trust-attestation.v1"
+        or not isinstance(pair_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", pair_id) is None
+        or payload.get("inventory_sha256") != f"sha256:{pair_id}"
+        or payload.get("handoff_tag")
+        != f"drycontroller-release-public-keys-sha256-{pair_id}"
+        or not isinstance(payload.get("source_commit"), str)
+        or COMMIT_RE.fullmatch(payload["source_commit"]) is None
+        or payload.get("host_sha256") != _sha256(host_key)
+        or payload.get("software_sha256") != _sha256(software_key)
+    ):
         raise ValueError(
             "Cloud release-trust attestation does not match CI signing keys"
         )

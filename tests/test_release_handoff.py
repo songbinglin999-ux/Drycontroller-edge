@@ -335,8 +335,13 @@ def test_cloud_trust_preflight_requires_authenticated_observed_fingerprints(
     host_raw = _public_key(host_key)
     software_raw = _public_key(software_key)
     calls = []
+    pair_id = "9" * 64
     observed = {
         "schema": "drycontroller.release-trust-attestation.v1",
+        "pair_id": pair_id,
+        "handoff_tag": f"drycontroller-release-public-keys-sha256-{pair_id}",
+        "inventory_sha256": f"sha256:{pair_id}",
+        "source_commit": "a" * 40,
         "host_sha256": _digest(host_raw),
         "software_sha256": _digest(software_raw),
     }
@@ -384,6 +389,16 @@ def test_cloud_trust_preflight_requires_authenticated_observed_fingerprints(
             cloud_api_key="cloud-release-api-key",
         )
     assert len(calls) == 2
+
+    observed["host_sha256"] = _digest(host_raw)
+    observed["handoff_tag"] = "drycontroller-release-public-keys-sha256-" + "8" * 64
+    with pytest.raises(ValueError, match="does not match"):
+        module.trust_preflight(
+            host_public_key=host_key,
+            software_public_key=software_key,
+            cloud_url="https://ops.example.com",
+            cloud_api_key="cloud-release-api-key",
+        )
 
 
 def test_release_publish_creates_digest_tag_and_writes_inventory_last(
