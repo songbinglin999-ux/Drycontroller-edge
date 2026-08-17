@@ -14,7 +14,7 @@
 3. **最小容器数**：合并职责单一的微服务，减少编排复杂度和故障域。
 4. **离线 7x24**：不依赖云端，本地闭环完整可运行。
 5. **控制建议与控制命令分离**：AI 永不直接写 PLC；`edge-api` 是唯一 command issuer；`edge-daq` 只消费签名后的 command 并回 ACK/NAK。生产工作流按模式授权：`MANUAL` 下人工设频率目标，`AUTO` 下 edge 自动签发频率目标；edge-api 这一层（range guard / ramp-slew gate / 工艺联锁 / 签名 / 审计）始终不被旁路。
-6. **保命层不依赖 tailnet 可用性**：LAN SSH + 防火墙默认 ACCEPT 是不可动摇的最终兜底，独立于 Tailscale 控制面是否可达。
+6. **维护入口最小授权**：当前只验收腾讯云专用 `tag:ops` 跳板经 Tailscale SSH 以 `dryops` 登录 Edge，ACL 仅允许 `tag:ops -> tag:edge:22`；LAN operations-CA 入口属于后续独立 DANGER gate，不计入当前验收。
 
 ---
 
@@ -23,7 +23,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     保命层（宿主机级）                        │
-│   Tailscale (systemd) ─ SSH (局域网) ─ host watchdog         │
+│   Tailscale (systemd) ─ Tailscale SSH ─ host watchdog        │
 └──────────────────────────┬──────────────────────────────────┘
 ┌──────────────────────────▼──────────────────────────────────┐
 │                     基础层（数据基础设施）                     │
@@ -52,16 +52,16 @@
 | 组件 | 职责 | 实现方式 |
 |---|---|---|
 | Tailscale | 远程 VPN 通道 | **systemd 服务**，不在 Docker 容器内，独立于 compose 生命周期 |
-| SSH | 局域网 fallback | 宿主机 sshd，Tailscale 不可达时走局域网接入 |
+| SSH | 远程维护入口 | 腾讯云专用 `tag:ops` 跳板经 Tailscale SSH，以 `dryops` 登录；不下发 Edge 私钥或默认密码 |
 | host watchdog | 监控 Docker daemon | systemd unit（`Restart=always`）或独立脚本，Docker daemon 异常时自动重启；watchdog 自身由 systemd 守护，避免单点 |
 
-**验收标准**：执行 `docker compose down` 后，通过 Tailscale SSH 仍可远程接入宿主机；通过 LAN SSH 同样可达。
+**验收标准**：执行 `docker compose down` 后，腾讯云专用 `tag:ops` 跳板仍可通过 Tailscale SSH 以 `dryops` 接入宿主机，且不能访问 Edge `8000`。
 
 **5/30 教训**：Tailscale 跑在 Docker 容器内，`compose down` 一起被杀，远程通道永久断联。此层直接解决该问题。
 
-### 2.1 兜底底线（不可动摇）
+### 2.1 当前维护边界
 
-tailnet 控制面走的是未备案域名，SNI 放行与 UPnP 端口映射都脆（重启路由器即丢），因此**保命层不能把"能新建 Tailscale 连接"当作前提**。最终兜底是 **LAN SSH(22) + 网卡/路由 + 防火墙默认 ACCEPT**，独立于 tailnet 可用性。任何安全收紧都不得切断这条 LAN 接入路径。
+当前上线范围只有腾讯云专用 `tag:ops` 跳板到 `tag:edge:22` 的 Tailscale SSH；Edge 在受限 edge-api ingress 生效并校验节点身份后才启用 SSH。不得把 LAN SSH、默认 ACCEPT、Edge 密码库或通用远程执行写入本阶段验收。基于 operations-CA 的 LAN 应急入口如需落地，必须作为后续独立 DANGER 变更重新设计、复核和验收。
 
 ### 2.2 enroll 改造（不能标"不变"）
 
@@ -327,7 +327,7 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 | 事项 | 内容 | 验收标准 |
 |---|---|---|
 | 数据链路 | PLC tags、采集、工程量换算、阈值告警、大屏、`PLC_HEARTBEAT` 读取、`EDGE_HOST_ALIVE` 写入 | 现场点表落库；只读数据链路和双向通讯心跳 E2E 跑通 |
-| 保命层 | 宿主机 Tailscale + LAN SSH + host watchdog + enroll 改造 | `compose down` 后 Tailscale/LAN SSH 均可达；cloud-ops 仍能识别设备 tailnet 地址 |
+| 保命层 | 宿主机 Tailscale + Tailscale SSH + host watchdog + enroll 改造 | `compose down` 后腾讯云 `tag:ops` 跳板仍能以 `dryops` SSH；`tag:ops` 不能访问 Edge `8000`；cloud-ops 仍能识别设备 tailnet 地址 |
 | PLC 统一接口 | 采集寄存器、D5100 单路频率事务、DryHMI direct 事务、参数同步、报警同步、状态同步、ACK/NAK、D5291 stale 后 hold-last/本地接管、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC hold-last 并拒绝新 edge 请求；edge 在线频率写入走 edge-api / D5100；edge 不可用且 PLC 授权时 DryHMI direct 走 D5550-D5599；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/epoch 状态可见；VFD/硬接线/设备保护可现场验收 |
 | edge 控制契约 | suggestion schema、signed command、ACK/NAK、range guard、最小变化率/冷却 gate、`MANUAL` / `AUTO` / `AUTO_PAUSED` 授权机制、owner/epoch gate | AI 不直写 PLC；未签名/越界/变化率超限/本地模式/心跳异常/非 EDGE owner/stale epoch 下 command 被拒并审计；AUTO 可一键退回 MANUAL，gate 失败自动挂起；PLC 负责 D5100 事务、hold-last 和最终输出 |
 | 监控层 | PLC 模式监控、控制权 owner/epoch、HMI 直连授权、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、HMI 接管、控制拒绝均可见且告警 |
@@ -358,7 +358,7 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 
 | 场景 | 预期 |
 |---|---|
-| `docker compose down` | Tailscale/LAN SSH 仍可达；PLC D5291 stale 后 hold-last / 拒绝新 edge 请求；云端显示业务离线但主机可达 |
+| `docker compose down` | 腾讯云 `tag:ops` 跳板的 Tailscale SSH 仍可达；PLC D5291 stale 后 hold-last / 拒绝新 edge 请求；云端显示业务离线但主机可达 |
 | kill `edge-daq` 主进程 | `D5291` 不再 fresh；PLC hold-last/拒绝新 edge 请求；edge-monitor/Alertmanager 告警 |
 | kill 心跳进程 | PLC D5291 freshness 超时；edge 恢复后仍需人工重新授权 AUTO |
 | MQTT 不可用 | edge-api 进入 `AUTO_PAUSED` 或保持 MANUAL；不产生新可执行 command；状态可审计 |

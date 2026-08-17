@@ -269,6 +269,14 @@ def create_app(
                     allow_unbound_node_id=True,
                 )
                 node_id = recovered.get("detail", {}).get("node_id")
+                if (
+                    recovered.get("reason") == "tailscale_ssh_disabled"
+                    and isinstance(node_id, str)
+                    and node_id
+                ):
+                    recovered = tailnet.ensure_ssh(
+                        node_name=active["node_name"], expected_node_id=node_id
+                    )
                 if recovered.get("ok") is not True or not isinstance(node_id, str) or not node_id:
                     raise TailnetJoinError("tailnet_join_recovery_failed")
                 active = store.bind_tailnet_node_id(node_id)

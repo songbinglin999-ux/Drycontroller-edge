@@ -91,6 +91,8 @@ class FakeTpmTools:
 class FakeTailnet:
     def __init__(self):
         self.online = False
+        self.ssh_enabled = True
+        self.ensure_ssh_calls = 0
         self.keys: list[str] = []
         self.expected_version = "1.98.10"
         self.login_server = "https://headscale.example.test"
@@ -111,7 +113,15 @@ class FakeTailnet:
                 "reason": "tailscale_node_identity_mismatch",
                 "detail": {"hostname": node_name, "node_id": "node-1"},
             }
-        return {"ok": True, "reason": "ok", "detail": {"hostname": node_name, "node_id": "node-1"}}
+        return {
+            "ok": self.ssh_enabled,
+            "reason": "ok" if self.ssh_enabled else "tailscale_ssh_disabled",
+            "detail": {
+                "hostname": node_name,
+                "node_id": "node-1",
+                "ssh_enabled": self.ssh_enabled,
+            },
+        }
 
     def join(self, *, node_name: str, auth_key: str):
         self.keys.append(auth_key)
@@ -122,6 +132,8 @@ class FakeTailnet:
         return self.status(node_name=node_name)
 
     def ensure_ssh(self, *, node_name: str, expected_node_id: str):
+        self.ensure_ssh_calls += 1
+        self.ssh_enabled = True
         return self.status(node_name=node_name, expected_node_id=expected_node_id)
 
 
@@ -465,11 +477,22 @@ async def test_factory_activation_persists_candidate_and_promotes_only_after_clo
 
 def test_tailnet_join_uses_root_only_file_argument_and_deletes_it(tmp_path):
     online = False
+    ssh_enabled = False
     commands: list[list[str]] = []
     key_paths: list[Path] = []
     auth_key = "hskey-auth-0123456789abcdef"
 
     def inspect_status(**kwargs):
+        if online and not ssh_enabled:
+            return {
+                "ok": False,
+                "reason": "tailscale_ssh_disabled",
+                "detail": {
+                    "hostname": kwargs["expected_hostname"],
+                    "node_id": "node-1",
+                    "ssh_enabled": False,
+                },
+            }
         return {
             "ok": online,
             "reason": "ok" if online else "tailscale_not_running",
@@ -477,9 +500,12 @@ def test_tailnet_join_uses_root_only_file_argument_and_deletes_it(tmp_path):
         }
 
     def run_command(command):
-        nonlocal online
+        nonlocal online, ssh_enabled
         commands.append(command)
         if command[0] == "/usr/bin/systemctl":
+            return 0
+        if command[-2:] == ["set", "--ssh"]:
+            ssh_enabled = True
             return 0
         key_argument = next(item for item in command if item.startswith("--auth-key=file:"))
         key_path = Path(key_argument.removeprefix("--auth-key=file:"))
@@ -500,10 +526,62 @@ def test_tailnet_join_uses_root_only_file_argument_and_deletes_it(tmp_path):
 
     assert result["ok"] is True
     assert commands and all(auth_key not in argument for command in commands for argument in command)
-    assert "--ssh" in commands[0]
-    assert ["/usr/bin/systemctl", "start", "drycontroller-tailnet-edge-api.socket"] in commands
+    assert "--ssh=false" in commands[0]
+    assert "--ssh" not in commands[0]
+    assert commands[1:] == [
+        ["/usr/bin/systemctl", "start", "drycontroller-tailnet-edge-api.socket"],
+        [
+            "/usr/bin/systemctl",
+            "is-active",
+            "--quiet",
+            "drycontroller-tailnet-edge-api.socket",
+        ],
+        [
+            "/usr/bin/tailscale",
+            "--socket=/var/run/tailscale/tailscaled.sock",
+            "set",
+            "--ssh",
+        ],
+        [
+            "/usr/bin/systemctl",
+            "is-active",
+            "--quiet",
+            "drycontroller-tailnet-edge-api.socket",
+        ],
+    ]
     assert key_paths and not key_paths[0].exists()
     assert (tmp_path / "join").stat().st_mode & 0o777 == 0o700
+
+
+def test_tailnet_join_ingress_failure_keeps_ssh_disabled(tmp_path):
+    commands: list[list[str]] = []
+
+    def run_command(command):
+        commands.append(command)
+        if command[:2] == ["/usr/bin/systemctl", "start"]:
+            return 1
+        return 0
+
+    client = TailnetClient(
+        expected_version="1.98.10",
+        login_server="https://headscale.example.test",
+        temp_root=tmp_path / "join",
+        run_command=run_command,
+        inspect_status=lambda **_kwargs: {
+            "ok": False,
+            "reason": "tailscale_not_running",
+            "detail": {},
+        },
+    )
+
+    with pytest.raises(TailnetJoinError, match="tailnet_edge_api_ingress_failed"):
+        client.join(
+            node_name="edge-abcdef123456",
+            auth_key="hskey-auth-0123456789abcdef",
+        )
+
+    assert "--ssh=false" in commands[0]
+    assert all(command[-2:] != ["set", "--ssh"] for command in commands)
 
 
 def test_tailnet_join_failure_deletes_key_and_never_persists_it(tmp_path):
@@ -788,12 +866,15 @@ async def test_tailnet_status_recovers_durable_join_attempt_after_daemon_success
         assert interrupted.status_code == 409
         assert store.tailnet_join_attempt() is not None
         assert "hskey-auth" not in store.tailnet_join_attempt_path.read_text(encoding="utf-8")
+        tailnet.ssh_enabled = False
         recovered = await client.post("/factory-identity/tailnet/status", json=confirmation)
 
     assert recovered.status_code == 200, recovered.text
     assert store.active()["tailnet_node_id"] == "node-1"
     assert store.tailnet_join_attempt() is None
     assert tailnet.keys == ["hskey-auth-0123456789abcdef"]
+    assert tailnet.ssh_enabled is True
+    assert tailnet.ensure_ssh_calls == 2
 
 
 @pytest.mark.asyncio

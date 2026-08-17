@@ -171,7 +171,7 @@ class TailnetClient:
                 f"--hostname={node_name}",
                 "--accept-dns=false",
                 "--accept-routes=false",
-                "--ssh",
+                "--ssh=false",
                 f"--auth-key=file:{key_path}",
             ]
             if self.run_command(command) != 0:
@@ -180,10 +180,15 @@ class TailnetClient:
                 ["/usr/bin/systemctl", "start", TAILNET_EDGE_API_SOCKET]
             ) != 0:
                 raise TailnetJoinError("tailnet_edge_api_ingress_failed")
-            result = self.status(node_name=node_name, allow_unbound_node_id=True)
-            if result.get("ok") is not True:
+            observed = self.status(node_name=node_name, allow_unbound_node_id=True)
+            node_id = observed.get("detail", {}).get("node_id")
+            if (
+                observed.get("reason") != "tailscale_ssh_disabled"
+                or not isinstance(node_id, str)
+                or not node_id
+            ):
                 raise TailnetJoinError("tailnet_join_verification_failed")
-            return result
+            return self.ensure_ssh(node_name=node_name, expected_node_id=node_id)
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
