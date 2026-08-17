@@ -54,6 +54,7 @@ def read_tailscale_status(
         )
         control_url_match = re.search(r'(?:^|[ {])url="(https://[^"\\]+)"(?:[ }]|$)', preferences)
         control_url = control_url_match.group(1) if control_url_match else None
+        ssh_enabled = re.search(r"(?:^|[ {])ssh=true(?:[ }]|$)", preferences) is not None
     except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
         reason = str(exc) if isinstance(exc, ValueError) else "tailscale_command_failed"
         return {"ok": False, "reason": reason, "detail": detail}
@@ -73,6 +74,7 @@ def read_tailscale_status(
             "hostname": self_status.get("HostName"),
             "tailscale_ips": self_status.get("TailscaleIPs"),
             "login_server": control_url,
+            "ssh_enabled": ssh_enabled,
         }
     )
     return {"ok": True, "reason": "observed", "detail": detail}
@@ -128,6 +130,7 @@ def validate_tailscale_status(
             and str(detail["login_server"]).rstrip("/") == expected_login_server.rstrip("/"),
             "tailscale_login_server_mismatch",
         ),
+        (detail.get("ssh_enabled") is True, "tailscale_ssh_disabled"),
     )
     for passed, reason in checks:
         if not passed:

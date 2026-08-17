@@ -137,6 +137,7 @@ class TailnetClient:
                 f"--hostname={node_name}",
                 "--accept-dns=false",
                 "--accept-routes=false",
+                "--ssh",
                 f"--auth-key=file:{key_path}",
             ]
             if self.run_command(command) != 0:

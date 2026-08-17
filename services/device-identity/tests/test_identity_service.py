@@ -497,6 +497,7 @@ def test_tailnet_join_uses_root_only_file_argument_and_deletes_it(tmp_path):
 
     assert result["ok"] is True
     assert commands and all(auth_key not in argument for command in commands for argument in command)
+    assert "--ssh" in commands[0]
     assert ["/usr/bin/systemctl", "start", "drycontroller-tailnet-edge-api.socket"] in commands
     assert key_paths and not key_paths[0].exists()
     assert (tmp_path / "join").stat().st_mode & 0o777 == 0o700

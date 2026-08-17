@@ -70,7 +70,7 @@ def test_actual_tailscale_status_matches_version_server_identity_and_online_stat
             "BackendState": "Running",
             "Self": {"Online": True, "ID": "node-7", "HostName": "edge-abcdef123456"},
         }),
-        ("prefs", "--pretty"): 'Prefs{ra=false url="https://headscale.example.test/" Persist{n=[redacted]}}',
+        ("prefs", "--pretty"): 'Prefs{ra=false ssh=true url="https://headscale.example.test/" Persist{n=[redacted]}}',
     }
 
     def reader(arguments):
@@ -88,6 +88,7 @@ def test_actual_tailscale_status_matches_version_server_identity_and_online_stat
     assert result["detail"]["version"] == "1.98.10"
     assert result["detail"]["version_long"] == "1.98.10-tabcdef123-g123456789"
     assert result["detail"]["node_id"] == "node-7"
+    assert result["detail"]["ssh_enabled"] is True
     assert "redacted" not in json.dumps(result)
 
 
@@ -125,6 +126,7 @@ def test_root_runner_exposes_only_sanitized_tailnet_observation(monkeypatch):
         ("ID", "", "tailscale_node_identity_missing"),
         ("HostName", "edge-node", "tailscale_hostname_mismatch"),
         ("ControlURL", "https://login.tailscale.com", "tailscale_login_server_mismatch"),
+        ("RunSSH", False, "tailscale_ssh_disabled"),
     ],
 )
 def test_actual_tailscale_status_fails_closed_on_runtime_drift(field, value, reason):
@@ -138,13 +140,14 @@ def test_actual_tailscale_status_fails_closed_on_runtime_drift(field, value, rea
         status[field] = value
     elif field in status["Self"]:
         status["Self"][field] = value
-    else:
+    elif field == "ControlURL":
         control_url = value
 
     def reader(arguments):
         if arguments[-2:] == ["status", "--json"]:
             return json.dumps(status)
-        return f'Prefs{{ra=false url="{control_url}" Persist{{n=[redacted]}}}}'
+        ssh = "true" if field != "RunSSH" or value else "false"
+        return f'Prefs{{ra=false ssh={ssh} url="{control_url}" Persist{{n=[redacted]}}}}'
 
     result = inspect_tailscale_status(
         expected_version="1.98.10",
@@ -172,7 +175,7 @@ def test_actual_tailscale_status_rejects_replacement_node_identity():
                     },
                 }
             )
-        return 'Prefs{url="https://headscale.example.test"}'
+        return 'Prefs{ssh=true url="https://headscale.example.test"}'
 
     result = inspect_tailscale_status(
         expected_version="1.98.10",
@@ -212,6 +215,7 @@ def test_tailnet_product_ingress_is_interface_bound_and_preflight_gated():
             "node_id": "node-7",
             "hostname": "edge-abcdef123456",
             "login_server": "https://headscale.example.test",
+            "ssh_enabled": True,
             "edge_api_ingress_active": False,
         },
     }
