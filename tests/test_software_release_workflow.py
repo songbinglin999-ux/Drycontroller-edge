@@ -117,6 +117,18 @@ def test_release_workflow_uses_the_fixed_builder_after_tests():
     assert "services:" not in workflow.split("workflow_dispatch:", 1)[1].split("jobs:", 1)[0]
 
 
+def test_edge_test_workflows_install_bsdtar_before_the_full_suite():
+    for relative in (
+        ".gitea/workflows/edge-tests.yml",
+        ".gitea/workflows/edge-host-release.yml",
+        ".gitea/workflows/edge-software-release.yml",
+    ):
+        workflow = (ROOT / relative).read_text(encoding="utf-8")
+        before_tests = workflow.split("bash scripts/test-all.sh", 1)[0]
+        assert "apt-get install -y --no-install-recommends libarchive-tools" in before_tests
+        assert "command -v bsdtar" in before_tests
+
+
 def test_release_workflow_pins_actions_and_scopes_release_secrets_to_the_builder_step():
     workflow = (ROOT / ".gitea/workflows/edge-software-release.yml").read_text(encoding="utf-8")
     release_job = workflow.split("\n  release:\n", 1)[1]
