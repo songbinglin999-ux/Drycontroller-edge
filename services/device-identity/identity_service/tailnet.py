@@ -106,13 +106,34 @@ class TailnetClient:
         if current.get("ok") is True or current.get("reason") != "tailscale_ssh_disabled":
             return current
         if self.run_command(
+            ["/usr/bin/systemctl", "is-active", "--quiet", TAILNET_EDGE_API_SOCKET]
+        ) != 0:
+            return {
+                **current,
+                "ok": False,
+                "reason": "tailnet_edge_api_ingress_inactive",
+            }
+        if self.run_command(
             [TAILSCALE_BIN, f"--socket={TAILSCALE_SOCKET}", "set", "--ssh"]
         ) != 0:
             raise TailnetJoinError("tailnet_ssh_enable_failed")
         result = self.status(node_name=node_name, expected_node_id=expected_node_id)
-        if result.get("ok") is not True:
-            raise TailnetJoinError("tailnet_ssh_enable_verification_failed")
-        return result
+        if result.get("ok") is True:
+            return result
+        if self.run_command(
+            [TAILSCALE_BIN, f"--socket={TAILSCALE_SOCKET}", "set", "--ssh=false"]
+        ) != 0:
+            raise TailnetJoinError("tailnet_ssh_rollback_failed")
+        rolled_back = self.status(
+            node_name=node_name, expected_node_id=expected_node_id
+        )
+        rolled_back_detail = rolled_back.get("detail")
+        if (
+            not isinstance(rolled_back_detail, dict)
+            or rolled_back_detail.get("ssh_enabled") is not False
+        ):
+            raise TailnetJoinError("tailnet_ssh_rollback_failed")
+        raise TailnetJoinError("tailnet_ssh_enable_verification_failed")
 
     def join(self, *, node_name: str, auth_key: str) -> dict[str, object]:
         current = self.status(node_name=node_name, allow_unbound_node_id=True)
