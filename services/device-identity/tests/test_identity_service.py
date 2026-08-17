@@ -121,6 +121,9 @@ class FakeTailnet:
             raise TailnetJoinError("tailnet_join_failed")
         return self.status(node_name=node_name)
 
+    def ensure_ssh(self, *, node_name: str, expected_node_id: str):
+        return self.status(node_name=node_name, expected_node_id=expected_node_id)
+
 
 def _activate_store(backend, store):
     state = store.initialize()
@@ -526,6 +529,79 @@ def test_tailnet_join_failure_deletes_key_and_never_persists_it(tmp_path):
             auth_key="hskey-auth-0123456789abcdef",
         )
     assert observed_key_path is not None and not observed_key_path.exists()
+
+
+def test_tailnet_bound_identity_enables_ssh_without_rejoining(tmp_path):
+    ssh_enabled = False
+    commands: list[list[str]] = []
+
+    def inspect_status(**_kwargs):
+        return {
+            "ok": ssh_enabled,
+            "reason": "ok" if ssh_enabled else "tailscale_ssh_disabled",
+            "detail": {
+                "hostname": "edge-abcdef123456",
+                "node_id": "node-1",
+                "ssh_enabled": ssh_enabled,
+            },
+        }
+
+    def run_command(command):
+        nonlocal ssh_enabled
+        commands.append(command)
+        if command[-2:] == ["set", "--ssh"]:
+            ssh_enabled = True
+        return 0
+
+    client = TailnetClient(
+        expected_version="1.98.10",
+        login_server="https://headscale.example.test",
+        temp_root=tmp_path / "join",
+        run_command=run_command,
+        inspect_status=inspect_status,
+    )
+
+    result = client.ensure_ssh(
+        node_name="edge-abcdef123456", expected_node_id="node-1"
+    )
+
+    assert result["ok"] is True
+    assert commands == [
+        [
+            "/usr/bin/tailscale",
+            "--socket=/var/run/tailscale/tailscaled.sock",
+            "set",
+            "--ssh",
+        ],
+        [
+            "/usr/bin/systemctl",
+            "is-active",
+            "--quiet",
+            "drycontroller-tailnet-edge-api.socket",
+        ],
+    ]
+
+
+def test_tailnet_identity_mismatch_never_enables_ssh(tmp_path):
+    commands: list[list[str]] = []
+    client = TailnetClient(
+        expected_version="1.98.10",
+        login_server="https://headscale.example.test",
+        temp_root=tmp_path / "join",
+        run_command=lambda command: commands.append(command) or 0,
+        inspect_status=lambda **_kwargs: {
+            "ok": False,
+            "reason": "tailscale_node_identity_mismatch",
+            "detail": {"node_id": "other-node", "ssh_enabled": False},
+        },
+    )
+
+    result = client.ensure_ssh(
+        node_name="edge-abcdef123456", expected_node_id="node-1"
+    )
+
+    assert result["reason"] == "tailscale_node_identity_mismatch"
+    assert commands == []
 
 
 def test_tailnet_join_rejects_preexisting_unbound_identity_without_consuming_key(tmp_path):

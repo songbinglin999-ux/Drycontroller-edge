@@ -276,7 +276,7 @@ def create_app(
             except (IdentityStateError, TailnetJoinError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from None
         try:
-            result = tailnet.status(
+            result = tailnet.ensure_ssh(
                 node_name=active["node_name"],
                 expected_node_id=expected_node_id,
             )
@@ -322,7 +322,7 @@ def create_app(
         if not isinstance(expected_node_id, str) or not expected_node_id:
             raise HTTPException(status_code=409, detail="tailnet_node_binding_missing")
         try:
-            result = tailnet.status(
+            result = tailnet.ensure_ssh(
                 node_name=active["node_name"],
                 expected_node_id=expected_node_id,
             )
