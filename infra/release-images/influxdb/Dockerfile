@@ -6,9 +6,6 @@ WORKDIR /src
 ADD --checksum=sha256:0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f \
     https://codeload.github.com/influxdata/influxdb/tar.gz/d4fa1941fd4adb29a556e774de426dfbab72f346 \
     /tmp/influxdb.tar.gz
-ADD --checksum=sha256:9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e \
-    https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
-    /tmp/influxdb-ui.tar.gz
 ADD --checksum=sha256:ffdfb10ab2fc4cbceb10af8d274e1fe88bc6bef5434f7d913dd1b7601f02c9ee \
     https://codeload.github.com/influxdata/openapi/tar.gz/8b5f1bbb2cd388eb454dc9da19e3d2c4061cdf5f \
     /tmp/influxdb-openapi.tar.gz
@@ -21,7 +18,11 @@ RUN retry() { \
             sleep 10; \
         done; \
     }; \
-    tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
+    curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+        --output /tmp/influxdb-ui.tar.gz \
+        https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
+    && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c - \
+    && tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
     && mkdir -p static/data /tmp/influxdb-openapi \
     && tar -xzf /tmp/influxdb-ui.tar.gz -C static/data \
     && tar -xzf /tmp/influxdb-openapi.tar.gz -C /tmp/influxdb-openapi --strip-components=1 \

@@ -64,6 +64,8 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     )
     assert "d4fa1941fd4adb29a556e774de426dfbab72f346" in influxdb
     assert "0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f" in influxdb
+    assert "curl --fail --location --retry 5 --retry-all-errors --retry-delay 2" in influxdb
+    assert "9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz" in influxdb
     assert "github.com/buger/jsonparser@v1.1.2" in influxdb
     assert "github.com/go-jose/go-jose/v4@v4.1.4" in influxdb
     assert "go.opentelemetry.io/otel/sdk@v1.43.0" in influxdb
