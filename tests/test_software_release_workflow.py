@@ -58,17 +58,30 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert "postgres) printf" not in release_builder.split("source_image_for()", 1)[1].split("}", 1)[0]
 
     assert f"FROM {INFLUXDB_BASE_IMAGE}" in influxdb
+    assert influxdb.startswith(
+        "# syntax=docker/dockerfile:1.7@"
+        "sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e\n"
+    )
     assert "d4fa1941fd4adb29a556e774de426dfbab72f346" in influxdb
     assert "0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f" in influxdb
     assert "github.com/buger/jsonparser@v1.1.2" in influxdb
     assert "github.com/go-jose/go-jose/v4@v4.1.4" in influxdb
     assert "go.opentelemetry.io/otel/sdk@v1.43.0" in influxdb
+    assert "d19700fce30d9aa15c96cefa0eb1db44330fd4526930cf5dedd860fe6b3b554b  go.mod" in influxdb
+    assert "50258d1b217e18c5154c40fc0aaf79238e11872cbf31a0830214d79e891fce61  go.sum" in influxdb
     assert "8cdf40161d7662e942582086853fca948fc1a842" in influxdb
+    assert "2026-04-22T18:55:12Z" in influxdb
     assert "e3c6663d78c62f69579d8f9afd00453dc3d01c29" in influxdb
     assert f"FROM {POSTGRES_BASE_IMAGE}" in postgres
+    assert postgres.startswith(
+        "# syntax=docker/dockerfile:1.7@"
+        "sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e\n"
+    )
     assert "6456aaa0f3c854d199d0f037f068eb97515b7513" in postgres
     assert "latest" not in influxdb
     assert "latest" not in postgres
+    assert "type=cache" not in influxdb
+    assert "type=cache" not in postgres
 
 
 def test_release_builder_is_complete_and_completion_is_last():

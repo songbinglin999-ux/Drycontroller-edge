@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
 FROM quay.io/influxdb/cross-builder@sha256:af550a559d42095b3cec8ccfdea614ac2364d924fc8e16813fc2a2e693477630 AS influxd-builder
 
@@ -13,13 +13,21 @@ ADD --checksum=sha256:ffdfb10ab2fc4cbceb10af8d274e1fe88bc6bef5434f7d913dd1b7601f
     https://codeload.github.com/influxdata/openapi/tar.gz/8b5f1bbb2cd388eb454dc9da19e3d2c4061cdf5f \
     /tmp/influxdb-openapi.tar.gz
 
-RUN tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
+RUN retry() { \
+        attempt=1; \
+        while ! "$@"; do \
+            test "${attempt}" -lt 3 || return 1; \
+            attempt=$((attempt + 1)); \
+            sleep 10; \
+        done; \
+    }; \
+    tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
     && mkdir -p static/data /tmp/influxdb-openapi \
     && tar -xzf /tmp/influxdb-ui.tar.gz -C static/data \
     && tar -xzf /tmp/influxdb-openapi.tar.gz -C /tmp/influxdb-openapi --strip-components=1 \
     && cp /tmp/influxdb-openapi/contracts/oss.json static/data/swagger.json \
     && test "$(go env GOVERSION)" = "go1.25.10" \
-    && GOTOOLCHAIN=local go get \
+    && retry env GOTOOLCHAIN=local go get \
         github.com/buger/jsonparser@v1.1.2 \
         github.com/go-jose/go-jose/v4@v4.1.4 \
         go.opentelemetry.io/otel@v1.43.0 \
@@ -28,6 +36,9 @@ RUN tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
         go.opentelemetry.io/otel/sdk/metric@v1.43.0 \
         go.opentelemetry.io/otel/trace@v1.43.0 \
         golang.org/x/sys@v0.42.0 \
+    && echo 'd19700fce30d9aa15c96cefa0eb1db44330fd4526930cf5dedd860fe6b3b554b  go.mod' | sha256sum -c - \
+    && echo '50258d1b217e18c5154c40fc0aaf79238e11872cbf31a0830214d79e891fce61  go.sum' | sha256sum -c - \
+    && retry env GOTOOLCHAIN=local go mod download \
     && GOTOOLCHAIN=local go generate ./static
 
 RUN export CC="$(xcc linux x86_64)" \
@@ -50,16 +61,26 @@ ADD --checksum=sha256:e1bd68bcc5c2d356aea7893d7089a6cac5adb6ca4e49474dcf3af8e613
     https://codeload.github.com/TomWright/dasel/tar.gz/e3c6663d78c62f69579d8f9afd00453dc3d01c29 \
     /tmp/dasel.tar.gz
 
-RUN mkdir -p /src/influx-cli /src/dasel /out \
+RUN retry() { \
+        attempt=1; \
+        while ! "$@"; do \
+            test "${attempt}" -lt 3 || return 1; \
+            attempt=$((attempt + 1)); \
+            sleep 10; \
+        done; \
+    }; \
+    mkdir -p /src/influx-cli /src/dasel /out \
     && tar -xzf /tmp/influx-cli.tar.gz -C /src/influx-cli --strip-components=1 \
     && tar -xzf /tmp/dasel.tar.gz -C /src/dasel --strip-components=1 \
     && test "$(go env GOVERSION)" = "go1.25.10" \
     && cd /src/influx-cli \
+    && retry env GOTOOLCHAIN=local go mod download \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local go build \
         -trimpath -buildvcs=false \
-        -ldflags "-s -w -X main.version=2.8.0 -X main.commit=8cdf40161d7662e942582086853fca948fc1a842 -X main.date=2023-08-14T00:00:00Z" \
+        -ldflags "-s -w -X main.version=2.8.0 -X main.commit=8cdf40161d7662e942582086853fca948fc1a842 -X main.date=2026-04-22T18:55:12Z" \
         -o /out/influx ./cmd/influx \
     && cd /src/dasel \
+    && retry env GOTOOLCHAIN=local go mod download \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local go build \
         -trimpath -buildvcs=false \
         -ldflags "-s -w -X github.com/tomwright/dasel/v3/internal.Version=v3.10.1" \
