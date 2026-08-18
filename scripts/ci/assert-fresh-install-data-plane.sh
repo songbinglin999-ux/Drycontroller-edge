@@ -3,6 +3,9 @@
 set -euo pipefail
 
 readonly FORMAL_PROJECT='drycontroller-edge'
+readonly DOCKER='/usr/bin/docker'
+readonly PYTHON='/usr/bin/python3'
+readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'
 
 deny() {
   printf 'fresh-install preflight refused: %s\n' "$1" >&2
@@ -68,7 +71,7 @@ inspect_volume_field() {
   local volume_name="$1"
   local template="$2"
   if ! INSPECTED_FIELD="$(
-    docker volume inspect --format "${template}" "${volume_name}" 2>/dev/null
+    "${DOCKER}" volume inspect --format "${template}" "${volume_name}" 2>/dev/null
   )"; then
     deny "unable to inspect volume ${volume_name}"
   fi
@@ -79,7 +82,7 @@ inspect_container_field() {
   local container_id="$1"
   local template="$2"
   if ! INSPECTED_FIELD="$(
-    docker container inspect --format "${template}" "${container_id}" 2>/dev/null
+    "${DOCKER}" container inspect --format "${template}" "${container_id}" 2>/dev/null
   )"; then
     deny "unable to inspect container ${container_id}"
   fi
@@ -109,32 +112,75 @@ done
 [ "${project_name}" = "${FORMAL_PROJECT}" ] \
   || deny "Compose project mismatch: expected ${FORMAL_PROJECT}"
 [[ "${lock_fd}" =~ ^[0-9]+$ ]] || deny 'inherited release transaction lock is required'
-command -v python3 >/dev/null 2>&1 || deny 'python3 is unavailable'
-if ! python3 - "${lock_fd}" <<'PY'
+[ -x "${PYTHON}" ] || deny 'fixed Python runtime is unavailable'
+if ! "${PYTHON}" - "${lock_fd}" "${RELEASE_LOCK}" "${DOCKER}" <<'PY'
 import fcntl
 import os
+import stat
 import sys
 
 try:
     descriptor = int(sys.argv[1])
-    os.fstat(descriptor)
-    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except (OSError, ValueError):
+    lock_path = sys.argv[2]
+    docker_path = sys.argv[3]
+    opened = os.fstat(descriptor)
+    expected = os.lstat(lock_path)
+    if not stat.S_ISREG(expected.st_mode) or stat.S_IMODE(expected.st_mode) != 0o600:
+        raise OSError("release lock metadata invalid")
+    if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+        raise OSError("release lock descriptor mismatch")
+    if sys.platform.startswith("linux"):
+        with open(f"/proc/self/fdinfo/{descriptor}", encoding="utf-8") as stream:
+            lock_fields = [
+                line.split()
+                for line in stream
+                if line.startswith("lock:")
+            ]
+        if not any(fields[2:5] == ["FLOCK", "ADVISORY", "WRITE"] for fields in lock_fields):
+            raise OSError("release lock descriptor is not held")
+    else:
+        probe = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                fcntl.flock(probe, fcntl.LOCK_UN)
+                raise OSError("release lock descriptor is not held")
+        finally:
+            os.close(probe)
+
+    executable = os.lstat(docker_path)
+    parent = os.lstat(os.path.dirname(docker_path))
+    if (
+        not stat.S_ISREG(executable.st_mode)
+        or executable.st_uid != os.geteuid()
+        or executable.st_mode & 0o022
+        or not executable.st_mode & 0o111
+        or not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or parent.st_mode & 0o022
+    ):
+        raise OSError("Docker executable is not trusted")
+except (OSError, ValueError, IndexError):
     raise SystemExit(1)
 PY
 then
-  deny 'inherited release transaction lock is unavailable'
+  deny 'inherited release lock or fixed Docker executable is untrusted'
 fi
 
-command -v docker >/dev/null 2>&1 || deny 'docker CLI is unavailable'
-if ! docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null)"; then
+if ! docker_version="$("${DOCKER}" version --format '{{.Server.Version}}' 2>/dev/null)"; then
   deny 'unable to query Docker daemon version'
 fi
 if [[ ! "${docker_version}" =~ ^[0-9]+(\.[0-9]+){1,3}([+~-][0-9A-Za-z._-]+)?$ ]]; then
   deny 'Docker daemon returned an empty or malformed version'
 fi
 
-if ! volume_names="$(docker volume ls --quiet 2>/dev/null)"; then
+if ! volume_names="$("${DOCKER}" volume ls --quiet 2>/dev/null)"; then
   deny 'unable to list Docker volumes'
 fi
 while IFS= read -r volume_name; do
@@ -167,7 +213,7 @@ while IFS= read -r volume_name; do
   deny "existing target volume ${volume_name}"
 done <<<"${volume_names}"
 
-if ! container_ids="$(docker container ls --all --quiet --no-trunc 2>/dev/null)"; then
+if ! container_ids="$("${DOCKER}" container ls --all --quiet --no-trunc 2>/dev/null)"; then
   deny 'unable to list Docker containers'
 fi
 while IFS= read -r container_id; do
@@ -202,7 +248,7 @@ while IFS= read -r container_id; do
     || deny "container name/service conflict on ${container_name}"
 
   if ! mount_lines="$(
-    docker container inspect \
+    "${DOCKER}" container inspect \
       --format '{{ range .Mounts }}{{ printf "%s|%s|%s\n" .Type .Name .Destination }}{{ end }}' \
       "${container_id}" 2>/dev/null
   )"; then

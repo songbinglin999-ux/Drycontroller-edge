@@ -475,6 +475,25 @@ def _local_image_reference(service: str, image_id: str) -> str:
     return f"drycontroller.local/{service}:sha256-{image_id.removeprefix('sha256:')}"
 
 
+def _validate_docker_executable() -> None:
+    path = Path(_DOCKER)
+    try:
+        metadata = path.lstat()
+        parent = path.parent.lstat()
+    except OSError as exc:
+        raise HostReleaseError("fixed Docker executable unavailable") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_mode & 0o022
+        or not metadata.st_mode & 0o111
+        or not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or parent.st_mode & 0o022
+    ):
+        raise HostReleaseError("fixed Docker executable is untrusted")
+
+
 class HostReleaseEngine:
     def __init__(
         self,
@@ -589,6 +608,10 @@ class HostReleaseEngine:
         return not reader.is_alive()
 
     def _run_command(self, args: list[str], cwd: Path | None = None, input_bytes: bytes | None = None) -> str:
+        if args and args[0] == _DOCKER:
+            _validate_docker_executable()
+        elif args and Path(args[0]).name == "docker":
+            raise HostReleaseError("Docker executable path drift")
         inherited_fds: tuple[int, ...] = ()
         inherits_release_lock = (
             len(args) == 3

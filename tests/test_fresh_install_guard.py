@@ -11,10 +11,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / "scripts" / "ci" / "assert-fresh-install-data-plane.sh"
+REAL_DOCKER_E2E = ROOT / "scripts" / "ci" / "test-fresh-install-data-plane-docker.sh"
 PROJECT = "drycontroller-edge"
 
 
-def _write_fake_docker(tmp_path: Path) -> None:
+def _write_fake_docker(tmp_path: Path) -> Path:
     fake = tmp_path / "docker"
     fake.write_text(
         r'''#!/bin/sh
@@ -129,6 +130,21 @@ esac
         encoding="utf-8",
     )
     fake.chmod(0o755)
+    return fake
+
+
+def _write_guard_under_test(tmp_path: Path, docker: Path, lock: Path) -> Path:
+    source = GUARD.read_text(encoding="utf-8")
+    docker_constant = "readonly DOCKER='/usr/bin/docker'"
+    lock_constant = "readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'"
+    assert source.count(docker_constant) == 1
+    assert source.count(lock_constant) == 1
+    source = source.replace(docker_constant, f"readonly DOCKER='{docker}'")
+    source = source.replace(lock_constant, f"readonly RELEASE_LOCK='{lock}'")
+    guard = tmp_path / "assert-fresh-install-data-plane-under-test"
+    guard.write_text(source, encoding="utf-8")
+    guard.chmod(0o755)
+    return guard
 
 
 def _run_guard(
@@ -139,8 +155,9 @@ def _run_guard(
     extra_env: dict[str, str] | None = None,
     log_path: Path | None = None,
     include_lock: bool = True,
+    lock_held: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    _write_fake_docker(tmp_path)
+    docker = _write_fake_docker(tmp_path)
     env = {
         **os.environ,
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
@@ -149,10 +166,14 @@ def _run_guard(
     }
     if log_path is not None:
         env["FAKE_DOCKER_LOG"] = str(log_path)
-    descriptor = os.open(tmp_path / "release.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    lock = tmp_path / "release.lock"
+    descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        args = ["bash", str(GUARD), "--project", project]
+        os.fchmod(descriptor, 0o600)
+        if lock_held:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        guard = _write_guard_under_test(tmp_path, docker, lock)
+        args = ["bash", str(guard), "--project", project]
         pass_fds: tuple[int, ...] = ()
         if include_lock:
             args.extend(["--lock-fd", str(descriptor)])
@@ -200,6 +221,28 @@ def test_guard_contract_covers_every_compose_volume_container_and_persistent_mou
             source_name, destination, *_ = mount.split(":")
             if source_name in compose["volumes"]:
                 assert destination in source
+
+
+@pytest.mark.skipif(
+    os.environ.get("DRYCONTROLLER_FRESH_GUARD_ISOLATED_DAEMON") != "1",
+    reason="requires an explicitly marked isolated disposable Docker daemon",
+)
+def test_guard_against_an_isolated_real_docker_daemon():
+    result = subprocess.run(
+        ["bash", str(REAL_DOCKER_E2E)],
+        cwd=ROOT,
+        env=os.environ,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5 * 60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "empty=1 volumes=8 services=12 path-spoof=refused unlocked-fd=refused"
+        in result.stdout
+    )
 
 
 @pytest.mark.parametrize(
@@ -323,6 +366,72 @@ def test_guard_requires_the_formal_project_and_inherited_lock(tmp_path: Path):
     assert "project mismatch" in wrong_project.stderr
     assert no_lock.returncode != 0
     assert "lock" in no_lock.stderr
+
+
+def test_guard_rejects_a_matching_but_unlocked_descriptor(tmp_path: Path):
+    result = _run_guard(tmp_path, "empty", lock_held=False)
+
+    assert result.returncode != 0
+    assert "lock" in result.stderr
+
+
+def test_guard_pins_production_docker_and_release_lock_paths():
+    source = GUARD.read_text(encoding="utf-8")
+
+    assert "readonly DOCKER='/usr/bin/docker'" in source
+    assert "readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'" in source
+    assert "command -v docker" not in source
+
+
+def test_guard_ignores_a_path_precedence_docker_that_fakes_an_empty_daemon(
+    tmp_path: Path,
+):
+    trusted_dir = tmp_path / "usr" / "bin"
+    trusted_dir.mkdir(parents=True)
+    trusted = _write_fake_docker(trusted_dir)
+    malicious_dir = tmp_path / "usr" / "local" / "bin"
+    malicious_dir.mkdir(parents=True)
+    malicious = malicious_dir / "docker"
+    malicious_log = tmp_path / "malicious-docker.log"
+    malicious.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >>'{malicious_log}'\n"
+        "case \"$1\" in version) echo 99.0.0;; esac\n",
+        encoding="utf-8",
+    )
+    malicious.chmod(0o755)
+    lock = tmp_path / "release.lock"
+    descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        guard = _write_guard_under_test(tmp_path, trusted, lock)
+        result = subprocess.run(
+            [
+                "bash",
+                str(guard),
+                "--project",
+                PROJECT,
+                "--lock-fd",
+                str(descriptor),
+            ],
+            env={
+                **os.environ,
+                "PATH": f"{malicious_dir}:{os.environ['PATH']}",
+                "FAKE_DOCKER_SCENARIO": "target-volume",
+                "FAKE_VOLUME_LOGICAL": "postgres_data",
+            },
+            pass_fds=(descriptor,),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.returncode != 0
+    assert "existing target volume" in result.stderr
+    assert not malicious_log.exists()
 
 
 def test_guard_only_calls_read_only_docker_commands(tmp_path: Path):

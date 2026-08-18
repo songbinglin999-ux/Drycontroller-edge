@@ -1105,6 +1105,37 @@ def test_fresh_install_guard_receives_the_held_transaction_lock_fd(tmp_path, mon
     assert output.splitlines()[-1] == "inherited"
 
 
+def test_host_docker_commands_require_one_fixed_trusted_executable(tmp_path, monkeypatch):
+    trusted_dir = tmp_path / "trusted" / "bin"
+    trusted_dir.mkdir(parents=True)
+    trusted = trusted_dir / "docker"
+    trusted.write_text("#!/bin/sh\necho trusted\n", encoding="utf-8")
+    trusted.chmod(0o755)
+    monkeypatch.setattr(host_release_engine, "_DOCKER", str(trusted))
+    engine = HostReleaseEngine(paths=_paths(tmp_path))
+
+    assert engine._run_command([str(trusted), "version"]).strip() == "trusted"
+
+    trusted.chmod(0o777)
+    with pytest.raises(HostReleaseError, match="untrusted"):
+        engine._run_command([str(trusted), "version"])
+    trusted.chmod(0o755)
+
+    symlink = trusted_dir / "docker-link"
+    symlink.symlink_to(trusted)
+    monkeypatch.setattr(host_release_engine, "_DOCKER", str(symlink))
+    with pytest.raises(HostReleaseError, match="untrusted"):
+        engine._run_command([str(symlink), "version"])
+
+    drift = tmp_path / "path-drift" / "docker"
+    drift.parent.mkdir()
+    drift.write_text("#!/bin/sh\necho drift\n", encoding="utf-8")
+    drift.chmod(0o755)
+    monkeypatch.setattr(host_release_engine, "_DOCKER", str(trusted))
+    with pytest.raises(HostReleaseError, match="path drift"):
+        engine._run_command([str(drift), "version"])
+
+
 def test_command_output_is_bounded_before_it_enters_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(host_release_engine, "MAX_COMMAND_OUTPUT_BYTES", 128)
     producer = tmp_path / "large-output"

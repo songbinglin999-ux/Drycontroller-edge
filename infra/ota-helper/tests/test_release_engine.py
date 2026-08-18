@@ -20,6 +20,7 @@ HELPER_DIR = Path(__file__).resolve().parents[1]
 if str(HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_DIR))
 
+import release_engine  # noqa: E402
 from release_engine import (  # noqa: E402
     RELEASE_JOURNAL_SCHEMA,
     COSIGN_TOOLCHAIN,
@@ -400,6 +401,23 @@ def test_starter_can_reuse_the_host_transaction_lock_descriptor(tmp_path):
     assert result["status"] == "running"
 
 
+def test_starter_rejects_an_unlocked_release_lock_descriptor(tmp_path):
+    paths = _paths(tmp_path)
+    manifest = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, manifest)
+    paths.lock.touch(mode=0o600)
+    descriptor = os.open(paths.lock, os.O_WRONLY)
+    try:
+        with pytest.raises(ReleaseError, match="is not held"):
+            ReleaseEngine(
+                paths=paths,
+                command_runner=FakeRuntime().run,
+                health_checker=lambda _url: None,
+            ).start_active_with_lock_fd(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _engine(paths: ReleasePaths, runtime: FakeRuntime, policies: dict[str, dict]) -> ReleaseEngine:
     return ReleaseEngine(
         paths=paths,
@@ -619,6 +637,7 @@ def test_runtime_compose_probe_receives_remaining_deadline_and_timeout_is_fail_c
 
 def test_subprocess_timeout_is_mapped_to_release_error(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
+    monkeypatch.setattr(release_engine, "_validate_docker_executable", lambda: None)
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd="docker", timeout=1)
@@ -626,6 +645,37 @@ def test_subprocess_timeout_is_mapped_to_release_error(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", timeout)
     with pytest.raises(ReleaseError, match="command timed out: docker"):
         ReleaseEngine(paths=paths)._run_command(["/usr/bin/docker", "compose"], timeout=1)
+
+
+def test_software_docker_commands_require_one_fixed_trusted_executable(tmp_path, monkeypatch):
+    trusted_dir = tmp_path / "trusted" / "bin"
+    trusted_dir.mkdir(parents=True)
+    trusted = trusted_dir / "docker"
+    trusted.write_text("#!/bin/sh\necho trusted\n", encoding="utf-8")
+    trusted.chmod(0o755)
+    monkeypatch.setattr(release_engine, "_DOCKER", str(trusted))
+    engine = ReleaseEngine(paths=_paths(tmp_path))
+
+    assert engine._run_command([str(trusted), "version"]).strip() == "trusted"
+
+    trusted.chmod(0o777)
+    with pytest.raises(ReleaseError, match="untrusted"):
+        engine._run_command([str(trusted), "version"])
+    trusted.chmod(0o755)
+
+    symlink = trusted_dir / "docker-link"
+    symlink.symlink_to(trusted)
+    monkeypatch.setattr(release_engine, "_DOCKER", str(symlink))
+    with pytest.raises(ReleaseError, match="untrusted"):
+        engine._run_command([str(symlink), "version"])
+
+    drift = tmp_path / "path-drift" / "docker"
+    drift.parent.mkdir()
+    drift.write_text("#!/bin/sh\necho drift\n", encoding="utf-8")
+    drift.chmod(0o755)
+    monkeypatch.setattr(release_engine, "_DOCKER", str(trusted))
+    with pytest.raises(ReleaseError, match="path drift"):
+        engine._run_command([str(drift), "version"])
 
 
 def _install_nonblocking_lock_probe(blocked, acquired_without_waiting) -> None:

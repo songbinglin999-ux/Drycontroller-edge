@@ -14,7 +14,9 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
+import sys
 import tarfile
 import time
 import urllib.error
@@ -105,6 +107,25 @@ _FIXED_ENV = {
 
 class ReleaseError(RuntimeError):
     pass
+
+
+def _validate_docker_executable() -> None:
+    path = Path(_DOCKER)
+    try:
+        metadata = path.lstat()
+        parent = path.parent.lstat()
+    except OSError as exc:
+        raise ReleaseError("fixed Docker executable unavailable") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_mode & 0o022
+        or not metadata.st_mode & 0o111
+        or not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or parent.st_mode & 0o022
+    ):
+        raise ReleaseError("fixed Docker executable is untrusted")
 
 
 @dataclass(frozen=True)
@@ -470,6 +491,10 @@ class ReleaseEngine:
                 os.close(descriptor)
 
     def _run_command(self, args: list[str], *, timeout: float | None = None) -> str:
+        if args and args[0] == _DOCKER:
+            _validate_docker_executable()
+        elif args and Path(args[0]).name == "docker":
+            raise ReleaseError("Docker executable path drift")
         try:
             completed = subprocess.run(
                 args,
@@ -636,15 +661,44 @@ class ReleaseEngine:
     def _validate_inherited_lock(self, descriptor: int) -> None:
         try:
             opened = os.fstat(descriptor)
-            expected = self.paths.lock.stat()
+            expected = self.paths.lock.lstat()
         except OSError as exc:
             raise ReleaseError("inherited release lock descriptor invalid") from exc
-        if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+        if (
+            not stat.S_ISREG(expected.st_mode)
+            or (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino)
+        ):
             raise ReleaseError("inherited release lock descriptor does not match release lock")
+        if sys.platform.startswith("linux"):
+            try:
+                fields = [
+                    line.split()
+                    for line in Path(f"/proc/self/fdinfo/{descriptor}").read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if line.startswith("lock:")
+                ]
+            except OSError as exc:
+                raise ReleaseError("inherited release lock descriptor invalid") from exc
+            if not any(parts[2:5] == ["FLOCK", "ADVISORY", "WRITE"] for parts in fields):
+                raise ReleaseError("inherited release lock descriptor is not held")
+            return
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ReleaseError("inherited release lock descriptor is not held") from exc
+            probe = os.open(
+                self.paths.lock,
+                os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+        except OSError as exc:
+            raise ReleaseError("inherited release lock descriptor invalid") from exc
+        try:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            fcntl.flock(probe, fcntl.LOCK_UN)
+            raise ReleaseError("inherited release lock descriptor is not held")
+        finally:
+            os.close(probe)
 
     def _initialize_active(self, seed: object) -> dict[str, Any]:
         if not isinstance(seed, dict) or set(seed) != {
