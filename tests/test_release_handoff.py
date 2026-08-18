@@ -652,13 +652,18 @@ def test_release_workflows_pin_current_actions_and_separate_key_export_from_pair
     assert "secrets.REPO_WRITE_TOKEN" in paired
     assert "secrets.REPO_WRITE_TOKEN" in recovery
     assert "secrets.GITEA_TOKEN" not in public_keys + paired + recovery
-    approved_base = "95296d2a152be621188739aa6b56f2eb29c21dfe"
-    assert approved_base in public_keys
-    assert approved_base in paired
-    assert approved_base in recovery
-    assert 'git diff --name-only "${approved_base}..HEAD"' in public_keys
-    assert 'git diff --name-only "${approved_base}..HEAD"' in paired
-    assert 'git diff --name-only "${approved_base}..HEAD"' in recovery
+    approved_product_source = "95296d2a152be621188739aa6b56f2eb29c21dfe"
+    for workflow in (public_keys, paired, recovery):
+        assert "secrets.RB8_EDGE_APPROVED_WORKFLOW_SHA" in workflow
+        assert '"${GITHUB_SHA}" == "${RB8_EDGE_APPROVED_WORKFLOW_SHA}"' in workflow
+        assert approved_product_source in workflow
+        assert "git diff --name-only" not in workflow
+    assert paired.count(f"ref: {approved_product_source}") == 2
+    assert f"ref: {approved_product_source}" in public_keys
+    assert 'RELEASE_SOURCE_COMMIT=%s\\n' in paired
+    assert '"${approved_product_source}" >> "${GITHUB_ENV}"' in paired
+    assert '"${approved_product_source}" >> "${GITHUB_ENV}"' in public_keys
+    assert '"${INPUT_SOURCE_COMMIT}" == "${approved_product_source}"' in recovery
     assert "upload-artifact" not in public_keys and "upload-artifact" not in paired
     assert "CLOUD_OPS_RELEASE_API" not in public_keys
     assert "build-host-release.sh" not in public_keys
