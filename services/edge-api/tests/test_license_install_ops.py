@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -26,11 +26,14 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
 
 from app.api.v1 import ops as ops_module  # noqa: E402
 from app.core.config import settings  # noqa: E402
+from app.services.registry_auth_writer import get_registry_auth_writer_client  # noqa: E402
 
 
-def _client() -> TestClient:
+def _client(*, registry_writer=None) -> TestClient:
     app = FastAPI()
     app.include_router(ops_module.router, prefix="/api/v1/ops")
+    if registry_writer is not None:
+        app.dependency_overrides[get_registry_auth_writer_client] = lambda: registry_writer
     return TestClient(app)
 
 
@@ -140,7 +143,18 @@ def test_registry_credential_refresh_writes_docker_config(tmp_path: Path):
     settings.REGISTRY_DOCKER_CONFIG_PATH = str(tmp_path / "registry" / "config.json")
     settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(tmp_path / "registry" / "status.json")
 
-    resp = _client().post(
+    observed: dict[str, object] = {}
+
+    class Writer:
+        async def install(self, payload):
+            observed.update(payload)
+            return {
+                key: value
+                for key, value in payload.items()
+                if key != "secret"
+            } | {"registry_host": "git.example.com"}
+
+    resp = _client(registry_writer=Writer()).post(
         "/api/v1/ops/registry-credentials/refresh",
         json={
             "credential_id": "cred-1",
@@ -159,6 +173,7 @@ def test_registry_credential_refresh_writes_docker_config(tmp_path: Path):
     assert body["credential"]["registry_host"] == "git.example.com"
     assert "secret" not in body["credential"]
     assert "robot-secret" not in json.dumps(body)
+    assert observed["secret"] == "robot-secret"
 
     docker_config = json.loads(Path(settings.REGISTRY_DOCKER_CONFIG_PATH).read_text(encoding="utf-8"))
     auth = docker_config["auths"]["git.example.com"]["auth"]
@@ -175,6 +190,47 @@ def test_registry_credential_refresh_writes_docker_config(tmp_path: Path):
     )
     assert resp.status_code == 200
     assert resp.json()["reason"] == "registry_docker_config_auth_missing"
+
+
+@pytest.mark.parametrize("failure", ["writer", "binding"])
+def test_registry_refresh_never_updates_legacy_state_before_root_auth_succeeds(
+    tmp_path: Path,
+    failure: str,
+):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    docker_config = tmp_path / "registry" / "config.json"
+    status = tmp_path / "registry" / "status.json"
+    settings.REGISTRY_DOCKER_CONFIG_PATH = str(docker_config)
+    settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(status)
+
+    class Writer:
+        async def install(self, payload):
+            if failure == "writer":
+                raise HTTPException(status_code=503, detail={"error": "writer_unavailable"})
+            return {
+                key: value
+                for key, value in payload.items()
+                if key != "secret"
+            } | {"registry_host": "wrong.example.test"}
+
+    response = _client(registry_writer=Writer()).post(
+        "/api/v1/ops/registry-credentials/refresh",
+        json={
+            "credential_id": "cred-1",
+            "registry_host": "registry.example.test",
+            "username": "edge-pull",
+            "secret": "never-persisted",
+            "secret_fingerprint": "fp-1",
+            "version": 2,
+        },
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert response.status_code in {502, 503}
+    assert not docker_config.exists()
+    assert not status.exists()
+    assert "never-persisted" not in response.text
 
 
 def test_ota_start_requires_registry_credential_status(tmp_path: Path):

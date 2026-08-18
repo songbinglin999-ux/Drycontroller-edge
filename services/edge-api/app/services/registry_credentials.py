@@ -55,7 +55,7 @@ def _parse_ts(value: Any) -> dt.datetime | None:
         return None
 
 
-def install_registry_credential(payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_registry_credential(payload: dict[str, Any]) -> dict[str, Any]:
     registry_host = _normalize_registry_host(str(payload.get("registry_host") or ""))
     username = str(payload.get("username") or "").strip()
     secret = str(payload.get("secret") or "")
@@ -64,6 +64,24 @@ def install_registry_credential(payload: dict[str, Any]) -> dict[str, Any]:
     version = int(payload.get("version") or 0)
     if not registry_host or not username or not secret or not credential_id or not secret_fingerprint or version < 1:
         raise ValueError("registry_credential_payload_incomplete")
+    return {
+        "registry_host": registry_host,
+        "username": username,
+        "secret": secret,
+        "credential_id": credential_id,
+        "secret_fingerprint": secret_fingerprint,
+        "version": version,
+    }
+
+
+def install_registry_credential(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_registry_credential(payload)
+    registry_host = normalized["registry_host"]
+    username = normalized["username"]
+    secret = normalized["secret"]
+    credential_id = normalized["credential_id"]
+    secret_fingerprint = normalized["secret_fingerprint"]
+    version = normalized["version"]
 
     docker_config_path = Path(settings.REGISTRY_DOCKER_CONFIG_PATH)
     docker_config = _read_json(docker_config_path)

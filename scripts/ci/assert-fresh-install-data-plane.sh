@@ -7,10 +7,16 @@ readonly DOCKER='/usr/bin/docker'
 readonly PYTHON='/usr/bin/python3'
 readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'
 readonly DOCKER_CONFIG_DIR='/var/lib/drycontroller-ota/guard-docker-config'
+readonly TOOL_IDENTITY='/etc/drycontroller/runtime-tools.json'
+readonly DAEMON_IDENTITY='/etc/drycontroller/docker-daemon.json'
+readonly DOCKER_SOCKET='/run/docker.sock'
+readonly TRUST_ROOT='/'
+readonly SOCKET_TRUST_ROOT='/'
+readonly DOCKER_SOCKET_KIND='socket'
 
 export HOME='/var/empty'
 export PATH='/usr/bin:/bin'
-export DOCKER_HOST='unix:///var/run/docker.sock'
+export DOCKER_HOST='unix:///run/docker.sock'
 export DOCKER_CONFIG="${DOCKER_CONFIG_DIR}"
 unset DOCKER_CONTEXT DOCKER_CLI_PLUGIN_EXTRA_DIRS DOCKER_CERT_PATH DOCKER_TLS_VERIFY \
   DOCKER_API_VERSION COMPOSE_FILE COMPOSE_PATH_SEPARATOR COMPOSE_PROFILES
@@ -79,7 +85,7 @@ inspect_volume_field() {
   local volume_name="$1"
   local template="$2"
   if ! INSPECTED_FIELD="$(
-    "${DOCKER}" volume inspect --format "${template}" "${volume_name}" 2>/dev/null
+    docker_checked volume inspect --format "${template}" "${volume_name}" 2>/dev/null
   )"; then
     deny "unable to inspect volume ${volume_name}"
   fi
@@ -90,7 +96,7 @@ inspect_container_field() {
   local container_id="$1"
   local template="$2"
   if ! INSPECTED_FIELD="$(
-    "${DOCKER}" container inspect --format "${template}" "${container_id}" 2>/dev/null
+    docker_checked container inspect --format "${template}" "${container_id}" 2>/dev/null
   )"; then
     deny "unable to inspect container ${container_id}"
   fi
@@ -121,8 +127,12 @@ done
   || deny "Compose project mismatch: expected ${FORMAL_PROJECT}"
 [[ "${lock_fd}" =~ ^[0-9]+$ ]] || deny 'inherited release transaction lock is required'
 [ -x "${PYTHON}" ] || deny 'fixed Python runtime is unavailable'
-if ! "${PYTHON}" - "${lock_fd}" "${RELEASE_LOCK}" "${DOCKER}" "${DOCKER_CONFIG_DIR}" <<'PY'
+exec 8<"${DOCKER}" || deny 'fixed Docker executable is unavailable'
+readonly DOCKER_FD=8
+readonly DOCKER_EXEC="/proc/self/fd/${DOCKER_FD}"
+if ! expected_daemon_identity="$("${PYTHON}" - "${lock_fd}" "${RELEASE_LOCK}" "${DOCKER}" "${DOCKER_CONFIG_DIR}" "${TOOL_IDENTITY}" "${DAEMON_IDENTITY}" "${DOCKER_SOCKET}" "${DOCKER_FD}" "${TRUST_ROOT}" "${SOCKET_TRUST_ROOT}" "${DOCKER_SOCKET_KIND}" <<'PY'
 import fcntl
+import hashlib
 import json
 import os
 import stat
@@ -139,8 +149,11 @@ def strict_object(pairs):
 try:
     descriptor = int(sys.argv[1])
     lock_path = sys.argv[2]
-    docker_path = sys.argv[3]
-    docker_config_dir = sys.argv[4]
+    docker_path, docker_config_dir, tool_identity, daemon_identity, socket_path = sys.argv[3:8]
+    docker_descriptor = int(sys.argv[8])
+    trust_root = sys.argv[9]
+    socket_trust_root = sys.argv[10]
+    socket_kind = sys.argv[11]
     opened = os.fstat(descriptor)
     expected = os.lstat(lock_path)
     if not stat.S_ISREG(expected.st_mode) or stat.S_IMODE(expected.st_mode) != 0o600:
@@ -172,18 +185,78 @@ try:
         finally:
             os.close(probe)
 
+    def validate_ancestors(value, root=trust_root):
+        current = os.path.dirname(value)
+        while True:
+            ancestor = os.lstat(current)
+            if (
+                not stat.S_ISDIR(ancestor.st_mode)
+                or ancestor.st_uid != os.geteuid()
+                or ancestor.st_mode & 0o022
+            ):
+                raise OSError("untrusted ancestor")
+            if current == root:
+                break
+            if current == "/":
+                raise OSError("path outside trusted root")
+            current = os.path.dirname(current)
+
+    validate_ancestors(docker_path)
     executable = os.lstat(docker_path)
-    parent = os.lstat(os.path.dirname(docker_path))
+    opened_executable = os.fstat(docker_descriptor)
     if (
         not stat.S_ISREG(executable.st_mode)
         or executable.st_uid != os.geteuid()
         or executable.st_mode & 0o022
         or not executable.st_mode & 0o111
-        or not stat.S_ISDIR(parent.st_mode)
-        or parent.st_uid != os.geteuid()
-        or parent.st_mode & 0o022
+        or executable.st_nlink != 1
+        or (opened_executable.st_dev, opened_executable.st_ino)
+        != (executable.st_dev, executable.st_ino)
     ):
         raise OSError("Docker executable is not trusted")
+    digest = hashlib.sha256()
+    while True:
+        chunk = os.read(docker_descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+    os.lseek(docker_descriptor, 0, os.SEEK_SET)
+
+    def read_identity(path, schema):
+        validate_ancestors(path)
+        metadata = os.lstat(path)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_nlink != 1
+        ):
+            raise OSError("runtime identity metadata invalid")
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(descriptor)
+            raw = os.read(descriptor, 65537)
+        finally:
+            os.close(descriptor)
+        if (
+            (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+            or not raw
+            or len(raw) > 65536
+        ):
+            raise OSError("runtime identity changed")
+        payload = json.loads(raw, object_pairs_hook=strict_object)
+        if not isinstance(payload, dict) or payload.get("schema") != schema:
+            raise OSError("runtime identity schema invalid")
+        return payload
+
+    tools = read_identity(tool_identity, "drycontroller.runtime-tools.v1")
+    records = tools.get("executables")
+    if (
+        not isinstance(records, dict)
+        or set(records) != {docker_path, "/usr/bin/bash", "/usr/libexec/docker/cli-plugins/docker-compose"}
+        or records.get(docker_path) != {"sha256": f"sha256:{digest.hexdigest()}"}
+    ):
+        raise OSError("Docker executable content is untrusted")
 
     config_directory = os.lstat(docker_config_dir)
     config_path = os.path.join(docker_config_dir, "config.json")
@@ -212,21 +285,58 @@ try:
         or json.loads(raw, object_pairs_hook=strict_object) != {"auths": {}}
     ):
         raise OSError("guard Docker config is invalid")
+    validate_ancestors(socket_path, socket_trust_root)
+    socket_metadata = os.lstat(socket_path)
+    if (
+        (socket_kind == "socket" and not stat.S_ISSOCK(socket_metadata.st_mode))
+        or (socket_kind == "regular-test" and not stat.S_ISREG(socket_metadata.st_mode))
+        or socket_kind not in {"socket", "regular-test"}
+        or socket_metadata.st_uid != os.geteuid()
+        or socket_metadata.st_mode & 0o002
+        or socket_metadata.st_nlink != 1
+    ):
+        raise OSError("Docker socket is untrusted")
+    daemon = read_identity(daemon_identity, "drycontroller.docker-daemon.v1")
+    if set(daemon) != {"schema", "id", "name", "root_dir"} or not all(
+        isinstance(daemon.get(key), str) and daemon[key]
+        for key in ("id", "name", "root_dir")
+    ):
+        raise OSError("Docker daemon identity invalid")
+    print(daemon["id"], daemon["name"], daemon["root_dir"], sep="\n")
 except (OSError, UnicodeError, ValueError, IndexError):
     raise SystemExit(1)
 PY
-then
+  )"; then
   deny 'inherited release lock or fixed Docker executable is untrusted'
 fi
+readonly expected_daemon_identity
+readonly socket_identity="$(stat -c '%d:%i' "${DOCKER_SOCKET}")"
 
-if ! docker_version="$("${DOCKER}" version --format '{{.Server.Version}}' 2>/dev/null)"; then
+docker_checked() {
+  local output
+  local observed
+  local status=0
+  [ "$(stat -c '%d:%i' "${DOCKER_SOCKET}" 2>/dev/null || true)" = "${socket_identity}" ] \
+    || deny 'Docker socket identity changed'
+  output="$("${DOCKER_EXEC}" "$@")" || status=$?
+  observed="$("${DOCKER_EXEC}" info --format '{{.ID}}\n{{.Name}}\n{{.DockerRootDir}}')" \
+    || deny 'Docker daemon identity unavailable'
+  [ "${observed}" = "${expected_daemon_identity}" ] \
+    || deny 'Docker daemon identity changed'
+  [ "$(stat -c '%d:%i' "${DOCKER_SOCKET}" 2>/dev/null || true)" = "${socket_identity}" ] \
+    || deny 'Docker socket identity changed'
+  [ "${status}" -eq 0 ] || return "${status}"
+  printf '%s' "${output}"
+}
+
+if ! docker_version="$(docker_checked version --format '{{.Server.Version}}' 2>/dev/null)"; then
   deny 'unable to query Docker daemon version'
 fi
 if [[ ! "${docker_version}" =~ ^[0-9]+(\.[0-9]+){1,3}([+~-][0-9A-Za-z._-]+)?$ ]]; then
   deny 'Docker daemon returned an empty or malformed version'
 fi
 
-if ! volume_names="$("${DOCKER}" volume ls --quiet 2>/dev/null)"; then
+if ! volume_names="$(docker_checked volume ls --quiet 2>/dev/null)"; then
   deny 'unable to list Docker volumes'
 fi
 while IFS= read -r volume_name; do
@@ -259,7 +369,7 @@ while IFS= read -r volume_name; do
   deny "existing target volume ${volume_name}"
 done <<<"${volume_names}"
 
-if ! container_ids="$("${DOCKER}" container ls --all --quiet --no-trunc 2>/dev/null)"; then
+if ! container_ids="$(docker_checked container ls --all --quiet --no-trunc 2>/dev/null)"; then
   deny 'unable to list Docker containers'
 fi
 while IFS= read -r container_id; do
@@ -294,7 +404,7 @@ while IFS= read -r container_id; do
     || deny "container name/service conflict on ${container_name}"
 
   if ! mount_lines="$(
-    "${DOCKER}" container inspect \
+    docker_checked container inspect \
       --format '{{ range .Mounts }}{{ printf "%s|%s|%s\n" .Type .Name .Destination }}{{ end }}' \
       "${container_id}" 2>/dev/null
   )"; then

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -26,6 +28,9 @@ if [ -n "${FAKE_DOCKER_LOG:-}" ]; then
 fi
 
 case "$1:$2" in
+  info:--format)
+    printf '%s\n' 'daemon-id' 'daemon-name' '/var/lib/docker-test'
+    ;;
   version:--format)
     case "$scenario" in
       version-failure) exit 42 ;;
@@ -138,9 +143,21 @@ def _write_guard_under_test(tmp_path: Path, docker: Path, lock: Path) -> Path:
     docker_constant = "readonly DOCKER='/usr/bin/docker'"
     lock_constant = "readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'"
     config_constant = "readonly DOCKER_CONFIG_DIR='/var/lib/drycontroller-ota/guard-docker-config'"
+    tools_constant = "readonly TOOL_IDENTITY='/etc/drycontroller/runtime-tools.json'"
+    daemon_constant = "readonly DAEMON_IDENTITY='/etc/drycontroller/docker-daemon.json'"
+    socket_constant = "readonly DOCKER_SOCKET='/run/docker.sock'"
+    trust_constant = "readonly TRUST_ROOT='/'"
+    socket_trust_constant = "readonly SOCKET_TRUST_ROOT='/'"
+    socket_kind_constant = "readonly DOCKER_SOCKET_KIND='socket'"
     assert source.count(docker_constant) == 1
     assert source.count(lock_constant) == 1
     assert source.count(config_constant) == 1
+    assert source.count(tools_constant) == 1
+    assert source.count(daemon_constant) == 1
+    assert source.count(socket_constant) == 1
+    assert source.count(trust_constant) == 1
+    assert source.count(socket_trust_constant) == 1
+    assert source.count(socket_kind_constant) == 1
     config_directory = tmp_path / "guard-docker-config"
     if config_directory.exists():
         config_directory.chmod(0o700)
@@ -152,9 +169,68 @@ def _write_guard_under_test(tmp_path: Path, docker: Path, lock: Path) -> Path:
     config.write_text('{"auths":{}}', encoding="utf-8")
     config.chmod(0o400)
     config_directory.chmod(0o500)
+    tool_identity = tmp_path / "runtime-tools.json"
+    if tool_identity.exists():
+        tool_identity.chmod(0o600)
+    tool_identity.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.runtime-tools.v1",
+                "executables": {
+                    str(docker): {
+                        "sha256": "sha256:" + hashlib.sha256(docker.read_bytes()).hexdigest()
+                    },
+                    "/usr/bin/bash": {"sha256": "sha256:" + "0" * 64},
+                    "/usr/libexec/docker/cli-plugins/docker-compose": {
+                        "sha256": "sha256:" + "1" * 64
+                    },
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    tool_identity.chmod(0o400)
+    daemon_identity = tmp_path / "docker-daemon.json"
+    if daemon_identity.exists():
+        daemon_identity.chmod(0o600)
+    daemon_identity.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.docker-daemon.v1",
+                "id": "daemon-id",
+                "name": "daemon-name",
+                "root_dir": "/var/lib/docker-test",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    daemon_identity.chmod(0o400)
+    docker_socket = tmp_path / "docker.sock"
+    docker_socket.write_bytes(b"")
+    docker_socket.chmod(0o600)
+    tmp_path.chmod(0o700)
     source = source.replace(docker_constant, f"readonly DOCKER='{docker}'")
     source = source.replace(lock_constant, f"readonly RELEASE_LOCK='{lock}'")
     source = source.replace(config_constant, f"readonly DOCKER_CONFIG_DIR='{config_directory}'")
+    source = source.replace(tools_constant, f"readonly TOOL_IDENTITY='{tool_identity}'")
+    source = source.replace(daemon_constant, f"readonly DAEMON_IDENTITY='{daemon_identity}'")
+    source = source.replace(socket_constant, f"readonly DOCKER_SOCKET='{docker_socket}'")
+    source = source.replace(trust_constant, f"readonly TRUST_ROOT='{tmp_path}'")
+    source = source.replace(
+        socket_trust_constant,
+        f"readonly SOCKET_TRUST_ROOT='{tmp_path}'",
+    )
+    source = source.replace(
+        socket_kind_constant,
+        "readonly DOCKER_SOCKET_KIND='regular-test'",
+    )
+    source = source.replace("stat -c '%d:%i'", "stat -f '%d:%i'")
+    source = source.replace(
+        'readonly DOCKER_EXEC="/proc/self/fd/${DOCKER_FD}"',
+        f"readonly DOCKER_EXEC='{docker}'",
+    )
     guard = tmp_path / "assert-fresh-install-data-plane-under-test"
     guard.write_text(source, encoding="utf-8")
     guard.chmod(0o755)
@@ -254,11 +330,25 @@ def test_guard_against_an_isolated_real_docker_daemon():
 
     assert result.returncode == 0, result.stderr
     assert (
-        "self-daemon=1 formal-chain=install,guard,compose,start volumes=8 services=12 "
-        "bash-spoof=refused plugin-context=refused wrong-daemon=refused "
-        "lock-matrix=wrong-inode,shared,reopen,replace,dup-pass-fds image-conflict=preserved"
+        "self-dockerd=1 installer=exact initializer=signed-pair refresh=live-edge-api "
+        "private-pull=authenticated-tls ota-apply=public-entrypoint "
+        "local-auth=missing,malformed path-context=refused tool-content=refused "
+        "ancestor=refused daemon=refused socket=refused"
         in result.stdout
     )
+
+
+def test_real_docker_e2e_uses_only_formal_public_entrypoints():
+    source = REAL_DOCKER_E2E.read_text(encoding="utf-8")
+
+    assert "infra/bootstrap/install-edge-host.sh" in source
+    assert "scripts/prepare-host-release.py\" stage" in source
+    assert "/usr/libexec/drycontroller/initialize-initial-release" not in source
+    assert "/infra/ota-helper/ota-apply" in source
+    assert "/api/v1/ops/registry-credentials/refresh" in source
+    assert "_assert_fresh_install" not in source
+    assert "host_release_engine.HostReleaseEngine" not in source
+    assert "cat >\"${compose_file}\"" not in source
 
 
 @pytest.mark.parametrize(
@@ -397,7 +487,7 @@ def test_guard_pins_production_docker_and_release_lock_paths():
     assert source.startswith("#!/usr/bin/bash\n")
     assert "readonly DOCKER='/usr/bin/docker'" in source
     assert "readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'" in source
-    assert "DOCKER_HOST='unix:///var/run/docker.sock'" in source
+    assert "DOCKER_HOST='unix:///run/docker.sock'" in source
     assert "command -v docker" not in source
 
 
@@ -490,6 +580,7 @@ def test_guard_only_calls_read_only_docker_commands(tmp_path: Path):
     assert result.returncode != 0
     calls = log_path.read_text(encoding="utf-8").splitlines()
     allowed = (
+        "info --format ",
         "version --format ",
         "volume ls --quiet",
         "volume inspect --format ",

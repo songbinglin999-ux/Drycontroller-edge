@@ -43,7 +43,12 @@ from app.services.health import get_system_readiness
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 from app.services.registry_credentials import (
     install_registry_credential,
+    normalize_registry_credential,
     registry_credential_check,
+)
+from app.services.registry_auth_writer import (
+    RegistryAuthWriterClient,
+    get_registry_auth_writer_client,
 )
 from app.services.audit import api_key_actor, write_audit
 from app.services.config_version import record_config_version
@@ -520,11 +525,24 @@ async def get_registry_credential_status(_: str = Depends(require_admin_api_key)
 
 
 @router.post("/registry-credentials/refresh")
-async def refresh_registry_credential(req: RegistryCredentialRefreshRequest, api_key: str = Depends(require_admin_api_key)):
+async def refresh_registry_credential(
+    req: RegistryCredentialRefreshRequest,
+    api_key: str = Depends(require_admin_api_key),
+    writer: RegistryAuthWriterClient = Depends(get_registry_auth_writer_client),
+):
+    payload = req.model_dump()
     try:
-        status_payload = install_registry_credential(req.model_dump())
+        normalized = normalize_registry_credential(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"success": False, "error": str(exc)}) from exc
+    root_status = await writer.install(payload)
+    compared = ("credential_id", "registry_host", "username", "secret_fingerprint", "version")
+    if any(root_status.get(key) != normalized.get(key) for key in compared):
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "registry_auth_writer_binding_mismatch"},
+        )
+    status_payload = install_registry_credential(normalized)
 
     await write_audit(
         actor=api_key_actor(api_key, role="admin"),

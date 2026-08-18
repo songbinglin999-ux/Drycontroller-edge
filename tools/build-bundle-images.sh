@@ -43,6 +43,8 @@ SOURCE_BUNDLE_PATHS=(
   infra/host-release-runner/initialize-initial-release
   infra/host-release-runner/drycontroller-host-release-runner.service
   infra/ota-helper/drycontroller-ota-helper.service
+  infra/registry-auth-writer/registry_auth_writer.py
+  infra/registry-auth-writer/drycontroller-registry-auth-writer.service
   services/device-identity/requirements.txt
   services/device-identity/identity_service
 )

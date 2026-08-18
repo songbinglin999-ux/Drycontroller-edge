@@ -70,7 +70,7 @@ def _edge_api_ingress_active() -> bool:
 FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    "DOCKER_HOST": "unix:///var/run/docker.sock",
+    "DOCKER_HOST": "unix:///run/docker.sock",
     "COMPOSE_PROJECT_NAME": "drycontroller-edge",
 }
 

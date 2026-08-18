@@ -215,6 +215,7 @@ services:
       # 唯一宿主 mutation 边界：只连接 root-owned 0660 UDS，不挂 Docker socket。
       - /run/drycontroller-ota:/run/drycontroller-ota:ro
       - /run/drycontroller-host-release:/run/drycontroller-host-release:ro
+      - /run/drycontroller-registry-auth:/run/drycontroller-registry-auth:ro
     ports:
       # P0-N1 audit 2026-05-15：默认绑 127.0.0.1，避免 LAN/PLC 网段直达 license install
       # 端点。生产若真有外部访问需求，由前置 Caddy/Traefik 反代，并显式覆写本变量。
