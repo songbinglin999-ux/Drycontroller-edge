@@ -1,6 +1,13 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
+FROM docker.io/library/rust:1.83.0-slim-bookworm@sha256:0f0dc99eb74e410d9420149cbb2b9be84abe00e8dbed6a4201a591a2c81844df AS rust-host-toolchain
+
+FROM docker.io/library/rust:1.83.0-alpine@sha256:4bebaa3d13e2933c751eaf4a2e38d0530807572ea101d9c61f20f51eb7174ee4 AS rust-musl-target
+
 FROM quay.io/influxdb/cross-builder@sha256:af550a559d42095b3cec8ccfdea614ac2364d924fc8e16813fc2a2e693477630 AS influxd-builder
+
+COPY --from=rust-host-toolchain /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-gnu /opt/rust-toolchain
+COPY --from=rust-musl-target /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl /opt/rust-toolchain/lib/rustlib/x86_64-unknown-linux-musl
 
 WORKDIR /src
 ADD --checksum=sha256:0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f \
@@ -60,12 +67,19 @@ RUN retry() { \
 
 RUN export CC="$(xcc linux x86_64)" \
     && export LINUX_EXTLD="-fno-PIC -static-pie -Wl,-z,stack-size=8388608" \
+    && export RUST_TOOLCHAIN_ROOT=/opt/rust-toolchain \
+    && export PATH="${RUST_TOOLCHAIN_ROOT}/bin:${PATH}" \
+    && export RUSTC="${RUST_TOOLCHAIN_ROOT}/bin/rustc" \
+    && test "$(rustc --version)" = "rustc 1.83.0 (90b35a623 2024-11-26)" \
+    && test "$(cargo --version)" = "cargo 1.83.0 (5ffbef321 2024-10-29)" \
+    && RUSTLIB_PATH="${RUST_TOOLCHAIN_ROOT}/lib/rustlib/x86_64-unknown-linux-musl/lib" \
+    && test -d "${RUSTLIB_PATH}" \
     && CGO_ENABLED=1 PKG_CONFIG="$(command -v pkg-config)" GOTOOLCHAIN=local go build \
         -tags assets,sqlite_foreign_keys,sqlite_json,static_build,noasm \
         -buildmode=pie \
         -trimpath \
         -buildvcs=false \
-        -ldflags "-s -w -X main.version=2.9.1 -X main.commit=d4fa1941fd4adb29a556e774de426dfbab72f346 -X main.date=2026-05-11T18:30:49Z -linkmode=external -extld=${CC} -extldflags '${LINUX_EXTLD} -L$(find_rustlib_path x86_64-unknown-linux-musl) -Wl,-lunwind'" \
+        -ldflags "-s -w -X main.version=2.9.1 -X main.commit=d4fa1941fd4adb29a556e774de426dfbab72f346 -X main.date=2026-05-11T18:30:49Z -linkmode=external -extld=${CC} -extldflags '${LINUX_EXTLD} -L${RUSTLIB_PATH} -Wl,-lunwind'" \
         -o /out/influxd \
         ./cmd/influxd
 

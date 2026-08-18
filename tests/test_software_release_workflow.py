@@ -29,6 +29,14 @@ PROMETHEUS_IMAGE = (
     "prom/prometheus:v3.13.0@"
     "sha256:0e698e35e50d1ddc2d11a4a55b089fe62eb71358a5c204dfafd21bdf8ffe04b8"
 )
+RUST_HOST_TOOLCHAIN_IMAGE = (
+    "docker.io/library/rust:1.83.0-slim-bookworm@"
+    "sha256:0f0dc99eb74e410d9420149cbb2b9be84abe00e8dbed6a4201a591a2c81844df"
+)
+RUST_MUSL_TARGET_IMAGE = (
+    "docker.io/library/rust:1.83.0-alpine@"
+    "sha256:4bebaa3d13e2933c751eaf4a2e38d0530807572ea101d9c61f20f51eb7174ee4"
+)
 
 
 def test_alertmanager_image_is_pinned_consistently_for_runtime_and_release():
@@ -58,6 +66,24 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert "postgres) printf" not in release_builder.split("source_image_for()", 1)[1].split("}", 1)[0]
 
     assert f"FROM {INFLUXDB_BASE_IMAGE}" in influxdb
+    assert f"FROM {RUST_HOST_TOOLCHAIN_IMAGE} AS rust-host-toolchain" in influxdb
+    assert f"FROM {RUST_MUSL_TARGET_IMAGE} AS rust-musl-target" in influxdb
+    assert (
+        "COPY --from=rust-host-toolchain "
+        "/usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-gnu /opt/rust-toolchain"
+        in influxdb
+    )
+    assert (
+        "COPY --from=rust-musl-target "
+        "/usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-musl/lib/rustlib/"
+        "x86_64-unknown-linux-musl /opt/rust-toolchain/lib/rustlib/x86_64-unknown-linux-musl"
+        in influxdb
+    )
+    assert "COPY --from=rust-host-toolchain /usr/local/cargo" not in influxdb
+    assert 'PATH="${RUST_TOOLCHAIN_ROOT}/bin:${PATH}"' in influxdb
+    assert 'test "$(rustc --version)" = "rustc 1.83.0 (90b35a623 2024-11-26)"' in influxdb
+    assert 'test "$(cargo --version)" = "cargo 1.83.0 (5ffbef321 2024-10-29)"' in influxdb
+    assert "find_rustlib_path" not in influxdb
     assert influxdb.startswith(
         "# syntax=docker/dockerfile:1.7@"
         "sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e\n"
