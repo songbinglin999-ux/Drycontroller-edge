@@ -95,10 +95,13 @@ readonly operation_id_file="${tmp_dir}/operation-id"
 readonly docker_config="${tmp_dir}/docker-config"
 readonly fake_net="${tmp_dir}/sys-class-net"
 readonly expected_host="${tmp_dir}/expected-host-release"
+readonly audit_binding="${tmp_dir}/registry-audit-binding.json"
+readonly audit_row="${tmp_dir}/registry-audit-row.json"
 
 dockerd_started=0
 registry_started=0
 policy_pid=''
+socket_probe_pid=''
 tpm_created=0
 net_mounted=0
 cloud_address_added=0
@@ -114,6 +117,7 @@ docker_exact() {
 cleanup() {
   set +e
   if [ -n "${policy_pid}" ]; then kill -TERM "${policy_pid}" >/dev/null 2>&1; fi
+  if [ -n "${socket_probe_pid}" ]; then kill -TERM "${socket_probe_pid}" >/dev/null 2>&1; fi
   if [ -f "${tmp_dir}/writer.pid" ]; then
     kill -TERM "$(<"${tmp_dir}/writer.pid")" >/dev/null 2>&1
   fi
@@ -350,6 +354,74 @@ if body.get("success") is not True or "secret" in json.dumps(body):
 PY
 [ "$(stat -c '%u:%g:%a' "${AUTH_SOURCE}")" = '0:0:400' ] \
   || fail 'root registry auth was not atomically installed with fixed metadata'
+[ ! -e /etc/drycontroller/registry/config.json ] \
+  || fail 'legacy business-container registry secret cache still exists'
+"${PYTHON}" - "${AUTH_SOURCE}" "${FIXTURE_ROOT}/registry-credential.json" "${audit_binding}" <<'PY'
+import base64, json, pathlib, sys
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+requested = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+if set(document) != {"schema", "auths", "credential"}:
+    raise SystemExit("root registry auth atomic document fields invalid")
+if document["schema"] != "drycontroller.registry-auth.v2":
+    raise SystemExit("root registry auth atomic document schema invalid")
+status = document["credential"]
+for key in ("credential_id", "registry_host", "username", "secret_fingerprint", "version"):
+    expected = requested[key]
+    if key == "registry_host":
+        expected = expected.removeprefix("https://").removeprefix("http://").rstrip("/")
+    if status.get(key) != expected:
+        raise SystemExit(f"root registry auth status binding invalid: {key}")
+if status.get("status") != "active" or not status.get("audit_id") or len(status.get("transaction_id", "")) != 32:
+    raise SystemExit("root registry auth audit binding invalid")
+encoded = document["auths"][status["registry_host"]]["auth"]
+if base64.b64decode(encoded).decode("utf-8") != f"{requested['username']}:{requested['secret']}":
+    raise SystemExit("root registry auth secret binding invalid")
+pathlib.Path(sys.argv[3]).write_text(json.dumps({
+    "audit_id": status["audit_id"],
+    "transaction_id": status["transaction_id"],
+    "version": status["version"],
+    "secret_fingerprint": status["secret_fingerprint"],
+}), encoding="utf-8")
+PY
+mapfile -t database_identity < <("${PYTHON}" - /etc/drycontroller/runtime.env <<'PY'
+import pathlib, sys
+values = {}
+for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if "=" in line:
+        key, value = line.split("=", 1)
+        values[key] = value
+print(values["POSTGRES_USER"])
+print(values["POSTGRES_DB"])
+PY
+)
+readonly postgres_user="${database_identity[0]}"
+readonly postgres_database="${database_identity[1]}"
+readonly audit_id="$("${PYTHON}" - "${audit_binding}" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["audit_id"]
+if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    raise SystemExit("registry audit ID invalid")
+print(value)
+PY
+)"
+docker_exact exec edge-postgres psql \
+  --username "${postgres_user}" --dbname "${postgres_database}" \
+  --tuples-only --no-align \
+  --command "SELECT json_build_object('audit_id', id, 'transaction_id', correlation_id, 'result', result, 'version', detail->>'version', 'secret_fingerprint', detail->>'secret_fingerprint') FROM operation_audit_logs WHERE id = ${audit_id};" \
+  >"${audit_row}"
+"${PYTHON}" - "${audit_binding}" "${audit_row}" <<'PY'
+import json, pathlib, sys
+expected = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+actual = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+if actual != {
+    "audit_id": expected["audit_id"],
+    "transaction_id": expected["transaction_id"],
+    "result": "accepted",
+    "version": str(expected["version"]),
+    "secret_fingerprint": expected["secret_fingerprint"],
+}:
+    raise SystemExit("root registry auth audit receipt does not match the committed audit row")
+PY
 
 "${PYTHON}" - \
   "${FIXTURE_ROOT}/candidate-policy.json" \
@@ -444,6 +516,51 @@ install -o root -g root -m 0400 "${tmp_dir}/daemon-identity.saved" \
 
 # Replacing the fixed socket with another listening inode must fail before any
 # Docker/Compose mutation. This socket belongs only to the self-dockerd job.
+"${PYTHON}" - "${tmp_dir}/socket-probe.ready" "${tmp_dir}/socket-probe.go" <<'PY' &
+import json, os, pathlib, subprocess, sys, time
+ready, go = map(pathlib.Path, sys.argv[1:])
+descriptor = os.open("/run/docker.sock", os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
+try:
+    ready.write_text("ready", encoding="ascii")
+    for _ in range(500):
+        if go.is_file():
+            break
+        time.sleep(0.02)
+    else:
+        raise SystemExit("descriptor-bound Docker probe was not released")
+    completed = subprocess.run(
+        [
+            "/usr/bin/docker",
+            "info",
+            "--format",
+            "{{.ID}}\\n{{.Name}}\\n{{.DockerRootDir}}",
+        ],
+        env={
+            "HOME": "/var/empty",
+            "PATH": "/usr/bin:/bin",
+            "DOCKER_HOST": f"unix:///proc/self/fd/{descriptor}",
+            "DOCKER_CONFIG": "/var/lib/drycontroller-ota/guard-docker-config",
+        },
+        pass_fds=(descriptor,),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+finally:
+    os.close(descriptor)
+expected = json.loads(pathlib.Path("/etc/drycontroller/docker-daemon.json").read_text(encoding="utf-8"))
+observed = dict(zip(("id", "name", "root_dir"), completed.stdout.splitlines(), strict=True))
+if observed != {key: expected[key] for key in observed}:
+    raise SystemExit("descriptor-bound Docker CLI reached the replacement path")
+PY
+socket_probe_pid="$!"
+for _ in $(seq 1 100); do
+  [ -f "${tmp_dir}/socket-probe.ready" ] && break
+  sleep 0.02
+done
+[ -f "${tmp_dir}/socket-probe.ready" ] \
+  || fail 'descriptor-bound Docker probe did not pin the original socket'
 mv /run/docker.sock "${tmp_dir}/docker.sock.saved"
 "${PYTHON}" - "${tmp_dir}/attacker-socket.pid" <<'PY' &
 import os, pathlib, socket, sys, time
@@ -461,6 +578,10 @@ for _ in $(seq 1 100); do
 done
 [ -S /run/docker.sock ] && [ -f "${tmp_dir}/attacker-socket.pid" ] \
   || fail 'replacement Docker socket fixture did not start'
+touch "${tmp_dir}/socket-probe.go"
+wait "${socket_probe_pid}" \
+  || fail 'descriptor-bound Docker CLI did not remain on the original socket'
+socket_probe_pid=''
 expect_start_failure 'replacement Docker socket'
 kill -TERM "$(<"${tmp_dir}/attacker-socket.pid")" >/dev/null 2>&1 || true
 rm -f /run/docker.sock
@@ -499,4 +620,4 @@ for container in containers:
 PY
 
 printf '%s\n' \
-  'formal-install private OTA E2E passed: self-dockerd=1 installer=exact initializer=signed-pair refresh=live-edge-api private-pull=authenticated-tls ota-apply=public-entrypoint local-auth=missing,malformed path-context=refused tool-content=refused ancestor=refused daemon=refused socket=refused'
+  'formal-install private OTA E2E passed: self-dockerd=1 installer=exact initializer=signed-pair refresh=live-edge-api audit=bound private-pull=authenticated-tls ota-apply=public-entrypoint local-auth=missing,malformed legacy-cache=absent path-context=refused tool-content=refused ancestor=refused daemon=refused socket-fd=pinned socket=refused'

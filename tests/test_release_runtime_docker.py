@@ -21,6 +21,7 @@ if str(HELPER_DIR) not in sys.path:
 
 from release_engine import (  # noqa: E402
     RELEASE_JOURNAL_SCHEMA,
+    REGISTRY_AUTH_SCHEMA,
     COSIGN_TOOLCHAIN,
     ReleaseEngine,
     ReleaseError,
@@ -47,6 +48,24 @@ SERVICES = (
     "postgres",
     "prometheus",
 )
+
+
+def _registry_document(registry: str) -> dict:
+    return {
+        "schema": REGISTRY_AUTH_SCHEMA,
+        "auths": {registry: {"auth": base64.b64encode(b"reader:secret").decode("ascii")}},
+        "credential": {
+            "status": "active",
+            "credential_id": "cred-1",
+            "registry_host": registry,
+            "username": "reader",
+            "secret_fingerprint": "fp-1",
+            "version": 2,
+            "transaction_id": "a" * 32,
+            "audit_id": 17,
+            "updated_at": "2026-08-19T00:00:00+00:00",
+        },
+    }
 
 
 def _docker_run(
@@ -443,8 +462,9 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
             host_active=host_active,
         )
         paths.registry_status.write_text(
-            json.dumps({"status": "active", "registry_host": registry}), encoding="utf-8"
+            json.dumps(_registry_document(registry)), encoding="utf-8"
         )
+        paths.registry_status.chmod(0o400)
         paths.device.write_text(
             json.dumps(
                 {

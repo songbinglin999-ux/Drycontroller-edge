@@ -142,6 +142,24 @@ def _policy(operation_id: str, manifest: dict) -> dict:
     }
 
 
+def _registry_document(auths: dict | None = None) -> dict:
+    return {
+        "schema": release_engine.REGISTRY_AUTH_SCHEMA,
+        "auths": auths or {},
+        "credential": {
+            "status": "active",
+            "credential_id": "cred-1",
+            "registry_host": REGISTRY,
+            "username": "reader",
+            "secret_fingerprint": "fp-1",
+            "version": 2,
+            "transaction_id": "a" * 32,
+            "audit_id": 17,
+            "updated_at": "2026-08-19T00:00:00+00:00",
+        },
+    }
+
+
 def _paths(tmp_path: Path) -> ReleasePaths:
     project = tmp_path / "project"
     project.mkdir()
@@ -163,10 +181,9 @@ def _paths(tmp_path: Path) -> ReleasePaths:
     pubkey = tmp_path / "cosign.pub"
     pubkey.write_bytes(PUBKEY_BYTES)
     registry_status = tmp_path / "registry-status.json"
-    registry_status.write_text(
-        json.dumps({"status": "active", "registry_host": REGISTRY}),
-        encoding="utf-8",
-    )
+    auth = base64.b64encode(b"reader:secret").decode("ascii")
+    registry_status.write_text(json.dumps(_registry_document({REGISTRY: {"auth": auth}})), encoding="utf-8")
+    registry_status.chmod(0o400)
     device = tmp_path / "device.json"
     device.write_text(
         json.dumps(
@@ -210,7 +227,10 @@ def _configure_root_docker_auth(tmp_path: Path, monkeypatch, payload: object | N
     root = tmp_path / "root-docker-state"
     root.mkdir(mode=0o700)
     source = root / "registry-auth.json"
-    source.write_text(json.dumps({"auths": {}} if payload is None else payload), encoding="utf-8")
+    if payload is None:
+        auth = base64.b64encode(b"reader:secret").decode("ascii")
+        payload = _registry_document({REGISTRY: {"auth": auth}})
+    source.write_text(json.dumps(payload), encoding="utf-8")
     source.chmod(0o400)
     local = root / "guard-docker-config"
     local.mkdir(mode=0o700)
@@ -225,7 +245,15 @@ def _configure_root_docker_auth(tmp_path: Path, monkeypatch, payload: object | N
 
 
 def _bypass_runtime_identity(monkeypatch) -> None:
-    monkeypatch.setattr(release_engine, "_bound_docker_daemon", contextlib.nullcontext)
+    @contextlib.contextmanager
+    def bound():
+        descriptor = os.open(os.devnull, os.O_RDONLY)
+        try:
+            yield f"unix:///proc/self/fd/{descriptor}", descriptor
+        finally:
+            os.close(descriptor)
+
+    monkeypatch.setattr(release_engine, "_bound_docker_daemon", bound)
     monkeypatch.setattr(
         release_engine,
         "_opened_command",
@@ -757,10 +785,28 @@ def test_software_root_docker_auth_source_rejects_every_non_auths_top_level_key(
         ReleaseEngine(paths=_paths(tmp_path))._run_command([str(docker), "pull", f"{REGISTRY}/image:test"])
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("audit_id", 0), ("transaction_id", "wrong"), ("version", 0)],
+)
+def test_software_root_auth_rejects_incomplete_atomic_status(tmp_path, monkeypatch, field, value):
+    auth = base64.b64encode(b"reader:secret").decode("ascii")
+    document = _registry_document({REGISTRY: {"auth": auth}})
+    document["credential"][field] = value
+    _configure_root_docker_auth(tmp_path, monkeypatch, document)
+
+    with pytest.raises(ReleaseError, match="schema"):
+        release_engine._read_registry_auth_source()
+
+
 @pytest.mark.parametrize("root_auth", ["missing", "malformed"])
 def test_software_local_compose_ignores_unavailable_registry_auth(tmp_path, monkeypatch, root_auth):
     auth = base64.b64encode(b"reader:secret").decode("ascii")
-    source = _configure_root_docker_auth(tmp_path, monkeypatch, {"auths": {REGISTRY: {"auth": auth}}})
+    source = _configure_root_docker_auth(
+        tmp_path,
+        monkeypatch,
+        _registry_document({REGISTRY: {"auth": auth}}),
+    )
     if root_auth == "missing":
         source.unlink()
     else:
@@ -782,7 +828,7 @@ def test_software_local_compose_ignores_unavailable_registry_auth(tmp_path, monk
     output = ReleaseEngine(paths=_paths(tmp_path))._run_command([str(compose), "version"])
     lines = output.splitlines()
 
-    assert lines[0] == "unix:///run/docker.sock"
+    assert lines[0].startswith("unix:///proc/self/fd/")
     assert json.loads(lines[2]) == {"auths": {}}
     assert Path(lines[1]).is_dir()
 
@@ -804,14 +850,34 @@ def test_software_registry_auth_is_read_only_for_registry_network_operations(arg
     assert release_engine._requires_registry_auth(args) is required
 
 
-@pytest.mark.parametrize("changed", ["socket", "daemon"])
-def test_software_daemon_binding_rejects_socket_or_daemon_replacement(monkeypatch, changed):
-    sockets = iter([(1, 2), (1, 3)] if changed == "socket" else [(1, 2), (1, 2)])
-    daemons = iter(
-        [{"id": "a"}, {"id": "b"}] if changed == "daemon" else [{"id": "a"}, {"id": "a"}]
-    )
-    monkeypatch.setattr(release_engine, "_docker_socket_identity", lambda: next(sockets))
-    monkeypatch.setattr(release_engine, "_docker_daemon_identity", lambda: next(daemons))
+def test_software_daemon_binding_uses_one_open_socket_descriptor(monkeypatch):
+    @contextlib.contextmanager
+    def opened():
+        yield 41
+
+    observed: list[tuple[str, int]] = []
+
+    def daemon(docker_host, descriptor):
+        observed.append((docker_host, descriptor))
+        return {"id": "a"}
+
+    monkeypatch.setattr(release_engine, "_opened_docker_socket", opened)
+    monkeypatch.setattr(release_engine, "_docker_daemon_identity", daemon)
+
+    with release_engine._bound_docker_daemon() as binding:
+        assert binding == ("unix:///proc/self/fd/41", 41)
+
+    assert observed == [("unix:///proc/self/fd/41", 41)] * 2
+
+
+def test_software_daemon_binding_rejects_identity_change_on_bound_descriptor(monkeypatch):
+    @contextlib.contextmanager
+    def opened():
+        yield 41
+
+    daemons = iter([{"id": "a"}, {"id": "b"}])
+    monkeypatch.setattr(release_engine, "_opened_docker_socket", opened)
+    monkeypatch.setattr(release_engine, "_docker_daemon_identity", lambda _host, _fd: next(daemons))
 
     with pytest.raises(ReleaseError, match="identity changed"):
         with release_engine._bound_docker_daemon():

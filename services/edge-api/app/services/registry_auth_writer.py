@@ -36,7 +36,7 @@ def _validated_socket() -> Path:
 
 
 class RegistryAuthWriterClient:
-    async def install(self, payload: dict[str, object]) -> dict:
+    async def _request(self, method: str, path: str, *, payload: dict[str, object] | None = None) -> dict:
         transport = httpx.AsyncHTTPTransport(uds=str(_validated_socket()), retries=0)
         try:
             async with httpx.AsyncClient(
@@ -45,7 +45,7 @@ class RegistryAuthWriterClient:
                 timeout=10,
                 trust_env=False,
             ) as client:
-                response = await client.post("/registry-auth/install", json=payload)
+                response = await client.request(method, path, json=payload)
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=503,
@@ -72,6 +72,12 @@ class RegistryAuthWriterClient:
                 detail={"error": "registry_auth_writer_invalid_response"},
             )
         return credential
+
+    async def install(self, payload: dict[str, object]) -> dict:
+        return await self._request("POST", "/registry-auth/install", payload=payload)
+
+    async def status(self) -> dict:
+        return await self._request("GET", "/registry-auth/status")
 
 
 _client: RegistryAuthWriterClient | None = None

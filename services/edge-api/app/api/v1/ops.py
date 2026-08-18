@@ -10,6 +10,7 @@ import json
 import os
 import time
 import ipaddress
+import uuid
 from typing import Any
 from pathlib import Path
 
@@ -42,7 +43,6 @@ from app.services.host_release_ops import HostReleaseOpsClient, get_host_release
 from app.services.health import get_system_readiness
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 from app.services.registry_credentials import (
-    install_registry_credential,
     normalize_registry_credential,
     registry_credential_check,
 )
@@ -200,8 +200,11 @@ def _preflight_device_identity(checks: list[dict[str, Any]]) -> None:
     )
 
 
-def _preflight_registry_credential(checks: list[dict[str, Any]]) -> None:
-    result = registry_credential_check()
+async def _preflight_registry_credential(
+    checks: list[dict[str, Any]],
+    writer: RegistryAuthWriterClient,
+) -> None:
+    result = registry_credential_check(await writer.status())
     _preflight_check(
         checks,
         "registry.credential",
@@ -430,7 +433,11 @@ async def verify_license(_: str = Depends(require_admin_api_key)):
 
 
 @router.post("/preflight")
-async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_api_key)):
+async def run_preflight(
+    req: PreflightRequest,
+    _: str = Depends(require_admin_api_key),
+    writer: RegistryAuthWriterClient = Depends(get_registry_auth_writer_client),
+):
     """
     云端触发的只读 preflight。
 
@@ -480,7 +487,7 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
     )
     if req.check_ota:
         await _preflight_ota_helper(checks)
-        _preflight_registry_credential(checks)
+        await _preflight_registry_credential(checks, writer)
     else:
         _preflight_check(
             checks,
@@ -519,8 +526,11 @@ async def run_preflight(req: PreflightRequest, _: str = Depends(require_admin_ap
 
 
 @router.get("/registry-credentials/status")
-async def get_registry_credential_status(_: str = Depends(require_admin_api_key)):
-    result = registry_credential_check()
+async def get_registry_credential_status(
+    _: str = Depends(require_admin_api_key),
+    writer: RegistryAuthWriterClient = Depends(get_registry_auth_writer_client),
+):
+    result = registry_credential_check(await writer.status())
     return {"success": result["ok"], "reason": result["reason"], "credential": result["detail"]}
 
 
@@ -535,29 +545,48 @@ async def refresh_registry_credential(
         normalized = normalize_registry_credential(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"success": False, "error": str(exc)}) from exc
-    root_status = await writer.install(payload)
-    compared = ("credential_id", "registry_host", "username", "secret_fingerprint", "version")
-    if any(root_status.get(key) != normalized.get(key) for key in compared):
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "registry_auth_writer_binding_mismatch"},
-        )
-    status_payload = install_registry_credential(normalized)
-
-    await write_audit(
+    transaction_id = uuid.uuid4().hex
+    audit_id = await write_audit(
         actor=api_key_actor(api_key, role="admin"),
         action="registry_credential.refresh",
         resource_type="registry_credential",
         resource_id=req.credential_id,
-        result="success",
+        correlation_id=transaction_id,
+        result="accepted",
         detail={
-            "registry_host": status_payload["registry_host"],
-            "username": status_payload["username"],
-            "version": status_payload["version"],
-            "secret_fingerprint": status_payload["secret_fingerprint"],
+            "registry_host": normalized["registry_host"],
+            "username": normalized["username"],
+            "version": normalized["version"],
+            "secret_fingerprint": normalized["secret_fingerprint"],
+            "transaction_id": transaction_id,
         },
     )
-    return {"success": True, "credential": status_payload}
+    if audit_id is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "registry_credential_audit_unavailable"},
+        )
+    root_status = await writer.install(
+        {**normalized, "transaction_id": transaction_id, "audit_id": audit_id}
+    )
+    compared = (
+        "credential_id",
+        "registry_host",
+        "username",
+        "secret_fingerprint",
+        "version",
+        "transaction_id",
+        "audit_id",
+    )
+    expected_status = {**normalized, "transaction_id": transaction_id, "audit_id": audit_id}
+    if root_status.get("status") != "active" or any(
+        root_status.get(key) != expected_status.get(key) for key in compared
+    ):
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "registry_auth_writer_binding_mismatch"},
+        )
+    return {"success": True, "credential": root_status}
 
 
 @router.get("/monitor-config")
@@ -612,8 +641,9 @@ async def ota_start(
     req: OtaStartRequest,
     client: OtaOpsClient = Depends(get_ota_ops_client),
     _: str = Depends(require_admin_api_key),
+    writer: RegistryAuthWriterClient = Depends(get_registry_auth_writer_client),
 ):
-    credential = registry_credential_check()
+    credential = registry_credential_check(await writer.status())
     if not credential["ok"]:
         raise HTTPException(
             status_code=409,
@@ -652,8 +682,9 @@ async def host_release_start(
     req: HostReleaseStartRequest,
     client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
     _: str = Depends(require_admin_api_key),
+    writer: RegistryAuthWriterClient = Depends(get_registry_auth_writer_client),
 ):
-    credential = registry_credential_check()
+    credential = registry_credential_check(await writer.status())
     if not credential["ok"]:
         raise HTTPException(
             status_code=409,

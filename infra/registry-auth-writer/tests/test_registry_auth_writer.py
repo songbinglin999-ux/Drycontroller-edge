@@ -13,7 +13,12 @@ MODULE_DIR = ROOT / "infra" / "registry-auth-writer"
 if str(MODULE_DIR) not in os.sys.path:
     os.sys.path.insert(0, str(MODULE_DIR))
 
-from registry_auth_writer import RegistryAuthError, install_registry_auth  # noqa: E402
+from registry_auth_writer import (  # noqa: E402
+    DOCUMENT_SCHEMA,
+    RegistryAuthError,
+    install_registry_auth,
+    read_registry_status,
+)
 
 
 def _payload(secret: str = "private-value") -> dict[str, object]:
@@ -24,6 +29,8 @@ def _payload(secret: str = "private-value") -> dict[str, object]:
         "secret": secret,
         "secret_fingerprint": "fp-1",
         "version": 3,
+        "transaction_id": "a" * 32,
+        "audit_id": 17,
     }
 
 
@@ -39,12 +46,17 @@ def test_atomic_root_auth_update_replaces_the_complete_document(tmp_path: Path):
     first_inode = destination.stat().st_ino
     second = install_registry_auth(_payload("second-secret"), path=destination)
 
-    assert first == second
+    assert first["credential_id"] == second["credential_id"] == "cred-1"
+    assert first["transaction_id"] == second["transaction_id"] == "a" * 32
+    assert first["audit_id"] == second["audit_id"] == 17
     assert "secret" not in second
     assert destination.stat().st_ino != first_inode
     assert destination.stat().st_mode & 0o777 == 0o400
     assert destination.stat().st_nlink == 1
     payload = json.loads(destination.read_text(encoding="utf-8"))
+    assert payload["schema"] == DOCUMENT_SCHEMA
+    assert payload["credential"] == second
+    assert read_registry_status(path=destination) == second
     encoded = payload["auths"]["registry.example.test"]["auth"]
     assert base64.b64decode(encoded).decode("utf-8") == "edge-pull:second-secret"
     assert not list(destination.parent.glob(".*.tmp"))
@@ -57,6 +69,8 @@ def test_atomic_root_auth_update_replaces_the_complete_document(tmp_path: Path):
         lambda payload: payload.update(secret=""),
         lambda payload: payload.update(registry_host="../socket"),
         lambda payload: payload.update(version=0),
+        lambda payload: payload.update(transaction_id="not-a-transaction"),
+        lambda payload: payload.update(audit_id=0),
         lambda payload: payload.update(extra="value"),
     ],
 )
@@ -103,3 +117,10 @@ def test_failed_atomic_replace_retains_previous_auth_and_removes_temporary_file(
     assert "new-secret" not in str(caught.value)
     assert destination.read_bytes() == before
     assert not list(destination.parent.glob(".*.tmp"))
+
+
+def test_missing_status_is_explicit_and_contains_no_secret(tmp_path: Path):
+    status = read_registry_status(path=_destination(tmp_path))
+
+    assert status == {"status": "missing"}
+    assert "secret" not in json.dumps(status)

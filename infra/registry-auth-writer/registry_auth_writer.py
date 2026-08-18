@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import socket
 import socketserver
 import stat
 import struct
+import threading
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -19,7 +21,10 @@ from typing import Any
 SOCKET_PATH = Path("/run/drycontroller-registry-auth/writer.sock")
 AUTH_PATH = Path("/var/lib/drycontroller-ota/registry-auth.json")
 MAX_REQUEST_BYTES = 16 * 1024
+DOCUMENT_SCHEMA = "drycontroller.registry-auth.v2"
 _REGISTRY = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$")
+_TRANSACTION_ID = re.compile(r"^[0-9a-f]{32}$")
+_INSTALL_LOCK = threading.Lock()
 
 
 class RegistryAuthError(ValueError):
@@ -46,6 +51,8 @@ def normalize_payload(payload: object) -> dict[str, Any]:
         "secret",
         "secret_fingerprint",
         "version",
+        "transaction_id",
+        "audit_id",
     }:
         raise RegistryAuthError("registry auth payload invalid")
     registry = _normalize_registry(payload["registry_host"])
@@ -54,6 +61,8 @@ def normalize_payload(payload: object) -> dict[str, Any]:
     secret = str(payload["secret"] or "")
     fingerprint = str(payload["secret_fingerprint"] or "").strip()
     version = payload["version"]
+    transaction_id = str(payload["transaction_id"] or "")
+    audit_id = payload["audit_id"]
     if (
         not credential_id
         or not username
@@ -66,6 +75,10 @@ def normalize_payload(payload: object) -> dict[str, Any]:
         or len(username.encode("utf-8")) > 1024
         or len(secret.encode("utf-8")) > 3072
         or len(fingerprint) > 256
+        or _TRANSACTION_ID.fullmatch(transaction_id) is None
+        or isinstance(audit_id, bool)
+        or not isinstance(audit_id, int)
+        or audit_id < 1
     ):
         raise RegistryAuthError("registry auth payload invalid")
     return {
@@ -75,6 +88,8 @@ def normalize_payload(payload: object) -> dict[str, Any]:
         "secret": secret,
         "secret_fingerprint": fingerprint,
         "version": version,
+        "transaction_id": transaction_id,
+        "audit_id": audit_id,
     }
 
 
@@ -113,50 +128,150 @@ def _write_all(descriptor: int, data: bytes) -> None:
         view = view[written:]
 
 
-def install_registry_auth(payload: object, *, path: Path = AUTH_PATH) -> dict[str, Any]:
-    normalized = normalize_payload(payload)
-    _validate_parent(path)
-    _validate_existing(path)
-    auth = base64.b64encode(
-        f"{normalized['username']}:{normalized['secret']}".encode("utf-8")
-    ).decode("ascii")
-    encoded = json.dumps(
-        {"auths": {normalized["registry_host"]: {"auth": auth}}},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+def _credential_status(document: object) -> dict[str, Any]:
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema", "auths", "credential"}
+        or document.get("schema") != DOCUMENT_SCHEMA
+    ):
+        raise RegistryAuthError("registry auth document invalid")
+    auths = document.get("auths")
+    credential = document.get("credential")
+    if (
+        not isinstance(auths, dict)
+        or not isinstance(credential, dict)
+        or set(credential) != {
+            "status",
+            "credential_id",
+            "registry_host",
+            "username",
+            "secret_fingerprint",
+            "version",
+            "transaction_id",
+            "audit_id",
+            "updated_at",
+        }
+        or credential.get("status") != "active"
+        or not isinstance(credential.get("credential_id"), str)
+        or not credential["credential_id"]
+        or not isinstance(credential.get("registry_host"), str)
+        or set(auths) != {credential["registry_host"]}
+        or not isinstance(credential.get("username"), str)
+        or not credential["username"]
+        or not isinstance(credential.get("secret_fingerprint"), str)
+        or not credential["secret_fingerprint"]
+        or isinstance(credential.get("version"), bool)
+        or not isinstance(credential.get("version"), int)
+        or credential["version"] < 1
+        or not isinstance(credential.get("transaction_id"), str)
+        or _TRANSACTION_ID.fullmatch(credential["transaction_id"]) is None
+        or isinstance(credential.get("audit_id"), bool)
+        or not isinstance(credential.get("audit_id"), int)
+        or credential["audit_id"] < 1
+        or not isinstance(credential.get("updated_at"), str)
+        or not credential["updated_at"]
+    ):
+        raise RegistryAuthError("registry auth document invalid")
+    entry = auths[credential["registry_host"]]
+    if not isinstance(entry, dict) or set(entry) != {"auth"} or not isinstance(entry["auth"], str):
+        raise RegistryAuthError("registry auth document invalid")
+    try:
+        decoded = base64.b64decode(entry["auth"], validate=True)
+        username, separator, secret = decoded.partition(b":")
+        bound_username = username.decode("utf-8")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RegistryAuthError("registry auth document invalid") from exc
+    if separator != b":" or not secret or bound_username != credential["username"]:
+        raise RegistryAuthError("registry auth document invalid")
+    return dict(credential)
+
+
+def read_registry_status(*, path: Path = AUTH_PATH) -> dict[str, Any]:
     descriptor = -1
     try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
-            0o400,
-        )
-        _write_all(descriptor, encoded)
-        os.fchmod(descriptor, 0o400)
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _validate_parent(path)
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"status": "missing"}
     except OSError as exc:
-        raise RegistryAuthError("registry auth update failed") from exc
+        raise RegistryAuthError("registry auth status unavailable") from exc
+    try:
+        _validate_existing(path)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        raw = os.read(descriptor, MAX_REQUEST_BYTES + 1)
+        if (
+            (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+            or not raw
+            or len(raw) > MAX_REQUEST_BYTES
+        ):
+            raise RegistryAuthError("registry auth status unavailable")
+        document = json.loads(raw)
+        return _credential_status(document)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RegistryAuthError) as exc:
+        raise RegistryAuthError("registry auth status unavailable") from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        temporary.unlink(missing_ok=True)
-    return {
+
+
+def install_registry_auth(payload: object, *, path: Path = AUTH_PATH) -> dict[str, Any]:
+    normalized = normalize_payload(payload)
+    auth = base64.b64encode(
+        f"{normalized['username']}:{normalized['secret']}".encode("utf-8")
+    ).decode("ascii")
+    status = {
+        "status": "active",
         "credential_id": normalized["credential_id"],
         "registry_host": normalized["registry_host"],
         "username": normalized["username"],
         "secret_fingerprint": normalized["secret_fingerprint"],
         "version": normalized["version"],
+        "transaction_id": normalized["transaction_id"],
+        "audit_id": normalized["audit_id"],
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
+    encoded = json.dumps(
+        {
+            "schema": DOCUMENT_SCHEMA,
+            "auths": {normalized["registry_host"]: {"auth": auth}},
+            "credential": status,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    with _INSTALL_LOCK:
+        _validate_parent(path)
+        _validate_existing(path)
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o400,
+            )
+            _write_all(descriptor, encoded)
+            os.fchmod(descriptor, 0o400)
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as exc:
+            raise RegistryAuthError("registry auth update failed") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+    return status
 
 
 class ThreadingUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -197,6 +312,17 @@ class RegistryAuthHandler(BaseHTTPRequestHandler):
             result = install_registry_auth(payload)
         except (UnicodeDecodeError, json.JSONDecodeError, RegistryAuthError, ValueError):
             self._json(422, {"error": "registry_auth_update_refused"})
+            return
+        self._json(200, {"success": True, "credential": result})
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path != "/registry-auth/status":
+            self._json(404, {"error": "route_not_found"})
+            return
+        try:
+            result = read_registry_status()
+        except RegistryAuthError:
+            self._json(503, {"error": "registry_auth_status_unavailable"})
             return
         self._json(200, {"success": True, "credential": result})
 

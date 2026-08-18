@@ -272,8 +272,17 @@ def test_root_release_runtime_is_disconnected_from_edge_api_writable_docker_conf
     assert "stat.S_IMODE(metadata.st_mode) != 0o400" in runtime_sources[0]
     assert "stat.S_IMODE(metadata.st_mode) != 0o400" in runtime_sources[2]
     for source in runtime_sources:
-        assert '"DOCKER_HOST": "unix:///run/docker.sock"' in source
         assert '"DOCKER_CONFIG": "/etc/drycontroller/registry"' not in source
+    for source in (runtime_sources[0], runtime_sources[2]):
+        assert "os.O_PATH" in source
+        assert 'f"unix:///proc/self/fd/{socket_descriptor}"' in source
+        assert '"DOCKER_HOST": docker_host' in source
+
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "/etc/drycontroller/registry" not in compose
+    assert "REGISTRY_DOCKER_CONFIG_PATH" not in compose
+    assert "REGISTRY_CREDENTIAL_STATUS_PATH" not in compose
+    assert "/run/drycontroller-registry-auth:/run/drycontroller-registry-auth:ro" in compose
 
 
 def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata():

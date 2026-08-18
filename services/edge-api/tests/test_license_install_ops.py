@@ -37,6 +37,11 @@ def _client(*, registry_writer=None) -> TestClient:
     return TestClient(app)
 
 
+class _MissingRegistryWriter:
+    async def status(self):
+        return {"status": "missing"}
+
+
 def _write_device_identity(path: Path) -> None:
     credential = "test-device-credential"
     path.write_text(
@@ -137,24 +142,40 @@ def test_license_install_mutation_route_is_removed(tmp_path: Path):
     assert license_path.read_text(encoding="utf-8") == '{"old":true}\n'
 
 
-def test_registry_credential_refresh_writes_docker_config(tmp_path: Path):
+def test_registry_credential_refresh_binds_root_status_to_precommitted_audit(monkeypatch):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
-    settings.REGISTRY_DOCKER_CONFIG_PATH = str(tmp_path / "registry" / "config.json")
-    settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(tmp_path / "registry" / "status.json")
 
     observed: dict[str, object] = {}
+    audit: dict[str, object] = {}
 
     class Writer:
+        status_payload = {"status": "missing"}
+
         async def install(self, payload):
             observed.update(payload)
-            return {
+            self.status_payload = {
                 key: value
                 for key, value in payload.items()
                 if key != "secret"
-            } | {"registry_host": "git.example.com"}
+            } | {
+                "status": "active",
+                "registry_host": "git.example.com",
+                "updated_at": "2026-08-19T00:00:00+00:00",
+            }
+            return self.status_payload
 
-    resp = _client(registry_writer=Writer()).post(
+        async def status(self):
+            return self.status_payload
+
+    async def write_audit(**kwargs):
+        audit.update(kwargs)
+        return 23
+
+    monkeypatch.setattr(ops_module, "write_audit", write_audit)
+    writer = Writer()
+
+    resp = _client(registry_writer=writer).post(
         "/api/v1/ops/registry-credentials/refresh",
         json={
             "credential_id": "cred-1",
@@ -174,35 +195,104 @@ def test_registry_credential_refresh_writes_docker_config(tmp_path: Path):
     assert "secret" not in body["credential"]
     assert "robot-secret" not in json.dumps(body)
     assert observed["secret"] == "robot-secret"
+    assert observed["audit_id"] == 23
+    assert observed["transaction_id"] == audit["correlation_id"]
+    assert audit["result"] == "accepted"
+    assert audit["detail"]["version"] == 2
+    assert audit["detail"]["secret_fingerprint"] == "fp-1"
 
-    docker_config = json.loads(Path(settings.REGISTRY_DOCKER_CONFIG_PATH).read_text(encoding="utf-8"))
-    auth = docker_config["auths"]["git.example.com"]["auth"]
-    assert base64.b64decode(auth).decode("utf-8") == "robot$edge:robot-secret"
-
-    status = json.loads(Path(settings.REGISTRY_CREDENTIAL_STATUS_PATH).read_text(encoding="utf-8"))
-    assert status["credential_id"] == "cred-1"
-    assert status["version"] == 2
-
-    Path(settings.REGISTRY_DOCKER_CONFIG_PATH).write_text('{"auths": {}}\n', encoding="utf-8")
-    resp = _client().get(
+    resp = _client(registry_writer=writer).get(
         "/api/v1/ops/registry-credentials/status",
         headers={"X-API-Key": "admin-1"},
     )
     assert resp.status_code == 200
-    assert resp.json()["reason"] == "registry_docker_config_auth_missing"
+    assert resp.json()["reason"] == "ok"
+    assert resp.json()["credential"]["audit_id"] == 23
+
+
+def test_registry_refresh_never_calls_root_writer_when_audit_commit_fails(monkeypatch):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    called = False
+
+    class Writer:
+        async def install(self, _payload):
+            nonlocal called
+            called = True
+
+    async def failed_audit(**_kwargs):
+        return None
+
+    monkeypatch.setattr(ops_module, "write_audit", failed_audit)
+    response = _client(registry_writer=Writer()).post(
+        "/api/v1/ops/registry-credentials/refresh",
+        json={
+            "credential_id": "cred-1",
+            "registry_host": "registry.example.test",
+            "username": "edge-pull",
+            "secret": "never-persisted",
+            "secret_fingerprint": "fp-1",
+            "version": 2,
+        },
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "registry_credential_audit_unavailable"
+    assert called is False
+    assert "never-persisted" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("audit_id", -1, "registry_credential_audit_invalid"),
+        ("transaction_id", "wrong", "registry_credential_transaction_invalid"),
+        ("version", -1, "registry_credential_version_invalid"),
+    ],
+)
+def test_registry_status_detects_invalid_atomic_protocol(field, value, reason):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    status = {
+        "status": "active",
+        "credential_id": "cred-1",
+        "registry_host": "registry.example.test",
+        "username": "edge-pull",
+        "secret_fingerprint": "fp-1",
+        "version": 2,
+        "transaction_id": "a" * 32,
+        "audit_id": 23,
+        "updated_at": "2026-08-19T00:00:00+00:00",
+    }
+    status[field] = value
+
+    class Writer:
+        async def status(self):
+            return status
+
+    response = _client(registry_writer=Writer()).get(
+        "/api/v1/ops/registry-credentials/status",
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert response.json()["reason"] == reason
 
 
 @pytest.mark.parametrize("failure", ["writer", "binding"])
-def test_registry_refresh_never_updates_legacy_state_before_root_auth_succeeds(
-    tmp_path: Path,
+def test_registry_refresh_reports_root_writer_failure_without_secret_disclosure(
+    monkeypatch,
     failure: str,
 ):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
-    docker_config = tmp_path / "registry" / "config.json"
-    status = tmp_path / "registry" / "status.json"
-    settings.REGISTRY_DOCKER_CONFIG_PATH = str(docker_config)
-    settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(status)
+
+    async def write_audit(**_kwargs):
+        return 23
+
+    monkeypatch.setattr(ops_module, "write_audit", write_audit)
 
     class Writer:
         async def install(self, payload):
@@ -212,7 +302,11 @@ def test_registry_refresh_never_updates_legacy_state_before_root_auth_succeeds(
                 key: value
                 for key, value in payload.items()
                 if key != "secret"
-            } | {"registry_host": "wrong.example.test"}
+            } | {
+                "status": "active",
+                "registry_host": "wrong.example.test",
+                "updated_at": "2026-08-19T00:00:00+00:00",
+            }
 
     response = _client(registry_writer=Writer()).post(
         "/api/v1/ops/registry-credentials/refresh",
@@ -228,18 +322,13 @@ def test_registry_refresh_never_updates_legacy_state_before_root_auth_succeeds(
     )
 
     assert response.status_code in {502, 503}
-    assert not docker_config.exists()
-    assert not status.exists()
     assert "never-persisted" not in response.text
 
 
-def test_ota_start_requires_registry_credential_status(tmp_path: Path):
+def test_ota_start_requires_registry_credential_status():
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
-    settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(tmp_path / "missing-status.json")
-    settings.REGISTRY_DOCKER_CONFIG_PATH = str(tmp_path / "missing-config.json")
-
-    resp = _client().post(
+    resp = _client(registry_writer=_MissingRegistryWriter()).post(
         "/api/v1/ops/ota/start",
         json={"operation_id": "a" * 32},
         headers={"X-API-Key": "admin-1"},
@@ -397,8 +486,6 @@ def test_preflight_check_ota_requires_registry_credential(tmp_path: Path, monkey
     settings.API_KEY_HEADER = "X-API-Key"
     settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
     settings.LICENSE_TRUST_POLICY_PATH = str(_write_trust_policy(tmp_path / "license-trust"))
-    settings.REGISTRY_DOCKER_CONFIG_PATH = str(tmp_path / "registry" / "config.json")
-    settings.REGISTRY_CREDENTIAL_STATUS_PATH = str(tmp_path / "registry" / "status.json")
     Path(settings.LICENSE_FILE_PATH).write_text("{}", encoding="utf-8")
     device_json = tmp_path / "device.json"
     _write_device_identity(device_json)
@@ -421,7 +508,7 @@ def test_preflight_check_ota_requires_registry_credential(tmp_path: Path, monkey
 
     monkeypatch.setattr(ops_module, "record_preflight_run", fake_record_preflight_run)
 
-    resp = _client().post(
+    resp = _client(registry_writer=_MissingRegistryWriter()).post(
         "/api/v1/ops/preflight",
         json={"strict": False, "check_ota": True},
         headers={"X-API-Key": "admin-1"},

@@ -331,9 +331,10 @@ def test_guard_against_an_isolated_real_docker_daemon():
     assert result.returncode == 0, result.stderr
     assert (
         "self-dockerd=1 installer=exact initializer=signed-pair refresh=live-edge-api "
-        "private-pull=authenticated-tls ota-apply=public-entrypoint "
-        "local-auth=missing,malformed path-context=refused tool-content=refused "
-        "ancestor=refused daemon=refused socket=refused"
+        "audit=bound private-pull=authenticated-tls ota-apply=public-entrypoint "
+        "local-auth=missing,malformed legacy-cache=absent path-context=refused "
+        "tool-content=refused ancestor=refused daemon=refused "
+        "socket-fd=pinned socket=refused"
         in result.stdout
     )
 
@@ -349,6 +350,10 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     assert "_assert_fresh_install" not in source
     assert "host_release_engine.HostReleaseEngine" not in source
     assert "cat >\"${compose_file}\"" not in source
+    assert "os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW" in source
+    assert '"DOCKER_HOST": f"unix:///proc/self/fd/{descriptor}"' in source
+    assert "legacy business-container registry secret cache still exists" in source
+    assert "FROM operation_audit_logs WHERE id = ${audit_id}" in source
 
 
 @pytest.mark.parametrize(
