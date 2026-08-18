@@ -82,6 +82,12 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert "latest" not in postgres
     assert "type=cache" not in influxdb
     assert "type=cache" not in postgres
+    assert "GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct" in influxdb
+    assert "GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct" in postgres
+    assert "GOSUMDB=sum.golang.org" in influxdb
+    assert "GOSUMDB=sum.golang.org" in postgres
+    assert "GOSUMDB=off" not in influxdb
+    assert "GOSUMDB=off" not in postgres
 
 
 def test_release_builder_is_complete_and_completion_is_last():

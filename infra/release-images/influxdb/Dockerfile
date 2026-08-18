@@ -27,7 +27,7 @@ RUN retry() { \
     && tar -xzf /tmp/influxdb-openapi.tar.gz -C /tmp/influxdb-openapi --strip-components=1 \
     && cp /tmp/influxdb-openapi/contracts/oss.json static/data/swagger.json \
     && test "$(go env GOVERSION)" = "go1.25.10" \
-    && retry env GOTOOLCHAIN=local go get \
+    && retry env 'GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct' GOSUMDB=sum.golang.org GOTOOLCHAIN=local go get \
         github.com/buger/jsonparser@v1.1.2 \
         github.com/go-jose/go-jose/v4@v4.1.4 \
         go.opentelemetry.io/otel@v1.43.0 \
@@ -38,7 +38,7 @@ RUN retry() { \
         golang.org/x/sys@v0.42.0 \
     && echo 'd19700fce30d9aa15c96cefa0eb1db44330fd4526930cf5dedd860fe6b3b554b  go.mod' | sha256sum -c - \
     && echo '50258d1b217e18c5154c40fc0aaf79238e11872cbf31a0830214d79e891fce61  go.sum' | sha256sum -c - \
-    && retry env GOTOOLCHAIN=local go mod download \
+    && retry env 'GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct' GOSUMDB=sum.golang.org GOTOOLCHAIN=local go mod download \
     && GOTOOLCHAIN=local go generate ./static
 
 RUN export CC="$(xcc linux x86_64)" \
@@ -74,13 +74,13 @@ RUN retry() { \
     && tar -xzf /tmp/dasel.tar.gz -C /src/dasel --strip-components=1 \
     && test "$(go env GOVERSION)" = "go1.25.10" \
     && cd /src/influx-cli \
-    && retry env GOTOOLCHAIN=local go mod download \
+    && retry env 'GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct' GOSUMDB=sum.golang.org GOTOOLCHAIN=local go mod download \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local go build \
         -trimpath -buildvcs=false \
         -ldflags "-s -w -X main.version=2.8.0 -X main.commit=8cdf40161d7662e942582086853fca948fc1a842 -X main.date=2026-04-22T18:55:12Z" \
         -o /out/influx ./cmd/influx \
     && cd /src/dasel \
-    && retry env GOTOOLCHAIN=local go mod download \
+    && retry env 'GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct' GOSUMDB=sum.golang.org GOTOOLCHAIN=local go mod download \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local go build \
         -trimpath -buildvcs=false \
         -ldflags "-s -w -X github.com/tomwright/dasel/v3/internal.Version=v3.10.1" \

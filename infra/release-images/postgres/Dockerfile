@@ -16,7 +16,7 @@ RUN retry() { \
     }; \
     tar -xzf /tmp/gosu.tar.gz --strip-components=1 \
     && test "$(go env GOVERSION)" = "go1.25.10" \
-    && retry env GOTOOLCHAIN=local go mod download \
+    && retry env 'GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct' GOSUMDB=sum.golang.org GOTOOLCHAIN=local go mod download \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local go build \
         -trimpath -buildvcs=false -ldflags "-s -w" -o /out/gosu .
 
