@@ -9,8 +9,11 @@ FROM quay.io/influxdb/cross-builder@sha256:af550a559d42095b3cec8ccfdea614ac2364d
 COPY --from=rust-host-toolchain /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-gnu /opt/rust-toolchain
 COPY --from=rust-musl-target /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl /opt/rust-toolchain/lib/rustlib/x86_64-unknown-linux-musl
 COPY infra/release-images/influxdb/cargo-vendor-v0.200.0.tar.gz /tmp/cargo-vendor.tar.gz
+COPY infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz /tmp/influxdb-ui.tar.gz
 
 RUN echo 'deabeee4a940f709b56556632c1fc56abdcd21a6f6b4c54f15308aa182ce8a4f  /tmp/cargo-vendor.tar.gz' | sha256sum -c - \
+    && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c - \
+    && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
     && mkdir -p /opt/cargo-vendor \
     && tar -xzf /tmp/cargo-vendor.tar.gz -C /opt/cargo-vendor \
     && test "$(find /opt/cargo-vendor -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 188 \
@@ -37,27 +40,7 @@ RUN retry() { \
             sleep 10; \
         done; \
     }; \
-    download_ui() { \
-        rm -f /tmp/influxdb-ui.tar.gz; \
-        if curl --fail --location --proto '=https' --proto-redir '=https' --max-redirs 3 \
-            --connect-timeout 15 --max-time 90 \
-            --retry 1 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
-            --max-filesize 20000000 --output /tmp/influxdb-ui.tar.gz \
-            https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
-            && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
-            && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c -; then \
-            return 0; \
-        fi; \
-        rm -f /tmp/influxdb-ui.tar.gz; \
-        curl --fail --proto '=https' --connect-timeout 15 --max-time 180 \
-            --retry 1 --retry-all-errors --retry-delay 2 --retry-max-time 240 \
-            --max-filesize 20000000 --output /tmp/influxdb-ui.tar.gz \
-            https://ghproxy.net/https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
-            && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
-            && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c -; \
-    }; \
-    download_ui \
-    && tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
+    tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
     && mkdir -p static/data /tmp/influxdb-openapi \
     && tar -xzf /tmp/influxdb-ui.tar.gz -C static/data \
     && tar -xzf /tmp/influxdb-openapi.tar.gz -C /tmp/influxdb-openapi --strip-components=1 \

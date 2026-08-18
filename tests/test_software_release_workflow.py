@@ -98,15 +98,11 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert "d4fa1941fd4adb29a556e774de426dfbab72f346" in influxdb
     assert "0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f" in influxdb
     ui_source = "https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz"
-    ui_mirror = f"https://ghproxy.net/{ui_source}"
-    assert influxdb.index(ui_source) < influxdb.index(ui_mirror)
-    assert "curl --fail --location --proto '=https' --proto-redir '=https' --max-redirs 3" in influxdb
-    assert "curl --fail --proto '=https' --connect-timeout 15 --max-time 180" in influxdb
-    assert influxdb.count("--location") == 1
-    assert influxdb.count("--max-filesize 20000000") == 2
-    assert influxdb.count("--retry-max-time") == 2
+    assert "COPY infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz" in influxdb
     assert "9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz" in influxdb
-    assert "sha256sum -c -; \\\n    }; \\" in influxdb
+    assert 'test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077' in influxdb
+    assert ui_source not in influxdb
+    assert "ghproxy.net" not in influxdb
     assert "github.com/buger/jsonparser@v1.1.2" in influxdb
     assert "github.com/go-jose/go-jose/v4@v4.1.4" in influxdb
     assert "go.opentelemetry.io/otel/sdk@v1.43.0" in influxdb
@@ -183,6 +179,35 @@ def test_influxdb_rust_dependencies_are_checksum_pinned_and_offline():
     assert provenance["flux_source"]["cargo_lock_sha256"] in dockerfile
     assert "static.crates.io" not in dockerfile
     assert "CARGO_NET_OFFLINE=false" not in dockerfile
+
+
+def test_influxdb_ui_asset_is_checksum_pinned_and_offline():
+    dockerfile = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
+    archive = ROOT / "infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz"
+    provenance = json.loads(
+        (ROOT / "infra/release-images/influxdb/ui-oss-v2.9.0.provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    expected_sha256 = "9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e"
+
+    assert archive.stat().st_size == 19844077
+    with archive.open("rb") as handle:
+        assert hashlib.file_digest(handle, "sha256").hexdigest() == expected_sha256
+    assert provenance == {
+        "schema_version": 1,
+        "source_release": "OSS-v2.9.0",
+        "source_url": "https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz",
+        "archive": {
+            "path": archive.name,
+            "size_bytes": 19844077,
+            "sha256": expected_sha256,
+        },
+    }
+    assert "COPY infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz" in dockerfile
+    assert expected_sha256 in dockerfile
+    assert provenance["source_url"] not in dockerfile
+    assert "ghproxy.net" not in dockerfile
 
 
 def test_release_builder_is_complete_and_completion_is_last():
