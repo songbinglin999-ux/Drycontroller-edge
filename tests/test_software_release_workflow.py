@@ -9,6 +9,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER_DIR = ROOT / "infra/ota-helper"
+ALERTMANAGER_IMAGE = (
+    "prom/alertmanager:v0.33.1@"
+    "sha256:a89f8d4520954079275441eecdb71444328bd90633dd4eddfc33b9ed657f349b"
+)
+
+
+def test_alertmanager_image_is_pinned_consistently_for_runtime_and_release():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    release_builder = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
+
+    assert f"image: {ALERTMANAGER_IMAGE}" in compose
+    assert f'alertmanager) printf \'%s\\n\' "{ALERTMANAGER_IMAGE}" ;;' in release_builder
+    assert "prom/alertmanager:v0.27.0" not in compose
+    assert "prom/alertmanager:v0.27.0" not in release_builder
 
 
 def test_release_builder_is_complete_and_completion_is_last():
