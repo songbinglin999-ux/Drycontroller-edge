@@ -8,6 +8,18 @@ FROM quay.io/influxdb/cross-builder@sha256:af550a559d42095b3cec8ccfdea614ac2364d
 
 COPY --from=rust-host-toolchain /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-gnu /opt/rust-toolchain
 COPY --from=rust-musl-target /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl /opt/rust-toolchain/lib/rustlib/x86_64-unknown-linux-musl
+COPY infra/release-images/influxdb/cargo-vendor-v0.200.0.tar.gz /tmp/cargo-vendor.tar.gz
+
+RUN echo 'deabeee4a940f709b56556632c1fc56abdcd21a6f6b4c54f15308aa182ce8a4f  /tmp/cargo-vendor.tar.gz' | sha256sum -c - \
+    && mkdir -p /opt/cargo-vendor \
+    && tar -xzf /tmp/cargo-vendor.tar.gz -C /opt/cargo-vendor \
+    && test "$(find /opt/cargo-vendor -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 188 \
+    && grep -F '"package":"2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"' \
+        /opt/cargo-vendor/libc-0.2.177/.cargo-checksum.json \
+    && printf '\n[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "/opt/cargo-vendor"\n' \
+        >> /root/.cargo/config
+
+ENV CARGO_NET_OFFLINE=true
 
 WORKDIR /src
 ADD --checksum=sha256:0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f \
@@ -63,6 +75,7 @@ RUN retry() { \
     && echo 'd19700fce30d9aa15c96cefa0eb1db44330fd4526930cf5dedd860fe6b3b554b  go.mod' | sha256sum -c - \
     && echo '50258d1b217e18c5154c40fc0aaf79238e11872cbf31a0830214d79e891fce61  go.sum' | sha256sum -c - \
     && retry env 'GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct' GOSUMDB=sum.golang.org GOTOOLCHAIN=local go mod download \
+    && echo '04184b5eaaf27711adbcef4023bf89183c6f5c249701bc10e94c6dea82230175  /go/pkg/mod/github.com/influxdata/flux@v0.200.0/libflux/Cargo.lock' | sha256sum -c - \
     && GOTOOLCHAIN=local go generate ./static
 
 RUN export CC="$(xcc linux x86_64)" \

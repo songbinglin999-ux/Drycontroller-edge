@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -124,6 +125,58 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert "GOSUMDB=sum.golang.org" in postgres
     assert "GOSUMDB=off" not in influxdb
     assert "GOSUMDB=off" not in postgres
+
+
+def test_influxdb_rust_dependencies_are_checksum_pinned_and_offline():
+    dockerfile = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
+    archive = ROOT / "infra/release-images/influxdb/cargo-vendor-v0.200.0.tar.gz"
+    provenance = json.loads(
+        (ROOT / "infra/release-images/influxdb/cargo-vendor-v0.200.0.provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    expected_archive_sha256 = "deabeee4a940f709b56556632c1fc56abdcd21a6f6b4c54f15308aa182ce8a4f"
+    with archive.open("rb") as handle:
+        assert hashlib.file_digest(handle, "sha256").hexdigest() == expected_archive_sha256
+
+    assert provenance["schema_version"] == 1
+    assert provenance["vendor_archive"] == {
+        "path": archive.name,
+        "registry_crate_count": 188,
+        "sha256": expected_archive_sha256,
+    }
+    assert provenance["flux_source"] == {
+        "cargo_lock_sha256": "04184b5eaaf27711adbcef4023bf89183c6f5c249701bc10e94c6dea82230175",
+        "go_module": "github.com/influxdata/flux",
+        "go_sum": "h1:r1KAmr0F0eZ3UV6p00HsJYRHbfCyF1ARA9lAwxD2VeM=",
+        "origin_commit": "b03b6bce7c27b8accc0cd00b12e32439a8fe19c3",
+        "origin_ref": "refs/tags/v0.200.0",
+        "origin_url": "https://github.com/influxdata/flux",
+        "version": "v0.200.0",
+    }
+    crates = provenance["registry_crates"]
+    assert len(crates) == 188
+    assert all(
+        crate["source"] == "registry+https://github.com/rust-lang/crates.io-index"
+        and re.fullmatch(r"[0-9a-f]{64}", crate["checksum"])
+        for crate in crates
+    )
+    assert {
+        "checksum": "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976",
+        "name": "libc",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "version": "0.2.177",
+    } in crates
+
+    assert "COPY infra/release-images/influxdb/cargo-vendor-v0.200.0.tar.gz" in dockerfile
+    assert expected_archive_sha256 in dockerfile
+    assert "ENV CARGO_NET_OFFLINE=true" in dockerfile
+    assert 'replace-with = "vendored-sources"' in dockerfile
+    assert 'directory = "/opt/cargo-vendor"' in dockerfile
+    assert provenance["flux_source"]["cargo_lock_sha256"] in dockerfile
+    assert "static.crates.io" not in dockerfile
+    assert "CARGO_NET_OFFLINE=false" not in dockerfile
 
 
 def test_release_builder_is_complete_and_completion_is_last():
