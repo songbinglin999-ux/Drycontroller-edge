@@ -12,7 +12,7 @@ x-ulimits: &default-ulimits
 services:
   # ==================== 数据库服务 ====================
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15.18-alpine3.24@sha256:cae15a3b718f23497a60b7cafdcf205216d7949680972da0584db00fb68bf3e6
     container_name: edge-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -35,7 +35,7 @@ services:
 
   # ==================== 时序数据库 ====================
   influxdb:
-    image: influxdb:2.7-alpine
+    image: influxdb:2.9.1-alpine@sha256:818eb972f70c4b6b04b8b952b9ef54480221d92f2ee9cadf8f73c180efa69ac7
     container_name: edge-influxdb
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
@@ -62,7 +62,7 @@ services:
   # ==================== MQTT Broker ====================
   # secrets 初始化（生成 /mosquitto/secret/passwords；证书由现场挂载到 /mosquitto/secret/certs）
   mosquitto-init:
-    image: eclipse-mosquitto:2.0
+    image: eclipse-mosquitto:2.0.22@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd
     container_name: edge-mosquitto-init
     networks:
       - edge-network
@@ -109,7 +109,7 @@ services:
     restart: "no"
 
   mosquitto:
-    image: eclipse-mosquitto:2.0
+    image: eclipse-mosquitto:2.0.22@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd
     container_name: edge-mosquitto
     volumes:
       - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
@@ -473,7 +473,7 @@ services:
 
   # ==================== Prometheus（指标采集/告警规则） ====================
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v3.13.0@sha256:0e698e35e50d1ddc2d11a4a55b089fe62eb71358a5c204dfafd21bdf8ffe04b8
     container_name: edge-prometheus
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro

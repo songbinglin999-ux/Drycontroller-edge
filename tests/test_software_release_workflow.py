@@ -13,6 +13,22 @@ ALERTMANAGER_IMAGE = (
     "prom/alertmanager:v0.33.1@"
     "sha256:a89f8d4520954079275441eecdb71444328bd90633dd4eddfc33b9ed657f349b"
 )
+INFLUXDB_BASE_IMAGE = (
+    "influxdb:2.9.1-alpine@"
+    "sha256:818eb972f70c4b6b04b8b952b9ef54480221d92f2ee9cadf8f73c180efa69ac7"
+)
+MOSQUITTO_IMAGE = (
+    "eclipse-mosquitto:2.0.22@"
+    "sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd"
+)
+POSTGRES_BASE_IMAGE = (
+    "postgres:15.18-alpine3.24@"
+    "sha256:cae15a3b718f23497a60b7cafdcf205216d7949680972da0584db00fb68bf3e6"
+)
+PROMETHEUS_IMAGE = (
+    "prom/prometheus:v3.13.0@"
+    "sha256:0e698e35e50d1ddc2d11a4a55b089fe62eb71358a5c204dfafd21bdf8ffe04b8"
+)
 
 
 def test_alertmanager_image_is_pinned_consistently_for_runtime_and_release():
@@ -23,6 +39,36 @@ def test_alertmanager_image_is_pinned_consistently_for_runtime_and_release():
     assert f'alertmanager) printf \'%s\\n\' "{ALERTMANAGER_IMAGE}" ;;' in release_builder
     assert "prom/alertmanager:v0.27.0" not in compose
     assert "prom/alertmanager:v0.27.0" not in release_builder
+
+
+def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    release_builder = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
+    influxdb = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
+    postgres = (ROOT / "infra/release-images/postgres/Dockerfile").read_text(encoding="utf-8")
+
+    for image in (INFLUXDB_BASE_IMAGE, MOSQUITTO_IMAGE, POSTGRES_BASE_IMAGE, PROMETHEUS_IMAGE):
+        assert f"image: {image}" in compose
+
+    assert f'mosquitto|mosquitto-init) printf \'%s\\n\' "{MOSQUITTO_IMAGE}" ;;' in release_builder
+    assert f'prometheus) printf \'%s\\n\' "{PROMETHEUS_IMAGE}" ;;' in release_builder
+    assert 'influxdb) printf \'%s\\n\' "infra/release-images/influxdb/Dockerfile" ;;' in release_builder
+    assert 'postgres) printf \'%s\\n\' "infra/release-images/postgres/Dockerfile" ;;' in release_builder
+    assert "influxdb) printf" not in release_builder.split("source_image_for()", 1)[1].split("}", 1)[0]
+    assert "postgres) printf" not in release_builder.split("source_image_for()", 1)[1].split("}", 1)[0]
+
+    assert f"FROM {INFLUXDB_BASE_IMAGE}" in influxdb
+    assert "d4fa1941fd4adb29a556e774de426dfbab72f346" in influxdb
+    assert "0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f" in influxdb
+    assert "github.com/buger/jsonparser@v1.1.2" in influxdb
+    assert "github.com/go-jose/go-jose/v4@v4.1.4" in influxdb
+    assert "go.opentelemetry.io/otel/sdk@v1.43.0" in influxdb
+    assert "8cdf40161d7662e942582086853fca948fc1a842" in influxdb
+    assert "e3c6663d78c62f69579d8f9afd00453dc3d01c29" in influxdb
+    assert f"FROM {POSTGRES_BASE_IMAGE}" in postgres
+    assert "6456aaa0f3c854d199d0f037f068eb97515b7513" in postgres
+    assert "latest" not in influxdb
+    assert "latest" not in postgres
 
 
 def test_release_builder_is_complete_and_completion_is_last():

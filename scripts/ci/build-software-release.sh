@@ -242,10 +242,16 @@ PY
 source_image_for() {
   case "$1" in
     alertmanager) printf '%s\n' "prom/alertmanager:v0.33.1@sha256:a89f8d4520954079275441eecdb71444328bd90633dd4eddfc33b9ed657f349b" ;;
-    influxdb) printf '%s\n' "influxdb:2.7-alpine" ;;
-    mosquitto|mosquitto-init) printf '%s\n' "eclipse-mosquitto:2.0" ;;
-    postgres) printf '%s\n' "postgres:15-alpine" ;;
-    prometheus) printf '%s\n' "prom/prometheus:v2.53.0" ;;
+    mosquitto|mosquitto-init) printf '%s\n' "eclipse-mosquitto:2.0.22@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd" ;;
+    prometheus) printf '%s\n' "prom/prometheus:v3.13.0@sha256:0e698e35e50d1ddc2d11a4a55b089fe62eb71358a5c204dfafd21bdf8ffe04b8" ;;
+    *) return 1 ;;
+  esac
+}
+
+release_dockerfile_for() {
+  case "$1" in
+    influxdb) printf '%s\n' "infra/release-images/influxdb/Dockerfile" ;;
+    postgres) printf '%s\n' "infra/release-images/postgres/Dockerfile" ;;
     *) return 1 ;;
   esac
 }
@@ -253,8 +259,16 @@ source_image_for() {
 release_step_build_or_mirror() {
   local service="$1"
   local target="$2"
+  local dockerfile=""
   local source_image=""
-  if source_image="$(source_image_for "${service}")"; then
+  if dockerfile="$(release_dockerfile_for "${service}")"; then
+    DOCKER_BUILDKIT=1 docker build \
+      --platform linux/amd64 \
+      --no-cache \
+      --file "${dockerfile}" \
+      --tag "${target}" \
+      .
+  elif source_image="$(source_image_for "${service}")"; then
     docker pull --platform linux/amd64 "${source_image}"
     docker tag "${source_image}" "${target}"
   else
