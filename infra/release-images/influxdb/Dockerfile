@@ -18,10 +18,26 @@ RUN retry() { \
             sleep 10; \
         done; \
     }; \
-    curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
-        --output /tmp/influxdb-ui.tar.gz \
-        https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
-    && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c - \
+    download_ui() { \
+        rm -f /tmp/influxdb-ui.tar.gz; \
+        if curl --fail --location --proto '=https' --proto-redir '=https' --max-redirs 3 \
+            --connect-timeout 15 --max-time 90 \
+            --retry 1 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
+            --max-filesize 20000000 --output /tmp/influxdb-ui.tar.gz \
+            https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
+            && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
+            && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c -; then \
+            return 0; \
+        fi; \
+        rm -f /tmp/influxdb-ui.tar.gz; \
+        curl --fail --proto '=https' --connect-timeout 15 --max-time 180 \
+            --retry 1 --retry-all-errors --retry-delay 2 --retry-max-time 240 \
+            --max-filesize 20000000 --output /tmp/influxdb-ui.tar.gz \
+            https://ghproxy.net/https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
+            && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
+            && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c -; \
+    }; \
+    download_ui \
     && tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
     && mkdir -p static/data /tmp/influxdb-openapi \
     && tar -xzf /tmp/influxdb-ui.tar.gz -C static/data \
