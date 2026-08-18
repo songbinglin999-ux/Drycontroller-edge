@@ -497,7 +497,7 @@ services:
 
   # ==================== Alertmanager（告警聚合/查询） ====================
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.33.1@sha256:a89f8d4520954079275441eecdb71444328bd90633dd4eddfc33b9ed657f349b
     container_name: edge-alertmanager
     volumes:
       - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro

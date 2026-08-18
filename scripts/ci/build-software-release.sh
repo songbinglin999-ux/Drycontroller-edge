@@ -241,7 +241,7 @@ PY
 
 source_image_for() {
   case "$1" in
-    alertmanager) printf '%s\n' "prom/alertmanager:v0.27.0" ;;
+    alertmanager) printf '%s\n' "prom/alertmanager:v0.33.1@sha256:a89f8d4520954079275441eecdb71444328bd90633dd4eddfc33b9ed657f349b" ;;
     influxdb) printf '%s\n' "influxdb:2.7-alpine" ;;
     mosquitto|mosquitto-init) printf '%s\n' "eclipse-mosquitto:2.0" ;;
     postgres) printf '%s\n' "postgres:15-alpine" ;;
