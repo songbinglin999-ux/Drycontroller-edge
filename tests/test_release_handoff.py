@@ -652,7 +652,7 @@ def test_release_workflows_pin_current_actions_and_separate_key_export_from_pair
     assert "secrets.REPO_WRITE_TOKEN" in paired
     assert "secrets.REPO_WRITE_TOKEN" in recovery
     assert "secrets.GITEA_TOKEN" not in public_keys + paired + recovery
-    approved_product_source = "95296d2a152be621188739aa6b56f2eb29c21dfe"
+    approved_product_source = "4ba671d4b8ae6e9449b8c64a279194359e4f0598"
     for workflow in (public_keys, paired, recovery):
         assert "secrets.RB8_EDGE_APPROVED_WORKFLOW_SHA" in workflow
         assert '"${GITHUB_SHA}" == "${RB8_EDGE_APPROVED_WORKFLOW_SHA}"' in workflow
