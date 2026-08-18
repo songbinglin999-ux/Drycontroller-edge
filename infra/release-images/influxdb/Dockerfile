@@ -85,8 +85,8 @@ RUN export CC="$(xcc linux x86_64)" \
     && export RUSTC="${RUST_TOOLCHAIN_ROOT}/bin/rustc" \
     && test "$(rustc --version)" = "rustc 1.83.0 (90b35a623 2024-11-26)" \
     && test "$(cargo --version)" = "cargo 1.83.0 (5ffbef321 2024-10-29)" \
-    && RUSTLIB_PATH="${RUST_TOOLCHAIN_ROOT}/lib/rustlib/x86_64-unknown-linux-musl/lib" \
-    && test -d "${RUSTLIB_PATH}" \
+    && RUSTLIB_PATH="${RUST_TOOLCHAIN_ROOT}/lib/rustlib/x86_64-unknown-linux-musl/lib/self-contained" \
+    && test -f "${RUSTLIB_PATH}/libunwind.a" \
     && CGO_ENABLED=1 PKG_CONFIG="$(command -v pkg-config)" GOTOOLCHAIN=local go build \
         -tags assets,sqlite_foreign_keys,sqlite_json,static_build,noasm \
         -buildmode=pie \

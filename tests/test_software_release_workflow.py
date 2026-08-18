@@ -84,6 +84,12 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert 'PATH="${RUST_TOOLCHAIN_ROOT}/bin:${PATH}"' in influxdb
     assert 'test "$(rustc --version)" = "rustc 1.83.0 (90b35a623 2024-11-26)"' in influxdb
     assert 'test "$(cargo --version)" = "cargo 1.83.0 (5ffbef321 2024-10-29)"' in influxdb
+    assert (
+        'RUSTLIB_PATH="${RUST_TOOLCHAIN_ROOT}/lib/rustlib/'
+        'x86_64-unknown-linux-musl/lib/self-contained"'
+        in influxdb
+    )
+    assert 'test -f "${RUSTLIB_PATH}/libunwind.a"' in influxdb
     assert "find_rustlib_path" not in influxdb
     assert influxdb.startswith(
         "# syntax=docker/dockerfile:1.7@"
