@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -29,6 +31,10 @@ _INSTALL_LOCK = threading.Lock()
 
 class RegistryAuthError(ValueError):
     pass
+
+
+def _secret_fingerprint(secret: bytes) -> str:
+    return hashlib.sha256(secret).hexdigest()[:16]
 
 
 def _normalize_registry(value: object) -> str:
@@ -74,7 +80,9 @@ def normalize_payload(payload: object) -> dict[str, Any]:
         or len(credential_id) > 256
         or len(username.encode("utf-8")) > 1024
         or len(secret.encode("utf-8")) > 3072
-        or len(fingerprint) > 256
+        or not hmac.compare_digest(
+            fingerprint, _secret_fingerprint(secret.encode("utf-8"))
+        )
         or _TRANSACTION_ID.fullmatch(transaction_id) is None
         or isinstance(audit_id, bool)
         or not isinstance(audit_id, int)
@@ -181,18 +189,25 @@ def _credential_status(document: object) -> dict[str, Any]:
         bound_username = username.decode("utf-8")
     except (UnicodeDecodeError, ValueError) as exc:
         raise RegistryAuthError("registry auth document invalid") from exc
-    if separator != b":" or not secret or bound_username != credential["username"]:
+    if (
+        separator != b":"
+        or not secret
+        or bound_username != credential["username"]
+        or not hmac.compare_digest(
+            credential["secret_fingerprint"], _secret_fingerprint(secret)
+        )
+    ):
         raise RegistryAuthError("registry auth document invalid")
     return dict(credential)
 
 
-def read_registry_status(*, path: Path = AUTH_PATH) -> dict[str, Any]:
+def _read_registry_document(path: Path) -> dict[str, Any] | None:
     descriptor = -1
     try:
         _validate_parent(path)
         metadata = path.lstat()
     except FileNotFoundError:
-        return {"status": "missing"}
+        return None
     except OSError as exc:
         raise RegistryAuthError("registry auth status unavailable") from exc
     try:
@@ -210,7 +225,8 @@ def read_registry_status(*, path: Path = AUTH_PATH) -> dict[str, Any]:
         ):
             raise RegistryAuthError("registry auth status unavailable")
         document = json.loads(raw)
-        return _credential_status(document)
+        _credential_status(document)
+        return document
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RegistryAuthError) as exc:
         raise RegistryAuthError("registry auth status unavailable") from exc
     finally:
@@ -218,12 +234,19 @@ def read_registry_status(*, path: Path = AUTH_PATH) -> dict[str, Any]:
             os.close(descriptor)
 
 
+def read_registry_status(*, path: Path = AUTH_PATH) -> dict[str, Any]:
+    document = _read_registry_document(path)
+    if document is None:
+        return {"status": "missing"}
+    return _credential_status(document)
+
+
 def install_registry_auth(payload: object, *, path: Path = AUTH_PATH) -> dict[str, Any]:
     normalized = normalize_payload(payload)
     auth = base64.b64encode(
         f"{normalized['username']}:{normalized['secret']}".encode("utf-8")
     ).decode("ascii")
-    status = {
+    status_fields = {
         "status": "active",
         "credential_id": normalized["credential_id"],
         "registry_host": normalized["registry_host"],
@@ -232,21 +255,39 @@ def install_registry_auth(payload: object, *, path: Path = AUTH_PATH) -> dict[st
         "version": normalized["version"],
         "transaction_id": normalized["transaction_id"],
         "audit_id": normalized["audit_id"],
-        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
-    encoded = json.dumps(
-        {
-            "schema": DOCUMENT_SCHEMA,
-            "auths": {normalized["registry_host"]: {"auth": auth}},
-            "credential": status,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
     temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
     with _INSTALL_LOCK:
         _validate_parent(path)
         _validate_existing(path)
+        existing = _read_registry_document(path)
+        if existing is not None:
+            existing_status = _credential_status(existing)
+            existing_version = existing_status["version"]
+            if normalized["version"] < existing_version:
+                raise RegistryAuthError("registry auth version rollback refused")
+            if normalized["version"] == existing_version:
+                expected = {
+                    "schema": DOCUMENT_SCHEMA,
+                    "auths": {normalized["registry_host"]: {"auth": auth}},
+                    "credential": {**status_fields, "updated_at": existing_status["updated_at"]},
+                }
+                if existing == expected:
+                    return existing_status
+                raise RegistryAuthError("registry auth version conflict")
+        status = {
+            **status_fields,
+            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        encoded = json.dumps(
+            {
+                "schema": DOCUMENT_SCHEMA,
+                "auths": {normalized["registry_host"]: {"auth": auth}},
+                "credential": status,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         descriptor = -1
         try:
             descriptor = os.open(

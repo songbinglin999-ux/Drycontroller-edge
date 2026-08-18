@@ -59,7 +59,7 @@ def _registry_document(registry: str) -> dict:
             "credential_id": "cred-1",
             "registry_host": registry,
             "username": "reader",
-            "secret_fingerprint": "fp-1",
+            "secret_fingerprint": hashlib.sha256(b"secret").hexdigest()[:16],
             "version": 2,
             "transaction_id": "a" * 32,
             "audit_id": 17,

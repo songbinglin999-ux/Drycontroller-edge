@@ -176,7 +176,7 @@ def _registry_document(auths: dict | None = None) -> dict:
             "credential_id": "cred-1",
             "registry_host": REGISTRY,
             "username": "reader",
-            "secret_fingerprint": "fp-1",
+            "secret_fingerprint": hashlib.sha256(b"secret").hexdigest()[:16],
             "version": 2,
             "transaction_id": "a" * 32,
             "audit_id": 17,
@@ -1345,6 +1345,15 @@ def test_host_root_auth_rejects_incomplete_atomic_status(tmp_path, monkeypatch, 
     auth = base64.b64encode(b"reader:secret").decode("ascii")
     document = _registry_document({REGISTRY: {"auth": auth}})
     document["credential"][field] = value
+    _configure_root_docker_auth(tmp_path, monkeypatch, document)
+
+    with pytest.raises(HostReleaseError, match="schema"):
+        host_release_engine._read_registry_auth_source()
+
+
+def test_host_root_auth_rejects_secret_fingerprint_tampering(tmp_path, monkeypatch):
+    auth = base64.b64encode(b"reader:different-secret").decode("ascii")
+    document = _registry_document({REGISTRY: {"auth": auth}})
     _configure_root_docker_auth(tmp_path, monkeypatch, document)
 
     with pytest.raises(HostReleaseError, match="schema"):

@@ -721,12 +721,16 @@ def _read_registry_auth_document(path: Path | None = None) -> tuple[dict[str, An
     ):
         raise HostReleaseError("root registry auth source schema invalid")
     try:
-        bound_username = base64.b64decode(
+        bound = base64.b64decode(
             normalized[credential["registry_host"]]["auth"], validate=True
-        ).partition(b":")[0].decode("utf-8")
+        ).partition(b":")
+        bound_username = bound[0].decode("utf-8")
+        bound_fingerprint = hashlib.sha256(bound[2]).hexdigest()[:16]
     except (UnicodeDecodeError, binascii.Error, ValueError) as exc:
         raise HostReleaseError("root registry auth source schema invalid") from exc
-    if bound_username != credential["username"]:
+    if bound_username != credential["username"] or not hmac.compare_digest(
+        bound_fingerprint, credential["secret_fingerprint"]
+    ):
         raise HostReleaseError("root registry auth source schema invalid")
     return {"auths": normalized}, dict(credential)
 

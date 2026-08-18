@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,14 +22,18 @@ from registry_auth_writer import (  # noqa: E402
 )
 
 
-def _payload(secret: str = "private-value") -> dict[str, object]:
+def _fingerprint(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
+
+
+def _payload(secret: str = "private-value", *, version: int = 3) -> dict[str, object]:
     return {
         "credential_id": "cred-1",
         "registry_host": "https://registry.example.test/",
         "username": "edge-pull",
         "secret": secret,
-        "secret_fingerprint": "fp-1",
-        "version": 3,
+        "secret_fingerprint": _fingerprint(secret),
+        "version": version,
         "transaction_id": "a" * 32,
         "audit_id": 17,
     }
@@ -44,7 +49,7 @@ def test_atomic_root_auth_update_replaces_the_complete_document(tmp_path: Path):
     destination = _destination(tmp_path)
     first = install_registry_auth(_payload("first-secret"), path=destination)
     first_inode = destination.stat().st_ino
-    second = install_registry_auth(_payload("second-secret"), path=destination)
+    second = install_registry_auth(_payload("second-secret", version=4), path=destination)
 
     assert first["credential_id"] == second["credential_id"] == "cred-1"
     assert first["transaction_id"] == second["transaction_id"] == "a" * 32
@@ -112,7 +117,7 @@ def test_failed_atomic_replace_retains_previous_auth_and_removes_temporary_file(
 
     monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(RegistryAuthError, match="update failed") as caught:
-        install_registry_auth(_payload("new-secret"), path=destination)
+        install_registry_auth(_payload("new-secret", version=4), path=destination)
 
     assert "new-secret" not in str(caught.value)
     assert destination.read_bytes() == before
@@ -124,3 +129,100 @@ def test_missing_status_is_explicit_and_contains_no_secret(tmp_path: Path):
 
     assert status == {"status": "missing"}
     assert "secret" not in json.dumps(status)
+
+
+def test_claimed_fingerprint_must_match_actual_secret_and_never_replace_active_auth(
+    tmp_path: Path,
+):
+    destination = _destination(tmp_path)
+    installed = install_registry_auth(_payload("old-secret", version=5), path=destination)
+    before = destination.read_bytes()
+    payload = _payload("different-secret", version=4)
+    payload["secret_fingerprint"] = _fingerprint("old-secret")
+
+    with pytest.raises(RegistryAuthError, match="payload invalid"):
+        install_registry_auth(payload, path=destination)
+
+    assert destination.read_bytes() == before
+    assert read_registry_status(path=destination) == installed
+
+
+def test_lower_version_cannot_replace_active_auth(tmp_path: Path):
+    destination = _destination(tmp_path)
+    installed = install_registry_auth(_payload("old-secret", version=5), path=destination)
+    before = destination.read_bytes()
+
+    with pytest.raises(RegistryAuthError, match="version rollback"):
+        install_registry_auth(_payload("different-secret", version=4), path=destination)
+
+    assert destination.read_bytes() == before
+    assert read_registry_status(path=destination) == installed
+
+
+def test_same_version_different_secret_is_refused(tmp_path: Path):
+    destination = _destination(tmp_path)
+    installed = install_registry_auth(_payload("old-secret", version=5), path=destination)
+    before = destination.read_bytes()
+
+    with pytest.raises(RegistryAuthError, match="version conflict"):
+        install_registry_auth(_payload("different-secret", version=5), path=destination)
+
+    assert destination.read_bytes() == before
+    assert read_registry_status(path=destination) == installed
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("credential_id", "cred-2"),
+        ("username", "other-reader"),
+        ("transaction_id", "b" * 32),
+        ("audit_id", 18),
+    ],
+)
+def test_same_version_different_metadata_is_refused(tmp_path: Path, field: str, value: object):
+    destination = _destination(tmp_path)
+    payload = _payload("old-secret", version=5)
+    installed = install_registry_auth(payload, path=destination)
+    before = destination.read_bytes()
+    replacement = _payload("old-secret", version=5)
+    replacement[field] = value
+
+    with pytest.raises(RegistryAuthError, match="version conflict"):
+        install_registry_auth(replacement, path=destination)
+
+    assert destination.read_bytes() == before
+    assert read_registry_status(path=destination) == installed
+
+
+def test_exact_same_version_request_is_idempotent(tmp_path: Path):
+    destination = _destination(tmp_path)
+    payload = _payload("same-secret", version=5)
+    first = install_registry_auth(payload, path=destination)
+    before = destination.read_bytes()
+    inode = destination.stat().st_ino
+
+    second = install_registry_auth(payload, path=destination)
+
+    assert second == first
+    assert destination.read_bytes() == before
+    assert destination.stat().st_ino == inode
+
+
+@pytest.mark.parametrize("tamper", ["auth", "fingerprint"])
+def test_status_read_rejects_secret_fingerprint_tampering(tmp_path: Path, tamper: str):
+    destination = _destination(tmp_path)
+    install_registry_auth(_payload("old-secret", version=5), path=destination)
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    if tamper == "auth":
+        document["auths"]["registry.example.test"]["auth"] = base64.b64encode(
+            b"edge-pull:different-secret"
+        ).decode("ascii")
+    else:
+        document["credential"]["secret_fingerprint"] = _fingerprint("different-secret")
+    destination.chmod(0o600)
+    destination.write_text(json.dumps(document), encoding="utf-8")
+    destination.chmod(0o400)
+
+    with pytest.raises(RegistryAuthError, match="status unavailable"):
+        read_registry_status(path=destination)
