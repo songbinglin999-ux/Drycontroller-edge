@@ -55,6 +55,9 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     release_builder = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
     influxdb = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
     postgres = (ROOT / "infra/release-images/postgres/Dockerfile").read_text(encoding="utf-8")
+    validation = (ROOT / ".gitea/workflows/rb8-external-image-validation.yml").read_text(
+        encoding="utf-8"
+    )
 
     for image in (INFLUXDB_BASE_IMAGE, MOSQUITTO_IMAGE, POSTGRES_BASE_IMAGE, PROMETHEUS_IMAGE):
         assert f"image: {image}" in compose
@@ -121,6 +124,10 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert "latest" not in postgres
     assert "type=cache" not in influxdb
     assert "type=cache" not in postgres
+    assert "&& dasel version" in influxdb
+    assert "dasel --version" not in influxdb
+    assert '--entrypoint dasel "${INFLUX_TEST_IMAGE}" version' in validation
+    assert '--entrypoint dasel "${INFLUX_TEST_IMAGE}" --version' not in validation
     assert "GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct" in influxdb
     assert "GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct" in postgres
     assert "GOSUMDB=sum.golang.org" in influxdb

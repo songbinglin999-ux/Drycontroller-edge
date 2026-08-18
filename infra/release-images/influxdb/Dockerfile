@@ -121,4 +121,4 @@ COPY --from=tools-builder /out/dasel /usr/local/bin/dasel
 
 RUN influxd version \
     && influx version \
-    && dasel --version
+    && dasel version
