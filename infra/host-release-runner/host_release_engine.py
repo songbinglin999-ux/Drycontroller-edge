@@ -111,6 +111,8 @@ _REGISTRY = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$")
 _REPOSITORY_PATH = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$")
 _SERVICE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _DOCKER = "/usr/bin/docker"
+_DOCKER_COMPOSE = "/usr/libexec/docker/cli-plugins/docker-compose"
+_BASH = "/usr/bin/bash"
 _COSIGN = "/usr/local/bin/cosign"
 _IDENTITY_ROOT = Path("/opt/drycontroller-identity")
 _IDENTITY_SIGNER = "/opt/drycontroller-identity/venv/bin/python"
@@ -155,10 +157,12 @@ _FORBIDDEN_COMPOSE_KEYS = {
 }
 _MAX_JSON_BYTES = 1024 * 1024
 _MAX_LAYER_BYTES = 256 * 1024 * 1024
+_REGISTRY_AUTH_SOURCE = Path("/var/lib/drycontroller-ota/registry-auth.json")
+_DOCKER_CONFIG_PARENT = Path("/var/lib/drycontroller-ota")
 _FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    "DOCKER_CONFIG": "/etc/drycontroller/registry",
+    "DOCKER_HOST": "unix:///var/run/docker.sock",
     "COMPOSE_PROJECT_NAME": "drycontroller-edge",
 }
 
@@ -475,15 +479,18 @@ def _local_image_reference(service: str, image_id: str) -> str:
     return f"drycontroller.local/{service}:sha256-{image_id.removeprefix('sha256:')}"
 
 
-def _validate_docker_executable() -> None:
-    path = Path(_DOCKER)
+def _validate_trusted_executable(value: str, label: str) -> None:
+    path = Path(value)
     try:
         metadata = path.lstat()
         parent = path.parent.lstat()
+        resolved = path.resolve(strict=True)
     except OSError as exc:
-        raise HostReleaseError("fixed Docker executable unavailable") from exc
+        raise HostReleaseError(f"fixed {label} executable unavailable") from exc
     if (
-        not stat.S_ISREG(metadata.st_mode)
+        not path.is_absolute()
+        or resolved != path
+        or not stat.S_ISREG(metadata.st_mode)
         or metadata.st_uid != os.geteuid()
         or metadata.st_mode & 0o022
         or not metadata.st_mode & 0o111
@@ -491,7 +498,86 @@ def _validate_docker_executable() -> None:
         or parent.st_uid != os.geteuid()
         or parent.st_mode & 0o022
     ):
-        raise HostReleaseError("fixed Docker executable is untrusted")
+        raise HostReleaseError(f"fixed {label} executable is untrusted")
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _read_registry_auth_source() -> dict[str, Any]:
+    path = _REGISTRY_AUTH_SOURCE
+    descriptor = -1
+    try:
+        metadata = path.lstat()
+        parent = path.parent.lstat()
+        resolved = path.resolve(strict=True)
+        if (
+            not path.is_absolute()
+            or resolved != path
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_nlink != 1
+            or not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+            or stat.S_IMODE(parent.st_mode) != 0o700
+        ):
+            raise OSError("registry auth source metadata invalid")
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise OSError("registry auth source changed")
+        raw = os.read(descriptor, _MAX_JSON_BYTES + 1)
+        if not raw or len(raw) > _MAX_JSON_BYTES:
+            raise OSError("registry auth source size invalid")
+        payload = json.loads(raw, object_pairs_hook=_strict_json_object)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise HostReleaseError("root registry auth source invalid") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(payload, dict) or set(payload) != {"auths"} or not isinstance(payload["auths"], dict):
+        raise HostReleaseError("root registry auth source schema invalid")
+    normalized: dict[str, dict[str, str]] = {}
+    for registry, entry in payload["auths"].items():
+        if not isinstance(registry, str) or _REGISTRY.fullmatch(registry) is None:
+            raise HostReleaseError("root registry auth source schema invalid")
+        if not isinstance(entry, dict) or set(entry) != {"auth"} or not isinstance(entry["auth"], str):
+            raise HostReleaseError("root registry auth source schema invalid")
+        try:
+            decoded = base64.b64decode(entry["auth"], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HostReleaseError("root registry auth source schema invalid") from exc
+        username, separator, secret = decoded.partition(b":")
+        if not username or separator != b":" or not secret or len(decoded) > 4096:
+            raise HostReleaseError("root registry auth source schema invalid")
+        normalized[registry] = {"auth": entry["auth"]}
+    return {"auths": normalized}
+
+
+@contextlib.contextmanager
+def _private_docker_environment() -> Iterator[dict[str, str]]:
+    payload = _read_registry_auth_source()
+    try:
+        with tempfile.TemporaryDirectory(prefix=".docker-config-", dir=_DOCKER_CONFIG_PARENT) as temporary:
+            directory = Path(temporary)
+            directory.chmod(0o700)
+            config = directory / "config.json"
+            descriptor = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            try:
+                os.write(descriptor, canonical_json_bytes(payload))
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            yield {**_FIXED_ENV, "DOCKER_CONFIG": str(directory)}
+    except OSError as exc:
+        raise HostReleaseError("private Docker auth config unavailable") from exc
 
 
 class HostReleaseEngine:
@@ -608,9 +694,17 @@ class HostReleaseEngine:
         return not reader.is_alive()
 
     def _run_command(self, args: list[str], cwd: Path | None = None, input_bytes: bytes | None = None) -> str:
+        uses_docker_config = False
         if args and args[0] == _DOCKER:
-            _validate_docker_executable()
-        elif args and Path(args[0]).name == "docker":
+            _validate_trusted_executable(_DOCKER, "Docker")
+            uses_docker_config = True
+        elif args and args[0] == _DOCKER_COMPOSE:
+            _validate_trusted_executable(_DOCKER_COMPOSE, "Docker Compose")
+            uses_docker_config = True
+        elif args and args[0] == _BASH and len(args) > 1 and args[1] == _FRESH_INSTALL_GUARD:
+            _validate_trusted_executable(_BASH, "Bash")
+            _validate_trusted_executable(_FRESH_INSTALL_GUARD, "fresh-install guard")
+        elif args and Path(args[0]).name in {"docker", "docker-compose"}:
             raise HostReleaseError("Docker executable path drift")
         inherited_fds: tuple[int, ...] = ()
         inherits_release_lock = (
@@ -618,11 +712,12 @@ class HostReleaseEngine:
             and args[0].endswith("/start-active-release")
             and args[1] == "--lock-fd"
         ) or (
-            len(args) == 5
-            and args[0] == _FRESH_INSTALL_GUARD
-            and args[1] == "--project"
-            and args[2] == _FIXED_ENV["COMPOSE_PROJECT_NAME"]
-            and args[3] == "--lock-fd"
+            len(args) == 6
+            and args[0] == _BASH
+            and args[1] == _FRESH_INSTALL_GUARD
+            and args[2] == "--project"
+            and args[3] == _FIXED_ENV["COMPOSE_PROJECT_NAME"]
+            and args[4] == "--lock-fd"
         )
         if inherits_release_lock:
             try:
@@ -637,7 +732,13 @@ class HostReleaseEngine:
         reader: threading.Thread | None = None
         timed_out = False
         command_succeeded = False
+        resources = contextlib.ExitStack()
         try:
+            command_env = (
+                resources.enter_context(_private_docker_environment())
+                if uses_docker_config
+                else _FIXED_ENV
+            )
             if input_bytes is not None:
                 input_handle = tempfile.TemporaryFile()
                 input_handle.write(input_bytes)
@@ -645,7 +746,7 @@ class HostReleaseEngine:
             process = subprocess.Popen(
                 args,
                 cwd=cwd,
-                env=_FIXED_ENV,
+                env=command_env,
                 stdin=input_handle,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -693,6 +794,7 @@ class HostReleaseEngine:
                     process.stdout.close()
             if input_handle != subprocess.DEVNULL:
                 input_handle.close()
+            resources.close()
 
     def _cloud_credentials(self) -> tuple[str, str]:
         values: dict[str, str] = {}
@@ -1078,8 +1180,7 @@ class HostReleaseEngine:
             _atomic_write(override, ("\n".join(override_lines) + "\n").encode())
             output = self._command_runner(
                 [
-                    _DOCKER,
-                    "compose",
+                    _DOCKER_COMPOSE,
                     "--env-file",
                     str(self.paths.runtime_env),
                     "--file",
@@ -1582,6 +1683,7 @@ class HostReleaseEngine:
     def _assert_fresh_install(self, lock_descriptor: int) -> None:
         self._command_runner(
             [
+                _BASH,
                 _FRESH_INSTALL_GUARD,
                 "--project",
                 _FIXED_ENV["COMPOSE_PROJECT_NAME"],
@@ -1816,8 +1918,7 @@ class HostReleaseEngine:
     def _stop_active(self, slot: dict[str, Any]) -> None:
         self._command_runner(
             [
-                _DOCKER,
-                "compose",
+                _DOCKER_COMPOSE,
                 "--env-file",
                 str(self.paths.runtime_env),
                 "--file",

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 
 set -euo pipefail
 
@@ -6,6 +6,14 @@ readonly FORMAL_PROJECT='drycontroller-edge'
 readonly DOCKER='/usr/bin/docker'
 readonly PYTHON='/usr/bin/python3'
 readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'
+readonly DOCKER_CONFIG_DIR='/var/lib/drycontroller-ota/guard-docker-config'
+
+export HOME='/var/empty'
+export PATH='/usr/bin:/bin'
+export DOCKER_HOST='unix:///var/run/docker.sock'
+export DOCKER_CONFIG="${DOCKER_CONFIG_DIR}"
+unset DOCKER_CONTEXT DOCKER_CLI_PLUGIN_EXTRA_DIRS DOCKER_CERT_PATH DOCKER_TLS_VERIFY \
+  DOCKER_API_VERSION COMPOSE_FILE COMPOSE_PATH_SEPARATOR COMPOSE_PROFILES
 
 deny() {
   printf 'fresh-install preflight refused: %s\n' "$1" >&2
@@ -113,16 +121,26 @@ done
   || deny "Compose project mismatch: expected ${FORMAL_PROJECT}"
 [[ "${lock_fd}" =~ ^[0-9]+$ ]] || deny 'inherited release transaction lock is required'
 [ -x "${PYTHON}" ] || deny 'fixed Python runtime is unavailable'
-if ! "${PYTHON}" - "${lock_fd}" "${RELEASE_LOCK}" "${DOCKER}" <<'PY'
+if ! "${PYTHON}" - "${lock_fd}" "${RELEASE_LOCK}" "${DOCKER}" "${DOCKER_CONFIG_DIR}" <<'PY'
 import fcntl
+import json
 import os
 import stat
 import sys
+
+def strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
 
 try:
     descriptor = int(sys.argv[1])
     lock_path = sys.argv[2]
     docker_path = sys.argv[3]
+    docker_config_dir = sys.argv[4]
     opened = os.fstat(descriptor)
     expected = os.lstat(lock_path)
     if not stat.S_ISREG(expected.st_mode) or stat.S_IMODE(expected.st_mode) != 0o600:
@@ -166,7 +184,35 @@ try:
         or parent.st_mode & 0o022
     ):
         raise OSError("Docker executable is not trusted")
-except (OSError, ValueError, IndexError):
+
+    config_directory = os.lstat(docker_config_dir)
+    config_path = os.path.join(docker_config_dir, "config.json")
+    config_file = os.lstat(config_path)
+    if (
+        os.path.realpath(docker_config_dir) != docker_config_dir
+        or os.path.realpath(config_path) != config_path
+        or not stat.S_ISDIR(config_directory.st_mode)
+        or config_directory.st_uid != os.geteuid()
+        or stat.S_IMODE(config_directory.st_mode) != 0o500
+        or not stat.S_ISREG(config_file.st_mode)
+        or config_file.st_uid != os.geteuid()
+        or stat.S_IMODE(config_file.st_mode) != 0o400
+        or config_file.st_nlink != 1
+    ):
+        raise OSError("guard Docker config is not trusted")
+    descriptor = os.open(config_path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(descriptor)
+        raw = os.read(descriptor, 4097)
+    finally:
+        os.close(descriptor)
+    if (
+        (opened.st_dev, opened.st_ino) != (config_file.st_dev, config_file.st_ino)
+        or len(raw) > 4096
+        or json.loads(raw, object_pairs_hook=strict_object) != {"auths": {}}
+    ):
+        raise OSError("guard Docker config is invalid")
+except (OSError, UnicodeError, ValueError, IndexError):
     raise SystemExit(1)
 PY
 then

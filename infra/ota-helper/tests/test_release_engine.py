@@ -205,6 +205,17 @@ def _paths(tmp_path: Path) -> ReleasePaths:
     )
 
 
+def _configure_root_docker_auth(tmp_path: Path, monkeypatch, payload: object | None = None) -> Path:
+    root = tmp_path / "root-docker-state"
+    root.mkdir(mode=0o700)
+    source = root / "registry-auth.json"
+    source.write_text(json.dumps({"auths": {}} if payload is None else payload), encoding="utf-8")
+    source.chmod(0o400)
+    monkeypatch.setattr(release_engine, "_REGISTRY_AUTH_SOURCE", source)
+    monkeypatch.setattr(release_engine, "_DOCKER_CONFIG_PARENT", root)
+    return source
+
+
 def _seed(paths: ReleasePaths, active: dict, *, previous: dict | None = None) -> None:
     paths.journal.write_text(
         json.dumps(
@@ -285,7 +296,7 @@ class FakeRuntime:
             return "pulled"
         if args[0] == "/usr/local/bin/cosign":
             return "verified"
-        if args[:2] == ["/usr/bin/docker", "compose"]:
+        if args and args[0] == release_engine._DOCKER_COMPOSE:
             override = Path(args[args.index("--file", args.index("--file") + 1) + 1])
             if "up" in args:
                 self.current_override = override
@@ -529,7 +540,9 @@ def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
     result = _engine(paths, runtime, {}).start_active()
 
     assert result["status"] == "running"
-    compose_up = next(call for call in runtime.calls if call[:2] == ["/usr/bin/docker", "compose"] and "up" in call)
+    compose_up = next(
+        call for call in runtime.calls if call and call[0] == release_engine._DOCKER_COMPOSE and "up" in call
+    )
     assert compose_up[-3:] == ["--pull", "never", "--no-build"]
     assert not any(call[:2] == ["/usr/bin/docker", "pull"] for call in runtime.calls)
     assert runtime.current_override is not None
@@ -554,7 +567,7 @@ def test_signed_active_waits_for_compose_start_period_and_transient_http_readine
     def command(args: list[str]) -> str:
         nonlocal status_checks
         output = runtime.run(args)
-        if args[:2] == ["/usr/bin/docker", "compose"] and "ps" in args:
+        if args and args[0] == release_engine._DOCKER_COMPOSE and "ps" in args:
             status_checks += 1
             if status_checks == 1:
                 records = json.loads(output)
@@ -637,17 +650,19 @@ def test_runtime_compose_probe_receives_remaining_deadline_and_timeout_is_fail_c
 
 def test_subprocess_timeout_is_mapped_to_release_error(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
-    monkeypatch.setattr(release_engine, "_validate_docker_executable", lambda: None)
+    _configure_root_docker_auth(tmp_path, monkeypatch)
+    monkeypatch.setattr(release_engine, "_validate_trusted_executable", lambda *_args: None)
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd="docker", timeout=1)
 
     monkeypatch.setattr(subprocess, "run", timeout)
     with pytest.raises(ReleaseError, match="command timed out: docker"):
-        ReleaseEngine(paths=paths)._run_command(["/usr/bin/docker", "compose"], timeout=1)
+        ReleaseEngine(paths=paths)._run_command(["/usr/bin/docker", "version"], timeout=1)
 
 
 def test_software_docker_commands_require_one_fixed_trusted_executable(tmp_path, monkeypatch):
+    _configure_root_docker_auth(tmp_path, monkeypatch)
     trusted_dir = tmp_path / "trusted" / "bin"
     trusted_dir.mkdir(parents=True)
     trusted = trusted_dir / "docker"
@@ -676,6 +691,47 @@ def test_software_docker_commands_require_one_fixed_trusted_executable(tmp_path,
     monkeypatch.setattr(release_engine, "_DOCKER", str(trusted))
     with pytest.raises(ReleaseError, match="path drift"):
         engine._run_command([str(drift), "version"])
+
+
+@pytest.mark.parametrize(
+    "extra_key",
+    ["cli-plugins", "context", "currentContext", "plugins", "proxies", "credsStore", "credHelpers", "unknown"],
+)
+def test_software_root_docker_auth_source_rejects_every_non_auths_top_level_key(
+    tmp_path,
+    monkeypatch,
+    extra_key,
+):
+    _configure_root_docker_auth(tmp_path, monkeypatch, {"auths": {}, extra_key: {}})
+    docker = tmp_path / "docker"
+    docker.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    docker.chmod(0o755)
+    monkeypatch.setattr(release_engine, "_DOCKER", str(docker))
+
+    with pytest.raises(ReleaseError, match="schema"):
+        ReleaseEngine(paths=_paths(tmp_path))._run_command([str(docker), "version"])
+
+
+def test_software_compose_uses_fixed_binary_and_private_sanitized_config(tmp_path, monkeypatch):
+    auth = base64.b64encode(b"reader:secret").decode("ascii")
+    _configure_root_docker_auth(tmp_path, monkeypatch, {"auths": {REGISTRY: {"auth": auth}}})
+    compose = tmp_path / "docker-compose"
+    compose.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$DOCKER_HOST\"\n"
+        "printf '%s\\n' \"$DOCKER_CONFIG\"\n"
+        "cat \"$DOCKER_CONFIG/config.json\"\n",
+        encoding="utf-8",
+    )
+    compose.chmod(0o755)
+    monkeypatch.setattr(release_engine, "_DOCKER_COMPOSE", str(compose))
+
+    output = ReleaseEngine(paths=_paths(tmp_path))._run_command([str(compose), "version"])
+    lines = output.splitlines()
+
+    assert lines[0] == "unix:///var/run/docker.sock"
+    assert json.loads(lines[2]) == {"auths": {REGISTRY: {"auth": auth}}}
+    assert not Path(lines[1]).exists()
 
 
 def _install_nonblocking_lock_probe(blocked, acquired_without_waiting) -> None:
@@ -723,7 +779,7 @@ def test_apply_and_active_start_use_a_two_process_transaction_barrier(tmp_path):
         def command(args: list[str]) -> str:
             nonlocal blocked_once
             result = runtime.run(args)
-            if not blocked_once and args[:2] == ["/usr/bin/docker", "compose"] and "up" in args:
+            if not blocked_once and args and args[0] == release_engine._DOCKER_COMPOSE and "up" in args:
                 blocked_once = True
                 apply_entered.set()
                 if not release_apply.wait(10):
@@ -958,7 +1014,7 @@ def test_manifest_verification_uses_real_cosign_signature(tmp_path):
             except subprocess.CalledProcessError as exc:
                 raise ReleaseError("real cosign verification failed") from exc
             return completed.stdout
-        if args[0] == "/usr/bin/docker" and "config" in args:
+        if args[0] == release_engine._DOCKER_COMPOSE and "config" in args:
             return "configured"
         raise AssertionError(f"unexpected command: {args}")
 

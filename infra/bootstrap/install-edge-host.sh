@@ -205,8 +205,36 @@ install_packages() {
       ca-certificates curl docker.io docker-compose-v2 iproute2 netplan.io \
       python3 python3-venv tailscale="$TAILSCALE_VERSION" tar tpm2-tools
   fi
-  command -v docker >/dev/null 2>&1 || die "docker is not installed"
-  docker compose version >/dev/null 2>&1 || die "docker compose v2 is not installed"
+  [ -x /usr/bin/docker ] && [ ! -L /usr/bin/docker ] || die "fixed Docker executable is not installed"
+  [ -x /usr/bin/bash ] && [ ! -L /usr/bin/bash ] || die "fixed Bash executable is not installed"
+  [ -x /usr/libexec/docker/cli-plugins/docker-compose ] \
+    && [ ! -L /usr/libexec/docker/cli-plugins/docker-compose ] \
+    || die "fixed Docker Compose executable is not installed"
+  python3 - /usr/bin/docker /usr/bin/bash /usr/libexec/docker/cli-plugins/docker-compose <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+for value in sys.argv[1:]:
+    path = Path(value)
+    metadata = path.lstat()
+    parent = path.parent.lstat()
+    if (
+        path.resolve(strict=True) != path
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_mode & 0o022
+        or not metadata.st_mode & 0o111
+        or not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != 0
+        or parent.st_mode & 0o022
+    ):
+        raise SystemExit(f"fixed executable is untrusted: {path}")
+PY
+  env -i HOME=/var/empty PATH=/usr/bin:/bin DOCKER_HOST=unix:///var/run/docker.sock \
+    DOCKER_CONFIG=/var/empty /usr/libexec/docker/cli-plugins/docker-compose version >/dev/null 2>&1 \
+    || die "fixed Docker Compose executable is unusable"
   command -v netplan >/dev/null 2>&1 || die "netplan is not installed"
   command -v tpm2_createprimary >/dev/null 2>&1 || die "tpm2-tools are not installed"
   python3 -m venv --help >/dev/null 2>&1 || die "python3 venv support is not installed"
@@ -241,6 +269,51 @@ install_static_runtime() {
   install -d -o root -g root -m 0755 /usr/libexec/drycontroller /etc/drycontroller/keys /etc/drycontroller/trust /etc/drycontroller/license
   install -d -m 0755 /usr/libexec/drycontroller/common
   install -d -m 0700 /var/lib/drycontroller /var/lib/drycontroller-host /var/lib/drycontroller-ota
+  python3 - <<'PY'
+import os
+import stat
+from pathlib import Path
+
+root = Path("/var/lib/drycontroller-ota")
+source = root / "registry-auth.json"
+if source.exists() or source.is_symlink():
+    metadata = source.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o400:
+        raise SystemExit("root registry auth source metadata invalid")
+else:
+    descriptor = os.open(source, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o400)
+    try:
+        os.write(descriptor, b'{"auths":{}}')
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+guard_directory = root / "guard-docker-config"
+if guard_directory.exists() or guard_directory.is_symlink():
+    metadata = guard_directory.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0:
+        raise SystemExit("guard Docker config directory invalid")
+else:
+    guard_directory.mkdir(mode=0o500)
+os.chown(guard_directory, 0, 0)
+os.chmod(guard_directory, 0o500)
+guard_config = guard_directory / "config.json"
+temporary = root / f".guard-docker-config.{os.getpid()}.tmp"
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o400)
+try:
+    os.write(descriptor, b'{"auths":{}}')
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+os.chown(temporary, 0, 0)
+os.replace(temporary, guard_config)
+os.chmod(guard_config, 0o400)
+directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
   install -d -o root -g root -m 0700 /var/lib/drycontroller/license-transaction
   install -d -o root -g root -m 0700 /var/lib/drycontroller/cloud-request-nonces
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_engine.py" /usr/libexec/drycontroller/host_release_engine.py

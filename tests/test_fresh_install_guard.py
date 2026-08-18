@@ -137,10 +137,24 @@ def _write_guard_under_test(tmp_path: Path, docker: Path, lock: Path) -> Path:
     source = GUARD.read_text(encoding="utf-8")
     docker_constant = "readonly DOCKER='/usr/bin/docker'"
     lock_constant = "readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'"
+    config_constant = "readonly DOCKER_CONFIG_DIR='/var/lib/drycontroller-ota/guard-docker-config'"
     assert source.count(docker_constant) == 1
     assert source.count(lock_constant) == 1
+    assert source.count(config_constant) == 1
+    config_directory = tmp_path / "guard-docker-config"
+    if config_directory.exists():
+        config_directory.chmod(0o700)
+    else:
+        config_directory.mkdir(mode=0o700)
+    config = config_directory / "config.json"
+    if config.exists():
+        config.chmod(0o600)
+    config.write_text('{"auths":{}}', encoding="utf-8")
+    config.chmod(0o400)
+    config_directory.chmod(0o500)
     source = source.replace(docker_constant, f"readonly DOCKER='{docker}'")
     source = source.replace(lock_constant, f"readonly RELEASE_LOCK='{lock}'")
+    source = source.replace(config_constant, f"readonly DOCKER_CONFIG_DIR='{config_directory}'")
     guard = tmp_path / "assert-fresh-install-data-plane-under-test"
     guard.write_text(source, encoding="utf-8")
     guard.chmod(0o755)
@@ -173,7 +187,7 @@ def _run_guard(
         if lock_held:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
         guard = _write_guard_under_test(tmp_path, docker, lock)
-        args = ["bash", str(guard), "--project", project]
+        args = ["/bin/bash", str(guard), "--project", project]
         pass_fds: tuple[int, ...] = ()
         if include_lock:
             args.extend(["--lock-fd", str(descriptor)])
@@ -229,7 +243,7 @@ def test_guard_contract_covers_every_compose_volume_container_and_persistent_mou
 )
 def test_guard_against_an_isolated_real_docker_daemon():
     result = subprocess.run(
-        ["bash", str(REAL_DOCKER_E2E)],
+        ["/usr/bin/bash", str(REAL_DOCKER_E2E)],
         cwd=ROOT,
         env=os.environ,
         text=True,
@@ -240,7 +254,9 @@ def test_guard_against_an_isolated_real_docker_daemon():
 
     assert result.returncode == 0, result.stderr
     assert (
-        "empty=1 volumes=8 services=12 path-spoof=refused unlocked-fd=refused"
+        "self-daemon=1 formal-chain=install,guard,compose,start volumes=8 services=12 "
+        "bash-spoof=refused plugin-context=refused wrong-daemon=refused "
+        "lock-matrix=wrong-inode,shared,reopen,replace,dup-pass-fds image-conflict=preserved"
         in result.stdout
     )
 
@@ -378,8 +394,10 @@ def test_guard_rejects_a_matching_but_unlocked_descriptor(tmp_path: Path):
 def test_guard_pins_production_docker_and_release_lock_paths():
     source = GUARD.read_text(encoding="utf-8")
 
+    assert source.startswith("#!/usr/bin/bash\n")
     assert "readonly DOCKER='/usr/bin/docker'" in source
     assert "readonly RELEASE_LOCK='/var/lib/drycontroller-ota/release.lock'" in source
+    assert "DOCKER_HOST='unix:///var/run/docker.sock'" in source
     assert "command -v docker" not in source
 
 
@@ -408,7 +426,7 @@ def test_guard_ignores_a_path_precedence_docker_that_fakes_an_empty_daemon(
         guard = _write_guard_under_test(tmp_path, trusted, lock)
         result = subprocess.run(
             [
-                "bash",
+                "/bin/bash",
                 str(guard),
                 "--project",
                 PROJECT,
@@ -428,6 +446,37 @@ def test_guard_ignores_a_path_precedence_docker_that_fakes_an_empty_daemon(
         )
     finally:
         os.close(descriptor)
+
+    assert result.returncode != 0
+    assert "existing target volume" in result.stderr
+    assert not malicious_log.exists()
+
+
+def test_guard_ignores_path_bash_wrapper_and_host_context_config_injection(tmp_path: Path):
+    malicious_dir = tmp_path / "usr" / "local" / "bin"
+    malicious_dir.mkdir(parents=True)
+    malicious_log = tmp_path / "malicious-bash.log"
+    wrapper = malicious_dir / "bash"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"printf invoked >'{malicious_log}'\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+
+    result = _run_guard(
+        tmp_path,
+        "target-volume",
+        extra_env={
+            "PATH": f"{malicious_dir}:/usr/bin:/bin",
+            "DOCKER_HOST": "tcp://attacker.invalid:2375",
+            "DOCKER_CONTEXT": "attacker",
+            "DOCKER_CONFIG": str(tmp_path / "attacker-config"),
+            "DOCKER_CLI_PLUGIN_EXTRA_DIRS": str(tmp_path / "plugins"),
+            "FAKE_VOLUME_LOGICAL": "postgres_data",
+        },
+    )
 
     assert result.returncode != 0
     assert "existing target volume" in result.stderr
