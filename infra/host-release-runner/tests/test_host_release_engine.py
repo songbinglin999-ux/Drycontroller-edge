@@ -610,6 +610,87 @@ def test_initial_pair_is_verified_started_and_idempotent(tmp_path):
     )["status"] == "already_initialized"
 
 
+def test_initial_pair_guard_and_start_share_one_held_transaction_lock(tmp_path):
+    paths, host, software, host_archive, software_archive, command = _blank_initial_fixture(
+        tmp_path
+    )
+    events: list[tuple[str, int]] = []
+
+    def locked_command(args, cwd, input_bytes):
+        if args and args[0].endswith("assert-fresh-install-data-plane"):
+            guard_fd = int(args[4])
+            probe = os.open(paths.lock, os.O_RDWR)
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(probe)
+            events.append(("guard", guard_fd))
+        elif args and args[0].endswith("start-active-release"):
+            events.append(("start", int(args[2])))
+        return command(args, cwd, input_bytes)
+
+    HostReleaseEngine(paths=paths, command_runner=locked_command).initialize_initial_pair(
+        host_seed={
+            "manifest": host,
+            "manifest_digest": canonical_digest(host),
+            "manifest_signature": SIGNATURE,
+        },
+        software_seed={
+            "manifest": software,
+            "manifest_digest": canonical_digest(software),
+            "manifest_signature": SIGNATURE,
+        },
+        host_image_archive=host_archive,
+        software_image_archive=software_archive,
+    )
+
+    assert [name for name, _descriptor in events] == ["guard", "start"]
+    assert events[0][1] == events[1][1]
+    guard_index = next(
+        index
+        for index, args in enumerate(command.commands)
+        if args and args[0].endswith("assert-fresh-install-data-plane")
+    )
+    image_load_index = next(
+        index
+        for index, args in enumerate(command.commands)
+        if args[:4] == ["/usr/bin/docker", "image", "load", "-i"]
+    )
+    assert guard_index < image_load_index
+
+
+def test_initial_pair_guard_refusal_prevents_docker_and_state_mutation(tmp_path):
+    paths, host, software, host_archive, software_archive, command = _blank_initial_fixture(
+        tmp_path
+    )
+
+    def refuse_guard(args, cwd, input_bytes):
+        if args and args[0].endswith("assert-fresh-install-data-plane"):
+            raise HostReleaseError("fresh-install guard refused")
+        return command(args, cwd, input_bytes)
+
+    with pytest.raises(HostReleaseError, match="fresh-install guard refused"):
+        HostReleaseEngine(paths=paths, command_runner=refuse_guard).initialize_initial_pair(
+            host_seed={
+                "manifest": host,
+                "manifest_digest": canonical_digest(host),
+                "manifest_signature": SIGNATURE,
+            },
+            software_seed={
+                "manifest": software,
+                "manifest_digest": canonical_digest(software),
+                "manifest_signature": SIGNATURE,
+            },
+            host_image_archive=host_archive,
+            software_image_archive=software_archive,
+        )
+
+    assert not any(args and args[0] == "/usr/bin/docker" for args in command.commands)
+    assert not paths.journal.exists()
+    assert not paths.current_link.exists()
+
+
 def test_initial_pair_archive_tamper_leaves_no_active_state(tmp_path):
     paths, host, software, host_archive, software_archive, command = _blank_initial_fixture(
         tmp_path
@@ -985,6 +1066,38 @@ def test_start_helper_receives_the_held_transaction_lock_fd(tmp_path):
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         output = HostReleaseEngine(paths=paths)._run_command(
             [str(helper), "--lock-fd", str(descriptor)]
+        )
+    finally:
+        os.close(descriptor)
+
+    assert output.splitlines()[-1] == "inherited"
+
+
+def test_fresh_install_guard_receives_the_held_transaction_lock_fd(tmp_path, monkeypatch):
+    paths = _paths(tmp_path)
+    helper = tmp_path / "assert-fresh-install-data-plane"
+    helper.write_text(
+        "#!/usr/bin/python3\n"
+        "import fcntl, sys\n"
+        "fd = int(sys.argv[4])\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "print('inherited')\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    monkeypatch.setattr(host_release_engine, "_FRESH_INSTALL_GUARD", str(helper))
+    paths.lock.touch(mode=0o600)
+    descriptor = os.open(paths.lock, os.O_WRONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        output = HostReleaseEngine(paths=paths)._run_command(
+            [
+                str(helper),
+                "--project",
+                "drycontroller-edge",
+                "--lock-fd",
+                str(descriptor),
+            ]
         )
     finally:
         os.close(descriptor)

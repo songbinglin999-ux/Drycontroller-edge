@@ -120,6 +120,7 @@ for path in \
   common/license_verifier.py \
   infra/bootstrap/installer_public_config.py \
   infra/bootstrap/tailscale_client_lock.py \
+  scripts/ci/assert-fresh-install-data-plane.sh \
   common/tailscale_status.py \
   infra/host-release-runner/host_release_engine.py \
   infra/host-release-runner/host_release_runner.py \
@@ -251,6 +252,7 @@ install_static_runtime() {
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-runner" /usr/libexec/drycontroller/host-release-runner
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-apply" /usr/libexec/drycontroller/host-release-apply
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/initialize-initial-release" /usr/libexec/drycontroller/initialize-initial-release
+  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/ci/assert-fresh-install-data-plane.sh" /usr/libexec/drycontroller/assert-fresh-install-data-plane
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/drycontroller-host-release-runner.service" /etc/systemd/system/drycontroller-host-release-runner.service
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-license-transaction-recovery.service" /etc/systemd/system/drycontroller-license-transaction-recovery.service

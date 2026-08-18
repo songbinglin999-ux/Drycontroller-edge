@@ -164,6 +164,7 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
         "--public-config",
         "--tailscale-client-lock",
         "/usr/libexec/drycontroller/initialize-initial-release",
+        "/usr/libexec/drycontroller/assert-fresh-install-data-plane",
         "/usr/libexec/drycontroller/host-release-runner",
     ):
         assert required in installer
@@ -228,6 +229,20 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert "require_cmd zstd" in usb_writer
     assert "signature_verifier=Path(host_cosign)" in usb_writer
     assert "USB raw compare passed" in usb_writer
+
+
+def test_formal_source_bundle_carries_the_fresh_install_guard():
+    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+    bundle_builder = (ROOT / "tools/build-bundle-images.sh").read_text(encoding="utf-8")
+
+    source = "scripts/ci/assert-fresh-install-data-plane.sh"
+    installed = "/usr/libexec/drycontroller/assert-fresh-install-data-plane"
+    assert source in bundle_builder
+    assert f'"${{REPO_SOURCE}}/{source}"' in installer
+    assert installed in installer
+    assert installer.index(installed) < installer.rindex(
+        "/usr/libexec/drycontroller/initialize-initial-release"
+    )
 
 
 def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata():

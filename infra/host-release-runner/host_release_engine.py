@@ -116,6 +116,7 @@ _IDENTITY_ROOT = Path("/opt/drycontroller-identity")
 _IDENTITY_SIGNER = "/opt/drycontroller-identity/venv/bin/python"
 _IDENTITY_MODULE = "identity_service.host_authorization"
 _SYSTEMCTL = "/usr/bin/systemctl"
+_FRESH_INSTALL_GUARD = "/usr/libexec/drycontroller/assert-fresh-install-data-plane"
 _SOFTWARE_HELPER_FILES = {
     "infra/ota-helper/drycontroller_ota_helper.py",
     "infra/ota-helper/release_engine.py",
@@ -589,9 +590,20 @@ class HostReleaseEngine:
 
     def _run_command(self, args: list[str], cwd: Path | None = None, input_bytes: bytes | None = None) -> str:
         inherited_fds: tuple[int, ...] = ()
-        if len(args) == 3 and args[0].endswith("/start-active-release") and args[1] == "--lock-fd":
+        inherits_release_lock = (
+            len(args) == 3
+            and args[0].endswith("/start-active-release")
+            and args[1] == "--lock-fd"
+        ) or (
+            len(args) == 5
+            and args[0] == _FRESH_INSTALL_GUARD
+            and args[1] == "--project"
+            and args[2] == _FIXED_ENV["COMPOSE_PROJECT_NAME"]
+            and args[3] == "--lock-fd"
+        )
+        if inherits_release_lock:
             try:
-                inherited_fds = (int(args[2]),)
+                inherited_fds = (int(args[-1]),)
             except ValueError as exc:
                 raise HostReleaseError("inherited release lock descriptor invalid") from exc
         process: subprocess.Popen[bytes] | None = None
@@ -1440,6 +1452,8 @@ class HostReleaseEngine:
                         "software_release_id": software["release_id"],
                         "status": "already_initialized",
                     }
+            self._assert_fresh_install(lock_descriptor)
+            if self.paths.journal.exists():
                 self._recover_initialization(slot)
 
             if any(
@@ -1541,6 +1555,19 @@ class HostReleaseEngine:
                 "software_release_id": software["release_id"],
                 "status": "initialized",
             }
+
+    def _assert_fresh_install(self, lock_descriptor: int) -> None:
+        self._command_runner(
+            [
+                _FRESH_INSTALL_GUARD,
+                "--project",
+                _FIXED_ENV["COMPOSE_PROJECT_NAME"],
+                "--lock-fd",
+                str(lock_descriptor),
+            ],
+            None,
+            None,
+        )
 
     def _validate_slot(self, slot: object) -> dict[str, Any]:
         fields = {
