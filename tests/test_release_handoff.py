@@ -648,8 +648,17 @@ def test_release_workflows_pin_current_actions_and_separate_key_export_from_pair
         "releases: write" in workflow and "contents: read" in workflow
         for workflow in (public_keys, paired, recovery)
     )
-    assert "secrets.GITEA_TOKEN" in public_keys and "secrets.GITEA_TOKEN" in paired
-    assert "secrets.GITEA_TOKEN" in recovery
+    assert "secrets.REPO_WRITE_TOKEN" in public_keys
+    assert "secrets.REPO_WRITE_TOKEN" in paired
+    assert "secrets.REPO_WRITE_TOKEN" in recovery
+    assert "secrets.GITEA_TOKEN" not in public_keys + paired + recovery
+    approved_base = "95296d2a152be621188739aa6b56f2eb29c21dfe"
+    assert approved_base in public_keys
+    assert approved_base in paired
+    assert approved_base in recovery
+    assert 'git diff --name-only "${approved_base}..HEAD"' in public_keys
+    assert 'git diff --name-only "${approved_base}..HEAD"' in paired
+    assert 'git diff --name-only "${approved_base}..HEAD"' in recovery
     assert "upload-artifact" not in public_keys and "upload-artifact" not in paired
     assert "CLOUD_OPS_RELEASE_API" not in public_keys
     assert "build-host-release.sh" not in public_keys
