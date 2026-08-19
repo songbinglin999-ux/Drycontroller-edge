@@ -325,7 +325,7 @@ def test_guard_against_an_isolated_real_docker_daemon():
         text=True,
         capture_output=True,
         check=False,
-        timeout=30 * 60,
+        timeout=60 * 60,
     )
 
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -341,10 +341,19 @@ def test_guard_against_an_isolated_real_docker_daemon():
 
 def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     source = REAL_DOCKER_E2E.read_text(encoding="utf-8")
+    runtime_template = (ROOT / "env.example").read_text(encoding="utf-8")
+    plc_host = next(
+        line.split("=", 1)[1]
+        for line in runtime_template.splitlines()
+        if line.startswith("PLC_HOST=")
+    )
 
     assert "infra/bootstrap/install-edge-host.sh" in source
     assert "--storage-driver=vfs" in source
     assert '--host-gateway-ip="${CLOUD_ADDRESS}"' in source
+    assert "/usr/bin/nsenter --target" in source
+    assert "scripts/ci/formal-modbus-fixture.py" in source
+    assert f"readonly PLC_FIXTURE_ADDRESS='{plc_host}'" in source
     assert "scripts/prepare-host-release.py\" stage" in source
     assert "/usr/libexec/drycontroller/initialize-initial-release" not in source
     assert "/infra/ota-helper/ota-apply" in source

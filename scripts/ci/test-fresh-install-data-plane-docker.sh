@@ -20,6 +20,7 @@ readonly REGISTRY_CONTAINER='drycontroller-rb8a2-registry'
 readonly REGISTRY_IMAGE='registry:2'
 readonly CLOUD_ADDRESS='100.100.0.2'
 readonly CLOUD_PORT='443'
+readonly PLC_FIXTURE_ADDRESS='192.168.1.100'
 
 fail() {
   printf 'formal-install private OTA E2E failed: %s\n' "$1" >&2
@@ -103,6 +104,7 @@ dockerd_process_pid=''
 registry_started=0
 policy_pid=''
 socket_probe_pid=''
+plc_fixture_pid=''
 tpm_created=0
 net_mounted=0
 cloud_address_added=0
@@ -115,8 +117,44 @@ docker_exact() {
     "${DOCKER}" "$@"
 }
 
+run_plc_fixture_monitor() {
+  local generation=''
+  local state container_id container_pid running started_at
+  while true; do
+    state="$(docker_exact container inspect \
+      --format '{{.Id}} {{.State.Pid}} {{.State.Running}} {{.State.StartedAt}}' \
+      edge-daq 2>/dev/null || true)"
+    if [ -n "${state}" ]; then
+      read -r container_id container_pid running started_at <<<"${state}"
+      if [ "${running}" = 'true' ] && [ "${container_id}:${started_at}" != "${generation}" ]; then
+        if /usr/bin/nsenter --target "${container_pid}" --net \
+          /usr/sbin/ip address replace "${PLC_FIXTURE_ADDRESS}/32" dev lo \
+          && docker_exact container cp \
+            "${SOURCE_ROOT}/scripts/ci/formal-modbus-fixture.py" \
+            edge-daq:/tmp/formal-modbus-fixture.py \
+          && docker_exact container exec --detach \
+            --env "MODBUS_SIM_HOST=${PLC_FIXTURE_ADDRESS}" \
+            --env MODBUS_SIM_PORT=2022 \
+            edge-daq /usr/local/bin/python /tmp/formal-modbus-fixture.py; then
+          generation="${container_id}:${started_at}"
+        fi
+      fi
+    fi
+    sleep 1
+  done
+}
+
+stop_plc_fixture_monitor() {
+  if [ -n "${plc_fixture_pid}" ]; then
+    kill -TERM "${plc_fixture_pid}" >/dev/null 2>&1 || true
+    wait "${plc_fixture_pid}" >/dev/null 2>&1 || true
+    plc_fixture_pid=''
+  fi
+}
+
 cleanup() {
   set +e
+  stop_plc_fixture_monitor
   if [ -n "${policy_pid}" ]; then kill -TERM "${policy_pid}" >/dev/null 2>&1; fi
   if [ -n "${socket_probe_pid}" ]; then kill -TERM "${socket_probe_pid}" >/dev/null 2>&1; fi
   if [ -f "${tmp_dir}/writer.pid" ]; then
@@ -202,10 +240,13 @@ docker_exact image inspect "${REGISTRY_IMAGE}" >/dev/null \
   --source-root "${SOURCE_ROOT}" \
   --output-root "${expected_host}" \
   --topology-output "${tmp_dir}/expected-topology.json" >/dev/null
+run_plc_fixture_monitor &
+plc_fixture_pid="$!"
 
-# The exact installer runs unchanged. Only unrelated service-manager/network/TPM
-# dependencies are emulated by the disposable job; release verification,
-# fresh-install guard, image loading, Compose start and health are all real.
+# The exact installer runs unchanged. Host service-manager/network/TPM and the
+# external PLC are emulated by the disposable job; the PLC still uses the real
+# RTU-over-TCP client. Release verification, fresh-install guard, image loading,
+# Compose start and health are all real.
 "${PYTHON}" - "${FIXTURE_ROOT}/tailscale-client-lock.json" >"${tmp_dir}/tailscale-version" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])
@@ -487,6 +528,7 @@ chmod 0400 "${AUTH_SOURCE}"
 "/opt/Drycontroller-edge/infra/ota-helper/start-active-release" >/dev/null
 rm -f "${AUTH_SOURCE}"
 mv "${tmp_dir}/registry-auth.saved" "${AUTH_SOURCE}"
+stop_plc_fixture_monitor
 
 expect_start_failure() {
   local context="$1"
