@@ -342,7 +342,7 @@ cmp -s "${expected_host}/docker-compose.yml" \
 
 printf '%s\n' '127.0.0.1 registry.e2e.test' >>/etc/hosts
 docker_exact run --detach --name "${REGISTRY_CONTAINER}" \
-  --publish 127.0.0.1:5443:5443 \
+  --network host \
   --volume "${FIXTURE_ROOT}/registry-config.yml:/etc/docker/registry/config.yml:ro" \
   --volume "${FIXTURE_ROOT}/registry.htpasswd:/auth/htpasswd:ro" \
   --volume "${FIXTURE_ROOT}/registry.crt:/certs/tls.crt:ro" \

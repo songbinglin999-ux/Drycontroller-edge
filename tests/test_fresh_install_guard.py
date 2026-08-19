@@ -367,6 +367,8 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     assert "FROM operation_audit_logs WHERE id = ${audit_id}" in source
     assert 'wait "${dockerd_process_pid}"' in source
     assert '[ -S /run/drycontroller-registry-auth/writer.sock ] && break' in source
+    assert "--network host" in source
+    assert "--publish 127.0.0.1:5443:5443" not in source
 
 
 @pytest.mark.parametrize(
