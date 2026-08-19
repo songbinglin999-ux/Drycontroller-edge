@@ -555,12 +555,15 @@ for name in docker bash docker-compose; do
     >"${attacker_bin}/${name}"
   chmod 0755 "${attacker_bin}/${name}"
 done
-DOCKER_HOST='tcp://127.0.0.1:9' \
-DOCKER_CONTEXT='attacker' \
-DOCKER_CONFIG="${tmp_dir}/attacker-config" \
-DOCKER_CLI_PLUGIN_EXTRA_DIRS="${attacker_bin}" \
-PATH="${attacker_bin}:/usr/local/bin:/usr/bin:/bin" \
-"/opt/Drycontroller-edge/infra/ota-helper/ota-apply" >/dev/null
+if ! DOCKER_HOST='tcp://127.0.0.1:9' \
+  DOCKER_CONTEXT='attacker' \
+  DOCKER_CONFIG="${tmp_dir}/attacker-config" \
+  DOCKER_CLI_PLUGIN_EXTRA_DIRS="${attacker_bin}" \
+  PATH="${attacker_bin}:/usr/local/bin:/usr/bin:/bin" \
+  "/opt/Drycontroller-edge/infra/ota-helper/ota-apply" \
+  >"${tmp_dir}/ota-apply.out" 2>&1; then
+  fail "public OTA entrypoint failed: $(<"${tmp_dir}/ota-apply.out")"
+fi
 for name in docker bash docker-compose; do
   [ ! -e "${tmp_dir}/attacker-${name}" ] || fail "PATH ${name} replacement executed"
 done

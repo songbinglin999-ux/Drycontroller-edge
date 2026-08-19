@@ -375,6 +375,7 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     assert 'readonly CLOUD_HOST=\'ops.e2e.test\'' in source
     assert '"${CLOUD_ADDRESS}" "${CLOUD_HOST}" >>/etc/hosts' in source
     assert "TLS policy fixture did not become ready" in source
+    assert "public OTA entrypoint failed" in source
 
 
 @pytest.mark.parametrize(
