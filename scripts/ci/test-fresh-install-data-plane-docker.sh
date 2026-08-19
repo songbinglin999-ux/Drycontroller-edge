@@ -640,7 +640,7 @@ try:
             "/usr/bin/docker",
             "info",
             "--format",
-            "{{.ID}}\\n{{.Name}}\\n{{.DockerRootDir}}",
+            "{{println .ID}}{{println .Name}}{{.DockerRootDir}}",
         ],
         env={
             "HOME": "/var/empty",
@@ -659,7 +659,10 @@ finally:
 lines = completed.stdout.splitlines()
 if completed.returncode != 0 or len(lines) != 3:
     detail = completed.stderr.strip()[:1000]
-    raise SystemExit(f"descriptor-bound Docker probe unavailable: {detail}")
+    raise SystemExit(
+        "descriptor-bound Docker probe unavailable: "
+        f"returncode={completed.returncode} stdout_lines={len(lines)} stderr={detail}"
+    )
 expected = json.loads(pathlib.Path("/etc/drycontroller/docker-daemon.json").read_text(encoding="utf-8"))
 observed = dict(zip(("id", "name", "root_dir"), lines, strict=True))
 if observed != {key: expected[key] for key in observed}:
