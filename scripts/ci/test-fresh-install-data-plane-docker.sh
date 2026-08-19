@@ -121,7 +121,7 @@ docker_exact() {
 plc_fixture_ready() {
   local container_pid="$1"
   /usr/bin/nsenter --target "${container_pid}" --net \
-    /usr/sbin/ss -H -ltn 'sport = :2022' \
+    /usr/bin/ss -H -ltn 'sport = :2022' 2>/dev/null \
     | /usr/bin/grep -Fq "${PLC_FIXTURE_ADDRESS}:2022"
 }
 
