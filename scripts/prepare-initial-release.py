@@ -278,14 +278,21 @@ def prepare(
         check=True,
         stdout=subprocess.DEVNULL,
     )
+    host_local_reference = local_image_reference(
+        "host-bundle", host_manifest["bundle"]["image_id"]
+    )
+    subprocess.run(["docker", "tag", host_reference, host_local_reference], check=True)
     with tempfile.TemporaryDirectory(prefix="drycontroller-host-image-id-") as temporary:
-        if _portable_image_id(host_reference, Path(temporary)) != host_manifest["bundle"]["image_id"]:
+        if (
+            _portable_image_id(host_local_reference, Path(temporary))
+            != host_manifest["bundle"]["image_id"]
+        ):
             raise ValueError("pulled HostRelease bundle image ID does not match signed manifest")
     host_image_bundle.parent.mkdir(parents=True, exist_ok=True)
     temporary_host_bundle = host_image_bundle.with_name(f".{host_image_bundle.name}.tmp")
     try:
         subprocess.run(
-            ["docker", "image", "save", "-o", str(temporary_host_bundle), host_reference],
+            ["docker", "image", "save", "-o", str(temporary_host_bundle), host_local_reference],
             check=True,
         )
         if not temporary_host_bundle.is_file() or temporary_host_bundle.stat().st_size == 0:
@@ -316,12 +323,13 @@ def prepare(
                 stdout=subprocess.DEVNULL,
             )
             expected_image_id = software_manifest["image_ids"][service]
-            if _portable_image_id(reference, image_id_dir) != expected_image_id:
-                raise ValueError(f"pulled image ID does not match signed manifest: {reference}")
+            local_reference = local_image_reference(service, expected_image_id)
             subprocess.run(
-                ["docker", "tag", reference, local_image_reference(service, expected_image_id)],
+                ["docker", "tag", reference, local_reference],
                 check=True,
             )
+            if _portable_image_id(local_reference, image_id_dir) != expected_image_id:
+                raise ValueError(f"pulled image ID does not match signed manifest: {reference}")
 
     software_image_bundle.parent.mkdir(parents=True, exist_ok=True)
     temporary_bundle = software_image_bundle.with_name(f".{software_image_bundle.name}.tmp")

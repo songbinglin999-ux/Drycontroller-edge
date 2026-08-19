@@ -209,14 +209,26 @@ fi
     monkeypatch.setattr(module, "validate_software_manifest", lambda value: value)
     monkeypatch.setattr(module, "validate_host_manifest", lambda value: value)
     expected_ids = {
-        reference: software_manifest["image_ids"][service]
-        for service, reference in software_manifest["services"].items()
+        module.local_image_reference(
+            service, software_manifest["image_ids"][service]
+        ): software_manifest["image_ids"][service]
+        for service in software_manifest["services"]
     }
-    expected_ids[host_manifest["bundle"]["image"]] = host_manifest["bundle"]["image_id"]
+    host_local_reference = module.local_image_reference(
+        "host-bundle", host_manifest["bundle"]["image_id"]
+    )
+    expected_ids[host_local_reference] = host_manifest["bundle"]["image_id"]
+    portable_references = []
+
+    def portable_image_id(reference, _directory):
+        portable_references.append(reference)
+        assert "@sha256:" not in reference
+        return expected_ids[reference]
+
     monkeypatch.setattr(
         module,
         "_portable_image_id",
-        lambda reference, _directory: expected_ids[reference],
+        portable_image_id,
     )
     host_seed, software_seed = module.prepare(
         software_release=software_release,
@@ -243,7 +255,12 @@ fi
     assert host_image_bundle.read_bytes() == b"archive"
     commands = log.read_text(encoding="utf-8")
     assert commands.count("docker pull ") == len(SERVICES) + 1
-    assert commands.count("docker tag ") == len(SERVICES)
+    assert commands.count("docker tag ") == len(SERVICES) + 1
+    assert (
+        f"docker image save -o {host_image_bundle.with_name('.host-bundle.tar.tmp')} "
+        f"{host_local_reference}"
+    ) in commands
+    assert set(portable_references) == set(expected_ids)
     assert commands.count("cosign verify --insecure-ignore-tlog=true") == len(SERVICES) + 1
     assert commands.count("cosign verify-blob") == 2
     assert commands.count("docker image save") >= 2
