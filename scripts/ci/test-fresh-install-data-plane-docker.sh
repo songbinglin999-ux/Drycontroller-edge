@@ -182,7 +182,9 @@ cleanup() {
     ip address del "${CLOUD_ADDRESS}/32" dev lo >/dev/null 2>&1
   fi
   if [ "${tpm_created}" -eq 1 ]; then rm -f /dev/tpmrm0; fi
-  rm -f /usr/local/share/ca-certificates/drycontroller-e2e-cloud.crt
+  rm -f \
+    /usr/local/share/ca-certificates/drycontroller-e2e-cloud.crt \
+    /usr/local/share/ca-certificates/drycontroller-e2e-registry.crt
   rm -rf \
     /etc/drycontroller \
     /etc/docker/certs.d/registry.e2e.test:5443 \
@@ -213,6 +215,9 @@ install -o root -g root -m 0644 \
 install -o root -g root -m 0644 \
   "${FIXTURE_ROOT}/cloud-ca.crt" \
   /usr/local/share/ca-certificates/drycontroller-e2e-cloud.crt
+install -o root -g root -m 0644 \
+  "${FIXTURE_ROOT}/registry-ca.crt" \
+  /usr/local/share/ca-certificates/drycontroller-e2e-registry.crt
 update-ca-certificates >/dev/null
 
 "${DOCKERD}" \
