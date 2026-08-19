@@ -11,12 +11,15 @@ import signal
 import socketserver
 import stat
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+sys.dont_write_bytecode = True
 
 from release_engine import ReleaseError, validate_release_journal
 

@@ -62,6 +62,23 @@ COMPOSE_DIGEST = "sha256:" + hashlib.sha256(COMPOSE_BYTES).hexdigest()
 TOPOLOGY_DIGEST = canonical_topology_digest(COMPOSE_DIGEST, sorted(SERVICES))
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        "drycontroller_ota_helper.py",
+        "initialize-active-release",
+        "ota-apply",
+        "start-active-release",
+    ],
+)
+def test_release_entrypoints_disable_bytecode_before_local_import(entrypoint: str):
+    source = (HELPER_DIR / entrypoint).read_text(encoding="utf-8")
+
+    assert source.index("sys.dont_write_bytecode = True") < source.index(
+        "from release_engine import"
+    )
+
+
 def test_topology_digest_includes_the_signed_health_contract():
     assert TOPOLOGY_DIGEST == canonical_manifest_digest(
         {
