@@ -178,6 +178,7 @@ update-ca-certificates >/dev/null
   --storage-driver=vfs \
   --pidfile="${daemon_pid}" \
   --bridge=none \
+  --host-gateway-ip="${CLOUD_ADDRESS}" \
   >"${daemon_log}" 2>&1 &
 dockerd_process_pid="$!"
 dockerd_started=1

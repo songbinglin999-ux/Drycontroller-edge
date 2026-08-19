@@ -344,6 +344,7 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
 
     assert "infra/bootstrap/install-edge-host.sh" in source
     assert "--storage-driver=vfs" in source
+    assert '--host-gateway-ip="${CLOUD_ADDRESS}"' in source
     assert "scripts/prepare-host-release.py\" stage" in source
     assert "/usr/libexec/drycontroller/initialize-initial-release" not in source
     assert "/infra/ota-helper/ota-apply" in source
