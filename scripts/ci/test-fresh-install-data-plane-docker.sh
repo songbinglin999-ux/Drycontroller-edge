@@ -169,6 +169,9 @@ cleanup() {
     elif [ -n "${dockerd_process_pid}" ]; then
       kill -TERM "${dockerd_process_pid}" >/dev/null 2>&1
     fi
+    if [ -n "${dockerd_process_pid}" ]; then
+      wait "${dockerd_process_pid}" >/dev/null 2>&1 || true
+    fi
   fi
   if [ "${net_mounted}" -eq 1 ]; then umount /sys/class/net >/dev/null 2>&1; fi
   if [ "${cloud_address_added}" -eq 1 ]; then
@@ -321,6 +324,10 @@ PATH="${shims}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   --public-config "${FIXTURE_ROOT}/public-config.json" \
   --tailscale-client-lock "${FIXTURE_ROOT}/tailscale-client-lock.json"
 
+for _ in $(seq 1 200); do
+  [ -S /run/drycontroller-registry-auth/writer.sock ] && break
+  sleep 0.05
+done
 [ -S /run/drycontroller-registry-auth/writer.sock ] \
   || fail 'formal service enable did not start the installed registry auth writer'
 [ -f /var/lib/drycontroller-host/active.json ] \
