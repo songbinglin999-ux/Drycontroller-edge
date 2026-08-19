@@ -118,16 +118,26 @@ docker_exact() {
     "${DOCKER}" "$@"
 }
 
+plc_fixture_ready() {
+  local container_pid="$1"
+  /usr/bin/nsenter --target "${container_pid}" --net \
+    /usr/sbin/ss -H -ltn 'sport = :2022' \
+    | /usr/bin/grep -Fq "${PLC_FIXTURE_ADDRESS}:2022"
+}
+
 run_plc_fixture_monitor() {
   local generation=''
-  local state container_id container_pid running started_at
+  local state container_id container_pid running started_at current_generation
   while true; do
     state="$(docker_exact container inspect \
       --format '{{.Id}} {{.State.Pid}} {{.State.Running}} {{.State.StartedAt}}' \
       edge-daq 2>/dev/null || true)"
     if [ -n "${state}" ]; then
       read -r container_id container_pid running started_at <<<"${state}"
-      if [ "${running}" = 'true' ] && [ "${container_id}:${started_at}" != "${generation}" ]; then
+      current_generation="${container_id}:${started_at}"
+      if [ "${running}" = 'true' ] \
+        && { [ "${current_generation}" != "${generation}" ] \
+          || ! plc_fixture_ready "${container_pid}"; }; then
         if /usr/bin/nsenter --target "${container_pid}" --net \
           /usr/sbin/ip address replace "${PLC_FIXTURE_ADDRESS}/32" dev lo \
           && docker_exact container cp \
@@ -137,7 +147,13 @@ run_plc_fixture_monitor() {
             --env "MODBUS_SIM_HOST=${PLC_FIXTURE_ADDRESS}" \
             --env MODBUS_SIM_PORT=2022 \
             edge-daq /usr/local/bin/python /tmp/formal-modbus-fixture.py; then
-          generation="${container_id}:${started_at}"
+          for _ in $(seq 1 50); do
+            if plc_fixture_ready "${container_pid}"; then
+              generation="${current_generation}"
+              break
+            fi
+            sleep 0.1
+          done
         fi
       fi
     fi
