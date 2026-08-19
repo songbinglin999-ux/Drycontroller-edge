@@ -328,7 +328,7 @@ def test_guard_against_an_isolated_real_docker_daemon():
         timeout=15 * 60,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert (
         "self-dockerd=1 installer=exact initializer=signed-pair refresh=live-edge-api "
         "audit=bound private-pull=authenticated-tls ota-apply=public-entrypoint "

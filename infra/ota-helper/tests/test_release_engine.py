@@ -890,6 +890,43 @@ def test_software_daemon_binding_uses_one_open_socket_descriptor(monkeypatch):
     assert observed == [("unix:///proc/self/fd/41", 41)] * 2
 
 
+def test_software_daemon_identity_uses_current_docker_line_template(tmp_path, monkeypatch):
+    docker = tmp_path / "docker"
+    docker.write_bytes(b"docker")
+    expected = {
+        "schema": "drycontroller.docker-daemon.v1",
+        "id": "daemon-id",
+        "name": "daemon-name",
+        "root_dir": "/var/lib/docker",
+    }
+    observed_args = []
+
+    monkeypatch.setattr(release_engine, "_read_identity_file", lambda *_args: expected)
+    monkeypatch.setattr(release_engine, "_validate_local_docker_config", lambda: None)
+    monkeypatch.setattr(
+        release_engine,
+        "_open_trusted_executable",
+        lambda *_args: os.open(docker, os.O_RDONLY),
+    )
+
+    def completed(args, **_kwargs):
+        observed_args.append(args)
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="daemon-id\ndaemon-name\n/var/lib/docker\n",
+        )
+
+    monkeypatch.setattr(release_engine.subprocess, "run", completed)
+
+    assert release_engine._docker_daemon_identity("unix:///proc/self/fd/41", 41) == {
+        "id": "daemon-id",
+        "name": "daemon-name",
+        "root_dir": "/var/lib/docker",
+    }
+    assert observed_args[0][-1] == "{{println .ID}}{{println .Name}}{{.DockerRootDir}}"
+
+
 def test_software_daemon_binding_rejects_identity_change_on_bound_descriptor(monkeypatch):
     @contextlib.contextmanager
     def opened():
