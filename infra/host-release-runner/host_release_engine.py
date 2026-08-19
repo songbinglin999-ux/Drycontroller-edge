@@ -1590,7 +1590,10 @@ class HostReleaseEngine:
                     continue
                 if volume_type != "bind" or not isinstance(source, str) or not source.startswith("/"):
                     raise HostReleaseError("HostRelease Compose volume type forbidden")
-                if isinstance(source, str) and (source == "/var/run/docker.sock" or source.startswith("/run/docker")):
+                if isinstance(source, str) and (
+                    source in {"/run/docker.sock", "/var/run/docker.sock"}
+                    or source.startswith("/run/docker/")
+                ):
                     raise HostReleaseError("HostRelease Compose may not mount the Docker socket")
                 if isinstance(source, str) and source.startswith("/"):
                     source_path = Path(source)
@@ -1599,11 +1602,13 @@ class HostReleaseEngine:
                     except ValueError:
                         writable_exact = {
                             "/etc/drycontroller/license",
+                            "/var/lib/drycontroller/cloud-request-nonces",
                             "/var/lib/drycontroller/configs-runtime",
                             "/var/lib/drycontroller/discovery",
                         }
                         readonly_exact = {
                             "/etc/drycontroller/keys",
+                            "/etc/drycontroller/trust",
                             "/var/lib/drycontroller",
                             "/run/drycontroller-ota",
                             "/run/drycontroller-host-release",
