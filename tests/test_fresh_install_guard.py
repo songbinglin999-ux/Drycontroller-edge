@@ -366,9 +366,12 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     assert "legacy business-container registry secret cache still exists" in source
     assert "FROM operation_audit_logs WHERE id = ${audit_id}" in source
     assert 'wait "${dockerd_process_pid}"' in source
+    assert 'umount -l "${daemon_exec}/netns/default"' in source
     assert '[ -S /run/drycontroller-registry-auth/writer.sock ] && break' in source
     assert "--network host" in source
     assert "--publish 127.0.0.1:5443:5443" not in source
+    assert '"secret" in body.get("credential", {})' in source
+    assert 'credential["secret"] in json.dumps(body)' in source
 
 
 @pytest.mark.parametrize(

@@ -172,6 +172,9 @@ cleanup() {
     if [ -n "${dockerd_process_pid}" ]; then
       wait "${dockerd_process_pid}" >/dev/null 2>&1 || true
     fi
+    if mountpoint -q "${daemon_exec}/netns/default"; then
+      umount -l "${daemon_exec}/netns/default" >/dev/null 2>&1 || true
+    fi
   fi
   if [ "${net_mounted}" -eq 1 ]; then umount /sys/class/net >/dev/null 2>&1; fi
   if [ "${cloud_address_added}" -eq 1 ]; then
@@ -399,6 +402,7 @@ for line in pathlib.Path("/etc/drycontroller/runtime.env").read_text(encoding="u
         values[key] = value
 admin = json.loads(values["ADMIN_API_KEYS"])[0]
 payload = pathlib.Path(sys.argv[1]).read_bytes()
+credential = json.loads(payload)
 request = urllib.request.Request(
     "http://127.0.0.1:18080/api/v1/ops/registry-credentials/refresh",
     data=payload,
@@ -407,7 +411,11 @@ request = urllib.request.Request(
 )
 with urllib.request.urlopen(request, timeout=15) as response:
     body = json.load(response)
-if body.get("success") is not True or "secret" in json.dumps(body):
+if (
+    body.get("success") is not True
+    or "secret" in body.get("credential", {})
+    or credential["secret"] in json.dumps(body)
+):
     raise SystemExit("live registry credential refresh response invalid")
 PY
 [ "$(stat -c '%u:%g:%a' "${AUTH_SOURCE}")" = '0:0:400' ] \
