@@ -32,6 +32,7 @@ SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"
 RELEASE_JOURNAL_SCHEMA = "drycontroller.release-journal.v1"
 REGISTRY_AUTH_SCHEMA = "drycontroller.registry-auth.v2"
 HOST_ACTIVE_SCHEMA = "drycontroller.host-active.v1"
+HOST_HEALTH_CONTRACT = "drycontroller.edge-health.v1"
 COSIGN_VERSION = "v3.1.3"
 COSIGN_LINUX_AMD64_SHA256 = "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
 COSIGN_TOOLCHAIN = {
@@ -640,6 +641,7 @@ def local_image_reference(service: str, image_id: str) -> str:
 def canonical_topology_digest(compose_digest: str, service_inventory: list[str]) -> str:
     topology = {
         "compose_digest": compose_digest,
+        "health_contract": HOST_HEALTH_CONTRACT,
         "service_inventory": service_inventory,
     }
     return f"sha256:{hashlib.sha256(canonical_manifest_bytes(topology)).hexdigest()}"

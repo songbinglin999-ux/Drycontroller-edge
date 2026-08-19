@@ -25,6 +25,7 @@ import release_engine  # noqa: E402
 from release_engine import (  # noqa: E402
     RELEASE_JOURNAL_SCHEMA,
     COSIGN_TOOLCHAIN,
+    HOST_HEALTH_CONTRACT,
     ReleaseEngine,
     ReleaseError,
     ReleasePaths,
@@ -59,6 +60,16 @@ SERVICES = (
 COMPOSE_BYTES = b"services: {}\n"
 COMPOSE_DIGEST = "sha256:" + hashlib.sha256(COMPOSE_BYTES).hexdigest()
 TOPOLOGY_DIGEST = canonical_topology_digest(COMPOSE_DIGEST, sorted(SERVICES))
+
+
+def test_topology_digest_includes_the_signed_health_contract():
+    assert TOPOLOGY_DIGEST == canonical_manifest_digest(
+        {
+            "compose_digest": COMPOSE_DIGEST,
+            "health_contract": HOST_HEALTH_CONTRACT,
+            "service_inventory": sorted(SERVICES),
+        }
+    )
 
 
 def _write_docker_archive(path: Path, manifest: list[dict], configs: dict[str, bytes] | None = None) -> None:

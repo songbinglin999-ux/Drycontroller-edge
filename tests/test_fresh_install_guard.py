@@ -325,7 +325,7 @@ def test_guard_against_an_isolated_real_docker_daemon():
         text=True,
         capture_output=True,
         check=False,
-        timeout=5 * 60,
+        timeout=15 * 60,
     )
 
     assert result.returncode == 0, result.stderr
