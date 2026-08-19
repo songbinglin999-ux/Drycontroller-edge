@@ -1541,7 +1541,7 @@ class ReleaseEngine:
                     else:
                         raise ReleaseError("release service is not running")
                 health = str(record.get("Health") or "").lower()
-                if service != "mosquitto-init" and health == "starting":
+                if service != "mosquitto-init" and health in {"starting", "unhealthy"}:
                     pending = True
                 elif service != "mosquitto-init" and health not in {"", "healthy"}:
                     raise ReleaseError("release service is unhealthy")
