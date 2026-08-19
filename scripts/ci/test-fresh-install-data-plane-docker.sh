@@ -567,7 +567,8 @@ if ! DOCKER_HOST='tcp://127.0.0.1:9' \
   PATH="${attacker_bin}:/usr/local/bin:/usr/bin:/bin" \
   "/opt/Drycontroller-edge/infra/ota-helper/ota-apply" \
   >"${tmp_dir}/ota-apply.out" 2>&1; then
-  fail "public OTA entrypoint failed: $(<"${tmp_dir}/ota-apply.out")"
+  runtime_status="$(docker_exact container ls --all --format '{{.Names}}={{.Status}}' 2>&1 || true)"
+  fail "public OTA entrypoint failed: $(<"${tmp_dir}/ota-apply.out"); runtime status: ${runtime_status}"
 fi
 for name in docker bash docker-compose; do
   [ ! -e "${tmp_dir}/attacker-${name}" ] || fail "PATH ${name} replacement executed"
