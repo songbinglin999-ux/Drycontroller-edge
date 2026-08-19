@@ -99,6 +99,7 @@ readonly audit_binding="${tmp_dir}/registry-audit-binding.json"
 readonly audit_row="${tmp_dir}/registry-audit-row.json"
 
 dockerd_started=0
+dockerd_process_pid=''
 registry_started=0
 policy_pid=''
 socket_probe_pid=''
@@ -124,8 +125,12 @@ cleanup() {
   if [ "${registry_started}" -eq 1 ]; then
     docker_exact container rm --force "${REGISTRY_CONTAINER}" >/dev/null 2>&1
   fi
-  if [ "${dockerd_started}" -eq 1 ] && [ -f "${daemon_pid}" ]; then
-    kill -TERM "$(<"${daemon_pid}")" >/dev/null 2>&1
+  if [ "${dockerd_started}" -eq 1 ]; then
+    if [ -f "${daemon_pid}" ]; then
+      kill -TERM "$(<"${daemon_pid}")" >/dev/null 2>&1
+    elif [ -n "${dockerd_process_pid}" ]; then
+      kill -TERM "${dockerd_process_pid}" >/dev/null 2>&1
+    fi
   fi
   if [ "${net_mounted}" -eq 1 ]; then umount /sys/class/net >/dev/null 2>&1; fi
   if [ "${cloud_address_added}" -eq 1 ]; then
@@ -173,10 +178,11 @@ update-ca-certificates >/dev/null
   --pidfile="${daemon_pid}" \
   --bridge=none \
   >"${daemon_log}" 2>&1 &
+dockerd_process_pid="$!"
 dockerd_started=1
 for _ in $(seq 1 300); do
   [ -S /run/docker.sock ] && docker_exact info >/dev/null 2>&1 && break
-  [ -f "${daemon_pid}" ] && kill -0 "$(<"${daemon_pid}")" >/dev/null 2>&1 \
+  kill -0 "${dockerd_process_pid}" >/dev/null 2>&1 \
     || fail 'disposable dockerd exited during startup'
   sleep 0.05
 done
