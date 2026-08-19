@@ -325,7 +325,7 @@ def test_guard_against_an_isolated_real_docker_daemon():
         text=True,
         capture_output=True,
         check=False,
-        timeout=15 * 60,
+        timeout=30 * 60,
     )
 
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -343,6 +343,7 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     source = REAL_DOCKER_E2E.read_text(encoding="utf-8")
 
     assert "infra/bootstrap/install-edge-host.sh" in source
+    assert "--storage-driver=vfs" in source
     assert "scripts/prepare-host-release.py\" stage" in source
     assert "/usr/libexec/drycontroller/initialize-initial-release" not in source
     assert "/infra/ota-helper/ota-apply" in source

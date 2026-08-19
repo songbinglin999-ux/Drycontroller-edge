@@ -175,6 +175,7 @@ update-ca-certificates >/dev/null
   --host=unix:///run/docker.sock \
   --data-root="${daemon_data}" \
   --exec-root="${daemon_exec}" \
+  --storage-driver=vfs \
   --pidfile="${daemon_pid}" \
   --bridge=none \
   >"${daemon_log}" 2>&1 &
@@ -188,6 +189,8 @@ for _ in $(seq 1 300); do
 done
 [ "$(docker_exact info --format '{{.DockerRootDir}}')" = "${daemon_data}" ] \
   || fail 'Docker CLI is not bound to the disposable data root'
+[ "$(docker_exact info --format '{{.Driver}}')" = 'vfs' ] \
+  || fail 'disposable dockerd is not using the nested-safe storage driver'
 [ -z "$(docker_exact container ls --all --quiet --no-trunc)" ] \
   || fail 'disposable daemon is not container-empty'
 
