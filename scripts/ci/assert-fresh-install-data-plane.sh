@@ -319,7 +319,7 @@ docker_checked() {
   [ "$(stat -c '%d:%i' "${DOCKER_SOCKET}" 2>/dev/null || true)" = "${socket_identity}" ] \
     || deny 'Docker socket identity changed'
   output="$("${DOCKER_EXEC}" "$@")" || status=$?
-  observed="$("${DOCKER_EXEC}" info --format '{{.ID}}\n{{.Name}}\n{{.DockerRootDir}}')" \
+  observed="$("${DOCKER_EXEC}" info --format '{{println .ID}}{{println .Name}}{{.DockerRootDir}}')" \
     || deny 'Docker daemon identity unavailable'
   [ "${observed}" = "${expected_daemon_identity}" ] \
     || deny 'Docker daemon identity changed'
