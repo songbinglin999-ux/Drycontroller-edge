@@ -584,7 +584,9 @@ if ! DOCKER_HOST='tcp://127.0.0.1:9' \
   "/opt/Drycontroller-edge/infra/ota-helper/ota-apply" \
   >"${tmp_dir}/ota-apply.out" 2>&1; then
   runtime_status="$(docker_exact container ls --all --format '{{.Names}}={{.Status}}' 2>&1 || true)"
-  fail "public OTA entrypoint failed: $(<"${tmp_dir}/ota-apply.out"); runtime status: ${runtime_status}"
+  edge_daq_ready="$(/usr/bin/curl --silent --show-error --max-time 5 \
+    http://127.0.0.1:8082/ready 2>&1 || true)"
+  fail "public OTA entrypoint failed: $(<"${tmp_dir}/ota-apply.out"); runtime status: ${runtime_status}; edge-daq ready: ${edge_daq_ready}"
 fi
 for name in docker bash docker-compose; do
   [ ! -e "${tmp_dir}/attacker-${name}" ] || fail "PATH ${name} replacement executed"
