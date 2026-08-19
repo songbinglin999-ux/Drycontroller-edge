@@ -844,7 +844,7 @@ def _docker_daemon_identity(docker_host: str, socket_descriptor: int) -> dict[st
                 _descriptor_path(descriptor),
                 "info",
                 "--format",
-                "{{.ID}}\\n{{.Name}}\\n{{.DockerRootDir}}",
+                "{{println .ID}}{{println .Name}}{{.DockerRootDir}}",
             ],
             env={
                 **_FIXED_ENV,
