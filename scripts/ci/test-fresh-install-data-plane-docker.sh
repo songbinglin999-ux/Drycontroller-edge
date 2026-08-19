@@ -648,15 +648,19 @@ try:
             "DOCKER_CONFIG": "/var/lib/drycontroller-ota/guard-docker-config",
         },
         pass_fds=(descriptor,),
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=15,
     )
 finally:
     os.close(descriptor)
+lines = completed.stdout.splitlines()
+if completed.returncode != 0 or len(lines) != 3:
+    detail = completed.stderr.strip()[:1000]
+    raise SystemExit(f"descriptor-bound Docker probe unavailable: {detail}")
 expected = json.loads(pathlib.Path("/etc/drycontroller/docker-daemon.json").read_text(encoding="utf-8"))
-observed = dict(zip(("id", "name", "root_dir"), completed.stdout.splitlines(), strict=True))
+observed = dict(zip(("id", "name", "root_dir"), lines, strict=True))
 if observed != {key: expected[key] for key in observed}:
     raise SystemExit("descriptor-bound Docker CLI reached the replacement path")
 PY

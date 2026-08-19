@@ -363,6 +363,7 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     assert "cat >\"${compose_file}\"" not in source
     assert "os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW" in source
     assert '"DOCKER_HOST": f"unix:///proc/self/fd/{descriptor}"' in source
+    assert "descriptor-bound Docker probe unavailable" in source
     assert "legacy business-container registry secret cache still exists" in source
     assert "FROM operation_audit_logs WHERE id = ${audit_id}" in source
     assert 'wait "${dockerd_process_pid}"' in source
