@@ -18,7 +18,7 @@ async def toggle_heartbeat(context: ModbusServerContext, slave_id: int) -> None:
     while True:
         value ^= 1
         context[slave_id].setValues(3, 45290, [value])
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
 
 async def main() -> None:

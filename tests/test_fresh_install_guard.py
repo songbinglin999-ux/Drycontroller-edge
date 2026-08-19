@@ -386,6 +386,13 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     assert "drycontroller-e2e-registry.crt" in source
 
 
+def test_formal_modbus_fixture_matches_the_plc_heartbeat_toggle_contract():
+    source = (ROOT / "scripts" / "ci" / "formal-modbus-fixture.py").read_text(encoding="utf-8")
+
+    assert "setValues(3, 45290, [value])" in source
+    assert "await asyncio.sleep(0.5)" in source
+
+
 @pytest.mark.parametrize(
     "logical",
     [
