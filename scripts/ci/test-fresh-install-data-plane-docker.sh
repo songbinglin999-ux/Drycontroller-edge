@@ -20,6 +20,7 @@ readonly REGISTRY_CONTAINER='drycontroller-rb8a2-registry'
 readonly REGISTRY_IMAGE='registry:2'
 readonly CLOUD_ADDRESS='100.100.0.2'
 readonly CLOUD_PORT='443'
+readonly CLOUD_HOST='ops.e2e.test'
 readonly PLC_FIXTURE_ADDRESS='192.168.1.100'
 
 fail() {
@@ -504,6 +505,7 @@ PY
 readonly operation_id="$(<"${operation_id_file}")"
 ip address add "${CLOUD_ADDRESS}/32" dev lo
 cloud_address_added=1
+printf '%s %s\n' "${CLOUD_ADDRESS}" "${CLOUD_HOST}" >>/etc/hosts
 "${PYTHON}" "${SOURCE_ROOT}/scripts/ci/formal-ota-policy-server.py" \
   --policy "${FIXTURE_ROOT}/candidate-policy.json" \
   --credential "${device_credential}" \
@@ -514,8 +516,37 @@ cloud_address_added=1
   --port "${CLOUD_PORT}" \
   >"${policy_log}" 2>&1 &
 policy_pid="$!"
-sleep 0.2
-kill -0 "${policy_pid}" >/dev/null 2>&1 || fail 'TLS policy fixture did not start'
+"${PYTHON}" - \
+  "${FIXTURE_ROOT}/candidate-policy.json" \
+  "${device_credential}" \
+  "${FIXTURE_ROOT}/cloud-ca.crt" <<'PY'
+import json
+import pathlib
+import ssl
+import sys
+import time
+import urllib.request
+
+expected = pathlib.Path(sys.argv[1]).read_bytes()
+operation_id = json.loads(expected)["operation_id"]
+credential = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").strip()
+context = ssl.create_default_context(cafile=sys.argv[3])
+request = urllib.request.Request(
+    f"https://ops.e2e.test/api/v1/ota/release-policy/{operation_id}",
+    headers={"X-Device-Credential": credential, "Accept": "application/json"},
+)
+for _ in range(100):
+    try:
+        with urllib.request.urlopen(request, context=context, timeout=2) as response:
+            body = response.read(len(expected) + 1)
+        if body != expected:
+            raise SystemExit("TLS policy fixture returned unexpected content")
+        break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("TLS policy fixture did not become ready")
+PY
 printf '{"operation_id":"%s"}' "${operation_id}" >"${STATE_ROOT}/request.json"
 chmod 0600 "${STATE_ROOT}/request.json"
 

@@ -372,6 +372,9 @@ def test_real_docker_e2e_uses_only_formal_public_entrypoints():
     assert "--publish 127.0.0.1:5443:5443" not in source
     assert '"secret" in body.get("credential", {})' in source
     assert 'credential["secret"] in json.dumps(body)' in source
+    assert 'readonly CLOUD_HOST=\'ops.e2e.test\'' in source
+    assert '"${CLOUD_ADDRESS}" "${CLOUD_HOST}" >>/etc/hosts' in source
+    assert "TLS policy fixture did not become ready" in source
 
 
 @pytest.mark.parametrize(
