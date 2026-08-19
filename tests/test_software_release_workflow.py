@@ -55,7 +55,7 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     release_builder = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
     influxdb = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
     postgres = (ROOT / "infra/release-images/postgres/Dockerfile").read_text(encoding="utf-8")
-    validation = (ROOT / ".gitea/workflows/rb8-external-image-validation.yml").read_text(
+    validation = (ROOT / "scripts/ci/rb8-a1-validation-control.yml").read_text(
         encoding="utf-8"
     )
 
