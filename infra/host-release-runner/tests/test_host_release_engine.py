@@ -126,7 +126,13 @@ def _host(
     }
 
 
-def _bundle(path: Path, files: dict[str, tuple[bytes, int]], config: bytes) -> None:
+def _bundle(
+    path: Path,
+    files: dict[str, tuple[bytes, int]],
+    config: bytes,
+    *,
+    include_layer_sources: bool = False,
+) -> None:
     layer_buffer = io.BytesIO()
     with tarfile.open(fileobj=layer_buffer, mode="w") as layer:
         for relative, (data, mode) in sorted(files.items()):
@@ -136,19 +142,147 @@ def _bundle(path: Path, files: dict[str, tuple[bytes, int]], config: bytes) -> N
             info.type = tarfile.REGTYPE
             layer.addfile(info, io.BytesIO(data))
     layer_bytes = layer_buffer.getvalue()
-    image_manifest = json.dumps(
-        [{"Config": "config.json", "RepoTags": ["bundle:test"], "Layers": ["layer.tar"]}],
-        separators=(",", ":"),
-    ).encode()
+    layer_name = "layer.tar"
+    image_record = {"Config": "config.json", "RepoTags": ["bundle:test"], "Layers": [layer_name]}
+    if include_layer_sources:
+        digest = hashlib.sha256(layer_bytes).hexdigest()
+        layer_name = f"blobs/sha256/{digest}"
+        image_record["Layers"] = [layer_name]
+        image_record["LayerSources"] = {
+            f"sha256:{digest}": {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar",
+                "size": len(layer_bytes),
+                "digest": f"sha256:{digest}",
+            }
+        }
+    image_manifest = json.dumps([image_record], separators=(",", ":")).encode()
     with tarfile.open(path, "w") as archive:
         for name, data in (
             ("manifest.json", image_manifest),
             ("config.json", config),
-            ("layer.tar", layer_bytes),
+            (layer_name, layer_bytes),
         ):
             info = tarfile.TarInfo(name)
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
+
+
+def test_docker_29_layer_sources_are_strictly_bound_to_the_scratch_layer(tmp_path):
+    paths = _paths(tmp_path)
+    files = _files(1)
+    topology = {
+        "compose_digest": f"sha256:{hashlib.sha256(files['docker-compose.yml'][0]).hexdigest()}",
+        "service_inventory": ["edge-api"],
+        "health_contract": HOST_HEALTH_CONTRACT,
+    }
+    software, _config = _software(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "11111111-1111-4111-8111-111111111111",
+        canonical_topology_digest(topology),
+        1,
+    )
+    bundle_config = b'{"architecture":"amd64","sequence":1}'
+    host = _host("11111111-1111-4111-8111-111111111111", software, 1, files, bundle_config)
+    archive = tmp_path / "docker-29-bundle.tar"
+    _bundle(archive, files, bundle_config, include_layer_sources=True)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    HostReleaseEngine(paths=paths)._extract_bundle(archive, host, staging)
+
+    assert (staging / "rootfs" / "docker-compose.yml").read_bytes() == files[
+        "docker-compose.yml"
+    ][0]
+
+
+@pytest.mark.parametrize(
+    "layer_sources",
+    [
+        {},
+        {
+            "sha256:" + "a" * 64: {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar",
+                "size": 10240,
+                "digest": "sha256:" + "a" * 64,
+            }
+        },
+        {
+            "sha256:" + "b" * 64: {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                "size": 10240,
+                "digest": "sha256:" + "b" * 64,
+                "untrustedExtension": True,
+            }
+        },
+    ],
+)
+def test_docker_29_layer_sources_reject_unbound_or_extended_metadata(tmp_path, layer_sources):
+    digest = "b" * 64
+    archive = tmp_path / "bundle.tar"
+    image_manifest = json.dumps(
+        [
+            {
+                "Config": "config.json",
+                "RepoTags": ["bundle:test"],
+                "Layers": [f"blobs/sha256/{digest}"],
+                "LayerSources": layer_sources,
+            }
+        ],
+        separators=(",", ":"),
+    ).encode()
+    with tarfile.open(archive, "w") as outer:
+        for name, data in (
+            ("manifest.json", image_manifest),
+            ("config.json", b"{}"),
+            (f"blobs/sha256/{digest}", b"not-a-layer"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            outer.addfile(info, io.BytesIO(data))
+    host = {"bundle": {"image_id": f"sha256:{hashlib.sha256(b'{}').hexdigest()}"}}
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    with pytest.raises(HostReleaseError, match="layer source"):
+        HostReleaseEngine(paths=_paths(tmp_path))._extract_bundle(archive, host, staging)
+
+
+def test_docker_29_layer_sources_reject_blob_content_digest_mismatch(tmp_path):
+    layer_bytes = b"not-the-declared-layer"
+    digest = hashlib.sha256(b"different-layer-bytes").hexdigest()
+    image_manifest = json.dumps(
+        [
+            {
+                "Config": "config.json",
+                "RepoTags": ["bundle:test"],
+                "Layers": [f"blobs/sha256/{digest}"],
+                "LayerSources": {
+                    f"sha256:{digest}": {
+                        "mediaType": "application/vnd.oci.image.layer.v1.tar",
+                        "size": len(layer_bytes),
+                        "digest": f"sha256:{digest}",
+                    }
+                },
+            }
+        ],
+        separators=(",", ":"),
+    ).encode()
+    archive = tmp_path / "bundle.tar"
+    with tarfile.open(archive, "w") as outer:
+        for name, data in (
+            ("manifest.json", image_manifest),
+            ("config.json", b"{}"),
+            (f"blobs/sha256/{digest}", layer_bytes),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            outer.addfile(info, io.BytesIO(data))
+    host = {"bundle": {"image_id": f"sha256:{hashlib.sha256(b'{}').hexdigest()}"}}
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    with pytest.raises(HostReleaseError, match="content digest mismatch"):
+        HostReleaseEngine(paths=_paths(tmp_path))._extract_bundle(archive, host, staging)
 
 
 def _image_archive(path: Path, references: list[str], configs: dict[str, bytes]) -> None:

@@ -1429,6 +1429,7 @@ class HostReleaseEngine:
     def _extract_bundle(self, archive: Path, host: dict[str, Any], staging: Path) -> None:
         rootfs = staging / "rootfs"
         rootfs.mkdir(mode=0o700)
+        expected_layer_digest: str | None = None
         try:
             with tarfile.open(archive, "r:*") as outer:
                 manifest_member = outer.getmember("manifest.json")
@@ -1439,7 +1440,11 @@ class HostReleaseEngine:
                 if not isinstance(image_manifest, list) or len(image_manifest) != 1:
                     raise HostReleaseError("HostRelease bundle must contain one image")
                 image_record = image_manifest[0]
-                if not isinstance(image_record, dict) or set(image_record) != {"Config", "RepoTags", "Layers"}:
+                required_fields = {"Config", "RepoTags", "Layers"}
+                if not isinstance(image_record, dict) or frozenset(image_record) not in {
+                    frozenset(required_fields),
+                    frozenset({*required_fields, "LayerSources"}),
+                }:
                     raise HostReleaseError("OCI image manifest fields invalid")
                 config_name = image_record.get("Config")
                 if not isinstance(config_name, str):
@@ -1459,6 +1464,29 @@ class HostReleaseEngine:
                 layer_member = outer.getmember(layers[0])
                 if not layer_member.isfile() or layer_member.size > _MAX_LAYER_BYTES:
                     raise HostReleaseError("HostRelease layer invalid")
+                if "LayerSources" in image_record:
+                    layer_digest = f"sha256:{PurePosixPath(layers[0]).name}"
+                    layer_sources = image_record["LayerSources"]
+                    if (
+                        layers[0] != f"blobs/sha256/{layer_digest.removeprefix('sha256:')}"
+                        or not _DIGEST.fullmatch(layer_digest)
+                        or not isinstance(layer_sources, dict)
+                        or set(layer_sources) != {layer_digest}
+                    ):
+                        raise HostReleaseError("HostRelease OCI layer sources invalid")
+                    layer_source = layer_sources[layer_digest]
+                    if (
+                        not isinstance(layer_source, dict)
+                        or set(layer_source) != {"mediaType", "size", "digest"}
+                        or layer_source.get("mediaType") != "application/vnd.oci.image.layer.v1.tar"
+                        or layer_source.get("digest") != layer_digest
+                        or not isinstance(layer_source.get("size"), int)
+                        or isinstance(layer_source.get("size"), bool)
+                        or layer_source.get("size") != layer_member.size
+                        or layer_member.size < 1
+                    ):
+                        raise HostReleaseError("HostRelease OCI layer source metadata invalid")
+                    expected_layer_digest = layer_digest
                 layer_file = outer.extractfile(layer_member)
                 if layer_file is None:
                     raise HostReleaseError("HostRelease layer missing")
@@ -1469,6 +1497,10 @@ class HostReleaseEngine:
             raise HostReleaseError("HostRelease OCI image invalid") from exc
         if len(layer_bytes) > _MAX_LAYER_BYTES:
             raise HostReleaseError("HostRelease layer too large")
+        if expected_layer_digest is not None and (
+            f"sha256:{hashlib.sha256(layer_bytes).hexdigest()}" != expected_layer_digest
+        ):
+            raise HostReleaseError("HostRelease OCI layer content digest mismatch")
         expected = {record["path"]: record for record in host["files"]}
         observed: set[str] = set()
         try:

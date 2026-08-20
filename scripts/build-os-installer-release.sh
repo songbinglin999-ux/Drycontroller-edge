@@ -18,9 +18,11 @@ LICENSE_TRUST="dist/initial-release/license-trust.json"
 PUBLIC_CONFIG="dist/initial-release/public-config.json"
 TAILSCALE_VERSIONS_LOCK=""
 TAILSCALE_DEB=""
+OFFLINE_APT_SNAPSHOT_ROOT=""
+OFFLINE_APT_LOCK=""
+OFFLINE_APT_LOCK_SHA256=""
 INSTALLER_PRIVATE_KEY=""
 INSTALLER_PUBLIC_KEY=""
-APT_MIRROR="${DRYCONTROLLER_AUTOINSTALL_APT_MIRROR:-}"
 FORCE=false
 COSIGN_APPROVED_VERSION="v3.1.3"
 COSIGN_APPROVED_LINUX_AMD64_SHA256="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
@@ -55,9 +57,11 @@ Options:
   --public-config FILE
   --tailscale-versions-lock FILE      Cloud infra/headscale/versions.lock.json
   --tailscale-deb FILE                Exact public Linux amd64 DEB from that lock
+  --offline-apt-snapshot-root DIR     Fixed local Ubuntu snapshot bytes
+  --offline-apt-lock FILE             Exact Release/Packages/package input lock
+  --offline-apt-lock-sha256 SHA256    Independently supplied lock digest
   --installer-private-key FILE
   --installer-public-key FILE
-  --apt-mirror URI
   --force
 
 This wrapper runs only on the fixed Ubuntu 24.04 Linux amd64 builder. It
@@ -90,9 +94,11 @@ while [ $# -gt 0 ]; do
     --public-config) value "$1" "${2:-}"; PUBLIC_CONFIG="$2"; shift 2 ;;
     --tailscale-versions-lock) value "$1" "${2:-}"; TAILSCALE_VERSIONS_LOCK="$2"; shift 2 ;;
     --tailscale-deb) value "$1" "${2:-}"; TAILSCALE_DEB="$2"; shift 2 ;;
+    --offline-apt-snapshot-root) value "$1" "${2:-}"; OFFLINE_APT_SNAPSHOT_ROOT="$2"; shift 2 ;;
+    --offline-apt-lock) value "$1" "${2:-}"; OFFLINE_APT_LOCK="$2"; shift 2 ;;
+    --offline-apt-lock-sha256) value "$1" "${2:-}"; OFFLINE_APT_LOCK_SHA256="$2"; shift 2 ;;
     --installer-private-key) value "$1" "${2:-}"; INSTALLER_PRIVATE_KEY="$2"; shift 2 ;;
     --installer-public-key) value "$1" "${2:-}"; INSTALLER_PUBLIC_KEY="$2"; shift 2 ;;
-    --apt-mirror) value "$1" "${2:-}"; APT_MIRROR="$2"; shift 2 ;;
     --force) FORCE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
@@ -122,9 +128,15 @@ for path in \
   "$BASE_ISO" "$HOST_RELEASE" "$SOFTWARE_RELEASE" "$HOST_PUBLIC_KEY" \
   "$SOFTWARE_PUBLIC_KEY" "$COSIGN_LINUX_AMD64" "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" \
   "$LICENSE_TRUST" "$PUBLIC_CONFIG" "$TAILSCALE_VERSIONS_LOCK" "$TAILSCALE_DEB" \
-  "$INSTALLER_PRIVATE_KEY" "$INSTALLER_PUBLIC_KEY"; do
+  "$OFFLINE_APT_LOCK" "$INSTALLER_PRIVATE_KEY" "$INSTALLER_PUBLIC_KEY"; do
   require_file "$path"
 done
+[ -d "$OFFLINE_APT_SNAPSHOT_ROOT" ] \
+  || die "required offline apt snapshot root not found: $OFFLINE_APT_SNAPSHOT_ROOT"
+[[ "$OFFLINE_APT_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || die "--offline-apt-lock-sha256 must be one lowercase SHA-256 digest"
+[ "$(sha256sum "$OFFLINE_APT_LOCK" | awk '{print $1}')" = "$OFFLINE_APT_LOCK_SHA256" ] \
+  || die "offline apt input lock checksum mismatch"
 [[ "$BASE_ISO_SHA256" =~ ^[0-9a-f]{64}$ ]] \
   || die "--base-iso-sha256 must be one approved lowercase SHA-256 digest"
 [ "$BASE_ISO_SHA256" = "$APPROVED_BASE_ISO_SHA256" ] \
@@ -142,6 +154,12 @@ grep -Eq "GitVersion:[[:space:]]+${COSIGN_APPROVED_VERSION//./\\.}([[:space:]]|$
 grep -Eq 'Platform:[[:space:]]+linux/amd64([[:space:]]|$)' <<<"$cosign_version_output" \
   || die "formal builder cosign platform is not linux/amd64"
 export PATH="$PINNED_TOOL_DIR:$PATH"
+run python3 scripts/validate-autoinstall-offline-apt-input.py validate \
+  --snapshot-root "$OFFLINE_APT_SNAPSHOT_ROOT" \
+  --lock "$OFFLINE_APT_LOCK" \
+  --lock-sha256 "$OFFLINE_APT_LOCK_SHA256" \
+  --plan-out "$PINNED_TOOL_DIR/offline-apt-plan.json" \
+  --combined-packages-out "$PINNED_TOOL_DIR/offline-apt-Packages"
 if [ -z "$OUTPUT_ISO" ]; then
   OUTPUT_ISO="dist/OS$(TZ=Asia/Shanghai date '+%Y%m%d')-${CHANNEL}.iso"
 fi
@@ -223,8 +241,11 @@ run python3 scripts/public-material-scan.py \
   --software-public-key dist/autoinstall/software-release-cosign.pub \
   --cosign "$PINNED_TOOL_DIR/cosign"
 run bash scripts/build-device-identity-wheelhouse.sh
-apt_args=(--suite noble --arch amd64)
-if [ -n "$APT_MIRROR" ]; then apt_args+=(--mirror "$APT_MIRROR"); fi
+apt_args=(
+  --snapshot-root "$OFFLINE_APT_SNAPSHOT_ROOT"
+  --lock "$OFFLINE_APT_LOCK"
+  --lock-sha256 "$OFFLINE_APT_LOCK_SHA256"
+)
 apt_args+=(--extra-deb "$TAILSCALE_DEB")
 run bash scripts/build-autoinstall-offline-apt-repo.sh "${apt_args[@]}"
 run bash scripts/build-autoinstall-bundle.sh --out dist/autoinstall
