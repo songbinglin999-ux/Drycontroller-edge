@@ -29,6 +29,7 @@ from host_release_engine import (  # noqa: E402
     COSIGN_TOOLCHAIN,
     HOST_ACTIVE_SCHEMA,
     HOST_HEALTH_CONTRACT,
+    REGISTRY_AUTH_SCHEMA,
     HostReleaseEngine,
     HostReleaseError,
     HostReleasePaths,
@@ -290,7 +291,32 @@ def test_signed_host_topology_change_and_failed_candidate_roll_back_offline(tmp_
     )
     for directory in (paths.releases, paths.software_releases, paths.journal.parent):
         directory.mkdir(parents=True, exist_ok=True)
-    paths.registry_status.write_text(json.dumps({"status": "active", "registry_host": registry}))
+    registry_secret = b"secret"
+    paths.registry_status.write_text(
+        json.dumps(
+            {
+                "schema": REGISTRY_AUTH_SCHEMA,
+                "auths": {
+                    registry: {
+                        "auth": base64.b64encode(b"reader:" + registry_secret).decode("ascii")
+                    }
+                },
+                "credential": {
+                    "status": "active",
+                    "credential_id": "cred-1",
+                    "registry_host": registry,
+                    "username": "reader",
+                    "secret_fingerprint": hashlib.sha256(registry_secret).hexdigest()[:16],
+                    "version": 2,
+                    "transaction_id": "a" * 32,
+                    "audit_id": 17,
+                    "updated_at": "2026-08-19T00:00:00+00:00",
+                },
+            }
+        )
+    )
+    paths.registry_status.chmod(0o400)
+    paths.registry_status.parent.chmod(0o700)
     paths.device.write_text(
         json.dumps(
             {
@@ -375,9 +401,13 @@ def test_signed_host_topology_change_and_failed_candidate_roll_back_offline(tmp_
             if len(actual) > 1 and actual[1] == "verify":
                 actual.insert(2, "--allow-insecure-registry")
             return _run(actual, cwd=cwd)
-        if args[0] == "/usr/bin/docker":
+        if args[0] in (
+            "/usr/bin/docker",
+            "/usr/libexec/docker/cli-plugins/docker-compose",
+        ):
+            subcommand = ["compose"] if Path(args[0]).name == "docker-compose" else []
             return _run(
-                [docker, *args[1:]],
+                [docker, *subcommand, *args[1:]],
                 cwd=cwd,
                 env={**os.environ, "COMPOSE_PROJECT_NAME": "drycontroller-edge"},
             )
@@ -655,7 +685,7 @@ def test_signed_host_topology_change_and_failed_candidate_roll_back_offline(tmp_
                     stderr=subprocess.DEVNULL,
                 )
         subprocess.run(
-            [docker, "rm", "-f", registry_name],
+            [docker, "rm", "-f", "-v", registry_name],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
