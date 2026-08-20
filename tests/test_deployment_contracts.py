@@ -188,6 +188,13 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert 'export PATH="$PINNED_TOOL_DIR:$PATH"' in release_builder
     assert "scripts/build-device-identity-wheelhouse.sh" in release_builder
     assert "scripts/build-autoinstall-offline-apt-repo.sh" in release_builder
+    assert "--offline-apt-snapshot-root" in release_builder
+    assert "--offline-apt-lock" in release_builder
+    assert "--offline-apt-lock-sha256" in release_builder
+    assert "--apt-mirror" not in release_builder
+    assert "DRYCONTROLLER_AUTOINSTALL_APT_MIRROR" not in release_builder
+    assert "--snapshot-root" in release_builder
+    assert "--lock-sha256" in release_builder
     assert "--tailscale-versions-lock" in release_builder
     assert "--tailscale-deb" in release_builder
     assert 'apt_args+=(--extra-deb "$TAILSCALE_DEB")' in release_builder

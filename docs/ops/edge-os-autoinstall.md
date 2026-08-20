@@ -13,6 +13,15 @@ Formal release flow is fail closed:
    amd64 builder, requires `--base-iso-sha256` from the separately approved
    Ubuntu 24.04.4 live-server checksum, requires it to match the reviewed policy
    allowlist, and verifies the ISO bytes before using the base as a diff baseline.
+   It also requires `--offline-apt-snapshot-root`, `--offline-apt-lock`, and an
+   independently supplied `--offline-apt-lock-sha256`. The lock admits only an
+   immutable `snapshot.ubuntu.com` timestamp, noble/amd64 Release and uncompressed
+   Packages files with exact size/SHA-256 bindings, explicit requested versions,
+   and the complete resolved dependency closure. The builder resolves only from
+   those local bytes and rejects metadata drift, a changed dependency set, live
+   mirrors, `current` aliases, and online fallback. The copied lock and a
+   deterministic receipt containing all input/output digests are embedded in the
+   offline apt repository and bound into the adjacent release manifest.
    It also consumes the Cloud `infra/headscale/versions.lock.json` plus its exact
    public Tailscale DEB and rejects version, architecture, URL, package metadata,
    or SHA-256 drift. It then rebuilds all inputs, verifies the final ISO, and
