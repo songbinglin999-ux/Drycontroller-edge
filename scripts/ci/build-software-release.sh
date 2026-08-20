@@ -2,6 +2,9 @@
 # Build one complete, signed Edge SoftwareRelease and complete it in Cloud last.
 set -euo pipefail
 
+TRIVY_BINARY="/usr/local/bin/trivy"
+readonly TRIVY_BINARY
+
 SERVICES=(
   "ai-ctrl-optimizer"
   "ai-softsensor"
@@ -41,10 +44,10 @@ export RELEASE_SERVICE_INVENTORY
 [[ "${HARBOR_PROJECT}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]
 [[ "${CLOUD_OPS_RELEASE_API_URL}" == https://* ]]
 command -v docker >/dev/null
-command -v trivy >/dev/null
 command -v cosign >/dev/null
 command -v python3 >/dev/null
 bash scripts/ci/verify-cosign-toolchain.sh
+python3 scripts/ci/verify-trivy-executable.py
 test -f "${TRIVY_CACHE_DIR}/db/trivy.db"
 test -f "${TRIVY_CACHE_DIR}/db/metadata.json"
 
@@ -283,7 +286,8 @@ release_step_build_or_mirror() {
 }
 
 release_step_scan() {
-  trivy image \
+  python3 scripts/ci/verify-trivy-executable.py
+  "${TRIVY_BINARY}" image \
     --cache-dir "${TRIVY_CACHE_DIR}" \
     --skip-db-update \
     --ignore-unfixed \

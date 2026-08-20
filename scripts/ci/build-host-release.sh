@@ -2,6 +2,9 @@
 # Build one paired H/T/S transaction and complete HostRelease last.
 set -euo pipefail
 
+TRIVY_BINARY="/usr/local/bin/trivy"
+readonly TRIVY_BINARY
+
 : "${HOST_RELEASE_VERSION:?missing HOST_RELEASE_VERSION}"
 : "${SOFTWARE_RELEASE_VERSION:?missing SOFTWARE_RELEASE_VERSION}"
 : "${RELEASE_SOURCE_COMMIT:?missing RELEASE_SOURCE_COMMIT}"
@@ -28,10 +31,11 @@ command -v find >/dev/null
 test -d "${RELEASE_HANDOFF_OUTPUT_DIR}"
 test ! -L "${RELEASE_HANDOFF_OUTPUT_DIR}"
 test -z "$(find "${RELEASE_HANDOFF_OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -print -quit)"
-for command in docker trivy cosign python3 tar sha256sum; do
+for command in docker cosign python3 tar sha256sum; do
   command -v "${command}" >/dev/null
 done
 bash scripts/ci/verify-cosign-toolchain.sh
+python3 scripts/ci/verify-trivy-executable.py
 test -f "${TRIVY_CACHE_DIR}/db/trivy.db"
 test -f "${TRIVY_CACHE_DIR}/db/metadata.json"
 
@@ -152,7 +156,8 @@ tar \
   host-release
 bundle_target="${HARBOR_HOST}/${HARBOR_PROJECT}/host-bundle:${HOST_RELEASE_VERSION}"
 docker import --platform linux/amd64 "${bundle_tar}" "${bundle_target}" >/dev/null
-trivy image \
+python3 scripts/ci/verify-trivy-executable.py
+"${TRIVY_BINARY}" image \
   --cache-dir "${TRIVY_CACHE_DIR}" \
   --skip-db-update \
   --ignore-unfixed \
