@@ -8,6 +8,21 @@ FROM quay.io/influxdb/cross-builder@sha256:af550a559d42095b3cec8ccfdea614ac2364d
 
 COPY --from=rust-host-toolchain /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-gnu /opt/rust-toolchain
 COPY --from=rust-musl-target /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl /opt/rust-toolchain/lib/rustlib/x86_64-unknown-linux-musl
+COPY infra/release-images/influxdb/cargo-vendor-v0.200.0.tar.gz /tmp/cargo-vendor.tar.gz
+COPY infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz /tmp/influxdb-ui.tar.gz
+
+RUN echo 'deabeee4a940f709b56556632c1fc56abdcd21a6f6b4c54f15308aa182ce8a4f  /tmp/cargo-vendor.tar.gz' | sha256sum -c - \
+    && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c - \
+    && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
+    && mkdir -p /opt/cargo-vendor \
+    && tar -xzf /tmp/cargo-vendor.tar.gz -C /opt/cargo-vendor \
+    && test "$(find /opt/cargo-vendor -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 188 \
+    && grep -F '"package":"2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"' \
+        /opt/cargo-vendor/libc-0.2.177/.cargo-checksum.json \
+    && printf '\n[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "/opt/cargo-vendor"\n' \
+        >> /root/.cargo/config
+
+ENV CARGO_NET_OFFLINE=true
 
 WORKDIR /src
 ADD --checksum=sha256:0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f \
@@ -25,27 +40,7 @@ RUN retry() { \
             sleep 10; \
         done; \
     }; \
-    download_ui() { \
-        rm -f /tmp/influxdb-ui.tar.gz; \
-        if curl --fail --location --proto '=https' --proto-redir '=https' --max-redirs 3 \
-            --connect-timeout 15 --max-time 90 \
-            --retry 1 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
-            --max-filesize 20000000 --output /tmp/influxdb-ui.tar.gz \
-            https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
-            && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
-            && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c -; then \
-            return 0; \
-        fi; \
-        rm -f /tmp/influxdb-ui.tar.gz; \
-        curl --fail --proto '=https' --connect-timeout 15 --max-time 180 \
-            --retry 1 --retry-all-errors --retry-delay 2 --retry-max-time 240 \
-            --max-filesize 20000000 --output /tmp/influxdb-ui.tar.gz \
-            https://ghproxy.net/https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
-            && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
-            && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c -; \
-    }; \
-    download_ui \
-    && tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
+    tar -xzf /tmp/influxdb.tar.gz --strip-components=1 \
     && mkdir -p static/data /tmp/influxdb-openapi \
     && tar -xzf /tmp/influxdb-ui.tar.gz -C static/data \
     && tar -xzf /tmp/influxdb-openapi.tar.gz -C /tmp/influxdb-openapi --strip-components=1 \
@@ -63,6 +58,7 @@ RUN retry() { \
     && echo 'd19700fce30d9aa15c96cefa0eb1db44330fd4526930cf5dedd860fe6b3b554b  go.mod' | sha256sum -c - \
     && echo '50258d1b217e18c5154c40fc0aaf79238e11872cbf31a0830214d79e891fce61  go.sum' | sha256sum -c - \
     && retry env 'GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct' GOSUMDB=sum.golang.org GOTOOLCHAIN=local go mod download \
+    && echo '04184b5eaaf27711adbcef4023bf89183c6f5c249701bc10e94c6dea82230175  /go/pkg/mod/github.com/influxdata/flux@v0.200.0/libflux/Cargo.lock' | sha256sum -c - \
     && GOTOOLCHAIN=local go generate ./static
 
 RUN export CC="$(xcc linux x86_64)" \
@@ -72,8 +68,8 @@ RUN export CC="$(xcc linux x86_64)" \
     && export RUSTC="${RUST_TOOLCHAIN_ROOT}/bin/rustc" \
     && test "$(rustc --version)" = "rustc 1.83.0 (90b35a623 2024-11-26)" \
     && test "$(cargo --version)" = "cargo 1.83.0 (5ffbef321 2024-10-29)" \
-    && RUSTLIB_PATH="${RUST_TOOLCHAIN_ROOT}/lib/rustlib/x86_64-unknown-linux-musl/lib" \
-    && test -d "${RUSTLIB_PATH}" \
+    && RUSTLIB_PATH="${RUST_TOOLCHAIN_ROOT}/lib/rustlib/x86_64-unknown-linux-musl/lib/self-contained" \
+    && test -f "${RUSTLIB_PATH}/libunwind.a" \
     && CGO_ENABLED=1 PKG_CONFIG="$(command -v pkg-config)" GOTOOLCHAIN=local go build \
         -tags assets,sqlite_foreign_keys,sqlite_json,static_build,noasm \
         -buildmode=pie \
@@ -125,4 +121,4 @@ COPY --from=tools-builder /out/dasel /usr/local/bin/dasel
 
 RUN influxd version \
     && influx version \
-    && dasel --version
+    && dasel version

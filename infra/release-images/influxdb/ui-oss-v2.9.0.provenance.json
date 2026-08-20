@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "source_release": "OSS-v2.9.0",
+  "source_url": "https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz",
+  "archive": {
+    "path": "ui-oss-v2.9.0.tar.gz",
+    "size_bytes": 19844077,
+    "sha256": "9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e"
+  }
+}

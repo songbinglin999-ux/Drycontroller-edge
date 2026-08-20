@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -54,6 +55,9 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     release_builder = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
     influxdb = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
     postgres = (ROOT / "infra/release-images/postgres/Dockerfile").read_text(encoding="utf-8")
+    validation = (ROOT / "scripts/ci/rb8-a1-validation-control.yml").read_text(
+        encoding="utf-8"
+    )
 
     for image in (INFLUXDB_BASE_IMAGE, MOSQUITTO_IMAGE, POSTGRES_BASE_IMAGE, PROMETHEUS_IMAGE):
         assert f"image: {image}" in compose
@@ -83,6 +87,12 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert 'PATH="${RUST_TOOLCHAIN_ROOT}/bin:${PATH}"' in influxdb
     assert 'test "$(rustc --version)" = "rustc 1.83.0 (90b35a623 2024-11-26)"' in influxdb
     assert 'test "$(cargo --version)" = "cargo 1.83.0 (5ffbef321 2024-10-29)"' in influxdb
+    assert (
+        'RUSTLIB_PATH="${RUST_TOOLCHAIN_ROOT}/lib/rustlib/'
+        'x86_64-unknown-linux-musl/lib/self-contained"'
+        in influxdb
+    )
+    assert 'test -f "${RUSTLIB_PATH}/libunwind.a"' in influxdb
     assert "find_rustlib_path" not in influxdb
     assert influxdb.startswith(
         "# syntax=docker/dockerfile:1.7@"
@@ -91,15 +101,11 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert "d4fa1941fd4adb29a556e774de426dfbab72f346" in influxdb
     assert "0d6d47516cd385285e878dac92e04b534667788449cf42e7bf6a96bb050c368f" in influxdb
     ui_source = "https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz"
-    ui_mirror = f"https://ghproxy.net/{ui_source}"
-    assert influxdb.index(ui_source) < influxdb.index(ui_mirror)
-    assert "curl --fail --location --proto '=https' --proto-redir '=https' --max-redirs 3" in influxdb
-    assert "curl --fail --proto '=https' --connect-timeout 15 --max-time 180" in influxdb
-    assert influxdb.count("--location") == 1
-    assert influxdb.count("--max-filesize 20000000") == 2
-    assert influxdb.count("--retry-max-time") == 2
+    assert "COPY infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz" in influxdb
     assert "9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz" in influxdb
-    assert "sha256sum -c -; \\\n    }; \\" in influxdb
+    assert 'test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077' in influxdb
+    assert ui_source not in influxdb
+    assert "ghproxy.net" not in influxdb
     assert "github.com/buger/jsonparser@v1.1.2" in influxdb
     assert "github.com/go-jose/go-jose/v4@v4.1.4" in influxdb
     assert "go.opentelemetry.io/otel/sdk@v1.43.0" in influxdb
@@ -118,12 +124,97 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     assert "latest" not in postgres
     assert "type=cache" not in influxdb
     assert "type=cache" not in postgres
+    assert "&& dasel version" in influxdb
+    assert "dasel --version" not in influxdb
+    assert '--entrypoint dasel "${INFLUX_TEST_IMAGE}" version' in validation
+    assert '--entrypoint dasel "${INFLUX_TEST_IMAGE}" --version' not in validation
     assert "GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct" in influxdb
     assert "GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct" in postgres
     assert "GOSUMDB=sum.golang.org" in influxdb
     assert "GOSUMDB=sum.golang.org" in postgres
     assert "GOSUMDB=off" not in influxdb
     assert "GOSUMDB=off" not in postgres
+
+
+def test_influxdb_rust_dependencies_are_checksum_pinned_and_offline():
+    dockerfile = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
+    archive = ROOT / "infra/release-images/influxdb/cargo-vendor-v0.200.0.tar.gz"
+    provenance = json.loads(
+        (ROOT / "infra/release-images/influxdb/cargo-vendor-v0.200.0.provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    expected_archive_sha256 = "deabeee4a940f709b56556632c1fc56abdcd21a6f6b4c54f15308aa182ce8a4f"
+    with archive.open("rb") as handle:
+        assert hashlib.file_digest(handle, "sha256").hexdigest() == expected_archive_sha256
+
+    assert provenance["schema_version"] == 1
+    assert provenance["vendor_archive"] == {
+        "path": archive.name,
+        "registry_crate_count": 188,
+        "sha256": expected_archive_sha256,
+    }
+    assert provenance["flux_source"] == {
+        "cargo_lock_sha256": "04184b5eaaf27711adbcef4023bf89183c6f5c249701bc10e94c6dea82230175",
+        "go_module": "github.com/influxdata/flux",
+        "go_sum": "h1:r1KAmr0F0eZ3UV6p00HsJYRHbfCyF1ARA9lAwxD2VeM=",
+        "origin_commit": "b03b6bce7c27b8accc0cd00b12e32439a8fe19c3",
+        "origin_ref": "refs/tags/v0.200.0",
+        "origin_url": "https://github.com/influxdata/flux",
+        "version": "v0.200.0",
+    }
+    crates = provenance["registry_crates"]
+    assert len(crates) == 188
+    assert all(
+        crate["source"] == "registry+https://github.com/rust-lang/crates.io-index"
+        and re.fullmatch(r"[0-9a-f]{64}", crate["checksum"])
+        for crate in crates
+    )
+    assert {
+        "checksum": "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976",
+        "name": "libc",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "version": "0.2.177",
+    } in crates
+
+    assert "COPY infra/release-images/influxdb/cargo-vendor-v0.200.0.tar.gz" in dockerfile
+    assert expected_archive_sha256 in dockerfile
+    assert "ENV CARGO_NET_OFFLINE=true" in dockerfile
+    assert 'replace-with = "vendored-sources"' in dockerfile
+    assert 'directory = "/opt/cargo-vendor"' in dockerfile
+    assert provenance["flux_source"]["cargo_lock_sha256"] in dockerfile
+    assert "static.crates.io" not in dockerfile
+    assert "CARGO_NET_OFFLINE=false" not in dockerfile
+
+
+def test_influxdb_ui_asset_is_checksum_pinned_and_offline():
+    dockerfile = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
+    archive = ROOT / "infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz"
+    provenance = json.loads(
+        (ROOT / "infra/release-images/influxdb/ui-oss-v2.9.0.provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    expected_sha256 = "9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e"
+
+    assert archive.stat().st_size == 19844077
+    with archive.open("rb") as handle:
+        assert hashlib.file_digest(handle, "sha256").hexdigest() == expected_sha256
+    assert provenance == {
+        "schema_version": 1,
+        "source_release": "OSS-v2.9.0",
+        "source_url": "https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz",
+        "archive": {
+            "path": archive.name,
+            "size_bytes": 19844077,
+            "sha256": expected_sha256,
+        },
+    }
+    assert "COPY infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz" in dockerfile
+    assert expected_sha256 in dockerfile
+    assert provenance["source_url"] not in dockerfile
+    assert "ghproxy.net" not in dockerfile
 
 
 def test_release_builder_is_complete_and_completion_is_last():
