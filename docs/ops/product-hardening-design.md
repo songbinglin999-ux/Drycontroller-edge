@@ -26,6 +26,7 @@ RB-4 发布边界：
 - CI 可以只构建直接变更的服务，但未变服务只能继承已完成前序版本的精确 digest，并再次扫描和验签；共享/未知变更、前序不可验证或换签名密钥时全量构建。
 - Edge 在停止 active 前重新验签 active manifest 并证明全部本地镜像；候选与回滚均使用 `--pull never`，回滚阶段不访问 Registry。
 - journal 在副作用前后原子写入并 fsync；中断恢复保守收敛到已证明的 previous。缺少 active/previous、digest、签名、公钥或本地镜像时拒绝升级。
+- 六个本地 Python 服务只允许使用固定的官方 `python:3.11-slim` Linux/amd64 manifest digest。Dockerfile 必须同时写入 OCI base name/digest labels；正式 builder 对新构建和继承镜像都复核平台、labels 与 config digest，随后生成绑定 SoftwareRelease manifest digest 的 `drycontroller.python-base-image-receipt.v1`。签名 manifest 的 `image_ids` 是 OCI config digest，因此可从 manifest 精确追溯到携带固定 base identity 的 image config；tag-only、digest 漂移、错误平台或 receipt 缺项都在 manifest 签名前失败关闭。
 
 ## 设计原则：现场无人值守
 
