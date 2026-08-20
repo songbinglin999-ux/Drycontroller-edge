@@ -369,7 +369,7 @@ def test_host_release_workflow_is_manual_serial_and_runs_the_fixed_builder_after
     assert "actions/setup-python@v5" not in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
-    resolve_step = workflow.split("      - name: Resolve release identity", 1)[1].split(
+    resolve_step = workflow.split("      - name: Resolve/bind exact candidate identity", 1)[1].split(
         "      - name: Prime pinned Trivy database", 1
     )[0]
     run_script = resolve_step.split("        run: |", 1)[1]
