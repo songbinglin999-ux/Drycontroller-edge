@@ -76,7 +76,8 @@ def _docker_run(
     runtime_env: Path | None = None,
 ) -> str:
     forwarded = [str(runtime_env) if runtime_env and arg == "/etc/drycontroller/runtime.env" else arg for arg in args[1:]]
-    actual = [shutil.which("docker") or "docker", *forwarded]
+    subcommand = ["compose"] if Path(args[0]).name == "docker-compose" else []
+    actual = [shutil.which("docker") or "docker", *subcommand, *forwarded]
     completed = subprocess.run(
         actual,
         cwd=cwd,
@@ -278,6 +279,7 @@ def test_release_runtime_waits_for_real_compose_health_start_period(tmp_path: Pa
         nonlocal status_checks
         actual = [
             docker,
+            "compose",
             *(str(runtime_env) if arg == "/etc/drycontroller/runtime.env" else arg for arg in args[1:]),
         ]
         if "ps" in actual:
@@ -656,7 +658,7 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
             running = [running]
         assert running[0]["Image"] == local_image_reference("edge-api", image_ids["1.2.0"])
     finally:
-        subprocess.run([docker, "rm", "-f", registry_name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([docker, "rm", "-f", "-v", registry_name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(
             [docker, "compose", "--project-name", "drycontroller-edge", "--file", str(compose), "down", "--volumes"],
             cwd=project,
