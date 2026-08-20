@@ -376,7 +376,11 @@ def test_host_release_workflow_is_manual_serial_and_runs_the_fixed_builder_after
     assert "INPUT_HOST_VERSION: ${{ inputs.host_version }}" in resolve_step
     assert "INPUT_SOFTWARE_VERSION: ${{ inputs.software_version }}" in resolve_step
     assert "${{ inputs." not in run_script
-    assert '[[ "${GITHUB_REF}" == "refs/heads/master" ]]' in run_script
+    assert (
+        'test "${CONTROLLER_REF}" = refs/heads/codex/rb8-formal-release-control'
+        in run_script
+    )
+    assert 'test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"' in run_script
 
 
 def test_host_release_workflow_scopes_both_signing_keys_to_the_builder_step():

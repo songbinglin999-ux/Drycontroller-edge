@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import textwrap
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -652,18 +653,21 @@ def test_release_workflows_pin_current_actions_and_separate_key_export_from_pair
     assert "secrets.REPO_WRITE_TOKEN" in paired
     assert "secrets.REPO_WRITE_TOKEN" in recovery
     assert "secrets.GITEA_TOKEN" not in public_keys + paired + recovery
-    approved_product_source = "4ba671d4b8ae6e9449b8c64a279194359e4f0598"
     for workflow in (public_keys, paired, recovery):
-        assert "secrets.RB8_EDGE_APPROVED_WORKFLOW_SHA" in workflow
-        assert '"${GITHUB_SHA}" == "${RB8_EDGE_APPROVED_WORKFLOW_SHA}"' in workflow
-        assert approved_product_source in workflow
+        assert "secrets.RB8_FORMAL_RELEASE_APPROVAL_DIGEST" in workflow
+        assert "secrets.RB8_EDGE_APPROVED_WORKFLOW_SHA" not in workflow
+        assert "refs/heads/codex/rb8-formal-release-control" in workflow
+        assert 'test "${expected_approval}" = "${APPROVAL_DIGEST}"' in workflow
+        assert "13af694b04641467182ffe7dfba1650229f0045d" in workflow
         assert "git diff --name-only" not in workflow
-    assert paired.count(f"ref: {approved_product_source}") == 2
-    assert f"ref: {approved_product_source}" in public_keys
+    assert paired.count("ref: ${{ inputs.candidate_sha }}") == 2
+    assert "ref: ${{ inputs.candidate_sha }}" in public_keys
+    assert "ref: ${{ inputs.candidate_sha }}" in recovery
     assert 'RELEASE_SOURCE_COMMIT=%s\\n' in paired
-    assert '"${approved_product_source}" >> "${GITHUB_ENV}"' in paired
-    assert '"${approved_product_source}" >> "${GITHUB_ENV}"' in public_keys
-    assert '"${INPUT_SOURCE_COMMIT}" == "${approved_product_source}"' in recovery
+    assert '"${CANDIDATE_SHA}" >> "${GITHUB_ENV}"' in paired
+    assert '"${CANDIDATE_SHA}" >> "${GITHUB_ENV}"' in public_keys
+    assert '"${CANDIDATE_SHA}" >> "${GITHUB_ENV}"' in recovery
+    assert "inputs.source_commit" not in recovery
     assert "upload-artifact" not in public_keys and "upload-artifact" not in paired
     assert "CLOUD_OPS_RELEASE_API" not in public_keys
     assert "build-host-release.sh" not in public_keys
@@ -692,6 +696,217 @@ def test_release_workflows_pin_current_actions_and_separate_key_export_from_pair
     assert "build-host-release.sh" not in recovery
     assert "GITEA_TOKEN" not in recovery_builder
     assert "GITEA_TOKEN" in recovery_publish
+
+
+def _workflow_run_blocks(workflow: str, step_name: str) -> list[str]:
+    marker = f"      - name: {step_name}\n"
+    blocks = []
+    for step in workflow.split(marker)[1:]:
+        run = step.split("        run: |\n", 1)[1]
+        blocks.append(textwrap.dedent(run.split("\n      - name:", 1)[0]))
+    return blocks
+
+
+def test_formal_release_workflows_authorize_exact_candidate_before_checkout_and_reject_drift(
+    tmp_path: Path,
+):
+    workflows = [
+        (ROOT / ".gitea/workflows/edge-host-release.yml").read_text(
+            encoding="utf-8"
+        ),
+        (ROOT / ".gitea/workflows/edge-release-public-keys.yml").read_text(
+            encoding="utf-8"
+        ),
+        (ROOT / ".gitea/workflows/edge-release-handoff-recovery.yml").read_text(
+            encoding="utf-8"
+        ),
+    ]
+    old_source = "4ba671d4b8ae6e9449b8c64a279194359e4f0598"
+    controller_ref = "refs/heads/codex/rb8-formal-release-control"
+    step_name = "Authorize exact release controller and candidate"
+    controller_sha = "b" * 40
+    candidate_sha = "a" * 40
+    approval_digest = hashlib.sha256(
+        f"{controller_sha}\n{candidate_sha}\n".encode()
+    ).hexdigest()
+
+    for workflow in workflows:
+        assert old_source not in workflow
+        assert controller_ref in workflow
+        assert "secrets.RB8_FORMAL_RELEASE_APPROVAL_DIGEST" in workflow
+        assert "candidate_sha:" in workflow
+        assert "ref: ${{ inputs.candidate_sha }}" in workflow
+        assert 'test "${REQUESTED_CANDIDATE_SHA}" != "${GITHUB_SHA}"' in workflow
+        assert "70ec3d49dab99d375820e679264b9a480d4bfe41" in workflow
+        assert 'test "${protected_control_status}" -eq 1' in workflow
+        authorizations = [
+            index for index in range(len(workflow)) if workflow.startswith(step_name, index)
+        ]
+        checkouts = [
+            index
+            for index in range(len(workflow))
+            if workflow.startswith("Checkout exact approved candidate", index)
+        ]
+        assert len(authorizations) == len(checkouts)
+        assert all(
+            authorization < checkout
+            for authorization, checkout in zip(authorizations, checkouts)
+        )
+
+        for index, script in enumerate(_workflow_run_blocks(workflow, step_name)):
+            github_env = tmp_path / f"github-env-{index}"
+            env = {
+                **os.environ,
+                "APPROVAL_DIGEST": approval_digest,
+                "GITHUB_ENV": str(github_env),
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_REF": controller_ref,
+                "GITHUB_SHA": controller_sha,
+                "REQUESTED_CANDIDATE_SHA": candidate_sha,
+            }
+            accepted = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            assert accepted.returncode == 0, accepted.stderr
+
+            rejected = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**env, "REQUESTED_CANDIDATE_SHA": old_source},
+            )
+            assert rejected.returncode != 0
+
+            rejected_controller = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**env, "GITHUB_SHA": "d" * 40},
+            )
+            assert rejected_controller.returncode != 0
+
+            self_approval = hashlib.sha256(
+                f"{controller_sha}\n{controller_sha}\n".encode()
+            ).hexdigest()
+            rejected_self_reference = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **env,
+                    "APPROVAL_DIGEST": self_approval,
+                    "REQUESTED_CANDIDATE_SHA": controller_sha,
+                },
+            )
+            assert rejected_self_reference.returncode != 0
+
+
+def test_formal_candidate_binding_rejects_a1_protected_control_ancestry(
+    tmp_path: Path,
+):
+    workflow = (ROOT / ".gitea/workflows/edge-host-release.yml").read_text(
+        encoding="utf-8"
+    )
+    [script] = _workflow_run_blocks(workflow, "Bind exact candidate source")
+    repository = tmp_path / "repository"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--shared", str(ROOT), str(repository)],
+        check=True,
+    )
+
+    base = "13af694b04641467182ffe7dfba1650229f0045d"
+    protected_control = "70ec3d49dab99d375820e679264b9a480d4bfe41"
+    controller_sha = "b" * 40
+    subprocess.run(
+        ["git", "checkout", "--quiet", "--detach", base],
+        cwd=repository,
+        check=True,
+    )
+    env = {
+        **os.environ,
+        "CANDIDATE_SHA": base,
+        "CONTROLLER_REF": "refs/heads/codex/rb8-formal-release-control",
+        "CONTROLLER_SHA": controller_sha,
+        "GITHUB_SHA": controller_sha,
+    }
+    accepted = subprocess.run(
+        ["bash", "-c", script],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    old_source = "4ba671d4b8ae6e9449b8c64a279194359e4f0598"
+    subprocess.run(
+        ["git", "checkout", "--quiet", "--detach", old_source],
+        cwd=repository,
+        check=True,
+    )
+    rejected_old_source = subprocess.run(
+        ["bash", "-c", script],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**env, "CANDIDATE_SHA": old_source},
+    )
+    assert rejected_old_source.returncode != 0
+
+    tree = subprocess.run(
+        ["git", "rev-parse", f"{base}^{{tree}}"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "test",
+    }
+    mixed_candidate = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            tree,
+            "-p",
+            base,
+            "-p",
+            protected_control,
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        input="test-only mixed ancestry\n",
+        env=commit_env,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "checkout", "--quiet", "--detach", mixed_candidate],
+        cwd=repository,
+        check=True,
+    )
+    rejected = subprocess.run(
+        ["bash", "-c", script],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**env, "CANDIDATE_SHA": mixed_candidate},
+    )
+    assert rejected.returncode != 0
 
 
 def test_real_cosign_verifies_completed_pair_and_rejects_resigned_digest_tamper(
