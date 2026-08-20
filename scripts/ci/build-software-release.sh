@@ -50,6 +50,7 @@ bash scripts/ci/verify-cosign-toolchain.sh
 python3 scripts/ci/verify-trivy-executable.py
 test -f "${TRIVY_CACHE_DIR}/db/trivy.db"
 test -f "${TRIVY_CACHE_DIR}/db/metadata.json"
+python3 scripts/ci/python_base_image_contract.py verify-dockerfiles >/dev/null
 
 release_work_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/drycontroller-software-release.XXXXXX")"
 chmod 700 "${release_work_dir}"
@@ -68,6 +69,10 @@ predecessor_manifest_path="${release_work_dir}/predecessor-manifest.json"
 predecessor_signature_path="${release_work_dir}/predecessor-manifest.sigstore.json"
 changed_services_path="${release_work_dir}/changed-services.txt"
 inherited_images_path="${release_work_dir}/inherited-images.tsv"
+python_base_receipt_dir="${release_work_dir}/python-base-images"
+python_base_receipt_path="${release_work_dir}/python-base-image-receipt.json"
+mkdir -p "${python_base_receipt_dir}"
+chmod 700 "${python_base_receipt_dir}"
 declare -A IMAGE_REFS=()
 declare -A IMAGE_IDS=()
 declare -A CHANGED_SERVICES=()
@@ -408,6 +413,19 @@ PY
     [[ -n "${service}" && -n "${inherited_ref}" && "${inherited_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
     release_step_scan "${inherited_ref}"
     release_step_verify_image "${inherited_ref}"
+    case "${service}" in
+      ai-ctrl-optimizer|ai-softsensor|edge-api|edge-daq|edge-monitor|license-service)
+        docker pull --platform linux/amd64 "${inherited_ref}"
+        inherited_actual_id="$(release_step_resolve_portable_image_id "${inherited_ref}")"
+        [[ "${inherited_actual_id}" == "${inherited_id}" ]]
+        python3 scripts/ci/python_base_image_contract.py verify-image \
+          --service "${service}" \
+          --reference "${inherited_ref}" \
+          --expected-image-id "${inherited_id}" \
+          --output "${python_base_receipt_dir}/${service}.json"
+        LOCAL_TARGETS+=("${inherited_ref}")
+        ;;
+    esac
     IMAGE_REFS["${service}"]="${inherited_ref}"
     IMAGE_IDS["${service}"]="${inherited_id}"
   done < "${inherited_images_path}"
@@ -502,6 +520,15 @@ for service in "${SERVICES[@]}"; do
   IMAGE_REFS["${service}"]="${digest_ref}"
   image_id="$(release_step_resolve_portable_image_id "${target}")"
   [[ "${image_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
+  case "${service}" in
+    ai-ctrl-optimizer|ai-softsensor|edge-api|edge-daq|edge-monitor|license-service)
+      python3 scripts/ci/python_base_image_contract.py verify-image \
+        --service "${service}" \
+        --reference "${target}" \
+        --expected-image-id "${image_id}" \
+        --output "${python_base_receipt_dir}/${service}.json"
+      ;;
+  esac
   IMAGE_IDS["${service}"]="${image_id}"
 done
 
@@ -546,6 +573,11 @@ validate_manifest(manifest)
 Path(sys.argv[2]).write_bytes(canonical_manifest_bytes(manifest))
 PY
 chmod 600 "${manifest_path}"
+python3 scripts/ci/python_base_image_contract.py verify-receipts \
+  --directory "${python_base_receipt_dir}" \
+  --manifest "${manifest_path}" \
+  --output "${python_base_receipt_path}"
+cat "${python_base_receipt_path}"
 release_step_sign_manifest
 release_step_verify_manifest
 release_step_complete_cloud
