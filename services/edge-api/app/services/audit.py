@@ -32,12 +32,13 @@ async def write_audit(
     result: str | None = None,
     error_msg: str | None = None,
     detail: dict[str, Any] | None = None,
-) -> None:
+) -> int | None:
     """
     Append an edge audit event locally and enqueue the same event for cloud sync.
 
-    Audit must not change the outcome of the business operation. Callers should
-    await this helper, but failures are swallowed after logging.
+    Audit failures are swallowed after logging and reported as ``None``. Most
+    callers keep audit best-effort; credential refresh uses the returned row ID
+    as a required receipt before it mutates root-owned authentication state.
     """
     safe_actor = actor or "system"
     safe_detail = detail or {}
@@ -81,11 +82,13 @@ async def write_audit(
                     )
                 )
                 await db.commit()
+                return log.id
             except Exception:  # noqa: BLE001 - 故意宽捕：best-effort audit writer 失败需 rollback 后交给外层吞掉
                 await db.rollback()
                 raise
     except Exception as exc:  # noqa: BLE001 - 故意宽捕：审计写入失败不能改变业务操作结果
         logger.error("edge_audit_write_failed", action=action, error=str(exc))
+        return None
 
 
 def _target(resource_type: str | None, resource_id: str | None) -> str | None:

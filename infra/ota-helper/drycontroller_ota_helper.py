@@ -11,12 +11,15 @@ import signal
 import socketserver
 import stat
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+sys.dont_write_bytecode = True
 
 from release_engine import ReleaseError, validate_release_journal
 
@@ -41,7 +44,7 @@ LOG_ENTRY_OVERHEAD_BYTES = 512
 FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    "DOCKER_CONFIG": "/etc/drycontroller/registry",
+    "DOCKER_HOST": "unix:///run/docker.sock",
     "COMPOSE_PROJECT_NAME": "drycontroller-edge",
 }
 

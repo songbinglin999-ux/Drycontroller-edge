@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import fcntl
 import hashlib
 import io
@@ -20,9 +21,11 @@ HELPER_DIR = Path(__file__).resolve().parents[1]
 if str(HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_DIR))
 
+import release_engine  # noqa: E402
 from release_engine import (  # noqa: E402
     RELEASE_JOURNAL_SCHEMA,
     COSIGN_TOOLCHAIN,
+    HOST_HEALTH_CONTRACT,
     ReleaseEngine,
     ReleaseError,
     ReleasePaths,
@@ -57,6 +60,33 @@ SERVICES = (
 COMPOSE_BYTES = b"services: {}\n"
 COMPOSE_DIGEST = "sha256:" + hashlib.sha256(COMPOSE_BYTES).hexdigest()
 TOPOLOGY_DIGEST = canonical_topology_digest(COMPOSE_DIGEST, sorted(SERVICES))
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        "drycontroller_ota_helper.py",
+        "initialize-active-release",
+        "ota-apply",
+        "start-active-release",
+    ],
+)
+def test_release_entrypoints_disable_bytecode_before_local_import(entrypoint: str):
+    source = (HELPER_DIR / entrypoint).read_text(encoding="utf-8")
+
+    assert source.index("sys.dont_write_bytecode = True") < source.index(
+        "from release_engine import"
+    )
+
+
+def test_topology_digest_includes_the_signed_health_contract():
+    assert TOPOLOGY_DIGEST == canonical_manifest_digest(
+        {
+            "compose_digest": COMPOSE_DIGEST,
+            "health_contract": HOST_HEALTH_CONTRACT,
+            "service_inventory": sorted(SERVICES),
+        }
+    )
 
 
 def _write_docker_archive(path: Path, manifest: list[dict], configs: dict[str, bytes] | None = None) -> None:
@@ -140,6 +170,24 @@ def _policy(operation_id: str, manifest: dict) -> dict:
     }
 
 
+def _registry_document(auths: dict | None = None) -> dict:
+    return {
+        "schema": release_engine.REGISTRY_AUTH_SCHEMA,
+        "auths": auths or {},
+        "credential": {
+            "status": "active",
+            "credential_id": "cred-1",
+            "registry_host": REGISTRY,
+            "username": "reader",
+            "secret_fingerprint": hashlib.sha256(b"secret").hexdigest()[:16],
+            "version": 2,
+            "transaction_id": "a" * 32,
+            "audit_id": 17,
+            "updated_at": "2026-08-19T00:00:00+00:00",
+        },
+    }
+
+
 def _paths(tmp_path: Path) -> ReleasePaths:
     project = tmp_path / "project"
     project.mkdir()
@@ -161,10 +209,9 @@ def _paths(tmp_path: Path) -> ReleasePaths:
     pubkey = tmp_path / "cosign.pub"
     pubkey.write_bytes(PUBKEY_BYTES)
     registry_status = tmp_path / "registry-status.json"
-    registry_status.write_text(
-        json.dumps({"status": "active", "registry_host": REGISTRY}),
-        encoding="utf-8",
-    )
+    auth = base64.b64encode(b"reader:secret").decode("ascii")
+    registry_status.write_text(json.dumps(_registry_document({REGISTRY: {"auth": auth}})), encoding="utf-8")
+    registry_status.chmod(0o400)
     device = tmp_path / "device.json"
     device.write_text(
         json.dumps(
@@ -201,6 +248,44 @@ def _paths(tmp_path: Path) -> ReleasePaths:
         device=device,
         cloud_config=cloud,
         host_active=host_active,
+    )
+
+
+def _configure_root_docker_auth(tmp_path: Path, monkeypatch, payload: object | None = None) -> Path:
+    root = tmp_path / "root-docker-state"
+    root.mkdir(mode=0o700)
+    source = root / "registry-auth.json"
+    if payload is None:
+        auth = base64.b64encode(b"reader:secret").decode("ascii")
+        payload = _registry_document({REGISTRY: {"auth": auth}})
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    source.chmod(0o400)
+    local = root / "guard-docker-config"
+    local.mkdir(mode=0o700)
+    local_config = local / "config.json"
+    local_config.write_text('{"auths":{}}\n', encoding="utf-8")
+    local_config.chmod(0o400)
+    local.chmod(0o500)
+    monkeypatch.setattr(release_engine, "_REGISTRY_AUTH_SOURCE", source)
+    monkeypatch.setattr(release_engine, "_DOCKER_CONFIG_PARENT", root)
+    monkeypatch.setattr(release_engine, "_LOCAL_DOCKER_CONFIG", local_config)
+    return source
+
+
+def _bypass_runtime_identity(monkeypatch) -> None:
+    @contextlib.contextmanager
+    def bound():
+        descriptor = os.open(os.devnull, os.O_RDONLY)
+        try:
+            yield f"unix:///proc/self/fd/{descriptor}", descriptor
+        finally:
+            os.close(descriptor)
+
+    monkeypatch.setattr(release_engine, "_bound_docker_daemon", bound)
+    monkeypatch.setattr(
+        release_engine,
+        "_opened_command",
+        lambda args: contextlib.nullcontext((args, ())),
     )
 
 
@@ -284,7 +369,7 @@ class FakeRuntime:
             return "pulled"
         if args[0] == "/usr/local/bin/cosign":
             return "verified"
-        if args[:2] == ["/usr/bin/docker", "compose"]:
+        if args and args[0] == release_engine._DOCKER_COMPOSE:
             override = Path(args[args.index("--file", args.index("--file") + 1) + 1])
             if "up" in args:
                 self.current_override = override
@@ -400,6 +485,23 @@ def test_starter_can_reuse_the_host_transaction_lock_descriptor(tmp_path):
     assert result["status"] == "running"
 
 
+def test_starter_rejects_an_unlocked_release_lock_descriptor(tmp_path):
+    paths = _paths(tmp_path)
+    manifest = _manifest("11111111-1111-4111-8111-111111111111", 1, "1.0.0")
+    _seed(paths, manifest)
+    paths.lock.touch(mode=0o600)
+    descriptor = os.open(paths.lock, os.O_WRONLY)
+    try:
+        with pytest.raises(ReleaseError, match="is not held"):
+            ReleaseEngine(
+                paths=paths,
+                command_runner=FakeRuntime().run,
+                health_checker=lambda _url: None,
+            ).start_active_with_lock_fd(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _engine(paths: ReleasePaths, runtime: FakeRuntime, policies: dict[str, dict]) -> ReleaseEngine:
     return ReleaseEngine(
         paths=paths,
@@ -511,7 +613,9 @@ def test_signed_active_start_uses_local_image_ids_and_never_pulls(tmp_path):
     result = _engine(paths, runtime, {}).start_active()
 
     assert result["status"] == "running"
-    compose_up = next(call for call in runtime.calls if call[:2] == ["/usr/bin/docker", "compose"] and "up" in call)
+    compose_up = next(
+        call for call in runtime.calls if call and call[0] == release_engine._DOCKER_COMPOSE and "up" in call
+    )
     assert compose_up[-3:] == ["--pull", "never", "--no-build"]
     assert not any(call[:2] == ["/usr/bin/docker", "pull"] for call in runtime.calls)
     assert runtime.current_override is not None
@@ -536,7 +640,7 @@ def test_signed_active_waits_for_compose_start_period_and_transient_http_readine
     def command(args: list[str]) -> str:
         nonlocal status_checks
         output = runtime.run(args)
-        if args[:2] == ["/usr/bin/docker", "compose"] and "ps" in args:
+        if args and args[0] == release_engine._DOCKER_COMPOSE and "ps" in args:
             status_checks += 1
             if status_checks == 1:
                 records = json.loads(output)
@@ -619,13 +723,239 @@ def test_runtime_compose_probe_receives_remaining_deadline_and_timeout_is_fail_c
 
 def test_subprocess_timeout_is_mapped_to_release_error(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
+    _configure_root_docker_auth(tmp_path, monkeypatch)
+    _bypass_runtime_identity(monkeypatch)
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd="docker", timeout=1)
 
     monkeypatch.setattr(subprocess, "run", timeout)
     with pytest.raises(ReleaseError, match="command timed out: docker"):
-        ReleaseEngine(paths=paths)._run_command(["/usr/bin/docker", "compose"], timeout=1)
+        ReleaseEngine(paths=paths)._run_command(["/usr/bin/docker", "version"], timeout=1)
+
+
+def test_software_docker_identity_binds_content_ancestors_and_opened_inode(tmp_path, monkeypatch):
+    trusted_root = tmp_path / "trusted"
+    trusted_dir = trusted_root / "bin"
+    trusted_dir.mkdir(parents=True, mode=0o755)
+    trusted = trusted_dir / "docker"
+    trusted.write_text("#!/bin/sh\necho trusted\n", encoding="utf-8")
+    trusted.chmod(0o755)
+    monkeypatch.setattr(release_engine, "_DOCKER", str(trusted))
+    monkeypatch.setattr(release_engine, "_TRUST_ROOT", trusted_root)
+    identity = trusted_root / "runtime-tools.json"
+    identity.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.runtime-tools.v1",
+                "executables": {
+                    str(trusted): {"sha256": f"sha256:{hashlib.sha256(trusted.read_bytes()).hexdigest()}"},
+                    release_engine._DOCKER_COMPOSE: {"sha256": "sha256:" + "1" * 64},
+                    "/usr/bin/bash": {"sha256": "sha256:" + "2" * 64},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    identity.chmod(0o400)
+    monkeypatch.setattr(release_engine, "_TOOL_IDENTITY_PATH", identity)
+
+    descriptor = release_engine._open_trusted_executable(str(trusted), "Docker")
+    replacement = trusted_dir / "replacement"
+    replacement.write_text("#!/bin/sh\necho replacement\n", encoding="utf-8")
+    replacement.chmod(0o755)
+    os.replace(replacement, trusted)
+    assert os.read(descriptor, 4096) == b"#!/bin/sh\necho trusted\n"
+    os.close(descriptor)
+
+    with pytest.raises(ReleaseError, match="untrusted"):
+        release_engine._open_trusted_executable(str(trusted), "Docker")
+
+    trusted.write_text("#!/bin/sh\necho trusted\n", encoding="utf-8")
+    trusted.chmod(0o755)
+
+    trusted.chmod(0o777)
+    with pytest.raises(ReleaseError, match="unavailable"):
+        release_engine._open_trusted_executable(str(trusted), "Docker")
+    trusted.chmod(0o755)
+
+    symlink = trusted_dir / "docker-link"
+    symlink.symlink_to(trusted)
+    monkeypatch.setattr(release_engine, "_DOCKER", str(symlink))
+    with pytest.raises(ReleaseError, match="unavailable"):
+        release_engine._open_trusted_executable(str(symlink), "Docker")
+
+    monkeypatch.setattr(release_engine, "_DOCKER", str(trusted))
+    trusted_dir.chmod(0o777)
+    with pytest.raises(ReleaseError, match="path drift"):
+        ReleaseEngine(paths=_paths(tmp_path))._run_command([str(tmp_path / "path-drift" / "docker"), "version"])
+    with pytest.raises(ReleaseError, match="unavailable"):
+        release_engine._open_trusted_executable(str(trusted), "Docker")
+
+
+@pytest.mark.parametrize(
+    "extra_key",
+    ["cli-plugins", "context", "currentContext", "plugins", "proxies", "credsStore", "credHelpers", "unknown"],
+)
+def test_software_root_docker_auth_source_rejects_every_non_auths_top_level_key(
+    tmp_path,
+    monkeypatch,
+    extra_key,
+):
+    _configure_root_docker_auth(tmp_path, monkeypatch, {"auths": {}, extra_key: {}})
+    _bypass_runtime_identity(monkeypatch)
+    docker = tmp_path / "docker"
+    docker.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    docker.chmod(0o755)
+    monkeypatch.setattr(release_engine, "_DOCKER", str(docker))
+
+    with pytest.raises(ReleaseError, match="schema"):
+        ReleaseEngine(paths=_paths(tmp_path))._run_command([str(docker), "pull", f"{REGISTRY}/image:test"])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("audit_id", 0), ("transaction_id", "wrong"), ("version", 0)],
+)
+def test_software_root_auth_rejects_incomplete_atomic_status(tmp_path, monkeypatch, field, value):
+    auth = base64.b64encode(b"reader:secret").decode("ascii")
+    document = _registry_document({REGISTRY: {"auth": auth}})
+    document["credential"][field] = value
+    _configure_root_docker_auth(tmp_path, monkeypatch, document)
+
+    with pytest.raises(ReleaseError, match="schema"):
+        release_engine._read_registry_auth_source()
+
+
+def test_software_root_auth_rejects_secret_fingerprint_tampering(tmp_path, monkeypatch):
+    auth = base64.b64encode(b"reader:different-secret").decode("ascii")
+    document = _registry_document({REGISTRY: {"auth": auth}})
+    _configure_root_docker_auth(tmp_path, monkeypatch, document)
+
+    with pytest.raises(ReleaseError, match="schema"):
+        release_engine._read_registry_auth_source()
+
+
+@pytest.mark.parametrize("root_auth", ["missing", "malformed"])
+def test_software_local_compose_ignores_unavailable_registry_auth(tmp_path, monkeypatch, root_auth):
+    auth = base64.b64encode(b"reader:secret").decode("ascii")
+    source = _configure_root_docker_auth(
+        tmp_path,
+        monkeypatch,
+        _registry_document({REGISTRY: {"auth": auth}}),
+    )
+    if root_auth == "missing":
+        source.unlink()
+    else:
+        source.chmod(0o600)
+        source.write_text("not-json", encoding="utf-8")
+        source.chmod(0o400)
+    _bypass_runtime_identity(monkeypatch)
+    compose = tmp_path / "docker-compose"
+    compose.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$DOCKER_HOST\"\n"
+        "printf '%s\\n' \"$DOCKER_CONFIG\"\n"
+        "cat \"$DOCKER_CONFIG/config.json\"\n",
+        encoding="utf-8",
+    )
+    compose.chmod(0o755)
+    monkeypatch.setattr(release_engine, "_DOCKER_COMPOSE", str(compose))
+
+    output = ReleaseEngine(paths=_paths(tmp_path))._run_command([str(compose), "version"])
+    lines = output.splitlines()
+
+    assert lines[0].startswith("unix:///proc/self/fd/")
+    assert json.loads(lines[2]) == {"auths": {}}
+    assert Path(lines[1]).is_dir()
+
+
+@pytest.mark.parametrize(
+    ("args", "required"),
+    [
+        ([release_engine._DOCKER, "pull", f"{REGISTRY}/image:test"], True),
+        ([release_engine._COSIGN, "verify", f"{REGISTRY}/image@sha256:{'1' * 64}"], True),
+        ([release_engine._DOCKER, "image", "inspect", "image"], False),
+        ([release_engine._DOCKER, "load", "-i", "image.tar"], False),
+        ([release_engine._DOCKER, "tag", "a", "b"], False),
+        ([release_engine._DOCKER_COMPOSE, "up", "--pull", "never"], False),
+        ([release_engine._DOCKER_COMPOSE, "down"], False),
+        ([release_engine._COSIGN, "verify-blob", "manifest.json"], False),
+    ],
+)
+def test_software_registry_auth_is_read_only_for_registry_network_operations(args, required):
+    assert release_engine._requires_registry_auth(args) is required
+
+
+def test_software_daemon_binding_uses_one_open_socket_descriptor(monkeypatch):
+    @contextlib.contextmanager
+    def opened():
+        yield 41
+
+    observed: list[tuple[str, int]] = []
+
+    def daemon(docker_host, descriptor):
+        observed.append((docker_host, descriptor))
+        return {"id": "a"}
+
+    monkeypatch.setattr(release_engine, "_opened_docker_socket", opened)
+    monkeypatch.setattr(release_engine, "_docker_daemon_identity", daemon)
+
+    with release_engine._bound_docker_daemon() as binding:
+        assert binding == ("unix:///proc/self/fd/41", 41)
+
+    assert observed == [("unix:///proc/self/fd/41", 41)] * 2
+
+
+def test_software_daemon_identity_uses_current_docker_line_template(tmp_path, monkeypatch):
+    docker = tmp_path / "docker"
+    docker.write_bytes(b"docker")
+    expected = {
+        "schema": "drycontroller.docker-daemon.v1",
+        "id": "daemon-id",
+        "name": "daemon-name",
+        "root_dir": "/var/lib/docker",
+    }
+    observed_args = []
+
+    monkeypatch.setattr(release_engine, "_read_identity_file", lambda *_args: expected)
+    monkeypatch.setattr(release_engine, "_validate_local_docker_config", lambda: None)
+    monkeypatch.setattr(
+        release_engine,
+        "_open_trusted_executable",
+        lambda *_args: os.open(docker, os.O_RDONLY),
+    )
+
+    def completed(args, **_kwargs):
+        observed_args.append(args)
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="daemon-id\ndaemon-name\n/var/lib/docker\n",
+        )
+
+    monkeypatch.setattr(release_engine.subprocess, "run", completed)
+
+    assert release_engine._docker_daemon_identity("unix:///proc/self/fd/41", 41) == {
+        "id": "daemon-id",
+        "name": "daemon-name",
+        "root_dir": "/var/lib/docker",
+    }
+    assert observed_args[0][-1] == "{{println .ID}}{{println .Name}}{{.DockerRootDir}}"
+
+
+def test_software_daemon_binding_rejects_identity_change_on_bound_descriptor(monkeypatch):
+    @contextlib.contextmanager
+    def opened():
+        yield 41
+
+    daemons = iter([{"id": "a"}, {"id": "b"}])
+    monkeypatch.setattr(release_engine, "_opened_docker_socket", opened)
+    monkeypatch.setattr(release_engine, "_docker_daemon_identity", lambda _host, _fd: next(daemons))
+
+    with pytest.raises(ReleaseError, match="identity changed"):
+        with release_engine._bound_docker_daemon():
+            pass
 
 
 def _install_nonblocking_lock_probe(blocked, acquired_without_waiting) -> None:
@@ -673,7 +1003,7 @@ def test_apply_and_active_start_use_a_two_process_transaction_barrier(tmp_path):
         def command(args: list[str]) -> str:
             nonlocal blocked_once
             result = runtime.run(args)
-            if not blocked_once and args[:2] == ["/usr/bin/docker", "compose"] and "up" in args:
+            if not blocked_once and args and args[0] == release_engine._DOCKER_COMPOSE and "up" in args:
                 blocked_once = True
                 apply_entered.set()
                 if not release_apply.wait(10):
@@ -908,7 +1238,7 @@ def test_manifest_verification_uses_real_cosign_signature(tmp_path):
             except subprocess.CalledProcessError as exc:
                 raise ReleaseError("real cosign verification failed") from exc
             return completed.stdout
-        if args[0] == "/usr/bin/docker" and "config" in args:
+        if args[0] == release_engine._DOCKER_COMPOSE and "config" in args:
             return "configured"
         raise AssertionError(f"unexpected command: {args}")
 

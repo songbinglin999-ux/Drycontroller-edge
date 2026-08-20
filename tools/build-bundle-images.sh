@@ -27,6 +27,7 @@ SOURCE_BUNDLE_PATHS=(
   infra/bootstrap/initialize-runtime-config.py
   infra/bootstrap/installer_public_config.py
   infra/bootstrap/tailscale_client_lock.py
+  scripts/ci/assert-fresh-install-data-plane.sh
   scripts/manage-license-trust.py
   scripts/manage-license-transaction.py
   common/license_verifier.py
@@ -42,6 +43,8 @@ SOURCE_BUNDLE_PATHS=(
   infra/host-release-runner/initialize-initial-release
   infra/host-release-runner/drycontroller-host-release-runner.service
   infra/ota-helper/drycontroller-ota-helper.service
+  infra/registry-auth-writer/registry_auth_writer.py
+  infra/registry-auth-writer/drycontroller-registry-auth-writer.service
   services/device-identity/requirements.txt
   services/device-identity/identity_service
 )

@@ -87,7 +87,7 @@ async def test_write_audit_adds_log_and_outbox_in_one_commit(monkeypatch):
     monkeypatch.setattr(audit_module, "AsyncSessionLocal", lambda: session)
     audit_module.settings.CLOUD_SYNC_OUTBOX_MAX_ATTEMPTS = 10
 
-    await audit_module.write_audit(
+    audit_id = await audit_module.write_audit(
         actor="admin:key:test",
         action="license.install",
         resource_type="license",
@@ -97,6 +97,7 @@ async def test_write_audit_adds_log_and_outbox_in_one_commit(monkeypatch):
     )
 
     assert session.committed is True
+    assert audit_id == 123
     assert session.rolled_back is False
     assert len(session.added) == 2
     assert isinstance(session.added[0], OperationAuditLog)
@@ -114,10 +115,11 @@ async def test_write_audit_rolls_back_when_outbox_insert_fails(monkeypatch):
     session = _FakeSession(fail_on_add=2)
     monkeypatch.setattr(audit_module, "AsyncSessionLocal", lambda: session)
 
-    await audit_module.write_audit(actor="admin", action="license.install")
+    audit_id = await audit_module.write_audit(actor="admin", action="license.install")
 
     assert session.committed is False
     assert session.rolled_back is True
+    assert audit_id is None
 
 
 @pytest.mark.asyncio

@@ -187,9 +187,7 @@ services:
       - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
       - LICENSE_TRUST_POLICY_PATH=${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}
       - LICENSE_SERVICE_BASE=${LICENSE_SERVICE_BASE:-http://license-service:8000}
-      # Registry pull credential lifecycle: Cloud Ops refresh writes Docker auth + status here.
-      - REGISTRY_DOCKER_CONFIG_PATH=${REGISTRY_DOCKER_CONFIG_PATH:-/etc/drycontroller/registry/config.json}
-      - REGISTRY_CREDENTIAL_STATUS_PATH=${REGISTRY_CREDENTIAL_STATUS_PATH:-/etc/drycontroller/registry/status.json}
+      # Registry pull credentials stay in the root writer; edge-api reads only UDS status.
       - REGISTRY_CREDENTIAL_MAX_AGE_HOURS=${REGISTRY_CREDENTIAL_MAX_AGE_HOURS:-0}
       # 大屏现场状态摘要只读展示云端/tailnet 配置状态
       - CLOUD_OPS_BASE_URL=${CLOUD_OPS_BASE_URL:-}
@@ -207,7 +205,6 @@ services:
       # edge-api 不拥有 license 或 trust policy 的写入面。
       - /etc/drycontroller/license:/etc/drycontroller/license:ro
       - /etc/drycontroller/keys:/etc/drycontroller/keys:ro
-      - /etc/drycontroller/registry:/etc/drycontroller/registry
       # 只读读取 bootstrap sentinel，供大屏现场状态摘要显示装机状态
       - /var/lib/drycontroller:/var/lib/drycontroller:ro
       - /var/lib/drycontroller/cloud-request-nonces:/var/lib/drycontroller-cloud-request-nonces
@@ -215,6 +212,7 @@ services:
       # 唯一宿主 mutation 边界：只连接 root-owned 0660 UDS，不挂 Docker socket。
       - /run/drycontroller-ota:/run/drycontroller-ota:ro
       - /run/drycontroller-host-release:/run/drycontroller-host-release:ro
+      - /run/drycontroller-registry-auth:/run/drycontroller-registry-auth:ro
     ports:
       # P0-N1 audit 2026-05-15：默认绑 127.0.0.1，避免 LAN/PLC 网段直达 license install
       # 端点。生产若真有外部访问需求，由前置 Caddy/Traefik 反代，并显式覆写本变量。

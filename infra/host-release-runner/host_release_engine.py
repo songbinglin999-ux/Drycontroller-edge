@@ -35,6 +35,7 @@ HOST_RELEASE_SCHEMA = "drycontroller.host-release.v1"
 HOST_ACTIVE_SCHEMA = "drycontroller.host-active.v1"
 SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"
 COORDINATOR_JOURNAL_SCHEMA = "drycontroller.host-release-coordinator.v1"
+REGISTRY_AUTH_SCHEMA = "drycontroller.registry-auth.v2"
 HOST_HEALTH_CONTRACT = "drycontroller.edge-health.v1"
 COSIGN_TOOLCHAIN = {
     "version": "v3.1.3",
@@ -111,11 +112,14 @@ _REGISTRY = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$")
 _REPOSITORY_PATH = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$")
 _SERVICE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _DOCKER = "/usr/bin/docker"
+_DOCKER_COMPOSE = "/usr/libexec/docker/cli-plugins/docker-compose"
+_BASH = "/usr/bin/bash"
 _COSIGN = "/usr/local/bin/cosign"
 _IDENTITY_ROOT = Path("/opt/drycontroller-identity")
 _IDENTITY_SIGNER = "/opt/drycontroller-identity/venv/bin/python"
 _IDENTITY_MODULE = "identity_service.host_authorization"
 _SYSTEMCTL = "/usr/bin/systemctl"
+_FRESH_INSTALL_GUARD = "/usr/libexec/drycontroller/assert-fresh-install-data-plane"
 _SOFTWARE_HELPER_FILES = {
     "infra/ota-helper/drycontroller_ota_helper.py",
     "infra/ota-helper/release_engine.py",
@@ -154,10 +158,17 @@ _FORBIDDEN_COMPOSE_KEYS = {
 }
 _MAX_JSON_BYTES = 1024 * 1024
 _MAX_LAYER_BYTES = 256 * 1024 * 1024
+_REGISTRY_AUTH_SOURCE = Path("/var/lib/drycontroller-ota/registry-auth.json")
+_DOCKER_CONFIG_PARENT = Path("/var/lib/drycontroller-ota")
+_LOCAL_DOCKER_CONFIG = Path("/var/lib/drycontroller-ota/guard-docker-config/config.json")
+_TOOL_IDENTITY_PATH = Path("/etc/drycontroller/runtime-tools.json")
+_DAEMON_IDENTITY_PATH = Path("/etc/drycontroller/docker-daemon.json")
+_DOCKER_SOCKET = Path("/run/docker.sock")
+_TRUST_ROOT = Path("/")
 _FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    "DOCKER_CONFIG": "/etc/drycontroller/registry",
+    "DOCKER_HOST": "unix:///run/docker.sock",
     "COMPOSE_PROJECT_NAME": "drycontroller-edge",
 }
 
@@ -198,7 +209,7 @@ class HostReleasePaths:
             software_releases=Path("/var/lib/drycontroller-ota/releases"),
             host_cosign_pubkey=Path("/etc/drycontroller/keys/host-release-cosign.pub"),
             software_cosign_pubkey=Path("/etc/drycontroller/keys/cosign.pub"),
-            registry_status=Path("/etc/drycontroller/registry/status.json"),
+            registry_status=_REGISTRY_AUTH_SOURCE,
             device=Path("/var/lib/drycontroller/device.json"),
             cloud_config=Path("/etc/drycontroller/cloud-ops.env"),
             runtime_env=Path("/etc/drycontroller/runtime.env"),
@@ -474,6 +485,451 @@ def _local_image_reference(service: str, image_id: str) -> str:
     return f"drycontroller.local/{service}:sha256-{image_id.removeprefix('sha256:')}"
 
 
+def _validate_ancestor_chain(path: Path) -> None:
+    root = _TRUST_ROOT
+    if not path.is_absolute() or (path != root and root not in path.parents):
+        raise OSError("path outside trusted root")
+    current = path
+    while True:
+        metadata = current.lstat()
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o022
+        ):
+            raise OSError("untrusted ancestor")
+        if current == root:
+            return
+        current = current.parent
+
+
+def _read_identity_file(path: Path, schema: str) -> dict[str, Any]:
+    descriptor = -1
+    try:
+        _validate_ancestor_chain(path.parent)
+        metadata = path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_nlink != 1
+        ):
+            raise OSError("identity metadata invalid")
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        raw = os.read(descriptor, 64 * 1024 + 1)
+        if (
+            (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+            or not raw
+            or len(raw) > 64 * 1024
+        ):
+            raise OSError("identity changed")
+        payload = json.loads(raw, object_pairs_hook=_strict_json_object)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise HostReleaseError("runtime identity unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(payload, dict) or payload.get("schema") != schema:
+        raise HostReleaseError("runtime identity invalid")
+    return payload
+
+
+def _open_trusted_executable(value: str, label: str) -> int:
+    path = Path(value)
+    descriptor = -1
+    try:
+        _validate_ancestor_chain(path.parent)
+        metadata = path.lstat()
+        if (
+            not path.is_absolute()
+            or path.resolve(strict=True) != path
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o022
+            or not metadata.st_mode & 0o111
+            or metadata.st_nlink != 1
+        ):
+            raise OSError("executable metadata invalid")
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise OSError("executable changed")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise HostReleaseError(f"fixed {label} executable unavailable") from exc
+    try:
+        identity = _read_identity_file(_TOOL_IDENTITY_PATH, "drycontroller.runtime-tools.v1")
+    except HostReleaseError:
+        os.close(descriptor)
+        raise
+    executables = identity.get("executables")
+    record = executables.get(value) if isinstance(executables, dict) else None
+    if (
+        not isinstance(executables, dict)
+        or set(executables) != {_DOCKER, _DOCKER_COMPOSE, _BASH}
+        or not isinstance(record, dict)
+        or set(record) != {"sha256"}
+        or record["sha256"] != f"sha256:{digest.hexdigest()}"
+    ):
+        os.close(descriptor)
+        raise HostReleaseError(f"fixed {label} executable is untrusted")
+    return descriptor
+
+
+def _validate_trusted_executable(value: str, label: str) -> None:
+    os.close(_open_trusted_executable(value, label))
+
+
+def _descriptor_path(descriptor: int) -> str:
+    prefix = "/proc/self/fd" if Path("/proc/self/fd").is_dir() else "/dev/fd"
+    return f"{prefix}/{descriptor}"
+
+
+def _open_trusted_program(value: str, label: str) -> int:
+    path = Path(value)
+    descriptor = -1
+    try:
+        _validate_ancestor_chain(path.parent)
+        metadata = path.lstat()
+        if (
+            path.resolve(strict=True) != path
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o022
+            or not metadata.st_mode & 0o111
+            or metadata.st_nlink != 1
+        ):
+            raise OSError("program metadata invalid")
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise OSError("program changed")
+        return descriptor
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise HostReleaseError(f"fixed {label} is untrusted") from exc
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _read_registry_auth_document(path: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    path = path or _REGISTRY_AUTH_SOURCE
+    descriptor = -1
+    try:
+        metadata = path.lstat()
+        parent_path = path.parent
+        parent = parent_path.lstat()
+        resolved = path.resolve(strict=True)
+        if (
+            not path.is_absolute()
+            or resolved != path
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_nlink != 1
+            or parent_path.resolve(strict=True) != parent_path
+            or not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+            or stat.S_IMODE(parent.st_mode) != 0o700
+        ):
+            raise OSError("registry auth source metadata invalid")
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise OSError("registry auth source changed")
+        raw = os.read(descriptor, _MAX_JSON_BYTES + 1)
+        if not raw or len(raw) > _MAX_JSON_BYTES:
+            raise OSError("registry auth source size invalid")
+        payload = json.loads(raw, object_pairs_hook=_strict_json_object)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise HostReleaseError("root registry auth source invalid") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema", "auths", "credential"}
+        or payload.get("schema") != REGISTRY_AUTH_SCHEMA
+        or not isinstance(payload["auths"], dict)
+    ):
+        raise HostReleaseError("root registry auth source schema invalid")
+    normalized: dict[str, dict[str, str]] = {}
+    for registry, entry in payload["auths"].items():
+        if not isinstance(registry, str) or _REGISTRY.fullmatch(registry) is None:
+            raise HostReleaseError("root registry auth source schema invalid")
+        if not isinstance(entry, dict) or set(entry) != {"auth"} or not isinstance(entry["auth"], str):
+            raise HostReleaseError("root registry auth source schema invalid")
+        try:
+            decoded = base64.b64decode(entry["auth"], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HostReleaseError("root registry auth source schema invalid") from exc
+        username, separator, secret = decoded.partition(b":")
+        if not username or separator != b":" or not secret or len(decoded) > 4096:
+            raise HostReleaseError("root registry auth source schema invalid")
+        normalized[registry] = {"auth": entry["auth"]}
+    credential = payload.get("credential")
+    if (
+        not isinstance(credential, dict)
+        or set(credential) != {
+            "status",
+            "credential_id",
+            "registry_host",
+            "username",
+            "secret_fingerprint",
+            "version",
+            "transaction_id",
+            "audit_id",
+            "updated_at",
+        }
+        or credential.get("status") != "active"
+        or not isinstance(credential.get("credential_id"), str)
+        or not credential["credential_id"]
+        or not isinstance(credential.get("registry_host"), str)
+        or credential["registry_host"] not in normalized
+        or not isinstance(credential.get("username"), str)
+        or not credential["username"]
+        or not isinstance(credential.get("secret_fingerprint"), str)
+        or not credential["secret_fingerprint"]
+        or isinstance(credential.get("version"), bool)
+        or not isinstance(credential.get("version"), int)
+        or credential["version"] < 1
+        or not isinstance(credential.get("transaction_id"), str)
+        or _OPERATION_ID.fullmatch(credential["transaction_id"]) is None
+        or isinstance(credential.get("audit_id"), bool)
+        or not isinstance(credential.get("audit_id"), int)
+        or credential["audit_id"] < 1
+        or not isinstance(credential.get("updated_at"), str)
+        or not credential["updated_at"]
+        or len(normalized) != 1
+    ):
+        raise HostReleaseError("root registry auth source schema invalid")
+    try:
+        bound = base64.b64decode(
+            normalized[credential["registry_host"]]["auth"], validate=True
+        ).partition(b":")
+        bound_username = bound[0].decode("utf-8")
+        bound_fingerprint = hashlib.sha256(bound[2]).hexdigest()[:16]
+    except (UnicodeDecodeError, binascii.Error, ValueError) as exc:
+        raise HostReleaseError("root registry auth source schema invalid") from exc
+    if bound_username != credential["username"] or not hmac.compare_digest(
+        bound_fingerprint, credential["secret_fingerprint"]
+    ):
+        raise HostReleaseError("root registry auth source schema invalid")
+    return {"auths": normalized}, dict(credential)
+
+
+def _read_registry_auth_source() -> dict[str, Any]:
+    return _read_registry_auth_document()[0]
+
+
+def _validate_local_docker_config() -> None:
+    path = _LOCAL_DOCKER_CONFIG
+    descriptor = -1
+    try:
+        metadata = path.lstat()
+        parent_path = path.parent
+        parent = parent_path.lstat()
+        if (
+            path.resolve(strict=True) != path
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_nlink != 1
+            or parent_path.resolve(strict=True) != parent_path
+            or not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+            or stat.S_IMODE(parent.st_mode) != 0o500
+        ):
+            raise OSError("local Docker config metadata invalid")
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        raw = os.read(descriptor, 4097)
+        if (
+            (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+            or len(raw) > 4096
+            or json.loads(raw, object_pairs_hook=_strict_json_object) != {"auths": {}}
+        ):
+            raise OSError("local Docker config invalid")
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise HostReleaseError("local Docker config invalid") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _docker_environment(*, registry_network: bool) -> contextlib.AbstractContextManager[dict[str, str]]:
+    if registry_network:
+        return _private_docker_environment()
+    _validate_local_docker_config()
+    return contextlib.nullcontext(
+        {**_FIXED_ENV, "DOCKER_CONFIG": str(_LOCAL_DOCKER_CONFIG.parent)}
+    )
+
+
+def _requires_registry_auth(args: list[str]) -> bool:
+    return bool(
+        args
+        and (
+            (args[0] == _DOCKER and len(args) > 1 and args[1] == "pull")
+            or (args[0] == _COSIGN and len(args) > 1 and args[1] == "verify")
+        )
+    )
+
+
+@contextlib.contextmanager
+def _opened_docker_socket() -> Iterator[int]:
+    descriptor = -1
+    try:
+        _validate_ancestor_chain(_DOCKER_SOCKET.parent)
+        metadata = _DOCKER_SOCKET.lstat()
+        if not hasattr(os, "O_PATH") or not Path("/proc/self/fd").is_dir():
+            raise OSError("descriptor-bound Unix sockets require Linux procfs")
+        descriptor = os.open(
+            _DOCKER_SOCKET,
+            os.O_PATH | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise HostReleaseError("Docker socket unavailable") from exc
+    if (
+        not stat.S_ISSOCK(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_mode & 0o002
+        or metadata.st_nlink != 1
+        or not stat.S_ISSOCK(opened.st_mode)
+        or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+    ):
+        os.close(descriptor)
+        raise HostReleaseError("Docker socket is untrusted")
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _docker_daemon_identity(docker_host: str, socket_descriptor: int) -> dict[str, str]:
+    expected = _read_identity_file(
+        _DAEMON_IDENTITY_PATH,
+        "drycontroller.docker-daemon.v1",
+    )
+    if set(expected) != {"schema", "id", "name", "root_dir"} or not all(
+        isinstance(expected.get(key), str) and expected[key]
+        for key in ("id", "name", "root_dir")
+    ):
+        raise HostReleaseError("Docker daemon identity invalid")
+    _validate_local_docker_config()
+    descriptor = _open_trusted_executable(_DOCKER, "Docker")
+    try:
+        completed = subprocess.run(
+            [
+                _descriptor_path(descriptor),
+                "info",
+                "--format",
+                "{{println .ID}}{{println .Name}}{{.DockerRootDir}}",
+            ],
+            env={
+                **_FIXED_ENV,
+                "DOCKER_HOST": docker_host,
+                "DOCKER_CONFIG": str(_LOCAL_DOCKER_CONFIG.parent),
+            },
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=15,
+            pass_fds=(descriptor, socket_descriptor),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HostReleaseError("Docker daemon identity unavailable") from exc
+    finally:
+        os.close(descriptor)
+    lines = completed.stdout.splitlines()
+    observed = dict(zip(("id", "name", "root_dir"), lines, strict=False))
+    if (
+        completed.returncode != 0
+        or len(completed.stdout.encode("utf-8")) > 4096
+        or len(lines) != 3
+        or observed != {key: expected[key] for key in ("id", "name", "root_dir")}
+    ):
+        raise HostReleaseError("Docker daemon identity mismatch")
+    return observed
+
+
+@contextlib.contextmanager
+def _bound_docker_daemon() -> Iterator[tuple[str, int]]:
+    with _opened_docker_socket() as socket_descriptor:
+        docker_host = f"unix:///proc/self/fd/{socket_descriptor}"
+        daemon_identity = _docker_daemon_identity(docker_host, socket_descriptor)
+        try:
+            yield docker_host, socket_descriptor
+        finally:
+            if _docker_daemon_identity(docker_host, socket_descriptor) != daemon_identity:
+                raise HostReleaseError("Docker daemon identity changed")
+
+
+@contextlib.contextmanager
+def _opened_command(args: list[str]) -> Iterator[tuple[list[str], tuple[int, ...]]]:
+    descriptors: list[int] = []
+    command = list(args)
+    try:
+        if args and args[0] in {_DOCKER, _DOCKER_COMPOSE, _BASH}:
+            label = {
+                _DOCKER: "Docker",
+                _DOCKER_COMPOSE: "Docker Compose",
+                _BASH: "Bash",
+            }[args[0]]
+            descriptor = _open_trusted_executable(args[0], label)
+            descriptors.append(descriptor)
+            command[0] = _descriptor_path(descriptor)
+        if len(args) > 1 and args[0] == _BASH and args[1] == _FRESH_INSTALL_GUARD:
+            descriptor = _open_trusted_program(_FRESH_INSTALL_GUARD, "fresh-install guard")
+            descriptors.append(descriptor)
+            command[1] = _descriptor_path(descriptor)
+        yield command, tuple(descriptors)
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
+@contextlib.contextmanager
+def _private_docker_environment() -> Iterator[dict[str, str]]:
+    payload = _read_registry_auth_source()
+    try:
+        with tempfile.TemporaryDirectory(prefix=".docker-config-", dir=_DOCKER_CONFIG_PARENT) as temporary:
+            directory = Path(temporary)
+            directory.chmod(0o700)
+            config = directory / "config.json"
+            descriptor = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            try:
+                os.write(descriptor, canonical_json_bytes(payload))
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            yield {**_FIXED_ENV, "DOCKER_CONFIG": str(directory)}
+    except OSError as exc:
+        raise HostReleaseError("private Docker auth config unavailable") from exc
+
+
 class HostReleaseEngine:
     def __init__(
         self,
@@ -588,10 +1044,31 @@ class HostReleaseEngine:
         return not reader.is_alive()
 
     def _run_command(self, args: list[str], cwd: Path | None = None, input_bytes: bytes | None = None) -> str:
+        uses_docker = False
+        if args and args[0] == _DOCKER:
+            uses_docker = True
+        elif args and args[0] == _DOCKER_COMPOSE:
+            uses_docker = True
+        elif args and args[0] == _BASH and len(args) > 1 and args[1] == _FRESH_INSTALL_GUARD:
+            pass
+        elif args and Path(args[0]).name in {"docker", "docker-compose"}:
+            raise HostReleaseError("Docker executable path drift")
         inherited_fds: tuple[int, ...] = ()
-        if len(args) == 3 and args[0].endswith("/start-active-release") and args[1] == "--lock-fd":
+        inherits_release_lock = (
+            len(args) == 3
+            and args[0].endswith("/start-active-release")
+            and args[1] == "--lock-fd"
+        ) or (
+            len(args) == 6
+            and args[0] == _BASH
+            and args[1] == _FRESH_INSTALL_GUARD
+            and args[2] == "--project"
+            and args[3] == _FIXED_ENV["COMPOSE_PROJECT_NAME"]
+            and args[4] == "--lock-fd"
+        )
+        if inherits_release_lock:
             try:
-                inherited_fds = (int(args[2]),)
+                inherited_fds = (int(args[-1]),)
             except ValueError as exc:
                 raise HostReleaseError("inherited release lock descriptor invalid") from exc
         process: subprocess.Popen[bytes] | None = None
@@ -602,19 +1079,34 @@ class HostReleaseEngine:
         reader: threading.Thread | None = None
         timed_out = False
         command_succeeded = False
+        resources = contextlib.ExitStack()
         try:
+            command_env = (
+                resources.enter_context(
+                    _docker_environment(registry_network=_requires_registry_auth(args))
+                )
+                if uses_docker or _requires_registry_auth(args)
+                else _FIXED_ENV
+            )
+            socket_fds: tuple[int, ...] = ()
+            if uses_docker:
+                docker_host, socket_descriptor = resources.enter_context(_bound_docker_daemon())
+                command_env = {**command_env, "DOCKER_HOST": docker_host}
+                socket_fds = (socket_descriptor,)
+            command_args, executable_fds = resources.enter_context(_opened_command(args))
+            passed_fds = tuple(dict.fromkeys((*inherited_fds, *executable_fds, *socket_fds)))
             if input_bytes is not None:
                 input_handle = tempfile.TemporaryFile()
                 input_handle.write(input_bytes)
                 input_handle.seek(0)
             process = subprocess.Popen(
-                args,
+                command_args,
                 cwd=cwd,
-                env=_FIXED_ENV,
+                env=command_env,
                 stdin=input_handle,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                pass_fds=inherited_fds,
+                pass_fds=passed_fds,
                 close_fds=True,
                 start_new_session=True,
             )
@@ -658,6 +1150,7 @@ class HostReleaseEngine:
                     process.stdout.close()
             if input_handle != subprocess.DEVNULL:
                 input_handle.close()
+            resources.close()
 
     def _cloud_credentials(self) -> tuple[str, str]:
         values: dict[str, str] = {}
@@ -830,7 +1323,7 @@ class HostReleaseEngine:
         assert_pair(host, software)
         if host["registry"] != software["registry"]:
             raise HostReleaseError("HostRelease and SoftwareRelease registry mismatch")
-        registry_status = _read_json(self.paths.registry_status)
+        _, registry_status = _read_registry_auth_document(self.paths.registry_status)
         if (
             not isinstance(registry_status, dict)
             or registry_status.get("status") != "active"
@@ -1043,8 +1536,7 @@ class HostReleaseEngine:
             _atomic_write(override, ("\n".join(override_lines) + "\n").encode())
             output = self._command_runner(
                 [
-                    _DOCKER,
-                    "compose",
+                    _DOCKER_COMPOSE,
                     "--env-file",
                     str(self.paths.runtime_env),
                     "--file",
@@ -1098,7 +1590,10 @@ class HostReleaseEngine:
                     continue
                 if volume_type != "bind" or not isinstance(source, str) or not source.startswith("/"):
                     raise HostReleaseError("HostRelease Compose volume type forbidden")
-                if isinstance(source, str) and (source == "/var/run/docker.sock" or source.startswith("/run/docker")):
+                if isinstance(source, str) and (
+                    source in {"/run/docker.sock", "/var/run/docker.sock"}
+                    or source.startswith("/run/docker/")
+                ):
                     raise HostReleaseError("HostRelease Compose may not mount the Docker socket")
                 if isinstance(source, str) and source.startswith("/"):
                     source_path = Path(source)
@@ -1107,15 +1602,17 @@ class HostReleaseEngine:
                     except ValueError:
                         writable_exact = {
                             "/etc/drycontroller/license",
-                            "/etc/drycontroller/registry",
+                            "/var/lib/drycontroller/cloud-request-nonces",
                             "/var/lib/drycontroller/configs-runtime",
                             "/var/lib/drycontroller/discovery",
                         }
                         readonly_exact = {
                             "/etc/drycontroller/keys",
+                            "/etc/drycontroller/trust",
                             "/var/lib/drycontroller",
                             "/run/drycontroller-ota",
                             "/run/drycontroller-host-release",
+                            "/run/drycontroller-registry-auth",
                             "/var/log/drycontroller",
                         }
                         service_writable = source.removeprefix("/var/log/drycontroller/")
@@ -1440,6 +1937,8 @@ class HostReleaseEngine:
                         "software_release_id": software["release_id"],
                         "status": "already_initialized",
                     }
+            self._assert_fresh_install(lock_descriptor)
+            if self.paths.journal.exists():
                 self._recover_initialization(slot)
 
             if any(
@@ -1541,6 +2040,20 @@ class HostReleaseEngine:
                 "software_release_id": software["release_id"],
                 "status": "initialized",
             }
+
+    def _assert_fresh_install(self, lock_descriptor: int) -> None:
+        self._command_runner(
+            [
+                _BASH,
+                _FRESH_INSTALL_GUARD,
+                "--project",
+                _FIXED_ENV["COMPOSE_PROJECT_NAME"],
+                "--lock-fd",
+                str(lock_descriptor),
+            ],
+            None,
+            None,
+        )
 
     def _validate_slot(self, slot: object) -> dict[str, Any]:
         fields = {
@@ -1766,8 +2279,7 @@ class HostReleaseEngine:
     def _stop_active(self, slot: dict[str, Any]) -> None:
         self._command_runner(
             [
-                _DOCKER,
-                "compose",
+                _DOCKER_COMPOSE,
                 "--env-file",
                 str(self.paths.runtime_env),
                 "--file",

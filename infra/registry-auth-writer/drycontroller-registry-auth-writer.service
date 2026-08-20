@@ -1,0 +1,34 @@
+[Unit]
+Description=DryController root registry auth writer
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/registry_auth_writer.py
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=drycontroller-registry-auth
+RuntimeDirectoryMode=0755
+StateDirectory=drycontroller-ota
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/run/drycontroller-registry-auth /var/lib/drycontroller-ota
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

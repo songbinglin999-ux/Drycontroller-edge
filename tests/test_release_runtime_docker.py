@@ -21,6 +21,7 @@ if str(HELPER_DIR) not in sys.path:
 
 from release_engine import (  # noqa: E402
     RELEASE_JOURNAL_SCHEMA,
+    REGISTRY_AUTH_SCHEMA,
     COSIGN_TOOLCHAIN,
     ReleaseEngine,
     ReleaseError,
@@ -47,6 +48,24 @@ SERVICES = (
     "postgres",
     "prometheus",
 )
+
+
+def _registry_document(registry: str) -> dict:
+    return {
+        "schema": REGISTRY_AUTH_SCHEMA,
+        "auths": {registry: {"auth": base64.b64encode(b"reader:secret").decode("ascii")}},
+        "credential": {
+            "status": "active",
+            "credential_id": "cred-1",
+            "registry_host": registry,
+            "username": "reader",
+            "secret_fingerprint": hashlib.sha256(b"secret").hexdigest()[:16],
+            "version": 2,
+            "transaction_id": "a" * 32,
+            "audit_id": 17,
+            "updated_at": "2026-08-19T00:00:00+00:00",
+        },
+    }
 
 
 def _docker_run(
@@ -93,6 +112,74 @@ def _sign_manifest(cosign: str, manifest: dict, key: Path, signing_config: Path,
         stdout=subprocess.DEVNULL,
     )
     return base64.b64encode(bundle_path.read_bytes()).decode("ascii")
+
+
+def test_release_runtime_waits_for_a_running_service_to_recover_from_unhealthy(tmp_path: Path):
+    image_id = "sha256:" + "d" * 64
+    manifest = {
+        "schema": "drycontroller.software-release.v1",
+        "release_id": "11111111-1111-4111-8111-111111111111",
+        "host_release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "topology_digest": "sha256:" + "c" * 64,
+        "sequence": 1,
+        "version": "1.0.0",
+        "source_commit": "a" * 40,
+        "registry": "registry.example.test:5443",
+        "signing_key_sha256": "sha256:" + "b" * 64,
+        "cosign": COSIGN_TOOLCHAIN,
+        "services": {
+            service: f"registry.example.test:5443/drycontroller/{service}@sha256:{index:064x}"
+            for index, service in enumerate(SERVICES, start=1)
+        },
+        "image_ids": {service: image_id for service in SERVICES},
+    }
+    journal = {"effect": None, "error": None}
+    paths = ReleasePaths(
+        lock=tmp_path / "release.lock",
+        journal=tmp_path / "release-journal.json",
+        request=tmp_path / "request.json",
+        releases=tmp_path / "releases",
+        project=tmp_path,
+        compose=tmp_path / "docker-compose.yml",
+        cosign_pubkey=tmp_path / "cosign.pub",
+        registry_status=tmp_path / "registry.json",
+        device=tmp_path / "device.json",
+        cloud_config=tmp_path / "cloud.env",
+        host_active=tmp_path / "host-active.json",
+    )
+    status_checks = 0
+
+    def runtime_status(_args: list[str], _timeout: float) -> str:
+        nonlocal status_checks
+        status_checks += 1
+        records = []
+        for service in SERVICES:
+            records.append(
+                {
+                    "Service": service,
+                    "Image": local_image_reference(service, image_id),
+                    "State": "exited" if service == "mosquitto-init" else "running",
+                    "ExitCode": 0,
+                    "Health": (
+                        "unhealthy"
+                        if service == "edge-api" and status_checks == 1
+                        else "healthy"
+                    ),
+                }
+            )
+        return json.dumps(records)
+
+    engine = ReleaseEngine(
+        paths=paths,
+        command_runner=lambda _args: "",
+        runtime_command_runner=runtime_status,
+        runtime_health_checker=lambda _url, _timeout: None,
+        sleeper=lambda _seconds: None,
+    )
+
+    engine._verify_runtime(journal, {"manifest": manifest}, tmp_path / "override.yml", "candidate")
+
+    assert status_checks == 2
 
 
 @pytest.mark.skipif(
@@ -443,8 +530,9 @@ def test_signed_registry_a_b_c_failure_rolls_back_offline_and_rejects_wrong_topo
             host_active=host_active,
         )
         paths.registry_status.write_text(
-            json.dumps({"status": "active", "registry_host": registry}), encoding="utf-8"
+            json.dumps(_registry_document(registry)), encoding="utf-8"
         )
+        paths.registry_status.chmod(0o400)
         paths.device.write_text(
             json.dumps(
                 {

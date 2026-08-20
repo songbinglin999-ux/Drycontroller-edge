@@ -120,6 +120,7 @@ for path in \
   common/license_verifier.py \
   infra/bootstrap/installer_public_config.py \
   infra/bootstrap/tailscale_client_lock.py \
+  scripts/ci/assert-fresh-install-data-plane.sh \
   common/tailscale_status.py \
   infra/host-release-runner/host_release_engine.py \
   infra/host-release-runner/host_release_runner.py \
@@ -128,6 +129,8 @@ for path in \
   infra/host-release-runner/initialize-initial-release \
   infra/host-release-runner/drycontroller-host-release-runner.service \
   infra/ota-helper/drycontroller-ota-helper.service \
+  infra/registry-auth-writer/registry_auth_writer.py \
+  infra/registry-auth-writer/drycontroller-registry-auth-writer.service \
   infra/bootstrap/drycontroller-factory-identity.service \
   infra/bootstrap/drycontroller-tailnet-edge-api.socket \
   infra/bootstrap/drycontroller-tailnet-edge-api.service \
@@ -204,8 +207,82 @@ install_packages() {
       ca-certificates curl docker.io docker-compose-v2 iproute2 netplan.io \
       python3 python3-venv tailscale="$TAILSCALE_VERSION" tar tpm2-tools
   fi
-  command -v docker >/dev/null 2>&1 || die "docker is not installed"
-  docker compose version >/dev/null 2>&1 || die "docker compose v2 is not installed"
+  [ -x /usr/bin/docker ] && [ ! -L /usr/bin/docker ] || die "fixed Docker executable is not installed"
+  [ -x /usr/bin/bash ] && [ ! -L /usr/bin/bash ] || die "fixed Bash executable is not installed"
+  [ -x /usr/libexec/docker/cli-plugins/docker-compose ] \
+    && [ ! -L /usr/libexec/docker/cli-plugins/docker-compose ] \
+    || die "fixed Docker Compose executable is not installed"
+  install -d -o root -g root -m 0755 /etc/drycontroller
+  python3 - /etc/drycontroller/runtime-tools.json /usr/bin/docker /usr/bin/bash /usr/libexec/docker/cli-plugins/docker-compose <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1])
+executables = {}
+for value in sys.argv[2:]:
+    path = Path(value)
+    metadata = path.lstat()
+    current = path.parent
+    while True:
+        ancestor = current.lstat()
+        if (
+            not stat.S_ISDIR(ancestor.st_mode)
+            or ancestor.st_uid != 0
+            or ancestor.st_mode & 0o022
+        ):
+            raise SystemExit(f"fixed executable ancestor is untrusted: {current}")
+        if current == Path("/"):
+            break
+        current = current.parent
+    if (
+        path.resolve(strict=True) != path
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_mode & 0o022
+        or not metadata.st_mode & 0o111
+        or metadata.st_nlink != 1
+    ):
+        raise SystemExit(f"fixed executable is untrusted: {path}")
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise SystemExit(f"fixed executable changed while opening: {path}")
+        digest = hashlib.file_digest(os.fdopen(os.dup(descriptor), "rb"), "sha256").hexdigest()
+    finally:
+        os.close(descriptor)
+    executables[str(path)] = {"sha256": f"sha256:{digest}"}
+
+payload = {
+    "schema": "drycontroller.runtime-tools.v1",
+    "executables": executables,
+}
+temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+descriptor = os.open(
+    temporary,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+    0o400,
+)
+try:
+    os.write(descriptor, json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    os.fchmod(descriptor, 0o400)
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+os.replace(temporary, target)
+directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+  env -i HOME=/var/empty PATH=/usr/bin:/bin DOCKER_HOST=unix:///run/docker.sock \
+    DOCKER_CONFIG=/var/empty /usr/libexec/docker/cli-plugins/docker-compose version >/dev/null 2>&1 \
+    || die "fixed Docker Compose executable is unusable"
   command -v netplan >/dev/null 2>&1 || die "netplan is not installed"
   command -v tpm2_createprimary >/dev/null 2>&1 || die "tpm2-tools are not installed"
   python3 -m venv --help >/dev/null 2>&1 || die "python3 venv support is not installed"
@@ -234,6 +311,110 @@ configure_docker() {
   fi
   systemctl enable docker.service >/dev/null
   systemctl restart docker.service
+  python3 - /etc/drycontroller/docker-daemon.json <<'PY'
+import json
+import os
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1])
+socket_path = Path("/run/docker.sock")
+metadata = socket_path.lstat()
+if (
+    not stat.S_ISSOCK(metadata.st_mode)
+    or metadata.st_uid != 0
+    or metadata.st_mode & 0o002
+    or metadata.st_nlink != 1
+):
+    raise SystemExit("fixed Docker socket is untrusted")
+completed = subprocess.run(
+    [
+        "/usr/bin/docker",
+        "info",
+        "--format",
+        '{{json .}}',
+    ],
+    check=True,
+    capture_output=True,
+    text=True,
+    timeout=15,
+    env={
+        "HOME": "/var/empty",
+        "PATH": "/usr/bin:/bin",
+        "DOCKER_HOST": "unix:///run/docker.sock",
+        "DOCKER_CONFIG": "/var/lib/drycontroller-ota/guard-docker-config",
+    },
+)
+info = json.loads(completed.stdout)
+identity = {
+    "id": info.get("ID"),
+    "name": info.get("Name"),
+    "root_dir": info.get("DockerRootDir"),
+}
+if not all(isinstance(value, str) and value for value in identity.values()):
+    raise SystemExit("Docker daemon identity is incomplete")
+payload = {"schema": "drycontroller.docker-daemon.v1", **identity}
+temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+descriptor = os.open(
+    temporary,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+    0o400,
+)
+try:
+    os.write(descriptor, json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    os.fchmod(descriptor, 0o400)
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+os.replace(temporary, target)
+directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+}
+
+prepare_release_security_state() {
+  install -d -o root -g root -m 0700 /var/lib/drycontroller-ota
+  python3 - <<'PY'
+import os
+import stat
+from pathlib import Path
+
+root = Path("/var/lib/drycontroller-ota")
+guard_directory = root / "guard-docker-config"
+if guard_directory.exists() or guard_directory.is_symlink():
+    metadata = guard_directory.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0:
+        raise SystemExit("guard Docker config directory invalid")
+else:
+    guard_directory.mkdir(mode=0o500)
+os.chown(guard_directory, 0, 0)
+os.chmod(guard_directory, 0o500)
+guard_config = guard_directory / "config.json"
+temporary = root / f".guard-docker-config.{os.getpid()}.tmp"
+descriptor = os.open(
+    temporary,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+    0o400,
+)
+try:
+    os.write(descriptor, b'{"auths":{}}')
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+os.chown(temporary, 0, 0)
+os.replace(temporary, guard_config)
+os.chmod(guard_config, 0o400)
+directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
 }
 
 install_static_runtime() {
@@ -251,8 +432,11 @@ install_static_runtime() {
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-runner" /usr/libexec/drycontroller/host-release-runner
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-apply" /usr/libexec/drycontroller/host-release-apply
   install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/initialize-initial-release" /usr/libexec/drycontroller/initialize-initial-release
+  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/ci/assert-fresh-install-data-plane.sh" /usr/libexec/drycontroller/assert-fresh-install-data-plane
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/drycontroller-host-release-runner.service" /etc/systemd/system/drycontroller-host-release-runner.service
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
+  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/registry-auth-writer/registry_auth_writer.py" /usr/libexec/drycontroller/registry_auth_writer.py
+  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/registry-auth-writer/drycontroller-registry-auth-writer.service" /etc/systemd/system/drycontroller-registry-auth-writer.service
   install -o root -g root -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-license-transaction-recovery.service" /etc/systemd/system/drycontroller-license-transaction-recovery.service
   install -o root -g root -m 0644 "$HOST_COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/host-release-cosign.pub
   install -o root -g root -m 0644 "$SOFTWARE_COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub
@@ -356,6 +540,7 @@ enable_services() {
   [ "$identity_healthy" = true ] && systemctl is-active --quiet drycontroller-factory-identity.service \
     || die "TPM factory identity service did not become healthy"
   systemctl enable --now drycontroller-device-credential-rotation.timer
+  systemctl enable --now drycontroller-registry-auth-writer.service
   systemctl enable --now drycontroller-ota-helper.service
   systemctl enable --now drycontroller-host-release-runner.service
 }
@@ -402,6 +587,7 @@ log "preparing one blank DryController Edge host"
 prepare_tailscale_state
 install_packages
 prepare_tailscale_state
+prepare_release_security_state
 configure_docker
 install_static_runtime
 install_identity_service

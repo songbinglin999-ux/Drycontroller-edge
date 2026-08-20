@@ -141,7 +141,7 @@ def test_host_release_runner_is_outside_its_signed_update_surface():
     assert '"infra/host-release-runner/' not in builder
     assert '"configs/keys/"' in engine
     assert '"--lock-fd"' in engine
-    assert "pass_fds=inherited_fds" in engine
+    assert "pass_fds=passed_fds" in engine
 
 
 def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
@@ -164,6 +164,7 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
         "--public-config",
         "--tailscale-client-lock",
         "/usr/libexec/drycontroller/initialize-initial-release",
+        "/usr/libexec/drycontroller/assert-fresh-install-data-plane",
         "/usr/libexec/drycontroller/host-release-runner",
     ):
         assert required in installer
@@ -228,6 +229,60 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     assert "require_cmd zstd" in usb_writer
     assert "signature_verifier=Path(host_cosign)" in usb_writer
     assert "USB raw compare passed" in usb_writer
+
+
+def test_formal_source_bundle_carries_the_fresh_install_guard_and_registry_writer():
+    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+    bundle_builder = (ROOT / "tools/build-bundle-images.sh").read_text(encoding="utf-8")
+
+    source = "scripts/ci/assert-fresh-install-data-plane.sh"
+    installed = "/usr/libexec/drycontroller/assert-fresh-install-data-plane"
+    assert source in bundle_builder
+    assert f'"${{REPO_SOURCE}}/{source}"' in installer
+    assert installed in installer
+    assert installer.index(installed) < installer.rindex(
+        "/usr/libexec/drycontroller/initialize-initial-release"
+    )
+    for source in (
+        "infra/registry-auth-writer/registry_auth_writer.py",
+        "infra/registry-auth-writer/drycontroller-registry-auth-writer.service",
+    ):
+        assert source in bundle_builder
+        assert f'"${{REPO_SOURCE}}/{source}"' in installer
+
+
+def test_root_release_runtime_is_disconnected_from_edge_api_writable_docker_config():
+    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+    guard = (ROOT / "scripts/ci/assert-fresh-install-data-plane.sh").read_text(encoding="utf-8")
+    runtime_sources = [
+        (ROOT / "infra/host-release-runner/host_release_engine.py").read_text(encoding="utf-8"),
+        (ROOT / "infra/host-release-runner/host_release_runner.py").read_text(encoding="utf-8"),
+        (ROOT / "infra/ota-helper/release_engine.py").read_text(encoding="utf-8"),
+        (ROOT / "infra/ota-helper/drycontroller_ota_helper.py").read_text(encoding="utf-8"),
+    ]
+
+    assert guard.startswith("#!/usr/bin/bash\n")
+    assert 'readonly DOCKER_CONFIG_DIR=\'/var/lib/drycontroller-ota/guard-docker-config\'' in guard
+    assert '"/usr/bin/bash"' in runtime_sources[0]
+    assert '"/usr/libexec/docker/cli-plugins/docker-compose"' in runtime_sources[0]
+    assert '"/usr/libexec/docker/cli-plugins/docker-compose"' in runtime_sources[2]
+    assert "registry-auth.json" not in installer
+    assert "drycontroller-registry-auth-writer.service" in installer
+    assert "guard-docker-config" in installer
+    assert "stat.S_IMODE(metadata.st_mode) != 0o400" in runtime_sources[0]
+    assert "stat.S_IMODE(metadata.st_mode) != 0o400" in runtime_sources[2]
+    for source in runtime_sources:
+        assert '"DOCKER_CONFIG": "/etc/drycontroller/registry"' not in source
+    for source in (runtime_sources[0], runtime_sources[2]):
+        assert "os.O_PATH" in source
+        assert 'f"unix:///proc/self/fd/{socket_descriptor}"' in source
+        assert '"DOCKER_HOST": docker_host' in source
+
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "/etc/drycontroller/registry" not in compose
+    assert "REGISTRY_DOCKER_CONFIG_PATH" not in compose
+    assert "REGISTRY_CREDENTIAL_STATUS_PATH" not in compose
+    assert "/run/drycontroller-registry-auth:/run/drycontroller-registry-auth:ro" in compose
 
 
 def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata():
