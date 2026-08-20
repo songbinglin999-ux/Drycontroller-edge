@@ -513,11 +513,6 @@ for service in "${SERVICES[@]}"; do
   LOCAL_TARGETS+=("${target}")
   release_step_build_or_mirror "${service}" "${target}"
   release_step_scan "${target}"
-  release_step_push "${target}"
-  digest_ref="$(release_step_resolve_digest "${target}")"
-  release_step_sign_image "${digest_ref}"
-  release_step_verify_image "${digest_ref}"
-  IMAGE_REFS["${service}"]="${digest_ref}"
   image_id="$(release_step_resolve_portable_image_id "${target}")"
   [[ "${image_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
   case "${service}" in
@@ -529,6 +524,11 @@ for service in "${SERVICES[@]}"; do
         --output "${python_base_receipt_dir}/${service}.json"
       ;;
   esac
+  release_step_push "${target}"
+  digest_ref="$(release_step_resolve_digest "${target}")"
+  release_step_sign_image "${digest_ref}"
+  release_step_verify_image "${digest_ref}"
+  IMAGE_REFS["${service}"]="${digest_ref}"
   IMAGE_IDS["${service}"]="${image_id}"
 done
 

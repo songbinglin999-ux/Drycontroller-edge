@@ -81,7 +81,7 @@ def test_controller_trivy_pin_matches_candidate_verifier_constants():
 
 def test_changed_python_images_prove_base_identity_before_push_and_sign():
     script = SOFTWARE_BUILDER.read_text(encoding="utf-8")
-    loop = script.rsplit('for service in "${SERVICES[@]}"; do', 1)[1].split(
+    loop = script.split('for service in "${SERVICES[@]}"; do', 1)[1].split(
         "\ndone\n", 1
     )[0]
     build = loop.index("release_step_build_or_mirror")
