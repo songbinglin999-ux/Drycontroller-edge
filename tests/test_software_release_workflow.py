@@ -884,7 +884,8 @@ exec(compile(os.environ["RESOLVER_SOURCE"], "<resolver>", "exec"))
         text=True,
     )
     predecessor = json.loads(predecessor_path.read_text(encoding="utf-8")) if predecessor_path.exists() else None
-    resumable = json.loads(resumable_path.read_text(encoding="utf-8")) if resumable_path.exists() else None
+    resumable_bytes = resumable_path.read_bytes() if resumable_path.exists() else b""
+    resumable = json.loads(resumable_bytes) if resumable_bytes else None
     return result, predecessor, resumable
 
 
@@ -892,7 +893,19 @@ def test_resolver_selects_latest_completed_pair_and_preserves_resumable_orphans(
     _, paired_software, paired_host = _formal_pair_rows(3, "3" * 40)
     _, current_software, current_host = _formal_pair_rows(5, "5" * 40)
     _, standalone_software, _ = _formal_pair_rows(9, "9" * 40)
+    standalone_software["manifest"]["host_release_id"] = paired_host["id"]
+    standalone_software["manifest"]["topology_digest"] = paired_software["manifest"][
+        "topology_digest"
+    ]
+    runner_dir = ROOT / "infra/host-release-runner"
+    sys.path.insert(0, str(runner_dir))
+    from host_release_engine import canonical_digest  # noqa: PLC0415
+
+    standalone_software["manifest_digest"] = canonical_digest(
+        standalone_software["manifest"]
+    )
     current_host = {key: current_host[key] for key in ("id", "sequence", "version", "source_commit")}
+    current_host["version"] = "2.0.0-host.5"
     current_host["status"] = "building"
 
     result, predecessor, resumable = _run_predecessor_resolver(
@@ -907,6 +920,29 @@ def test_resolver_selects_latest_completed_pair_and_preserves_resumable_orphans(
     assert predecessor["id"] == paired_software["id"]
     assert predecessor["paired_host_release"]["id"] == paired_host["id"]
     assert resumable["id"] == current_software["id"]
+
+
+def test_resolver_writes_an_empty_resume_marker_for_a_new_release(tmp_path: Path):
+    _, paired_software, paired_host = _formal_pair_rows(3, "3" * 40)
+    _, current_software, current_host = _formal_pair_rows(5, "5" * 40)
+    current_host = {
+        key: current_host[key]
+        for key in ("id", "sequence", "version", "source_commit")
+    }
+    current_host["status"] = "building"
+
+    result, predecessor, resumable = _run_predecessor_resolver(
+        tmp_path,
+        [paired_software],
+        [current_host, paired_host],
+        current_software,
+        current_host["id"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert predecessor["id"] == paired_software["id"]
+    assert resumable is None
+    assert (tmp_path / "resumable-release.json").read_bytes() == b""
 
 
 def test_resolver_rejects_malformed_completed_pair_instead_of_falling_back(tmp_path: Path):
@@ -993,11 +1029,83 @@ def test_completed_software_retry_revalidates_exact_release_before_resuming(tmp_
         'json.dumps(row, sort_keys=True, separators=(",", ":"))',
     ):
         assert gate in function
-    assert script.index("release_step_resume_completed_release; then") < script.index(
-        "release_step_create_cloud\n"
-    )
+    resume_guard = script.rindex('if [[ -s "${resumable_release_path}" ]]; then')
+    resume_call = script.rindex("  release_step_resume_completed_release\n")
+    create_call = script.rindex("release_step_create_cloud\n")
+    assert resume_guard < resume_call < create_call
 
     wrong_source = json.loads(json.dumps(software_row))
     wrong_source["source_commit"] = "6" * 40
     resumable_path.write_text(json.dumps(wrong_source), encoding="utf-8")
     assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+
+
+def test_completed_software_retry_propagates_shell_gate_failure_without_output(tmp_path: Path):
+    _, software_row, host_row = _formal_pair_rows(5, "5" * 40)
+    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
+    function_match = re.search(
+        r"(release_step_resume_completed_release\(\) \{.*?\n\})"
+        r"\n\nrelease_step_sign_manifest",
+        script,
+        flags=re.DOTALL,
+    )
+    assert function_match is not None
+    main = script.rsplit("release_step_resolve_predecessor\n", 1)[1].split(
+        "release_step_resolve_changed_services", 1
+    )[0]
+    resumable_path = tmp_path / "resumable.json"
+    output_path = tmp_path / "software-output.json"
+    resumable_path.write_text(json.dumps(software_row), encoding="utf-8")
+    harness = f"""
+set -euo pipefail
+release_step_resolve_predecessor() {{ :; }}
+python3() {{
+  if [[ "${{1:-}}" == scripts/ci/python_base_image_contract.py ]]; then
+    return 0
+  fi
+  command "${{REAL_PYTHON}}" "$@"
+}}
+cosign() {{ return 0; }}
+docker() {{ return 0; }}
+release_step_scan() {{ return 42; }}
+release_step_verify_image() {{ return 0; }}
+release_step_resolve_portable_image_id() {{ printf 'sha256:%064d\n' 0; }}
+declare -a LOCAL_TARGETS=()
+{function_match.group(1)}
+{main}
+exit 88
+"""
+    manifest = software_row["manifest"]
+    environment = {
+        **os.environ,
+        "REAL_PYTHON": sys.executable,
+        "PYTHONPATH": os.pathsep.join(
+            (str(HELPER_DIR), str(ROOT / "infra/host-release-runner"))
+        ),
+        "resumable_release_path": str(resumable_path),
+        "manifest_path": str(tmp_path / "manifest.json"),
+        "manifest_signature": str(tmp_path / "manifest.sigstore.json"),
+        "inherited_images_path": str(tmp_path / "images.tsv"),
+        "signing_pub": str(tmp_path / "cosign.pub"),
+        "python_base_receipt_dir": str(tmp_path / "receipts"),
+        "python_base_receipt_path": str(tmp_path / "receipt.json"),
+        "SOFTWARE_RELEASE_OUTPUT": str(output_path),
+        "RELEASE_SERVICE_INVENTORY": "\n".join(manifest["services"]),
+        "RELEASE_VERSION": software_row["version"],
+        "RELEASE_SOURCE_COMMIT": software_row["source_commit"],
+        "HOST_RELEASE_ID": host_row["id"],
+        "TOPOLOGY_DIGEST": manifest["topology_digest"],
+        "HARBOR_HOST": manifest["registry"],
+        "HARBOR_PROJECT": "drycontroller",
+        "SIGNING_KEY_SHA256": manifest["signing_key_sha256"],
+    }
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert not output_path.exists()

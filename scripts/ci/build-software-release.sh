@@ -239,7 +239,6 @@ current_host = host_by_id.get(os.environ["HOST_RELEASE_ID"])
 current_host_is_building = (
     isinstance(current_host, dict)
     and current_host.get("status") == "building"
-    and current_host.get("version") == os.environ["RELEASE_VERSION"]
     and current_host.get("source_commit") == os.environ["RELEASE_SOURCE_COMMIT"]
 )
 resumable = []
@@ -261,7 +260,10 @@ for row in software_rows:
     host_row = host_by_id.get(manifest["host_release_id"])
     if host_row is None or host_row.get("status") != "completed":
         continue
-    assert_pair(completed_hosts[host_row["id"]], manifest)
+    host_manifest = completed_hosts[host_row["id"]]
+    if host_manifest["software_release_id"] != row["id"]:
+        continue
+    assert_pair(host_manifest, manifest)
     pairs.append((row["sequence"], row, host_row))
 
 if len(resumable) > 1:
@@ -276,7 +278,7 @@ Path(sys.argv[1]).write_text(
     encoding="utf-8",
 )
 Path(sys.argv[2]).write_text(
-    json.dumps(resumable[0] if resumable else None, separators=(",", ":")),
+    json.dumps(resumable[0], separators=(",", ":")) if resumable else "",
     encoding="utf-8",
 )
 PY
@@ -620,7 +622,6 @@ PY
 }
 
 release_step_resume_completed_release() {
-  [[ -s "${resumable_release_path}" ]] || return 1
   PYTHONPATH="infra/ota-helper:infra/host-release-runner" python3 - \
     "${resumable_release_path}" \
     "${manifest_path}" \
@@ -792,7 +793,8 @@ PY
 }
 
 release_step_resolve_predecessor
-if release_step_resume_completed_release; then
+if [[ -s "${resumable_release_path}" ]]; then
+  release_step_resume_completed_release
   exit 0
 fi
 release_step_resolve_changed_services
