@@ -134,6 +134,22 @@ with urllib.request.urlopen(request, timeout=30) as response:
 if not isinstance(payload, list):
     raise SystemExit("Cloud returned an invalid SoftwareRelease list")
 predecessor = next((row for row in payload if row.get("status") == "completed"), None)
+if predecessor is not None:
+    manifest = predecessor.get("manifest")
+    host_release_id = manifest.get("host_release_id") if isinstance(manifest, dict) else None
+    host_request = urllib.request.Request(
+        os.environ["CLOUD_OPS_RELEASE_API_URL"].rstrip("/") + "/api/v1/host-releases",
+        headers={"X-API-Key": os.environ["CLOUD_OPS_RELEASE_API_KEY"]},
+        method="GET",
+    )
+    with urllib.request.urlopen(host_request, timeout=30) as response:
+        host_payload = json.loads(response.read(4 * 1024 * 1024))
+    if not isinstance(host_payload, list):
+        raise SystemExit("Cloud returned an invalid HostRelease list")
+    predecessor["paired_host_release"] = next(
+        (row for row in host_payload if row.get("id") == host_release_id),
+        None,
+    )
 Path(sys.argv[1]).write_text(
     json.dumps(predecessor, separators=(",", ":")),
     encoding="utf-8",
@@ -344,7 +360,7 @@ release_step_verify_image() {
 }
 
 release_step_load_inherited_images() {
-  PYTHONPATH="infra/ota-helper" python3 - \
+  PYTHONPATH="infra/ota-helper:infra/host-release-runner" python3 - \
     "${predecessor_path}" \
     "${predecessor_manifest_path}" \
     "${predecessor_signature_path}" \
@@ -358,6 +374,12 @@ import os
 import sys
 from pathlib import Path
 
+from host_release_engine import (
+    assert_pair,
+    canonical_digest as host_canonical_digest,
+    validate_host_manifest,
+    validate_software_manifest,
+)
 from release_engine import canonical_manifest_bytes, validate_manifest
 
 predecessor = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -370,20 +392,59 @@ if predecessor is None:
     raise SystemExit(0)
 
 manifest = validate_manifest(predecessor.get("manifest"))
+validate_software_manifest(manifest)
 manifest_bytes = canonical_manifest_bytes(manifest)
 expected_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
-if predecessor.get("manifest_digest") != expected_digest:
-    raise SystemExit("predecessor manifest digest mismatch")
+software_identity_matches = (
+    predecessor.get("status") == "completed"
+    and predecessor.get("id") == manifest["release_id"]
+    and predecessor.get("sequence") == manifest["sequence"]
+    and predecessor.get("version") == manifest["version"]
+    and predecessor.get("source_commit") == manifest["source_commit"]
+    and predecessor.get("manifest_digest") == expected_digest
+    and isinstance(predecessor.get("manifest_signature"), str)
+    and predecessor.get("manifest_signature")
+)
+if not software_identity_matches:
+    raise SystemExit("predecessor SoftwareRelease identity is incomplete")
+predecessor_host = predecessor.get("paired_host_release")
+if not isinstance(predecessor_host, dict):
+    raise SystemExit("predecessor HostRelease is missing")
+host_manifest = validate_host_manifest(predecessor_host.get("manifest"))
+host_identity_matches = (
+    predecessor_host.get("status") == "completed"
+    and predecessor_host.get("id") == host_manifest["release_id"]
+    and predecessor_host.get("sequence") == host_manifest["sequence"]
+    and predecessor_host.get("version") == host_manifest["version"]
+    and predecessor_host.get("source_commit") == host_manifest["source_commit"]
+    and predecessor_host.get("manifest_digest") == host_canonical_digest(host_manifest)
+    and isinstance(predecessor_host.get("manifest_signature"), str)
+    and predecessor_host.get("manifest_signature")
+    and predecessor_host.get("software_release_id") == predecessor.get("id")
+)
+if not host_identity_matches:
+    raise SystemExit("predecessor HostRelease identity is incomplete")
+assert_pair(host_manifest, manifest)
+try:
+    host_signature = base64.b64decode(
+        predecessor_host["manifest_signature"],
+        validate=True,
+    )
+except (binascii.Error, ValueError) as exc:
+    raise SystemExit("predecessor HostRelease signature is invalid") from exc
+if not host_signature:
+    raise SystemExit("predecessor HostRelease signature is missing")
 if manifest["signing_key_sha256"] != os.environ["SIGNING_KEY_SHA256"]:
     if changed != set(service_inventory):
         raise SystemExit("signing-key rotation requires rebuilding every service")
     Path(sys.argv[5]).write_text("", encoding="utf-8")
     raise SystemExit(0)
-if (
+binding_changed = (
     manifest["host_release_id"] != os.environ["HOST_RELEASE_ID"]
     or manifest["topology_digest"] != os.environ["TOPOLOGY_DIGEST"]
-):
-    raise SystemExit("predecessor topology binding changed")
+)
+if binding_changed and changed != set(service_inventory):
+    raise SystemExit("new HostRelease binding requires rebuilding every service")
 try:
     signature = base64.b64decode(predecessor.get("manifest_signature", ""), validate=True)
 except (binascii.Error, ValueError) as exc:
@@ -393,7 +454,9 @@ if not signature:
 Path(sys.argv[2]).write_bytes(manifest_bytes)
 Path(sys.argv[3]).write_bytes(signature)
 Path(sys.argv[5]).write_text(
-    "".join(
+    ""
+    if binding_changed
+    else "".join(
         f"{service}\t{manifest['services'][service]}\t{manifest['image_ids'][service]}\n"
         for service in service_inventory
         if service not in changed

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -521,3 +522,182 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
     subprocess.run(["git", "commit", "-qm", "shared change"], cwd=repository, check=True)
     shared_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
     assert set(resolve(docs_commit, shared_commit)) == set(services)
+
+
+def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Path):
+    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
+    assert '"/api/v1/host-releases"' in script
+    assert 'predecessor["paired_host_release"]' in script
+    match = re.search(
+        r"release_step_load_inherited_images\(\) \{.*?<<'PY'\n(.*?)\nPY\n",
+        script,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    loader = match.group(1)
+
+    runner_dir = ROOT / "infra/host-release-runner"
+    sys.path.insert(0, str(runner_dir))
+    from host_release_engine import (  # noqa: PLC0415
+        COSIGN_TOOLCHAIN,
+        HOST_HEALTH_CONTRACT,
+        canonical_digest,
+        canonical_topology_digest,
+    )
+
+    services = (
+        "ai-ctrl-optimizer",
+        "ai-softsensor",
+        "alertmanager",
+        "edge-api",
+        "edge-daq",
+        "edge-monitor",
+        "influxdb",
+        "license-service",
+        "mosquitto",
+        "mosquitto-init",
+        "postgres",
+        "prometheus",
+    )
+    old_host_id = "11111111-1111-4111-8111-111111111111"
+    new_host_id = "22222222-2222-4222-8222-222222222222"
+    software_id = "33333333-3333-4333-8333-333333333333"
+    source_commit = "a" * 40
+    registry = "registry.example.com"
+    compose = b"services:\n  edge-api:\n    image: edge-api:3\n"
+    topology = {
+        "compose_digest": "sha256:" + hashlib.sha256(compose).hexdigest(),
+        "service_inventory": sorted(services),
+        "health_contract": HOST_HEALTH_CONTRACT,
+    }
+    topology_digest = canonical_topology_digest(topology)
+    software_signing_key = "sha256:" + "b" * 64
+    software_manifest = {
+        "schema": "drycontroller.software-release.v1",
+        "release_id": software_id,
+        "host_release_id": old_host_id,
+        "topology_digest": topology_digest,
+        "sequence": 3,
+        "version": "1.0.0-rb8.3",
+        "source_commit": source_commit,
+        "registry": registry,
+        "signing_key_sha256": software_signing_key,
+        "cosign": COSIGN_TOOLCHAIN,
+        "services": {
+            service: f"{registry}/drycontroller/{service}@sha256:{index:064x}"
+            for index, service in enumerate(services, start=1)
+        },
+        "image_ids": {
+            service: f"sha256:{index + 100:064x}"
+            for index, service in enumerate(services, start=1)
+        },
+    }
+    helper_files = {
+        "infra/ota-helper/drycontroller_ota_helper.py": (b"helper\n", 0o644),
+        "infra/ota-helper/release_engine.py": (b"engine\n", 0o644),
+        "infra/ota-helper/ota-apply": (b"#!/usr/bin/python3\n", 0o755),
+        "infra/ota-helper/initialize-active-release": (b"#!/usr/bin/python3\n", 0o755),
+        "infra/ota-helper/start-active-release": (b"#!/usr/bin/python3\n", 0o755),
+    }
+    files = {"docker-compose.yml": (compose, 0o644), **helper_files}
+    host_manifest = {
+        "schema": "drycontroller.host-release.v1",
+        "release_id": old_host_id,
+        "sequence": 3,
+        "version": "1.0.0-rb8.3",
+        "source_commit": source_commit,
+        "registry": registry,
+        "signing_key_sha256": "sha256:" + "c" * 64,
+        "cosign": COSIGN_TOOLCHAIN,
+        "bundle": {
+            "image": f"{registry}/drycontroller/host-bundle@sha256:{999:064x}",
+            "image_id": "sha256:" + "d" * 64,
+        },
+        "topology": topology,
+        "topology_digest": topology_digest,
+        "software_release_id": software_id,
+        "software_manifest_digest": canonical_digest(software_manifest),
+        "files": [
+            {
+                "path": path,
+                "sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+                "mode": mode,
+            }
+            for path, (data, mode) in sorted(files.items())
+        ],
+    }
+    predecessor = {
+        "id": software_id,
+        "sequence": 3,
+        "version": "1.0.0-rb8.3",
+        "source_commit": source_commit,
+        "status": "completed",
+        "manifest": software_manifest,
+        "manifest_digest": canonical_digest(software_manifest),
+        "manifest_signature": "c2ln",
+        "paired_host_release": {
+            "id": old_host_id,
+            "sequence": 3,
+            "version": "1.0.0-rb8.3",
+            "source_commit": source_commit,
+            "status": "completed",
+            "manifest": host_manifest,
+            "manifest_digest": canonical_digest(host_manifest),
+            "manifest_signature": "aG9zdC1zaWc=",
+            "software_release_id": software_id,
+        },
+    }
+    predecessor_path = tmp_path / "predecessor.json"
+    predecessor_manifest_path = tmp_path / "predecessor-manifest.json"
+    predecessor_signature_path = tmp_path / "predecessor-manifest.sigstore.json"
+    changed_services_path = tmp_path / "changed-services.txt"
+    inherited_images_path = tmp_path / "inherited-images.tsv"
+    predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
+    changed_services_path.write_text("".join(f"{service}\n" for service in services), encoding="utf-8")
+
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join((str(HELPER_DIR), str(runner_dir))),
+        "RELEASE_SERVICE_INVENTORY": "\n".join(services),
+        "HOST_RELEASE_ID": new_host_id,
+        "TOPOLOGY_DIGEST": topology_digest,
+        "SIGNING_KEY_SHA256": software_signing_key,
+    }
+    command = [
+        "python3",
+        "-c",
+        loader,
+        str(predecessor_path),
+        str(predecessor_manifest_path),
+        str(predecessor_signature_path),
+        str(changed_services_path),
+        str(inherited_images_path),
+    ]
+    subprocess.run(command, cwd=ROOT, env=environment, check=True)
+
+    assert inherited_images_path.read_text(encoding="utf-8") == ""
+    assert predecessor_manifest_path.read_bytes()
+    assert predecessor_signature_path.read_bytes()
+
+    predecessor["status"] = "building"
+    predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
+    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+    predecessor["status"] = "completed"
+
+    predecessor["paired_host_release"]["status"] = "building"
+    predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
+    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+    predecessor["paired_host_release"]["status"] = "completed"
+
+    predecessor["paired_host_release"]["software_release_id"] = new_host_id
+    predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
+    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+    predecessor["paired_host_release"]["software_release_id"] = software_id
+
+    predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
+    changed_services_path.write_text(
+        "".join(f"{service}\n" for service in services[:-1]),
+        encoding="utf-8",
+    )
+    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
