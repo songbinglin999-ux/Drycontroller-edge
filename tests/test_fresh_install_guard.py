@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -226,7 +227,8 @@ def _write_guard_under_test(tmp_path: Path, docker: Path, lock: Path) -> Path:
         socket_kind_constant,
         "readonly DOCKER_SOCKET_KIND='regular-test'",
     )
-    source = source.replace("stat -c '%d:%i'", "stat -f '%d:%i'")
+    if sys.platform == "darwin":
+        source = source.replace("stat -c '%d:%i'", "stat -f '%d:%i'")
     source = source.replace(
         'readonly DOCKER_EXEC="/proc/self/fd/${DOCKER_FD}"',
         f"readonly DOCKER_EXEC='{docker}'",
@@ -279,6 +281,21 @@ def _run_guard(
         )
     finally:
         os.close(descriptor)
+
+
+def test_guard_fixture_uses_the_host_stat_dialect(tmp_path: Path, monkeypatch):
+    docker = _write_fake_docker(tmp_path)
+    lock = tmp_path / "release.lock"
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    linux_source = _write_guard_under_test(tmp_path, docker, lock).read_text()
+    assert "stat -c '%d:%i'" in linux_source
+    assert "stat -f '%d:%i'" not in linux_source
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    darwin_source = _write_guard_under_test(tmp_path, docker, lock).read_text()
+    assert "stat -c '%d:%i'" not in darwin_source
+    assert "stat -f '%d:%i'" in darwin_source
 
 
 def test_guard_accepts_only_an_empty_daemon_under_the_transaction_lock(tmp_path: Path):
