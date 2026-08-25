@@ -65,6 +65,7 @@ manifest_signature="${release_work_dir}/manifest.sigstore.json"
 image_map_path="${release_work_dir}/images.tsv"
 release_metadata_path="${release_work_dir}/cloud-release.json"
 predecessor_path="${release_work_dir}/predecessor.json"
+resumable_release_path="${release_work_dir}/resumable-release.json"
 predecessor_manifest_path="${release_work_dir}/predecessor-manifest.json"
 predecessor_signature_path="${release_work_dir}/predecessor-manifest.sigstore.json"
 changed_services_path="${release_work_dir}/changed-services.txt"
@@ -117,41 +118,165 @@ chmod 600 "${signing_config}"
 export SIGNING_KEY_SHA256="sha256:$(sha256sum "${signing_pub}" | awk '{print $1}')"
 
 release_step_resolve_predecessor() {
-  python3 - "${predecessor_path}" <<'PY'
+  PYTHONPATH="infra/ota-helper:infra/host-release-runner" python3 - \
+    "${predecessor_path}" \
+    "${resumable_release_path}" <<'PY'
+import base64
+import binascii
+import hashlib
 import json
 import os
 import sys
 import urllib.request
 from pathlib import Path
 
-request = urllib.request.Request(
-    os.environ["CLOUD_OPS_RELEASE_API_URL"].rstrip("/") + "/api/v1/software-releases",
-    headers={"X-API-Key": os.environ["CLOUD_OPS_RELEASE_API_KEY"]},
-    method="GET",
+from host_release_engine import (
+    assert_pair,
+    canonical_digest as host_canonical_digest,
+    validate_host_manifest,
+    validate_software_manifest,
 )
-with urllib.request.urlopen(request, timeout=30) as response:
-    payload = json.loads(response.read(4 * 1024 * 1024))
-if not isinstance(payload, list):
-    raise SystemExit("Cloud returned an invalid SoftwareRelease list")
-predecessor = next((row for row in payload if row.get("status") == "completed"), None)
-if predecessor is not None:
-    manifest = predecessor.get("manifest")
-    host_release_id = manifest.get("host_release_id") if isinstance(manifest, dict) else None
-    host_request = urllib.request.Request(
-        os.environ["CLOUD_OPS_RELEASE_API_URL"].rstrip("/") + "/api/v1/host-releases",
+from release_engine import canonical_manifest_bytes, validate_manifest
+
+
+def fetch(name):
+    request = urllib.request.Request(
+        os.environ["CLOUD_OPS_RELEASE_API_URL"].rstrip("/") + f"/api/v1/{name}",
         headers={"X-API-Key": os.environ["CLOUD_OPS_RELEASE_API_KEY"]},
         method="GET",
     )
-    with urllib.request.urlopen(host_request, timeout=30) as response:
-        host_payload = json.loads(response.read(4 * 1024 * 1024))
-    if not isinstance(host_payload, list):
-        raise SystemExit("Cloud returned an invalid HostRelease list")
-    predecessor["paired_host_release"] = next(
-        (row for row in host_payload if row.get("id") == host_release_id),
-        None,
-    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read(4 * 1024 * 1024))
+    if not isinstance(payload, list):
+        raise SystemExit(f"Cloud returned an invalid {name} list")
+    return payload
+
+
+def index_rows(rows, label):
+    by_id = {}
+    sequences = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SystemExit(f"Cloud returned an invalid {label} row")
+        sequence = row.get("sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+            raise SystemExit(f"Cloud returned an invalid {label} sequence")
+        release_id = row.get("id")
+        if not isinstance(release_id, str) or not release_id:
+            raise SystemExit(f"Cloud returned an invalid {label} id")
+        if sequence in sequences or release_id in by_id:
+            raise SystemExit(f"Cloud returned duplicate {label} identity")
+        sequences.add(sequence)
+        by_id[release_id] = row
+    return by_id
+
+
+def decode_signature(row, label):
+    try:
+        signature = base64.b64decode(row.get("manifest_signature", ""), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise SystemExit(f"completed {label} signature is invalid") from exc
+    if not signature:
+        raise SystemExit(f"completed {label} signature is missing")
+
+
+def validate_software_row(row):
+    manifest = validate_manifest(row.get("manifest"))
+    validate_software_manifest(manifest)
+    expected_digest = "sha256:" + hashlib.sha256(canonical_manifest_bytes(manifest)).hexdigest()
+    if (
+        row.get("status") != "completed"
+        or row.get("id") != manifest["release_id"]
+        or row.get("sequence") != manifest["sequence"]
+        or row.get("version") != manifest["version"]
+        or row.get("source_commit") != manifest["source_commit"]
+        or row.get("manifest_digest") != expected_digest
+        or set(manifest["services"]) != service_inventory
+    ):
+        raise SystemExit("completed SoftwareRelease identity is invalid")
+    decode_signature(row, "SoftwareRelease")
+    return manifest
+
+
+def validate_host_row(row):
+    manifest = validate_host_manifest(row.get("manifest"))
+    if (
+        row.get("status") != "completed"
+        or row.get("id") != manifest["release_id"]
+        or row.get("sequence") != manifest["sequence"]
+        or row.get("version") != manifest["version"]
+        or row.get("source_commit") != manifest["source_commit"]
+        or row.get("manifest_digest") != host_canonical_digest(manifest)
+        or row.get("software_release_id") != manifest["software_release_id"]
+    ):
+        raise SystemExit("completed HostRelease identity is invalid")
+    decode_signature(row, "HostRelease")
+    return manifest
+
+
+software_rows = fetch("software-releases")
+host_rows = fetch("host-releases")
+software_by_id = index_rows(software_rows, "SoftwareRelease")
+host_by_id = index_rows(host_rows, "HostRelease")
+service_inventory = set(os.environ["RELEASE_SERVICE_INVENTORY"].splitlines())
+completed_software = {}
+completed_hosts = {}
+for row in software_rows:
+    if row.get("status") == "completed":
+        completed_software[row["id"]] = validate_software_row(row)
+for row in host_rows:
+    if row.get("status") == "completed":
+        completed_hosts[row["id"]] = validate_host_row(row)
+
+for host_id, host_manifest in completed_hosts.items():
+    software_row = software_by_id.get(host_manifest["software_release_id"])
+    if software_row is None or software_row.get("status") != "completed":
+        raise SystemExit("completed HostRelease has no completed SoftwareRelease")
+    software_manifest = completed_software[software_row["id"]]
+    assert_pair(host_manifest, software_manifest)
+
+current_host = host_by_id.get(os.environ["HOST_RELEASE_ID"])
+current_host_is_building = (
+    isinstance(current_host, dict)
+    and current_host.get("status") == "building"
+    and current_host.get("version") == os.environ["RELEASE_VERSION"]
+    and current_host.get("source_commit") == os.environ["RELEASE_SOURCE_COMMIT"]
+)
+resumable = []
+pairs = []
+for row in software_rows:
+    if row.get("status") != "completed":
+        continue
+    manifest = completed_software[row["id"]]
+    if (
+        current_host_is_building
+        and row.get("version") == os.environ["RELEASE_VERSION"]
+        and row.get("source_commit") == os.environ["RELEASE_SOURCE_COMMIT"]
+        and manifest["host_release_id"] == os.environ["HOST_RELEASE_ID"]
+        and manifest["topology_digest"] == os.environ["TOPOLOGY_DIGEST"]
+        and manifest["registry"] == os.environ["HARBOR_HOST"]
+        and manifest["signing_key_sha256"] == os.environ["SIGNING_KEY_SHA256"]
+    ):
+        resumable.append(row)
+    host_row = host_by_id.get(manifest["host_release_id"])
+    if host_row is None or host_row.get("status") != "completed":
+        continue
+    assert_pair(completed_hosts[host_row["id"]], manifest)
+    pairs.append((row["sequence"], row, host_row))
+
+if len(resumable) > 1:
+    raise SystemExit("multiple resumable SoftwareReleases found")
+pairs.sort(key=lambda item: item[0], reverse=True)
+predecessor = None
+if pairs:
+    predecessor = dict(pairs[0][1])
+    predecessor["paired_host_release"] = pairs[0][2]
 Path(sys.argv[1]).write_text(
     json.dumps(predecessor, separators=(",", ":")),
+    encoding="utf-8",
+)
+Path(sys.argv[2]).write_text(
+    json.dumps(resumable[0] if resumable else None, separators=(",", ":")),
     encoding="utf-8",
 )
 PY
@@ -494,6 +619,118 @@ PY
   done < "${inherited_images_path}"
 }
 
+release_step_resume_completed_release() {
+  [[ -s "${resumable_release_path}" ]] || return 1
+  PYTHONPATH="infra/ota-helper:infra/host-release-runner" python3 - \
+    "${resumable_release_path}" \
+    "${manifest_path}" \
+    "${manifest_signature}" \
+    "${inherited_images_path}" <<'PY'
+import base64
+import binascii
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+from host_release_engine import validate_software_manifest
+from release_engine import canonical_manifest_bytes, validate_manifest
+
+row = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(row, dict):
+    raise SystemExit(1)
+manifest = validate_manifest(row.get("manifest"))
+validate_software_manifest(manifest)
+manifest_bytes = canonical_manifest_bytes(manifest)
+expected_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
+service_inventory = tuple(os.environ["RELEASE_SERVICE_INVENTORY"].splitlines())
+if (
+    row.get("status") != "completed"
+    or row.get("id") != manifest["release_id"]
+    or row.get("sequence") != manifest["sequence"]
+    or row.get("version") != manifest["version"]
+    or row.get("source_commit") != manifest["source_commit"]
+    or row.get("manifest_digest") != expected_digest
+    or row.get("version") != os.environ["RELEASE_VERSION"]
+    or row.get("source_commit") != os.environ["RELEASE_SOURCE_COMMIT"]
+    or manifest["host_release_id"] != os.environ["HOST_RELEASE_ID"]
+    or manifest["topology_digest"] != os.environ["TOPOLOGY_DIGEST"]
+    or manifest["registry"] != os.environ["HARBOR_HOST"]
+    or manifest["signing_key_sha256"] != os.environ["SIGNING_KEY_SHA256"]
+    or set(manifest["services"]) != set(service_inventory)
+):
+    raise SystemExit("resumable SoftwareRelease identity is invalid")
+for service in service_inventory:
+    expected_prefix = (
+        f"{os.environ['HARBOR_HOST']}/{os.environ['HARBOR_PROJECT']}/{service}@sha256:"
+    )
+    if not manifest["services"][service].startswith(expected_prefix):
+        raise SystemExit("resumable SoftwareRelease repository is invalid")
+try:
+    signature = base64.b64decode(row.get("manifest_signature", ""), validate=True)
+except (binascii.Error, ValueError) as exc:
+    raise SystemExit("resumable SoftwareRelease signature is invalid") from exc
+if not signature:
+    raise SystemExit("resumable SoftwareRelease signature is missing")
+Path(sys.argv[2]).write_bytes(manifest_bytes)
+Path(sys.argv[3]).write_bytes(signature)
+Path(sys.argv[4]).write_text(
+    "".join(
+        f"{service}\t{manifest['services'][service]}\t{manifest['image_ids'][service]}\n"
+        for service in service_inventory
+    ),
+    encoding="utf-8",
+)
+PY
+  chmod 600 "${manifest_path}" "${manifest_signature}"
+  cosign verify-blob \
+    --key "${signing_pub}" \
+    --insecure-ignore-tlog=true \
+    --bundle "${manifest_signature}" \
+    "${manifest_path}" >/dev/null
+  while IFS=$'\t' read -r service resumed_ref resumed_id; do
+    [[ -n "${service}" && -n "${resumed_ref}" && "${resumed_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
+    release_step_scan "${resumed_ref}"
+    release_step_verify_image "${resumed_ref}"
+    docker pull --platform linux/amd64 "${resumed_ref}"
+    resumed_actual_id="$(release_step_resolve_portable_image_id "${resumed_ref}")"
+    [[ "${resumed_actual_id}" == "${resumed_id}" ]]
+    LOCAL_TARGETS+=("${resumed_ref}")
+    case "${service}" in
+      ai-ctrl-optimizer|ai-softsensor|edge-api|edge-daq|edge-monitor|license-service)
+        python3 scripts/ci/python_base_image_contract.py verify-image \
+          --service "${service}" \
+          --reference "${resumed_ref}" \
+          --expected-image-id "${resumed_id}" \
+          --output "${python_base_receipt_dir}/${service}.json"
+        ;;
+    esac
+  done < "${inherited_images_path}"
+  python3 scripts/ci/python_base_image_contract.py verify-receipts \
+    --directory "${python_base_receipt_dir}" \
+    --manifest "${manifest_path}" \
+    --output "${python_base_receipt_path}"
+  python3 - "${resumable_release_path}" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+row = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+output = os.environ.get("SOFTWARE_RELEASE_OUTPUT", "")
+if output:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(row, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    output_path.chmod(0o600)
+print(f"SoftwareRelease resumed: id={row['id']} digest={row['manifest_digest']}")
+PY
+}
+
 release_step_sign_manifest() {
   cosign sign-blob \
     --yes \
@@ -555,6 +792,9 @@ PY
 }
 
 release_step_resolve_predecessor
+if release_step_resume_completed_release; then
+  exit 0
+fi
 release_step_resolve_changed_services
 while IFS= read -r service; do
   [[ -n "${service}" ]]

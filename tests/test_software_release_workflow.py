@@ -526,7 +526,7 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
 
 def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Path):
     script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-    assert '"/api/v1/host-releases"' in script
+    assert 'fetch("host-releases")' in script
     assert 'predecessor["paired_host_release"]' in script
     match = re.search(
         r"release_step_load_inherited_images\(\) \{.*?<<'PY'\n(.*?)\nPY\n",
@@ -700,4 +700,304 @@ def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Pat
         "".join(f"{service}\n" for service in services[:-1]),
         encoding="utf-8",
     )
+    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+
+
+def _formal_pair_rows(sequence: int, source_commit: str):
+    runner_dir = ROOT / "infra/host-release-runner"
+    sys.path.insert(0, str(runner_dir))
+    from host_release_engine import (  # noqa: PLC0415
+        COSIGN_TOOLCHAIN,
+        HOST_HEALTH_CONTRACT,
+        canonical_digest,
+        canonical_topology_digest,
+    )
+
+    services = (
+        "ai-ctrl-optimizer",
+        "ai-softsensor",
+        "alertmanager",
+        "edge-api",
+        "edge-daq",
+        "edge-monitor",
+        "influxdb",
+        "license-service",
+        "mosquitto",
+        "mosquitto-init",
+        "postgres",
+        "prometheus",
+    )
+    registry = "registry.example.com"
+    software_id = f"00000000-0000-4000-8000-{sequence:012d}"
+    host_id = f"10000000-0000-4000-8000-{sequence:012d}"
+    version = f"1.0.0-rb8.{sequence}"
+    compose = b"services:\n  edge-api:\n    image: edge-api:3\n"
+    topology = {
+        "compose_digest": "sha256:" + hashlib.sha256(compose).hexdigest(),
+        "service_inventory": sorted(services),
+        "health_contract": HOST_HEALTH_CONTRACT,
+    }
+    topology_digest = canonical_topology_digest(topology)
+    software_manifest = {
+        "schema": "drycontroller.software-release.v1",
+        "release_id": software_id,
+        "host_release_id": host_id,
+        "topology_digest": topology_digest,
+        "sequence": sequence,
+        "version": version,
+        "source_commit": source_commit,
+        "registry": registry,
+        "signing_key_sha256": "sha256:" + "b" * 64,
+        "cosign": COSIGN_TOOLCHAIN,
+        "services": {
+            service: f"{registry}/drycontroller/{service}@sha256:{index:064x}"
+            for index, service in enumerate(services, start=1)
+        },
+        "image_ids": {
+            service: f"sha256:{index + 100:064x}"
+            for index, service in enumerate(services, start=1)
+        },
+    }
+    files = {
+        "docker-compose.yml": (compose, 0o644),
+        "infra/ota-helper/drycontroller_ota_helper.py": (b"helper\n", 0o644),
+        "infra/ota-helper/release_engine.py": (b"engine\n", 0o644),
+        "infra/ota-helper/ota-apply": (b"#!/usr/bin/python3\n", 0o755),
+        "infra/ota-helper/initialize-active-release": (b"#!/usr/bin/python3\n", 0o755),
+        "infra/ota-helper/start-active-release": (b"#!/usr/bin/python3\n", 0o755),
+    }
+    host_manifest = {
+        "schema": "drycontroller.host-release.v1",
+        "release_id": host_id,
+        "sequence": sequence,
+        "version": version,
+        "source_commit": source_commit,
+        "registry": registry,
+        "signing_key_sha256": "sha256:" + "c" * 64,
+        "cosign": COSIGN_TOOLCHAIN,
+        "bundle": {
+            "image": f"{registry}/drycontroller/host-bundle@sha256:{sequence:064x}",
+            "image_id": "sha256:" + "d" * 64,
+        },
+        "topology": topology,
+        "topology_digest": topology_digest,
+        "software_release_id": software_id,
+        "software_manifest_digest": canonical_digest(software_manifest),
+        "files": [
+            {
+                "path": path,
+                "sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+                "mode": mode,
+            }
+            for path, (data, mode) in sorted(files.items())
+        ],
+    }
+    software_row = {
+        "id": software_id,
+        "sequence": sequence,
+        "version": version,
+        "source_commit": source_commit,
+        "status": "completed",
+        "manifest": software_manifest,
+        "manifest_digest": canonical_digest(software_manifest),
+        "manifest_signature": "c29mdHdhcmUtc2ln",
+    }
+    host_row = {
+        "id": host_id,
+        "sequence": sequence,
+        "version": version,
+        "source_commit": source_commit,
+        "status": "completed",
+        "manifest": host_manifest,
+        "manifest_digest": canonical_digest(host_manifest),
+        "manifest_signature": "aG9zdC1zaWc=",
+        "software_release_id": software_id,
+    }
+    return services, software_row, host_row
+
+
+def _run_predecessor_resolver(
+    tmp_path: Path,
+    software_rows: list[dict],
+    host_rows: list[dict],
+    current_software: dict,
+    current_host_id: str,
+):
+    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
+    match = re.search(
+        r"release_step_resolve_predecessor\(\) \{.*?<<'PY'\n(.*?)\nPY\n",
+        script,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    predecessor_path = tmp_path / "predecessor.json"
+    resumable_path = tmp_path / "resumable-release.json"
+    wrapper = """
+import json
+import os
+import urllib.request
+
+payloads = json.loads(os.environ["FAKE_CLOUD_PAYLOADS"])
+
+class Response:
+    def __init__(self, payload):
+        self.payload = payload
+    def __enter__(self):
+        return self
+    def __exit__(self, *_args):
+        return False
+    def read(self, _limit):
+        return json.dumps(self.payload).encode()
+
+def urlopen(request, timeout):
+    return Response(payloads[request.full_url.rsplit("/", 1)[-1]])
+
+urllib.request.urlopen = urlopen
+exec(compile(os.environ["RESOLVER_SOURCE"], "<resolver>", "exec"))
+"""
+    manifest = current_software["manifest"]
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            (str(HELPER_DIR), str(ROOT / "infra/host-release-runner"))
+        ),
+        "CLOUD_OPS_RELEASE_API_URL": "https://ops.example.com",
+        "CLOUD_OPS_RELEASE_API_KEY": "test-key",
+        "RELEASE_SERVICE_INVENTORY": "\n".join(sorted(manifest["services"])),
+        "RELEASE_VERSION": current_software["version"],
+        "RELEASE_SOURCE_COMMIT": current_software["source_commit"],
+        "HOST_RELEASE_ID": current_host_id,
+        "TOPOLOGY_DIGEST": manifest["topology_digest"],
+        "HARBOR_HOST": manifest["registry"],
+        "SIGNING_KEY_SHA256": manifest["signing_key_sha256"],
+        "FAKE_CLOUD_PAYLOADS": json.dumps(
+            {"software-releases": software_rows, "host-releases": host_rows}
+        ),
+        "RESOLVER_SOURCE": match.group(1),
+    }
+    result = subprocess.run(
+        ["python3", "-c", wrapper, str(predecessor_path), str(resumable_path)],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    predecessor = json.loads(predecessor_path.read_text(encoding="utf-8")) if predecessor_path.exists() else None
+    resumable = json.loads(resumable_path.read_text(encoding="utf-8")) if resumable_path.exists() else None
+    return result, predecessor, resumable
+
+
+def test_resolver_selects_latest_completed_pair_and_preserves_resumable_orphans(tmp_path: Path):
+    _, paired_software, paired_host = _formal_pair_rows(3, "3" * 40)
+    _, current_software, current_host = _formal_pair_rows(5, "5" * 40)
+    _, standalone_software, _ = _formal_pair_rows(9, "9" * 40)
+    current_host = {key: current_host[key] for key in ("id", "sequence", "version", "source_commit")}
+    current_host["status"] = "building"
+
+    result, predecessor, resumable = _run_predecessor_resolver(
+        tmp_path,
+        [standalone_software, current_software, paired_software],
+        [current_host, paired_host],
+        current_software,
+        current_host["id"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert predecessor["id"] == paired_software["id"]
+    assert predecessor["paired_host_release"]["id"] == paired_host["id"]
+    assert resumable["id"] == current_software["id"]
+
+
+def test_resolver_rejects_malformed_completed_pair_instead_of_falling_back(tmp_path: Path):
+    _, older_software, older_host = _formal_pair_rows(3, "3" * 40)
+    _, malformed_software, malformed_host = _formal_pair_rows(6, "6" * 40)
+    malformed_host["manifest"]["software_release_id"] = older_software["id"]
+    runner_dir = ROOT / "infra/host-release-runner"
+    sys.path.insert(0, str(runner_dir))
+    from host_release_engine import canonical_digest  # noqa: PLC0415
+
+    malformed_host["manifest_digest"] = canonical_digest(malformed_host["manifest"])
+    result, _, _ = _run_predecessor_resolver(
+        tmp_path,
+        [older_software, malformed_software],
+        [older_host, malformed_host],
+        malformed_software,
+        malformed_host["id"],
+    )
+
+    assert result.returncode != 0
+
+
+def test_completed_software_retry_revalidates_exact_release_before_resuming(tmp_path: Path):
+    services, software_row, host_row = _formal_pair_rows(5, "5" * 40)
+    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
+    function = script.split("release_step_resume_completed_release() {", 1)[1].split(
+        "\n}\n\nrelease_step_sign_manifest", 1
+    )[0]
+    match = re.search(r"<<'PY'\n(.*?)\nPY\n", function, flags=re.DOTALL)
+    assert match is not None
+    resumable_path = tmp_path / "resumable.json"
+    manifest_path = tmp_path / "manifest.json"
+    signature_path = tmp_path / "manifest.sigstore.json"
+    images_path = tmp_path / "images.tsv"
+    resumable_path.write_text(json.dumps(software_row), encoding="utf-8")
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            (str(HELPER_DIR), str(ROOT / "infra/host-release-runner"))
+        ),
+        "RELEASE_SERVICE_INVENTORY": "\n".join(services),
+        "RELEASE_VERSION": software_row["version"],
+        "RELEASE_SOURCE_COMMIT": software_row["source_commit"],
+        "HOST_RELEASE_ID": host_row["id"],
+        "TOPOLOGY_DIGEST": software_row["manifest"]["topology_digest"],
+        "HARBOR_HOST": software_row["manifest"]["registry"],
+        "HARBOR_PROJECT": "drycontroller",
+        "SIGNING_KEY_SHA256": software_row["manifest"]["signing_key_sha256"],
+    }
+    command = [
+        "python3",
+        "-c",
+        match.group(1),
+        str(resumable_path),
+        str(manifest_path),
+        str(signature_path),
+        str(images_path),
+    ]
+    subprocess.run(command, cwd=ROOT, env=environment, check=True)
+
+    sys.path.insert(0, str(HELPER_DIR))
+    from release_engine import canonical_manifest_bytes  # noqa: PLC0415
+
+    assert manifest_path.read_bytes() == canonical_manifest_bytes(software_row["manifest"])
+    assert signature_path.read_bytes() == b"software-sig"
+    assert images_path.read_text(encoding="utf-8").splitlines() == [
+        "\t".join(
+            (
+                service,
+                software_row["manifest"]["services"][service],
+                software_row["manifest"]["image_ids"][service],
+            )
+        )
+        for service in services
+    ]
+    for gate in (
+        "cosign verify-blob",
+        'release_step_scan "${resumed_ref}"',
+        'release_step_verify_image "${resumed_ref}"',
+        'docker pull --platform linux/amd64 "${resumed_ref}"',
+        'release_step_resolve_portable_image_id "${resumed_ref}"',
+        "python_base_image_contract.py verify-image",
+        "python_base_image_contract.py verify-receipts",
+        'json.dumps(row, sort_keys=True, separators=(",", ":"))',
+    ):
+        assert gate in function
+    assert script.index("release_step_resume_completed_release; then") < script.index(
+        "release_step_create_cloud\n"
+    )
+
+    wrong_source = json.loads(json.dumps(software_row))
+    wrong_source["source_commit"] = "6" * 40
+    resumable_path.write_text(json.dumps(wrong_source), encoding="utf-8")
     assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0

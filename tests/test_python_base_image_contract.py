@@ -217,7 +217,7 @@ def test_formal_builder_verifies_built_and_inherited_python_images_before_signin
     script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
 
     assert "python_base_image_contract.py verify-dockerfiles" in script
-    assert script.count("python_base_image_contract.py verify-image") == 2
+    assert script.count("python_base_image_contract.py verify-image") == 3
     assert "python_base_image_contract.py verify-receipts" in script
     changed_loop = script.split('for service in "${SERVICES[@]}"; do', 1)[1].split(
         "\ndone\n", 1
