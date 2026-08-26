@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -8,8 +9,41 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _builder_module():
+    module_path = ROOT / "scripts" / "ci" / "software_release_builder.py"
+    spec = importlib.util.spec_from_file_location(
+        "software_release_builder_for_tests", module_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_software_release_builder_has_importable_business_module():
+    module = _builder_module()
+
+    assert module.SERVICES == (
+        "ai-ctrl-optimizer",
+        "ai-softsensor",
+        "alertmanager",
+        "edge-api",
+        "edge-daq",
+        "edge-monitor",
+        "influxdb",
+        "license-service",
+        "mosquitto",
+        "mosquitto-init",
+        "postgres",
+        "prometheus",
+    )
 HELPER_DIR = ROOT / "infra/ota-helper"
 ALERTMANAGER_IMAGE = (
     "prom/alertmanager:v0.33.1@"
@@ -43,17 +77,17 @@ RUST_MUSL_TARGET_IMAGE = (
 
 def test_alertmanager_image_is_pinned_consistently_for_runtime_and_release():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    release_builder = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
+    builder = _builder_module()
 
     assert f"image: {ALERTMANAGER_IMAGE}" in compose
-    assert f'alertmanager) printf \'%s\\n\' "{ALERTMANAGER_IMAGE}" ;;' in release_builder
+    assert builder.SOURCE_IMAGES["alertmanager"] == ALERTMANAGER_IMAGE
     assert "prom/alertmanager:v0.27.0" not in compose
-    assert "prom/alertmanager:v0.27.0" not in release_builder
+    assert "prom/alertmanager:v0.27.0" not in builder.SOURCE_IMAGES.values()
 
 
 def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    release_builder = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
+    builder = _builder_module()
     influxdb = (ROOT / "infra/release-images/influxdb/Dockerfile").read_text(encoding="utf-8")
     postgres = (ROOT / "infra/release-images/postgres/Dockerfile").read_text(encoding="utf-8")
     validation = (ROOT / "scripts/ci/rb8-a1-validation-control.yml").read_text(
@@ -63,12 +97,13 @@ def test_external_release_images_are_exact_and_vulnerable_binaries_are_rebuilt()
     for image in (INFLUXDB_BASE_IMAGE, MOSQUITTO_IMAGE, POSTGRES_BASE_IMAGE, PROMETHEUS_IMAGE):
         assert f"image: {image}" in compose
 
-    assert f'mosquitto|mosquitto-init) printf \'%s\\n\' "{MOSQUITTO_IMAGE}" ;;' in release_builder
-    assert f'prometheus) printf \'%s\\n\' "{PROMETHEUS_IMAGE}" ;;' in release_builder
-    assert 'influxdb) printf \'%s\\n\' "infra/release-images/influxdb/Dockerfile" ;;' in release_builder
-    assert 'postgres) printf \'%s\\n\' "infra/release-images/postgres/Dockerfile" ;;' in release_builder
-    assert "influxdb) printf" not in release_builder.split("source_image_for()", 1)[1].split("}", 1)[0]
-    assert "postgres) printf" not in release_builder.split("source_image_for()", 1)[1].split("}", 1)[0]
+    assert builder.SOURCE_IMAGES["mosquitto"] == MOSQUITTO_IMAGE
+    assert builder.SOURCE_IMAGES["mosquitto-init"] == MOSQUITTO_IMAGE
+    assert builder.SOURCE_IMAGES["prometheus"] == PROMETHEUS_IMAGE
+    assert builder.RELEASE_DOCKERFILES == {
+        "influxdb": "infra/release-images/influxdb/Dockerfile",
+        "postgres": "infra/release-images/postgres/Dockerfile",
+    }
 
     assert f"FROM {INFLUXDB_BASE_IMAGE}" in influxdb
     assert f"FROM {RUST_HOST_TOOLCHAIN_IMAGE} AS rust-host-toolchain" in influxdb
@@ -218,51 +253,37 @@ def test_influxdb_ui_asset_is_checksum_pinned_and_offline():
     assert "ghproxy.net" not in dockerfile
 
 
-def test_release_builder_is_complete_and_completion_is_last():
-    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-    expected = {
-        "ai-ctrl-optimizer",
-        "ai-softsensor",
-        "alertmanager",
-        "edge-api",
-        "edge-daq",
-        "edge-monitor",
-        "influxdb",
-        "license-service",
-        "mosquitto",
-        "mosquitto-init",
-        "postgres",
-        "prometheus",
+def test_release_builder_creates_a_complete_bound_manifest(tmp_path: Path):
+    builder = _builder_module()
+    image_map = tmp_path / "images.tsv"
+    manifest_path = tmp_path / "manifest.json"
+    image_map.write_text(
+        "".join(
+            f"{service}\tregistry.example.com/drycontroller/{service}@sha256:{index:064x}"
+            f"\tsha256:{index + 100:064x}\n"
+            for index, service in enumerate(builder.SERVICES, start=1)
+        ),
+        encoding="utf-8",
+    )
+    environment = {
+        "RELEASE_ID": "11111111-1111-4111-8111-111111111111",
+        "HOST_RELEASE_ID": "22222222-2222-4222-8222-222222222222",
+        "TOPOLOGY_DIGEST": "sha256:" + "a" * 64,
+        "RELEASE_SEQUENCE": "4",
+        "RELEASE_VERSION": "1.2.3",
+        "RELEASE_SOURCE_COMMIT": "b" * 40,
+        "HARBOR_HOST": "registry.example.com",
+        "SIGNING_KEY_SHA256": "sha256:" + "c" * 64,
     }
-    service_block = re.search(r"^SERVICES=\((.*?)^\)", script, flags=re.MULTILINE | re.DOTALL)
-    assert service_block is not None
-    assert set(re.findall(r'"([a-z0-9-]+)"', service_block.group(1))) == expected
-    assert "release_step_resolve_predecessor" in script
-    assert "release_step_resolve_changed_services" in script
-    assert "release_step_load_inherited_images" in script
-    assert "release_step_scan \"${inherited_ref}\"" in script
-    assert "release_step_verify_image \"${inherited_ref}\"" in script
-    assert "inputs.services" not in script
-    assert '"host_release_id": os.environ["HOST_RELEASE_ID"]' in script
-    assert '"topology_digest": os.environ["TOPOLOGY_DIGEST"]' in script
-    assert "bash scripts/ci/verify-cosign-toolchain.sh" in script
-    assert "release_step_resolve_portable_image_id" in script
-    assert "docker_archive_config_digest" in script
-    assert "docker image inspect --format '{{.Id}}'" not in script
 
-    order = [
-        "release_step_build_or_mirror",
-        "release_step_scan",
-        "release_step_push",
-        "release_step_resolve_digest",
-        "release_step_sign_image",
-        "release_step_verify_image",
-        "release_step_sign_manifest",
-        "release_step_verify_manifest",
-        "release_step_complete_cloud",
-    ]
-    positions = [script.index(marker) for marker in order]
-    assert positions == sorted(positions)
+    builder.create_manifest(image_map, manifest_path, environ=environment)
+
+    manifest = json.loads(manifest_path.read_bytes())
+    assert manifest["host_release_id"] == environment["HOST_RELEASE_ID"]
+    assert manifest["topology_digest"] == environment["TOPOLOGY_DIGEST"]
+    assert tuple(manifest["services"]) == builder.SERVICES
+    assert tuple(manifest["image_ids"]) == builder.SERVICES
+    assert manifest["cosign"] == builder.COSIGN_TOOLCHAIN
 
 
 def test_release_cosign_toolchain_gate_checks_platform_version_and_checksum(tmp_path: Path):
@@ -402,32 +423,15 @@ def test_host_release_workflow_scopes_both_signing_keys_to_the_builder_step():
         assert f"{secret}: ${{{{ secrets.{expected} }}}}" in builder
 
 
-def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path):
-    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-    match = re.search(
-        r"release_step_resolve_changed_services\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}",
-        script,
-        flags=re.DOTALL,
-    )
-    assert match is not None
-    resolver = match.group(1)
-    services = (
-        "ai-ctrl-optimizer",
-        "ai-softsensor",
-        "alertmanager",
-        "edge-api",
-        "edge-daq",
-        "edge-monitor",
-        "influxdb",
-        "license-service",
-        "mosquitto",
-        "mosquitto-init",
-        "postgres",
-        "prometheus",
-    )
+def test_release_builder_only_rebuilds_directly_changed_services(
+    tmp_path: Path, monkeypatch
+):
+    builder = _builder_module()
+    services = builder.SERVICES
 
     repository = tmp_path / "repository"
     repository.mkdir()
+    monkeypatch.chdir(repository)
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.email", "release-test@example.com"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.name", "Release Test"], cwd=repository, check=True)
@@ -488,20 +492,16 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
             encoding="utf-8",
         )
         environment = {
-            **os.environ,
-            "PYTHONPATH": str(ROOT / "infra/ota-helper"),
             "HARBOR_HOST": "registry.example.com",
             "SIGNING_KEY_SHA256": "sha256:" + "a" * 64,
             "RELEASE_SOURCE_COMMIT": current_commit,
             "HOST_RELEASE_ID": manifest["host_release_id"],
             "TOPOLOGY_DIGEST": manifest["topology_digest"],
-            "RELEASE_SERVICE_INVENTORY": "\n".join(services),
         }
-        subprocess.run(
-            ["python3", "-c", resolver, str(predecessor_path), str(output_path)],
-            cwd=repository,
-            env=environment,
-            check=True,
+        builder.resolve_changed_services(
+            predecessor_path,
+            output_path,
+            environ=environment,
         )
         return output_path.read_text(encoding="utf-8").splitlines()
 
@@ -525,16 +525,7 @@ def test_release_builder_only_rebuilds_directly_changed_services(tmp_path: Path)
 
 
 def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Path):
-    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-    assert 'fetch("host-releases")' in script
-    assert 'predecessor["paired_host_release"]' in script
-    match = re.search(
-        r"release_step_load_inherited_images\(\) \{.*?<<'PY'\n(.*?)\nPY\n",
-        script,
-        flags=re.DOTALL,
-    )
-    assert match is not None
-    loader = match.group(1)
+    builder = _builder_module()
 
     runner_dir = ROOT / "infra/host-release-runner"
     sys.path.insert(0, str(runner_dir))
@@ -545,20 +536,7 @@ def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Pat
         canonical_topology_digest,
     )
 
-    services = (
-        "ai-ctrl-optimizer",
-        "ai-softsensor",
-        "alertmanager",
-        "edge-api",
-        "edge-daq",
-        "edge-monitor",
-        "influxdb",
-        "license-service",
-        "mosquitto",
-        "mosquitto-init",
-        "postgres",
-        "prometheus",
-    )
+    services = builder.SERVICES
     old_host_id = "11111111-1111-4111-8111-111111111111"
     new_host_id = "22222222-2222-4222-8222-222222222222"
     software_id = "33333333-3333-4333-8333-333333333333"
@@ -657,24 +635,22 @@ def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Pat
     changed_services_path.write_text("".join(f"{service}\n" for service in services), encoding="utf-8")
 
     environment = {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join((str(HELPER_DIR), str(runner_dir))),
-        "RELEASE_SERVICE_INVENTORY": "\n".join(services),
         "HOST_RELEASE_ID": new_host_id,
         "TOPOLOGY_DIGEST": topology_digest,
         "SIGNING_KEY_SHA256": software_signing_key,
     }
-    command = [
-        "python3",
-        "-c",
-        loader,
-        str(predecessor_path),
-        str(predecessor_manifest_path),
-        str(predecessor_signature_path),
-        str(changed_services_path),
-        str(inherited_images_path),
-    ]
-    subprocess.run(command, cwd=ROOT, env=environment, check=True)
+
+    def load() -> None:
+        builder.load_inherited_images(
+            predecessor_path,
+            predecessor_manifest_path,
+            predecessor_signature_path,
+            changed_services_path,
+            inherited_images_path,
+            environ=environment,
+        )
+
+    load()
 
     assert inherited_images_path.read_text(encoding="utf-8") == ""
     assert predecessor_manifest_path.read_bytes()
@@ -682,17 +658,20 @@ def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Pat
 
     predecessor["status"] = "building"
     predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
-    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+    with pytest.raises(SystemExit):
+        load()
     predecessor["status"] = "completed"
 
     predecessor["paired_host_release"]["status"] = "building"
     predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
-    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+    with pytest.raises(SystemExit):
+        load()
     predecessor["paired_host_release"]["status"] = "completed"
 
     predecessor["paired_host_release"]["software_release_id"] = new_host_id
     predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
-    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+    with pytest.raises(SystemExit):
+        load()
     predecessor["paired_host_release"]["software_release_id"] = software_id
 
     predecessor_path.write_text(json.dumps(predecessor), encoding="utf-8")
@@ -700,7 +679,8 @@ def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Pat
         "".join(f"{service}\n" for service in services[:-1]),
         encoding="utf-8",
     )
-    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+    with pytest.raises(SystemExit):
+        load()
 
 
 def _formal_pair_rows(sequence: int, source_commit: str):
@@ -824,71 +804,41 @@ def _run_predecessor_resolver(
     current_software: dict,
     current_host_id: str,
 ):
-    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-    match = re.search(
-        r"release_step_resolve_predecessor\(\) \{.*?<<'PY'\n(.*?)\nPY\n",
-        script,
-        flags=re.DOTALL,
-    )
-    assert match is not None
+    builder = _builder_module()
     predecessor_path = tmp_path / "predecessor.json"
     resumable_path = tmp_path / "resumable-release.json"
-    wrapper = """
-import json
-import os
-import urllib.request
-
-payloads = json.loads(os.environ["FAKE_CLOUD_PAYLOADS"])
-
-class Response:
-    def __init__(self, payload):
-        self.payload = payload
-    def __enter__(self):
-        return self
-    def __exit__(self, *_args):
-        return False
-    def read(self, _limit):
-        return json.dumps(self.payload).encode()
-
-def urlopen(request, timeout):
-    return Response(payloads[request.full_url.rsplit("/", 1)[-1]])
-
-urllib.request.urlopen = urlopen
-exec(compile(os.environ["RESOLVER_SOURCE"], "<resolver>", "exec"))
-"""
     manifest = current_software["manifest"]
     environment = {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join(
-            (str(HELPER_DIR), str(ROOT / "infra/host-release-runner"))
-        ),
-        "CLOUD_OPS_RELEASE_API_URL": "https://ops.example.com",
-        "CLOUD_OPS_RELEASE_API_KEY": "test-key",
-        "RELEASE_SERVICE_INVENTORY": "\n".join(sorted(manifest["services"])),
         "RELEASE_VERSION": current_software["version"],
         "RELEASE_SOURCE_COMMIT": current_software["source_commit"],
         "HOST_RELEASE_ID": current_host_id,
         "TOPOLOGY_DIGEST": manifest["topology_digest"],
         "HARBOR_HOST": manifest["registry"],
         "SIGNING_KEY_SHA256": manifest["signing_key_sha256"],
-        "FAKE_CLOUD_PAYLOADS": json.dumps(
-            {"software-releases": software_rows, "host-releases": host_rows}
-        ),
-        "RESOLVER_SOURCE": match.group(1),
     }
-    result = subprocess.run(
-        ["python3", "-c", wrapper, str(predecessor_path), str(resumable_path)],
-        cwd=ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
+    payloads = {
+        "software-releases": software_rows,
+        "host-releases": host_rows,
+    }
+    try:
+        builder.resolve_predecessor(
+            predecessor_path,
+            resumable_path,
+            environ=environment,
+            fetcher=lambda name: payloads[name],
+        )
+    except (Exception, SystemExit) as exc:
+        result = subprocess.CompletedProcess([], 1, stdout="", stderr=str(exc))
+    else:
+        result = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    predecessor = (
+        json.loads(predecessor_path.read_text(encoding="utf-8"))
+        if predecessor_path.exists()
+        else None
     )
-    predecessor = json.loads(predecessor_path.read_text(encoding="utf-8")) if predecessor_path.exists() else None
     resumable_bytes = resumable_path.read_bytes() if resumable_path.exists() else b""
     resumable = json.loads(resumable_bytes) if resumable_bytes else None
     return result, predecessor, resumable
-
-
 def test_resolver_selects_latest_completed_pair_and_preserves_resumable_orphans(tmp_path: Path):
     _, paired_software, paired_host = _formal_pair_rows(3, "3" * 40)
     _, current_software, current_host = _formal_pair_rows(5, "5" * 40)
@@ -967,23 +917,13 @@ def test_resolver_rejects_malformed_completed_pair_instead_of_falling_back(tmp_p
 
 def test_completed_software_retry_revalidates_exact_release_before_resuming(tmp_path: Path):
     services, software_row, host_row = _formal_pair_rows(5, "5" * 40)
-    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-    function = script.split("release_step_resume_completed_release() {", 1)[1].split(
-        "\n}\n\nrelease_step_sign_manifest", 1
-    )[0]
-    match = re.search(r"<<'PY'\n(.*?)\nPY\n", function, flags=re.DOTALL)
-    assert match is not None
+    builder = _builder_module()
     resumable_path = tmp_path / "resumable.json"
     manifest_path = tmp_path / "manifest.json"
     signature_path = tmp_path / "manifest.sigstore.json"
     images_path = tmp_path / "images.tsv"
     resumable_path.write_text(json.dumps(software_row), encoding="utf-8")
     environment = {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join(
-            (str(HELPER_DIR), str(ROOT / "infra/host-release-runner"))
-        ),
-        "RELEASE_SERVICE_INVENTORY": "\n".join(services),
         "RELEASE_VERSION": software_row["version"],
         "RELEASE_SOURCE_COMMIT": software_row["source_commit"],
         "HOST_RELEASE_ID": host_row["id"],
@@ -992,16 +932,16 @@ def test_completed_software_retry_revalidates_exact_release_before_resuming(tmp_
         "HARBOR_PROJECT": "drycontroller",
         "SIGNING_KEY_SHA256": software_row["manifest"]["signing_key_sha256"],
     }
-    command = [
-        "python3",
-        "-c",
-        match.group(1),
-        str(resumable_path),
-        str(manifest_path),
-        str(signature_path),
-        str(images_path),
-    ]
-    subprocess.run(command, cwd=ROOT, env=environment, check=True)
+    def resume() -> None:
+        builder.resume_completed_release(
+            resumable_path,
+            manifest_path,
+            signature_path,
+            images_path,
+            environ=environment,
+        )
+
+    resume()
 
     sys.path.insert(0, str(HELPER_DIR))
     from release_engine import canonical_manifest_bytes  # noqa: PLC0415
@@ -1018,79 +958,21 @@ def test_completed_software_retry_revalidates_exact_release_before_resuming(tmp_
         )
         for service in services
     ]
-    for gate in (
-        "cosign verify-blob",
-        'release_step_scan "${resumed_ref}"',
-        'release_step_verify_image "${resumed_ref}"',
-        'docker pull --platform linux/amd64 "${resumed_ref}"',
-        'release_step_resolve_portable_image_id "${resumed_ref}"',
-        "python_base_image_contract.py verify-image",
-        "python_base_image_contract.py verify-receipts",
-        'json.dumps(row, sort_keys=True, separators=(",", ":"))',
-    ):
-        assert gate in function
-    resume_guard = script.rindex('if [[ -s "${resumable_release_path}" ]]; then')
-    resume_call = script.rindex("  release_step_resume_completed_release\n")
-    create_call = script.rindex("release_step_create_cloud\n")
-    assert resume_guard < resume_call < create_call
-
     wrong_source = json.loads(json.dumps(software_row))
     wrong_source["source_commit"] = "6" * 40
     resumable_path.write_text(json.dumps(wrong_source), encoding="utf-8")
-    assert subprocess.run(command, cwd=ROOT, env=environment, capture_output=True).returncode != 0
+    with pytest.raises(SystemExit, match="resumable SoftwareRelease identity is invalid"):
+        resume()
 
 
-def test_completed_software_retry_propagates_shell_gate_failure_without_output(tmp_path: Path):
+def test_resume_output_is_only_published_after_exact_validation(tmp_path: Path):
     _, software_row, host_row = _formal_pair_rows(5, "5" * 40)
-    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-    function_match = re.search(
-        r"(release_step_resume_completed_release\(\) \{.*?\n\})"
-        r"\n\nrelease_step_sign_manifest",
-        script,
-        flags=re.DOTALL,
-    )
-    assert function_match is not None
-    main = script.rsplit("release_step_resolve_predecessor\n", 1)[1].split(
-        "release_step_resolve_changed_services", 1
-    )[0]
+    builder = _builder_module()
     resumable_path = tmp_path / "resumable.json"
     output_path = tmp_path / "software-output.json"
-    resumable_path.write_text(json.dumps(software_row), encoding="utf-8")
-    harness = f"""
-set -euo pipefail
-release_step_resolve_predecessor() {{ :; }}
-python3() {{
-  if [[ "${{1:-}}" == scripts/ci/python_base_image_contract.py ]]; then
-    return 0
-  fi
-  command "${{REAL_PYTHON}}" "$@"
-}}
-cosign() {{ return 0; }}
-docker() {{ return 0; }}
-release_step_scan() {{ return 42; }}
-release_step_verify_image() {{ return 0; }}
-release_step_resolve_portable_image_id() {{ printf 'sha256:%064d\n' 0; }}
-declare -a LOCAL_TARGETS=()
-{function_match.group(1)}
-{main}
-exit 88
-"""
     manifest = software_row["manifest"]
     environment = {
-        **os.environ,
-        "REAL_PYTHON": sys.executable,
-        "PYTHONPATH": os.pathsep.join(
-            (str(HELPER_DIR), str(ROOT / "infra/host-release-runner"))
-        ),
-        "resumable_release_path": str(resumable_path),
-        "manifest_path": str(tmp_path / "manifest.json"),
-        "manifest_signature": str(tmp_path / "manifest.sigstore.json"),
-        "inherited_images_path": str(tmp_path / "images.tsv"),
-        "signing_pub": str(tmp_path / "cosign.pub"),
-        "python_base_receipt_dir": str(tmp_path / "receipts"),
-        "python_base_receipt_path": str(tmp_path / "receipt.json"),
         "SOFTWARE_RELEASE_OUTPUT": str(output_path),
-        "RELEASE_SERVICE_INVENTORY": "\n".join(manifest["services"]),
         "RELEASE_VERSION": software_row["version"],
         "RELEASE_SOURCE_COMMIT": software_row["source_commit"],
         "HOST_RELEASE_ID": host_row["id"],
@@ -1099,13 +981,31 @@ exit 88
         "HARBOR_PROJECT": "drycontroller",
         "SIGNING_KEY_SHA256": manifest["signing_key_sha256"],
     }
-    result = subprocess.run(
-        ["bash", "-c", harness],
-        cwd=ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
+    malformed = json.loads(json.dumps(software_row))
+    malformed["manifest"]["services"]["edge-api"] = (
+        "other.example.com/drycontroller/edge-api@sha256:" + "a" * 64
     )
+    resumable_path.write_text(json.dumps(malformed), encoding="utf-8")
 
-    assert result.returncode != 0
+    with pytest.raises(Exception):
+        builder.resume_completed_release(
+            resumable_path,
+            tmp_path / "manifest.json",
+            tmp_path / "manifest.sigstore.json",
+            tmp_path / "images.tsv",
+            environ=environment,
+        )
     assert not output_path.exists()
+
+    resumable_path.write_text(json.dumps(software_row), encoding="utf-8")
+    builder.resume_completed_release(
+        resumable_path,
+        tmp_path / "manifest.json",
+        tmp_path / "manifest.sigstore.json",
+        tmp_path / "images.tsv",
+        environ=environment,
+    )
+    builder.write_release_output(resumable_path, environ=environment)
+
+    assert json.loads(output_path.read_text(encoding="utf-8")) == software_row
+    assert output_path.stat().st_mode & 0o777 == 0o600

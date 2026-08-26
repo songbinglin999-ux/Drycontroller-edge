@@ -24,6 +24,7 @@ COMPOSE_PROJECT="drycontroller-edge"
 SOURCE_BUNDLE_PATHS=(
   env.example
   infra/bootstrap/install-edge-host.sh
+  infra/bootstrap/install-static-runtime.py
   infra/bootstrap/initialize-runtime-config.py
   infra/bootstrap/installer_public_config.py
   infra/bootstrap/tailscale_client_lock.py

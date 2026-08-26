@@ -5,22 +5,7 @@ set -euo pipefail
 TRIVY_BINARY="/usr/local/bin/trivy"
 readonly TRIVY_BINARY
 
-SERVICES=(
-  "ai-ctrl-optimizer"
-  "ai-softsensor"
-  "alertmanager"
-  "edge-api"
-  "edge-daq"
-  "edge-monitor"
-  "influxdb"
-  "license-service"
-  "mosquitto"
-  "mosquitto-init"
-  "postgres"
-  "prometheus"
-)
-RELEASE_SERVICE_INVENTORY="$(printf '%s\n' "${SERVICES[@]}")"
-export RELEASE_SERVICE_INVENTORY
+mapfile -t SERVICES < <(python3 scripts/ci/software_release_builder.py inventory)
 
 : "${RELEASE_VERSION:?missing RELEASE_VERSION}"
 : "${RELEASE_SOURCE_COMMIT:?missing RELEASE_SOURCE_COMMIT}"
@@ -88,22 +73,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
-python3 - <<'PY'
-import base64
-import json
-import os
-from pathlib import Path
-
-auth = base64.b64encode(
-    f"{os.environ['HARBOR_USER']}:{os.environ['HARBOR_PASSWORD']}".encode()
-).decode()
-path = Path(os.environ["DOCKER_CONFIG"]) / "config.json"
-path.write_text(
-    json.dumps({"auths": {os.environ["HARBOR_HOST"]: {"auth": auth}}}, separators=(",", ":")),
-    encoding="utf-8",
-)
-path.chmod(0o600)
-PY
+python3 scripts/ci/software_release_builder.py write-docker-auth "${DOCKER_CONFIG}/config.json"
 printf '%s' "${COSIGN_PRIVATE_KEY}" > "${signing_key}"
 chmod 600 "${signing_key}"
 cosign public-key --key "${signing_key}" > "${signing_pub}"
@@ -118,291 +88,34 @@ chmod 600 "${signing_config}"
 export SIGNING_KEY_SHA256="sha256:$(sha256sum "${signing_pub}" | awk '{print $1}')"
 
 release_step_resolve_predecessor() {
-  PYTHONPATH="infra/ota-helper:infra/host-release-runner" python3 - \
+  python3 scripts/ci/software_release_builder.py resolve-predecessor \
     "${predecessor_path}" \
-    "${resumable_release_path}" <<'PY'
-import base64
-import binascii
-import hashlib
-import json
-import os
-import sys
-import urllib.request
-from pathlib import Path
-
-from host_release_engine import (
-    assert_pair,
-    canonical_digest as host_canonical_digest,
-    validate_host_manifest,
-    validate_software_manifest,
-)
-from release_engine import canonical_manifest_bytes, validate_manifest
-
-
-def fetch(name):
-    request = urllib.request.Request(
-        os.environ["CLOUD_OPS_RELEASE_API_URL"].rstrip("/") + f"/api/v1/{name}",
-        headers={"X-API-Key": os.environ["CLOUD_OPS_RELEASE_API_KEY"]},
-        method="GET",
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read(4 * 1024 * 1024))
-    if not isinstance(payload, list):
-        raise SystemExit(f"Cloud returned an invalid {name} list")
-    return payload
-
-
-def index_rows(rows, label):
-    by_id = {}
-    sequences = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            raise SystemExit(f"Cloud returned an invalid {label} row")
-        sequence = row.get("sequence")
-        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
-            raise SystemExit(f"Cloud returned an invalid {label} sequence")
-        release_id = row.get("id")
-        if not isinstance(release_id, str) or not release_id:
-            raise SystemExit(f"Cloud returned an invalid {label} id")
-        if sequence in sequences or release_id in by_id:
-            raise SystemExit(f"Cloud returned duplicate {label} identity")
-        sequences.add(sequence)
-        by_id[release_id] = row
-    return by_id
-
-
-def decode_signature(row, label):
-    try:
-        signature = base64.b64decode(row.get("manifest_signature", ""), validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise SystemExit(f"completed {label} signature is invalid") from exc
-    if not signature:
-        raise SystemExit(f"completed {label} signature is missing")
-
-
-def validate_software_row(row):
-    manifest = validate_manifest(row.get("manifest"))
-    validate_software_manifest(manifest)
-    expected_digest = "sha256:" + hashlib.sha256(canonical_manifest_bytes(manifest)).hexdigest()
-    if (
-        row.get("status") != "completed"
-        or row.get("id") != manifest["release_id"]
-        or row.get("sequence") != manifest["sequence"]
-        or row.get("version") != manifest["version"]
-        or row.get("source_commit") != manifest["source_commit"]
-        or row.get("manifest_digest") != expected_digest
-        or set(manifest["services"]) != service_inventory
-    ):
-        raise SystemExit("completed SoftwareRelease identity is invalid")
-    decode_signature(row, "SoftwareRelease")
-    return manifest
-
-
-def validate_host_row(row):
-    manifest = validate_host_manifest(row.get("manifest"))
-    if (
-        row.get("status") != "completed"
-        or row.get("id") != manifest["release_id"]
-        or row.get("sequence") != manifest["sequence"]
-        or row.get("version") != manifest["version"]
-        or row.get("source_commit") != manifest["source_commit"]
-        or row.get("manifest_digest") != host_canonical_digest(manifest)
-        or row.get("software_release_id") != manifest["software_release_id"]
-    ):
-        raise SystemExit("completed HostRelease identity is invalid")
-    decode_signature(row, "HostRelease")
-    return manifest
-
-
-software_rows = fetch("software-releases")
-host_rows = fetch("host-releases")
-software_by_id = index_rows(software_rows, "SoftwareRelease")
-host_by_id = index_rows(host_rows, "HostRelease")
-service_inventory = set(os.environ["RELEASE_SERVICE_INVENTORY"].splitlines())
-completed_software = {}
-completed_hosts = {}
-for row in software_rows:
-    if row.get("status") == "completed":
-        completed_software[row["id"]] = validate_software_row(row)
-for row in host_rows:
-    if row.get("status") == "completed":
-        completed_hosts[row["id"]] = validate_host_row(row)
-
-for host_id, host_manifest in completed_hosts.items():
-    software_row = software_by_id.get(host_manifest["software_release_id"])
-    if software_row is None or software_row.get("status") != "completed":
-        raise SystemExit("completed HostRelease has no completed SoftwareRelease")
-    software_manifest = completed_software[software_row["id"]]
-    assert_pair(host_manifest, software_manifest)
-
-current_host = host_by_id.get(os.environ["HOST_RELEASE_ID"])
-current_host_is_building = (
-    isinstance(current_host, dict)
-    and current_host.get("status") == "building"
-    and current_host.get("source_commit") == os.environ["RELEASE_SOURCE_COMMIT"]
-)
-resumable = []
-pairs = []
-for row in software_rows:
-    if row.get("status") != "completed":
-        continue
-    manifest = completed_software[row["id"]]
-    if (
-        current_host_is_building
-        and row.get("version") == os.environ["RELEASE_VERSION"]
-        and row.get("source_commit") == os.environ["RELEASE_SOURCE_COMMIT"]
-        and manifest["host_release_id"] == os.environ["HOST_RELEASE_ID"]
-        and manifest["topology_digest"] == os.environ["TOPOLOGY_DIGEST"]
-        and manifest["registry"] == os.environ["HARBOR_HOST"]
-        and manifest["signing_key_sha256"] == os.environ["SIGNING_KEY_SHA256"]
-    ):
-        resumable.append(row)
-    host_row = host_by_id.get(manifest["host_release_id"])
-    if host_row is None or host_row.get("status") != "completed":
-        continue
-    host_manifest = completed_hosts[host_row["id"]]
-    if host_manifest["software_release_id"] != row["id"]:
-        continue
-    assert_pair(host_manifest, manifest)
-    pairs.append((row["sequence"], row, host_row))
-
-if len(resumable) > 1:
-    raise SystemExit("multiple resumable SoftwareReleases found")
-pairs.sort(key=lambda item: item[0], reverse=True)
-predecessor = None
-if pairs:
-    predecessor = dict(pairs[0][1])
-    predecessor["paired_host_release"] = pairs[0][2]
-Path(sys.argv[1]).write_text(
-    json.dumps(predecessor, separators=(",", ":")),
-    encoding="utf-8",
-)
-Path(sys.argv[2]).write_text(
-    json.dumps(resumable[0], separators=(",", ":")) if resumable else "",
-    encoding="utf-8",
-)
-PY
+    "${resumable_release_path}"
 }
 
 release_step_resolve_changed_services() {
-  PYTHONPATH="infra/ota-helper" python3 - "${predecessor_path}" "${changed_services_path}" <<'PY'
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-from release_engine import validate_manifest
-
-service_inventory = tuple(os.environ["RELEASE_SERVICE_INVENTORY"].splitlines())
-all_services = set(service_inventory)
-predecessor = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-changed = set(all_services)
-
-if predecessor is not None:
-    manifest = validate_manifest(predecessor.get("manifest"))
-    source_commit = predecessor.get("source_commit")
-    identity_matches = (
-        predecessor.get("id") == manifest["release_id"]
-        and predecessor.get("sequence") == manifest["sequence"]
-        and predecessor.get("version") == manifest["version"]
-        and source_commit == manifest["source_commit"]
-        and predecessor.get("manifest_digest")
-        and predecessor.get("manifest_signature")
-    )
-    can_inherit = (
-        identity_matches
-        and manifest["registry"] == os.environ["HARBOR_HOST"]
-        and manifest["signing_key_sha256"] == os.environ["SIGNING_KEY_SHA256"]
-        and manifest["host_release_id"] == os.environ["HOST_RELEASE_ID"]
-        and manifest["topology_digest"] == os.environ["TOPOLOGY_DIGEST"]
-    )
-    if can_inherit:
-        current_commit = os.environ["RELEASE_SOURCE_COMMIT"]
-        try:
-            subprocess.run(
-                ["git", "merge-base", "--is-ancestor", source_commit, current_commit],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            result = subprocess.run(
-                ["git", "diff", "--name-only", "-z", source_commit, current_commit, "--"],
-                check=True,
-                stdout=subprocess.PIPE,
-            )
-        except (OSError, subprocess.CalledProcessError):
-            pass
-        else:
-            changed = set()
-            for raw_path in result.stdout.split(b"\0"):
-                if not raw_path:
-                    continue
-                path = raw_path.decode("utf-8")
-                parts = path.split("/")
-                if len(parts) >= 3 and parts[0] == "services" and parts[1] in all_services:
-                    changed.add(parts[1])
-                elif parts[0] in {"docs", "tests", ".gitea"}:
-                    continue
-                else:
-                    changed = set(all_services)
-                    break
-
-Path(sys.argv[2]).write_text(
-    "".join(f"{service}\n" for service in service_inventory if service in changed),
-    encoding="utf-8",
-)
-PY
+  python3 scripts/ci/software_release_builder.py resolve-changed-services \
+    "${predecessor_path}" "${changed_services_path}"
 }
 
 release_step_create_cloud() {
-  python3 - "${release_metadata_path}" <<'PY'
-import json
-import os
-import sys
-import urllib.request
-from pathlib import Path
-
-body = json.dumps(
-    {
-        "version": os.environ["RELEASE_VERSION"],
-        "source_commit": os.environ["RELEASE_SOURCE_COMMIT"],
-    },
-    separators=(",", ":"),
-).encode()
-request = urllib.request.Request(
-    os.environ["CLOUD_OPS_RELEASE_API_URL"].rstrip("/") + "/api/v1/software-releases",
-    data=body,
-    headers={
-        "Content-Type": "application/json",
-        "X-API-Key": os.environ["CLOUD_OPS_RELEASE_API_KEY"],
-    },
-    method="POST",
-)
-with urllib.request.urlopen(request, timeout=30) as response:
-    payload = json.loads(response.read(1024 * 1024))
-if payload.get("status") != "building" or not payload.get("id") or int(payload.get("sequence") or 0) < 1:
-    raise SystemExit("Cloud did not create a building SoftwareRelease")
-Path(sys.argv[1]).write_text(
-    json.dumps({"id": payload["id"], "sequence": int(payload["sequence"])}, separators=(",", ":")),
-    encoding="utf-8",
-)
-PY
+  python3 scripts/ci/software_release_builder.py create-cloud "${release_metadata_path}"
 }
 
 source_image_for() {
   case "$1" in
-    alertmanager) printf '%s\n' "prom/alertmanager:v0.33.1@sha256:a89f8d4520954079275441eecdb71444328bd90633dd4eddfc33b9ed657f349b" ;;
-    mosquitto|mosquitto-init) printf '%s\n' "eclipse-mosquitto:2.0.22@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd" ;;
-    prometheus) printf '%s\n' "prom/prometheus:v3.13.0@sha256:0e698e35e50d1ddc2d11a4a55b089fe62eb71358a5c204dfafd21bdf8ffe04b8" ;;
+    alertmanager|mosquitto|mosquitto-init|prometheus)
+      python3 scripts/ci/software_release_builder.py source-image "$1"
+      ;;
     *) return 1 ;;
   esac
 }
 
 release_dockerfile_for() {
   case "$1" in
-    influxdb) printf '%s\n' "infra/release-images/influxdb/Dockerfile" ;;
-    postgres) printf '%s\n' "infra/release-images/postgres/Dockerfile" ;;
+    influxdb|postgres)
+      python3 scripts/ci/software_release_builder.py release-dockerfile "$1"
+      ;;
     *) return 1 ;;
   esac
 }
@@ -467,14 +180,7 @@ release_step_resolve_portable_image_id() {
   local target="$1"
   local archive="${release_work_dir}/portable-image.tar"
   docker image save -o "${archive}" "${target}"
-  PYTHONPATH="infra/ota-helper" python3 - "${archive}" <<'PY'
-import sys
-from pathlib import Path
-
-from release_engine import docker_archive_config_digest
-
-print(docker_archive_config_digest(Path(sys.argv[1])))
-PY
+  python3 scripts/ci/software_release_builder.py portable-image-id "${archive}"
   rm -f -- "${archive}"
 }
 
@@ -487,110 +193,12 @@ release_step_verify_image() {
 }
 
 release_step_load_inherited_images() {
-  PYTHONPATH="infra/ota-helper:infra/host-release-runner" python3 - \
+  python3 scripts/ci/software_release_builder.py load-inherited \
     "${predecessor_path}" \
     "${predecessor_manifest_path}" \
     "${predecessor_signature_path}" \
     "${changed_services_path}" \
-    "${inherited_images_path}" <<'PY'
-import base64
-import binascii
-import hashlib
-import json
-import os
-import sys
-from pathlib import Path
-
-from host_release_engine import (
-    assert_pair,
-    canonical_digest as host_canonical_digest,
-    validate_host_manifest,
-    validate_software_manifest,
-)
-from release_engine import canonical_manifest_bytes, validate_manifest
-
-predecessor = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-changed = set(Path(sys.argv[4]).read_text(encoding="utf-8").splitlines())
-service_inventory = tuple(os.environ["RELEASE_SERVICE_INVENTORY"].splitlines())
-if predecessor is None:
-    if changed != set(service_inventory):
-        raise SystemExit("a partial release requires a completed predecessor")
-    Path(sys.argv[5]).write_text("", encoding="utf-8")
-    raise SystemExit(0)
-
-manifest = validate_manifest(predecessor.get("manifest"))
-validate_software_manifest(manifest)
-manifest_bytes = canonical_manifest_bytes(manifest)
-expected_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
-software_identity_matches = (
-    predecessor.get("status") == "completed"
-    and predecessor.get("id") == manifest["release_id"]
-    and predecessor.get("sequence") == manifest["sequence"]
-    and predecessor.get("version") == manifest["version"]
-    and predecessor.get("source_commit") == manifest["source_commit"]
-    and predecessor.get("manifest_digest") == expected_digest
-    and isinstance(predecessor.get("manifest_signature"), str)
-    and predecessor.get("manifest_signature")
-)
-if not software_identity_matches:
-    raise SystemExit("predecessor SoftwareRelease identity is incomplete")
-predecessor_host = predecessor.get("paired_host_release")
-if not isinstance(predecessor_host, dict):
-    raise SystemExit("predecessor HostRelease is missing")
-host_manifest = validate_host_manifest(predecessor_host.get("manifest"))
-host_identity_matches = (
-    predecessor_host.get("status") == "completed"
-    and predecessor_host.get("id") == host_manifest["release_id"]
-    and predecessor_host.get("sequence") == host_manifest["sequence"]
-    and predecessor_host.get("version") == host_manifest["version"]
-    and predecessor_host.get("source_commit") == host_manifest["source_commit"]
-    and predecessor_host.get("manifest_digest") == host_canonical_digest(host_manifest)
-    and isinstance(predecessor_host.get("manifest_signature"), str)
-    and predecessor_host.get("manifest_signature")
-    and predecessor_host.get("software_release_id") == predecessor.get("id")
-)
-if not host_identity_matches:
-    raise SystemExit("predecessor HostRelease identity is incomplete")
-assert_pair(host_manifest, manifest)
-try:
-    host_signature = base64.b64decode(
-        predecessor_host["manifest_signature"],
-        validate=True,
-    )
-except (binascii.Error, ValueError) as exc:
-    raise SystemExit("predecessor HostRelease signature is invalid") from exc
-if not host_signature:
-    raise SystemExit("predecessor HostRelease signature is missing")
-if manifest["signing_key_sha256"] != os.environ["SIGNING_KEY_SHA256"]:
-    if changed != set(service_inventory):
-        raise SystemExit("signing-key rotation requires rebuilding every service")
-    Path(sys.argv[5]).write_text("", encoding="utf-8")
-    raise SystemExit(0)
-binding_changed = (
-    manifest["host_release_id"] != os.environ["HOST_RELEASE_ID"]
-    or manifest["topology_digest"] != os.environ["TOPOLOGY_DIGEST"]
-)
-if binding_changed and changed != set(service_inventory):
-    raise SystemExit("new HostRelease binding requires rebuilding every service")
-try:
-    signature = base64.b64decode(predecessor.get("manifest_signature", ""), validate=True)
-except (binascii.Error, ValueError) as exc:
-    raise SystemExit("predecessor manifest signature is invalid") from exc
-if not signature:
-    raise SystemExit("predecessor manifest signature is missing")
-Path(sys.argv[2]).write_bytes(manifest_bytes)
-Path(sys.argv[3]).write_bytes(signature)
-Path(sys.argv[5]).write_text(
-    ""
-    if binding_changed
-    else "".join(
-        f"{service}\t{manifest['services'][service]}\t{manifest['image_ids'][service]}\n"
-        for service in service_inventory
-        if service not in changed
-    ),
-    encoding="utf-8",
-)
-PY
+    "${inherited_images_path}"
 
   if [[ -s "${predecessor_manifest_path}" ]]; then
     cosign verify-blob \
@@ -622,68 +230,11 @@ PY
 }
 
 release_step_resume_completed_release() {
-  PYTHONPATH="infra/ota-helper:infra/host-release-runner" python3 - \
+  python3 scripts/ci/software_release_builder.py resume \
     "${resumable_release_path}" \
     "${manifest_path}" \
     "${manifest_signature}" \
-    "${inherited_images_path}" <<'PY'
-import base64
-import binascii
-import hashlib
-import json
-import os
-import sys
-from pathlib import Path
-
-from host_release_engine import validate_software_manifest
-from release_engine import canonical_manifest_bytes, validate_manifest
-
-row = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-if not isinstance(row, dict):
-    raise SystemExit(1)
-manifest = validate_manifest(row.get("manifest"))
-validate_software_manifest(manifest)
-manifest_bytes = canonical_manifest_bytes(manifest)
-expected_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
-service_inventory = tuple(os.environ["RELEASE_SERVICE_INVENTORY"].splitlines())
-if (
-    row.get("status") != "completed"
-    or row.get("id") != manifest["release_id"]
-    or row.get("sequence") != manifest["sequence"]
-    or row.get("version") != manifest["version"]
-    or row.get("source_commit") != manifest["source_commit"]
-    or row.get("manifest_digest") != expected_digest
-    or row.get("version") != os.environ["RELEASE_VERSION"]
-    or row.get("source_commit") != os.environ["RELEASE_SOURCE_COMMIT"]
-    or manifest["host_release_id"] != os.environ["HOST_RELEASE_ID"]
-    or manifest["topology_digest"] != os.environ["TOPOLOGY_DIGEST"]
-    or manifest["registry"] != os.environ["HARBOR_HOST"]
-    or manifest["signing_key_sha256"] != os.environ["SIGNING_KEY_SHA256"]
-    or set(manifest["services"]) != set(service_inventory)
-):
-    raise SystemExit("resumable SoftwareRelease identity is invalid")
-for service in service_inventory:
-    expected_prefix = (
-        f"{os.environ['HARBOR_HOST']}/{os.environ['HARBOR_PROJECT']}/{service}@sha256:"
-    )
-    if not manifest["services"][service].startswith(expected_prefix):
-        raise SystemExit("resumable SoftwareRelease repository is invalid")
-try:
-    signature = base64.b64decode(row.get("manifest_signature", ""), validate=True)
-except (binascii.Error, ValueError) as exc:
-    raise SystemExit("resumable SoftwareRelease signature is invalid") from exc
-if not signature:
-    raise SystemExit("resumable SoftwareRelease signature is missing")
-Path(sys.argv[2]).write_bytes(manifest_bytes)
-Path(sys.argv[3]).write_bytes(signature)
-Path(sys.argv[4]).write_text(
-    "".join(
-        f"{service}\t{manifest['services'][service]}\t{manifest['image_ids'][service]}\n"
-        for service in service_inventory
-    ),
-    encoding="utf-8",
-)
-PY
+    "${inherited_images_path}"
   chmod 600 "${manifest_path}" "${manifest_signature}"
   cosign verify-blob \
     --key "${signing_pub}" \
@@ -712,24 +263,8 @@ PY
     --directory "${python_base_receipt_dir}" \
     --manifest "${manifest_path}" \
     --output "${python_base_receipt_path}"
-  python3 - "${resumable_release_path}" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-row = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-output = os.environ.get("SOFTWARE_RELEASE_OUTPUT", "")
-if output:
-    output_path = Path(output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(row, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    output_path.chmod(0o600)
-print(f"SoftwareRelease resumed: id={row['id']} digest={row['manifest_digest']}")
-PY
+  python3 scripts/ci/software_release_builder.py write-release-output \
+    "${resumable_release_path}"
 }
 
 release_step_sign_manifest() {
@@ -750,46 +285,10 @@ release_step_verify_manifest() {
 }
 
 release_step_complete_cloud() {
-  python3 - "${release_metadata_path}" "${manifest_path}" "${manifest_signature}" <<'PY'
-import base64
-import hashlib
-import json
-import os
-import sys
-import urllib.request
-from pathlib import Path
-
-metadata = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-manifest_bytes = Path(sys.argv[2]).read_bytes()
-manifest = json.loads(manifest_bytes)
-signature = base64.b64encode(Path(sys.argv[3]).read_bytes()).decode()
-body = json.dumps(
-    {"manifest": manifest, "manifest_signature": signature},
-    separators=(",", ":"),
-).encode()
-request = urllib.request.Request(
-    os.environ["CLOUD_OPS_RELEASE_API_URL"].rstrip("/")
-    + f"/api/v1/software-releases/{metadata['id']}/complete",
-    data=body,
-    headers={
-        "Content-Type": "application/json",
-        "X-API-Key": os.environ["CLOUD_OPS_RELEASE_API_KEY"],
-    },
-    method="POST",
-)
-with urllib.request.urlopen(request, timeout=30) as response:
-    payload = json.loads(response.read(1024 * 1024))
-expected_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
-if payload.get("status") != "completed" or payload.get("manifest_digest") != expected_digest:
-    raise SystemExit("Cloud did not complete the exact SoftwareRelease manifest")
-output = os.environ.get("SOFTWARE_RELEASE_OUTPUT", "")
-if output:
-    output_path = Path(output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-    output_path.chmod(0o600)
-print(f"SoftwareRelease completed: id={metadata['id']} digest={expected_digest}")
-PY
+  python3 scripts/ci/software_release_builder.py complete-cloud \
+    "${release_metadata_path}" \
+    "${manifest_path}" \
+    "${manifest_signature}"
 }
 
 release_step_resolve_predecessor
@@ -804,8 +303,8 @@ while IFS= read -r service; do
 done < "${changed_services_path}"
 
 release_step_create_cloud
-release_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["id"])' "${release_metadata_path}")"
-release_sequence="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sequence"])' "${release_metadata_path}")"
+release_id="$(python3 scripts/ci/software_release_builder.py field "${release_metadata_path}" id)"
+release_sequence="$(python3 scripts/ci/software_release_builder.py field "${release_metadata_path}" sequence)"
 
 release_step_load_inherited_images
 
@@ -847,36 +346,8 @@ done
 
 export RELEASE_ID="${release_id}"
 export RELEASE_SEQUENCE="${release_sequence}"
-PYTHONPATH="infra/ota-helper" python3 - "${image_map_path}" "${manifest_path}" <<'PY'
-import os
-import sys
-from pathlib import Path
-
-from release_engine import COSIGN_TOOLCHAIN, canonical_manifest_bytes, validate_manifest
-
-services = {}
-image_ids = {}
-for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    service, reference, image_id = line.split("\t")
-    services[service] = reference
-    image_ids[service] = image_id
-manifest = {
-    "schema": "drycontroller.software-release.v1",
-    "release_id": os.environ["RELEASE_ID"],
-    "host_release_id": os.environ["HOST_RELEASE_ID"],
-    "topology_digest": os.environ["TOPOLOGY_DIGEST"],
-    "sequence": int(os.environ["RELEASE_SEQUENCE"]),
-    "version": os.environ["RELEASE_VERSION"],
-    "source_commit": os.environ["RELEASE_SOURCE_COMMIT"],
-    "registry": os.environ["HARBOR_HOST"],
-    "signing_key_sha256": os.environ["SIGNING_KEY_SHA256"],
-    "cosign": COSIGN_TOOLCHAIN,
-    "services": services,
-    "image_ids": image_ids,
-}
-validate_manifest(manifest)
-Path(sys.argv[2]).write_bytes(canonical_manifest_bytes(manifest))
-PY
+python3 scripts/ci/software_release_builder.py create-manifest \
+  "${image_map_path}" "${manifest_path}"
 chmod 600 "${manifest_path}"
 python3 scripts/ci/python_base_image_contract.py verify-receipts \
   --directory "${python_base_receipt_dir}" \

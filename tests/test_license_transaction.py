@@ -399,14 +399,24 @@ def test_boot_recovery_runs_before_docker_and_is_installed():
     unit = (
         ROOT / "infra/bootstrap/drycontroller-license-transaction-recovery.service"
     ).read_text(encoding="utf-8")
-    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(
+    installer_script = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(
         encoding="utf-8"
     )
+    static_path = ROOT / "infra/bootstrap/install-static-runtime.py"
+    static_spec = importlib.util.spec_from_file_location(
+        "license_static_installer", static_path
+    )
+    assert static_spec is not None and static_spec.loader is not None
+    static_installer = importlib.util.module_from_spec(static_spec)
+    static_spec.loader.exec_module(static_installer)
     assert "Before=docker.service" in unit
     assert "RequiredBy=docker.service" in unit
     assert "WantedBy=multi-user.target" not in unit
     assert "manage-license-transaction.py recover" in unit
-    assert "install -o root -g root -m 0755" in installer
-    assert "/etc/drycontroller/license" in installer
-    assert "/var/lib/drycontroller/license-transaction" in installer
-    assert "systemctl enable drycontroller-license-transaction-recovery.service" in installer
+    assert static_installer.RUNTIME_FILES["scripts/manage-license-transaction.py"] == (
+        "/usr/libexec/drycontroller/manage-license-transaction.py",
+        0o755,
+    )
+    assert static_installer.DIRECTORIES["/etc/drycontroller/license"] == 0o755
+    assert static_installer.DIRECTORIES["/var/lib/drycontroller/license-transaction"] == 0o700
+    assert "systemctl enable drycontroller-license-transaction-recovery.service" in installer_script

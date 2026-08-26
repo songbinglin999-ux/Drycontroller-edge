@@ -1,4 +1,5 @@
 import io
+import importlib.util
 import subprocess
 import sys
 import tarfile
@@ -33,6 +34,15 @@ def _env_example() -> dict[str, str]:
         key, value = line.split("=", 1)
         result[key] = value
     return result
+
+
+def _static_installer():
+    path = ROOT / "infra/bootstrap/install-static-runtime.py"
+    spec = importlib.util.spec_from_file_location("deployment_static_installer", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_plc_deployment_defaults_match_rtu_over_tcp_contract():
@@ -146,6 +156,15 @@ def test_host_release_runner_is_outside_its_signed_update_surface():
 
 def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
     installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+    help_text = subprocess.run(
+        ["bash", str(ROOT / "infra/bootstrap/install-edge-host.sh"), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    runtime_destinations = {
+        destination for destination, _mode in _static_installer().RUNTIME_FILES.values()
+    }
     post_install = (ROOT / "infra/autoinstall/post-install.sh").read_text(encoding="utf-8")
     user_data = (ROOT / "infra/autoinstall/user-data").read_text(encoding="utf-8")
     release_builder = (ROOT / "scripts/build-os-installer-release.sh").read_text(encoding="utf-8")
@@ -167,9 +186,9 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
         "/usr/libexec/drycontroller/assert-fresh-install-data-plane",
         "/usr/libexec/drycontroller/host-release-runner",
     ):
-        assert required in installer
+        assert required in help_text or required in runtime_destinations
     for retired in ("--initial-release", "--host-active", "--cosign-public-key"):
-        assert retired not in installer
+        assert retired not in help_text
     assert "[ -c /dev/tpmrm0 ]" in installer
     assert 'password: "!"' in user_data
     assert "allow-pw: false" in user_data
@@ -239,23 +258,19 @@ def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
 
 
 def test_formal_source_bundle_carries_the_fresh_install_guard_and_registry_writer():
-    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
     bundle_builder = (ROOT / "tools/build-bundle-images.sh").read_text(encoding="utf-8")
+    runtime_files = _static_installer().RUNTIME_FILES
 
     source = "scripts/ci/assert-fresh-install-data-plane.sh"
     installed = "/usr/libexec/drycontroller/assert-fresh-install-data-plane"
     assert source in bundle_builder
-    assert f'"${{REPO_SOURCE}}/{source}"' in installer
-    assert installed in installer
-    assert installer.index(installed) < installer.rindex(
-        "/usr/libexec/drycontroller/initialize-initial-release"
-    )
+    assert runtime_files[source] == (installed, 0o755)
     for source in (
         "infra/registry-auth-writer/registry_auth_writer.py",
         "infra/registry-auth-writer/drycontroller-registry-auth-writer.service",
     ):
         assert source in bundle_builder
-        assert f'"${{REPO_SOURCE}}/{source}"' in installer
+        assert source in runtime_files
 
 
 def test_root_release_runtime_is_disconnected_from_edge_api_writable_docker_config():
@@ -317,12 +332,13 @@ def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata
 
 
 def test_installer_retires_the_independent_license_trust_writer():
-    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+    runtime_files = _static_installer().RUNTIME_FILES
 
-    assert "rm -f /usr/libexec/drycontroller/manage-license-trust.py" in installer
-    assert '"${REPO_SOURCE}/scripts/manage-license-trust.py"' in installer
-    assert "--root /etc/drycontroller/keys/license-trust" in installer
-    assert "install -o root -g root -m 0755 \"${REPO_SOURCE}/scripts/manage-license-trust.py\"" not in installer
+    assert "scripts/manage-license-trust.py" not in runtime_files
+    assert runtime_files["scripts/manage-license-transaction.py"] == (
+        "/usr/libexec/drycontroller/manage-license-transaction.py",
+        0o755,
+    )
 
 
 def test_edge_api_tailnet_preflight_uses_fixed_root_observer_without_localapi_socket():

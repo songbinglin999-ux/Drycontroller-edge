@@ -12,6 +12,7 @@ import asyncio
 import base64
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -367,11 +368,15 @@ def test_cloud_signature_concurrent_replay_is_rejected(tmp_path):
 
 def test_cloud_nonce_store_has_dedicated_writable_mount():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
+    path = ROOT / "infra/bootstrap/install-static-runtime.py"
+    spec = importlib.util.spec_from_file_location("nonce_static_installer", path)
+    assert spec is not None and spec.loader is not None
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
 
     assert "CLOUD_REQUEST_NONCE_DB=/var/lib/drycontroller-cloud-request-nonces/nonces.sqlite3" in compose
     assert (
         "/var/lib/drycontroller/cloud-request-nonces:/var/lib/drycontroller-cloud-request-nonces"
         in compose
     )
-    assert "install -d -o root -g root -m 0700 /var/lib/drycontroller/cloud-request-nonces" in installer
+    assert installer.DIRECTORIES["/var/lib/drycontroller/cloud-request-nonces"] == 0o700

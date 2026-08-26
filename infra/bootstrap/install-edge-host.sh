@@ -114,6 +114,7 @@ done
 
 for path in \
   env.example \
+  infra/bootstrap/install-static-runtime.py \
   infra/bootstrap/initialize-runtime-config.py \
   scripts/manage-license-trust.py \
   scripts/manage-license-transaction.py \
@@ -418,32 +419,13 @@ PY
 }
 
 install_static_runtime() {
-  install -d -o root -g root -m 0755 /usr/libexec/drycontroller /etc/drycontroller/keys /etc/drycontroller/trust /etc/drycontroller/license
-  install -d -m 0755 /usr/libexec/drycontroller/common
-  install -d -m 0700 /var/lib/drycontroller /var/lib/drycontroller-host /var/lib/drycontroller-ota
-  install -d -o root -g root -m 0700 /var/lib/drycontroller/license-transaction
-  install -d -o root -g root -m 0700 /var/lib/drycontroller/cloud-request-nonces
-  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_engine.py" /usr/libexec/drycontroller/host_release_engine.py
-  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/host_release_runner.py" /usr/libexec/drycontroller/host_release_runner.py
-  install -o root -g root -m 0644 "${REPO_SOURCE}/common/tailscale_status.py" /usr/libexec/drycontroller/common/tailscale_status.py
-  install -o root -g root -m 0644 "${REPO_SOURCE}/common/license_verifier.py" /usr/libexec/drycontroller/common/license_verifier.py
-  rm -f /usr/libexec/drycontroller/manage-license-trust.py
-  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/manage-license-transaction.py" /usr/libexec/drycontroller/manage-license-transaction.py
-  install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-runner" /usr/libexec/drycontroller/host-release-runner
-  install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/host-release-apply" /usr/libexec/drycontroller/host-release-apply
-  install -o root -g root -m 0755 "${REPO_SOURCE}/infra/host-release-runner/initialize-initial-release" /usr/libexec/drycontroller/initialize-initial-release
-  install -o root -g root -m 0755 "${REPO_SOURCE}/scripts/ci/assert-fresh-install-data-plane.sh" /usr/libexec/drycontroller/assert-fresh-install-data-plane
-  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/host-release-runner/drycontroller-host-release-runner.service" /etc/systemd/system/drycontroller-host-release-runner.service
-  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/ota-helper/drycontroller-ota-helper.service" /etc/systemd/system/drycontroller-ota-helper.service
-  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/registry-auth-writer/registry_auth_writer.py" /usr/libexec/drycontroller/registry_auth_writer.py
-  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/registry-auth-writer/drycontroller-registry-auth-writer.service" /etc/systemd/system/drycontroller-registry-auth-writer.service
-  install -o root -g root -m 0644 "${REPO_SOURCE}/infra/bootstrap/drycontroller-license-transaction-recovery.service" /etc/systemd/system/drycontroller-license-transaction-recovery.service
-  install -o root -g root -m 0644 "$HOST_COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/host-release-cosign.pub
-  install -o root -g root -m 0644 "$SOFTWARE_COSIGN_PUBLIC_KEY" /etc/drycontroller/keys/cosign.pub
-  install -o root -g root -m 0644 "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" /etc/drycontroller/trust/device-identity-cloud.pub
-  install -o root -g root -m 0755 "$COSIGN_BIN" /usr/local/bin/cosign
-  [ "$(sha256sum /usr/local/bin/cosign | awk '{print $1}')" = "$COSIGN_APPROVED_LINUX_AMD64_SHA256" ] \
-    || die "installed cosign checksum changed"
+  python3 "${REPO_SOURCE}/infra/bootstrap/install-static-runtime.py" \
+    --repo-source "$REPO_SOURCE" \
+    --host-cosign-public-key "$HOST_COSIGN_PUBLIC_KEY" \
+    --software-cosign-public-key "$SOFTWARE_COSIGN_PUBLIC_KEY" \
+    --device-identity-cloud-public-key "$DEVICE_IDENTITY_CLOUD_PUBLIC_KEY" \
+    --cosign-binary "$COSIGN_BIN" \
+    --approved-cosign-sha256 "$COSIGN_APPROVED_LINUX_AMD64_SHA256"
 }
 
 install_identity_service() {

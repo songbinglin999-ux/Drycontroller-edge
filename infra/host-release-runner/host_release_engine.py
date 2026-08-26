@@ -37,6 +37,7 @@ SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"
 COORDINATOR_JOURNAL_SCHEMA = "drycontroller.host-release-coordinator.v1"
 REGISTRY_AUTH_SCHEMA = "drycontroller.registry-auth.v2"
 HOST_HEALTH_CONTRACT = "drycontroller.edge-health.v1"
+SHARED_SECURITY_CONTRACT_VERSION = 1
 COSIGN_TOOLCHAIN = {
     "version": "v3.1.3",
     "linux_amd64_sha256": "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
