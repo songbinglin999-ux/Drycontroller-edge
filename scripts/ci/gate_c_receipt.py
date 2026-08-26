@@ -28,9 +28,7 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{7,63}$")
-REGISTRY_ORIGIN = re.compile(
-    r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$"
-)
+REGISTRY_ORIGIN = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$")
 REGISTRY_NAMESPACE = re.compile(
     r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?"
     r"(?:/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)*$"
@@ -98,14 +96,21 @@ def _pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _json(raw: bytes, label: str, *, canonical: bool) -> dict[str, Any]:
+def _json_value(raw: bytes, label: str) -> Any:
     _need(0 < len(raw) <= MAX_JSON_BYTES, f"{label} is missing or too large")
     try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise GateCError(f"{label} is not valid UTF-8 JSON") from exc
+
+
+def _json(raw: bytes, label: str, *, canonical: bool) -> dict[str, Any]:
+    value = _json_value(raw, label)
     _need(isinstance(value, dict), f"{label} must be one JSON object")
-    _need(not canonical or raw == canonical_bytes(value), f"{label} bytes are not canonical")
+    _need(
+        not canonical or raw == canonical_bytes(value),
+        f"{label} bytes are not canonical",
+    )
     return value
 
 
@@ -116,6 +121,13 @@ def parse_canonical(raw: bytes, label: str) -> dict[str, Any]:
 def _read(path: Path, label: str, *, canonical: bool = True) -> dict[str, Any]:
     try:
         return _json(path.read_bytes(), label, canonical=canonical)
+    except OSError as exc:
+        raise GateCError(f"{label} is unavailable") from exc
+
+
+def _read_json_value(path: Path, label: str) -> Any:
+    try:
+        return _json_value(path.read_bytes(), label)
     except OSError as exc:
         raise GateCError(f"{label} is unavailable") from exc
 
@@ -140,15 +152,26 @@ def _write_new(path: Path, value: object) -> None:
 
 
 def validate_manifest(manifest: Mapping[str, Any]) -> dict[str, str]:
-    _need(manifest.get("schema") == MANIFEST_SCHEMA, "Gate B manifest schema is invalid")
+    _need(
+        manifest.get("schema") == MANIFEST_SCHEMA, "Gate B manifest schema is invalid"
+    )
     gate_a = manifest.get("gate_a")
     edge = gate_a.get("edge") if isinstance(gate_a, dict) else None
     fields = {"archive_sha256", "commit", "parent", "review_receipt_sha256", "tree"}
-    _need(isinstance(edge, dict) and set(edge) == fields, "Gate B Edge identity is invalid")
+    _need(
+        isinstance(edge, dict) and set(edge) == fields,
+        "Gate B Edge identity is invalid",
+    )
     for name in ("archive_sha256", "review_receipt_sha256"):
-        _need(isinstance(edge[name], str) and SHA256.fullmatch(edge[name]), f"invalid Edge {name}")
+        _need(
+            isinstance(edge[name], str) and SHA256.fullmatch(edge[name]),
+            f"invalid Edge {name}",
+        )
     for name in ("commit", "parent", "tree"):
-        _need(isinstance(edge[name], str) and COMMIT.fullmatch(edge[name]), f"invalid Edge {name}")
+        _need(
+            isinstance(edge[name], str) and COMMIT.fullmatch(edge[name]),
+            f"invalid Edge {name}",
+        )
     _need(manifest.get("frontend") == "excluded", "Gate B Frontend boundary is invalid")
     _need(
         manifest.get("gate_sequence") == ["A", "B", "C", "D", "E", "F"],
@@ -157,7 +180,9 @@ def validate_manifest(manifest: Mapping[str, Any]) -> dict[str, str]:
     return {name: edge[name] for name in fields}
 
 
-def validate_approval(approval: Mapping[str, Any], manifest_sha: str, run_id: str) -> None:
+def validate_approval(
+    approval: Mapping[str, Any], manifest_sha: str, run_id: str
+) -> None:
     fields = {
         "controller_commit",
         "evidence_root",
@@ -169,10 +194,21 @@ def validate_approval(approval: Mapping[str, Any], manifest_sha: str, run_id: st
         "signing_keys",
         "toolchain",
     }
-    _need(set(approval) == fields and approval.get("schema") == APPROVAL_SCHEMA, "invalid approval")
-    _need(approval.get("gate_b_manifest_sha256") == manifest_sha, "approval manifest mismatch")
-    _need(approval.get("run_id") == run_id and RUN_ID.fullmatch(run_id), "invalid run ID")
-    _need(COMMIT.fullmatch(str(approval.get("controller_commit", ""))), "invalid controller")
+    _need(
+        set(approval) == fields and approval.get("schema") == APPROVAL_SCHEMA,
+        "invalid approval",
+    )
+    _need(
+        approval.get("gate_b_manifest_sha256") == manifest_sha,
+        "approval manifest mismatch",
+    )
+    _need(
+        approval.get("run_id") == run_id and RUN_ID.fullmatch(run_id), "invalid run ID"
+    )
+    _need(
+        COMMIT.fullmatch(str(approval.get("controller_commit", ""))),
+        "invalid controller",
+    )
     root = approval.get("evidence_root")
     _need(isinstance(root, str) and Path(root).is_absolute(), "invalid evidence root")
     runner = approval.get("runner")
@@ -183,24 +219,56 @@ def validate_approval(approval: Mapping[str, Any], manifest_sha: str, run_id: st
         "invalid runner approval",
     )
     registry = approval.get("registry")
-    _need(isinstance(registry, dict) and set(registry) == {"namespace", "origin"}, "invalid registry")
+    _need(
+        isinstance(registry, dict) and set(registry) == {"namespace", "origin"},
+        "invalid registry",
+    )
     origin, namespace = registry["origin"], registry["namespace"]
-    _need(isinstance(origin, str) and REGISTRY_ORIGIN.fullmatch(origin), "invalid registry origin")
-    _need(isinstance(namespace, str) and REGISTRY_NAMESPACE.fullmatch(namespace), "invalid namespace")
+    _need(
+        isinstance(origin, str) and REGISTRY_ORIGIN.fullmatch(origin),
+        "invalid registry origin",
+    )
+    _need(
+        isinstance(namespace, str) and REGISTRY_NAMESPACE.fullmatch(namespace),
+        "invalid namespace",
+    )
     suffix = f"rb8-gate-c-edge/{manifest_sha}/{run_id}"
-    _need(namespace == suffix or namespace.endswith("/" + suffix), "namespace is not isolated")
+    _need(
+        namespace == suffix or namespace.endswith("/" + suffix),
+        "namespace is not isolated",
+    )
     keys = approval.get("signing_keys")
-    _need(isinstance(keys, dict) and set(keys) == {"host", "receipt", "software"}, "invalid keys")
-    _need(all(isinstance(value, str) and DIGEST.fullmatch(value) for value in keys.values()), "invalid key digest")
+    _need(
+        isinstance(keys, dict) and set(keys) == {"host", "receipt", "software"},
+        "invalid keys",
+    )
+    _need(
+        all(
+            isinstance(value, str) and DIGEST.fullmatch(value)
+            for value in keys.values()
+        ),
+        "invalid key digest",
+    )
     _need(len(set(keys.values())) == 3, "signing roles are not separated")
     tools = approval.get("toolchain")
-    _need(isinstance(tools, dict) and set(tools) == TOOLCHAIN_FIELDS, "invalid toolchain")
-    _need(tools.get("cosign") == COSIGN_TOOLCHAIN and isinstance(tools.get("trivy"), dict), "invalid scanner/signer")
     _need(
-        re.fullmatch(r"moby/buildkit@sha256:[0-9a-f]{64}", str(tools.get("buildkit_image", ""))),
+        isinstance(tools, dict) and set(tools) == TOOLCHAIN_FIELDS, "invalid toolchain"
+    )
+    _need(
+        tools.get("cosign") == COSIGN_TOOLCHAIN
+        and isinstance(tools.get("trivy"), dict),
+        "invalid scanner/signer",
+    )
+    _need(
+        re.fullmatch(
+            r"moby/buildkit@sha256:[0-9a-f]{64}", str(tools.get("buildkit_image", ""))
+        ),
         "BuildKit image is mutable",
     )
-    _need(str(tools.get("buildkit_version", "")).startswith("v"), "invalid BuildKit version")
+    _need(
+        str(tools.get("buildkit_version", "")).startswith("v"),
+        "invalid BuildKit version",
+    )
     database = tools.get("trivy_db")
     _need(
         isinstance(database, dict)
@@ -210,14 +278,27 @@ def validate_approval(approval: Mapping[str, Any], manifest_sha: str, run_id: st
         and SHA256.fullmatch(str(database.get("package_sha256", ""))),
         "invalid Trivy database",
     )
-    for name in TOOLCHAIN_FIELDS - {"buildkit_image", "buildkit_version", "cosign", "trivy", "trivy_db"}:
-        _need(isinstance(tools.get(name), str) and tools[name], f"empty approved {name}")
+    for name in TOOLCHAIN_FIELDS - {
+        "buildkit_image",
+        "buildkit_version",
+        "cosign",
+        "trivy",
+        "trivy_db",
+    }:
+        _need(
+            isinstance(tools.get(name), str) and tools[name], f"empty approved {name}"
+        )
 
 
 def _git(root: Path, *args: str) -> str:
     try:
         return subprocess.run(
-            ("git", *args), cwd=root, check=True, capture_output=True, text=True, timeout=30
+            ("git", *args),
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
         raise GateCError("Git identity check failed") from exc
@@ -238,7 +319,10 @@ def _archive_sha(root: Path, commit: str) -> str:
         _, stderr = process.communicate(timeout=120)
     except (OSError, subprocess.SubprocessError) as exc:
         raise GateCError("Git archive check failed") from exc
-    _need(process.returncode == 0, f"Git archive failed: {stderr.decode(errors='replace')}")
+    _need(
+        process.returncode == 0,
+        f"Git archive failed: {stderr.decode(errors='replace')}",
+    )
     return digest.hexdigest()
 
 
@@ -251,8 +335,13 @@ def source_identity(root: Path, manifest: Mapping[str, Any]) -> dict[str, str]:
         "parent": _git(root, "rev-parse", "HEAD^"),
         "tree": _git(root, "rev-parse", "HEAD^{tree}"),
     }
-    _need(not _git(root, "status", "--porcelain=v1"), "Gate C source checkout is not clean")
-    _need(actual == {name: edge[name] for name in actual}, "Gate C source is not Gate B")
+    _need(
+        not _git(root, "status", "--porcelain=v1"),
+        "Gate C source checkout is not clean",
+    )
+    _need(
+        actual == {name: edge[name] for name in actual}, "Gate C source is not Gate B"
+    )
     return actual
 
 
@@ -265,9 +354,13 @@ def _run(*command: str) -> str:
         raise GateCError(f"toolchain check failed: {command[0]}") from exc
 
 
-def actual_toolchain(approval: Mapping[str, Any], buildkit: str, metadata_sha: str) -> dict[str, Any]:
+def actual_toolchain(
+    approval: Mapping[str, Any], buildkit: str, metadata_sha: str
+) -> dict[str, Any]:
     _need(SHA256.fullmatch(metadata_sha), "invalid Trivy metadata SHA-256")
-    docker = _run("docker", "version", "--format", "{{.Client.Version}}\\t{{.Server.Version}}").split("\t")
+    docker = _run(
+        "docker", "version", "--format", "{{.Client.Version}}\\t{{.Server.Version}}"
+    ).split("\t")
     _need(len(docker) == 2 and all(docker), "invalid Docker identity")
     _run("bash", str(ROOT / "scripts" / "ci" / "verify-cosign-toolchain.sh"))
     actual_trivy = json.loads(
@@ -295,7 +388,10 @@ def key_identities(evidence: Path, approval: Mapping[str, Any]) -> dict[str, Any
     for role in ("host", "receipt", "software"):
         relative = f"keys/{role}-cosign.pub"
         path = evidence / relative
-        _need(path.is_file() and not path.is_symlink() and path.stat().st_size <= 65536, "invalid public key")
+        _need(
+            path.is_file() and not path.is_symlink() and path.stat().st_size <= 65536,
+            "invalid public key",
+        )
         digest = "sha256:" + _file_sha(path)
         _need(digest == approval["signing_keys"][role], f"unapproved {role} key")
         result[role] = {"path": relative, "sha256": digest}
@@ -304,13 +400,18 @@ def key_identities(evidence: Path, approval: Mapping[str, Any]) -> dict[str, Any
 
 def _bound(evidence: Path, relative: str, label: str) -> tuple[Path, str]:
     path_part = Path(relative)
-    _need(not path_part.is_absolute() and ".." not in path_part.parts, f"unsafe {label} path")
+    _need(
+        not path_part.is_absolute() and ".." not in path_part.parts,
+        f"unsafe {label} path",
+    )
     path = evidence / path_part
     _need(path.is_file() and not path.is_symlink(), f"missing {label}")
     return path, "sha256:" + _file_sha(path)
 
 
-def artifact_inventory(evidence: Path, approval: Mapping[str, Any], keys: Mapping[str, Any]) -> list[dict[str, Any]]:
+def artifact_inventory(
+    evidence: Path, approval: Mapping[str, Any], keys: Mapping[str, Any]
+) -> list[dict[str, Any]]:
     path = evidence / "artifacts.tsv"
     _need(path.is_file() and not path.is_symlink(), "artifact inventory is missing")
     prefix = f"{approval['registry']['origin']}/{approval['registry']['namespace']}/"
@@ -320,12 +421,30 @@ def artifact_inventory(evidence: Path, approval: Mapping[str, Any], keys: Mappin
         _need(len(fields) == 7, "artifact inventory row is invalid")
         role, name, reference, image_id, scan_rel, signature_rel, base_rel = fields
         _need(role in {"host", "software"}, "invalid artifact role")
-        _need((role, name) == ("host", "host-bundle") or (role == "software" and name in SERVICES), "invalid artifact name")
-        _need(reference.startswith(f"{prefix}{name}@") and DIGEST.fullmatch(reference.rsplit("@", 1)[1]), "mutable artifact")
+        _need(
+            (role, name) == ("host", "host-bundle")
+            or (role == "software" and name in SERVICES),
+            "invalid artifact name",
+        )
+        repository, separator, manifest_digest = reference.rpartition("@")
+        _need(
+            separator == "@"
+            and repository == f"{prefix}{name}"
+            and DIGEST.fullmatch(manifest_digest),
+            "mutable artifact",
+        )
         _need(DIGEST.fullmatch(image_id), "invalid image ID")
         scan_path, scan_sha = _bound(evidence, scan_rel, "scan evidence")
         scan = _read(scan_path, "scan evidence", canonical=False)
-        for result in scan.get("Results") or []:
+        _need(
+            scan.get("ArtifactID") == image_id
+            and scan.get("ArtifactName") == image_id
+            and scan.get("ArtifactType") == "container_image",
+            "scan identity is not bound to artifact",
+        )
+        results = scan.get("Results")
+        _need(isinstance(results, list) and results, "scan results are missing")
+        for result in results:
             _need(isinstance(result, dict), "invalid scan result")
             findings = result.get("Vulnerabilities") or []
             _need(
@@ -333,9 +452,34 @@ def artifact_inventory(evidence: Path, approval: Mapping[str, Any], keys: Mappin
                 and all(isinstance(item, dict) for item in findings),
                 "invalid scan findings",
             )
-            _need(not any(item.get("Severity") in {"HIGH", "CRITICAL"} for item in findings), "scan failed")
-        signature_path, signature_sha = _bound(evidence, signature_rel, "signature evidence")
-        _need(signature_path.stat().st_size > 0, "empty signature evidence")
+            _need(
+                not any(
+                    item.get("Severity") in {"HIGH", "CRITICAL"} for item in findings
+                ),
+                "scan failed",
+            )
+        signature_path, signature_sha = _bound(
+            evidence, signature_rel, "signature evidence"
+        )
+        signatures = _read_json_value(signature_path, "signature evidence")
+        _need(
+            isinstance(signatures, list) and signatures,
+            "signature evidence is invalid",
+        )
+        for verification in signatures:
+            _need(isinstance(verification, dict), "signature evidence is invalid")
+            critical = verification.get("critical")
+            identity = critical.get("identity") if isinstance(critical, dict) else None
+            image = critical.get("image") if isinstance(critical, dict) else None
+            _need(
+                isinstance(critical, dict)
+                and critical.get("type") == "cosign container image signature"
+                and isinstance(identity, dict)
+                and identity.get("docker-reference") == repository
+                and isinstance(image, dict)
+                and image.get("docker-manifest-digest") == manifest_digest,
+                "signature identity is not bound to artifact",
+            )
         base: dict[str, str] | None = None
         if role == "software" and name in PYTHON_SERVICES:
             _need(base_rel != "-", "Python base evidence is missing")
@@ -358,7 +502,11 @@ def artifact_inventory(evidence: Path, approval: Mapping[str, Any], keys: Mappin
                 "name": name,
                 "reference": reference,
                 "role": role,
-                "scan": {"evidence": scan_rel, "evidence_sha256": scan_sha, "high_critical_exit_code": 0},
+                "scan": {
+                    "evidence": scan_rel,
+                    "evidence_sha256": scan_sha,
+                    "high_critical_exit_code": 0,
+                },
                 "signature": {
                     "evidence": signature_rel,
                     "evidence_sha256": signature_sha,
@@ -367,8 +515,15 @@ def artifact_inventory(evidence: Path, approval: Mapping[str, Any], keys: Mappin
                 },
             }
         )
-    expected = {("host", "host-bundle"), *(("software", service) for service in SERVICES)}
-    _need(len(records) == len(expected) and {(r["role"], r["name"]) for r in records} == expected, "incomplete artifacts")
+    expected = {
+        ("host", "host-bundle"),
+        *(("software", service) for service in SERVICES),
+    }
+    _need(
+        len(records) == len(expected)
+        and {(r["role"], r["name"]) for r in records} == expected,
+        "incomplete artifacts",
+    )
     return sorted(records, key=lambda item: (item["role"], item["name"]))
 
 
@@ -376,13 +531,23 @@ def prepare(environ: Mapping[str, str]) -> tuple[Path, str]:
     manifest_sha = environ.get("GATE_B_MANIFEST_SHA256", "")
     approval_sha = environ.get("GATE_C_APPROVAL_SHA256", "")
     run_id = environ.get("GATE_C_RUN_ID", "")
-    _need(SHA256.fullmatch(manifest_sha) and SHA256.fullmatch(approval_sha), "invalid input hash")
+    _need(
+        SHA256.fullmatch(manifest_sha) and SHA256.fullmatch(approval_sha),
+        "invalid input hash",
+    )
     try:
-        manifest_raw = base64.b64decode(environ.get("GATE_B_MANIFEST_BASE64", ""), validate=True)
-        approval_raw = base64.b64decode(environ.get("GATE_C_APPROVAL_BASE64", ""), validate=True)
+        manifest_raw = base64.b64decode(
+            environ.get("GATE_B_MANIFEST_BASE64", ""), validate=True
+        )
+        approval_raw = base64.b64decode(
+            environ.get("GATE_C_APPROVAL_BASE64", ""), validate=True
+        )
     except (binascii.Error, ValueError) as exc:
         raise GateCError("input is not strict base64") from exc
-    _need(_sha(manifest_raw) == manifest_sha and _sha(approval_raw) == approval_sha, "input hash mismatch")
+    _need(
+        _sha(manifest_raw) == manifest_sha and _sha(approval_raw) == approval_sha,
+        "input hash mismatch",
+    )
     manifest = parse_canonical(manifest_raw, "Gate B manifest")
     approval = parse_canonical(approval_raw, "Gate C approval")
     edge = validate_manifest(manifest)
@@ -392,15 +557,27 @@ def prepare(environ: Mapping[str, str]) -> tuple[Path, str]:
     root = Path(root_raw)
     _need(root.is_dir() and not root.is_symlink(), "evidence root is unavailable")
     controller = Path(environ.get("GATE_C_CONTROLLER_ROOT", "")).resolve(strict=True)
-    _need(_git(controller, "rev-parse", "HEAD") == approval["controller_commit"], "unapproved controller")
+    _need(
+        _git(controller, "rev-parse", "HEAD") == approval["controller_commit"],
+        "unapproved controller",
+    )
     _need(not _git(controller, "status", "--porcelain=v1"), "dirty controller")
-    runner = {name: environ.get(f"RUNNER_{name.upper()}", "") for name in ("arch", "name", "os")}
+    runner = {
+        name: environ.get(f"RUNNER_{name.upper()}", "")
+        for name in ("arch", "name", "os")
+    }
     _need(runner == approval["runner"], "unapproved runner")
-    _need(environ.get("HARBOR_HOST") == approval["registry"]["origin"], "unapproved registry")
+    _need(
+        environ.get("HARBOR_HOST") == approval["registry"]["origin"],
+        "unapproved registry",
+    )
     workflow_run = environ.get("GATE_C_WORKFLOW_RUN_ID", "")
     _need(workflow_run, "missing workflow run identity")
     evidence = root.resolve(strict=True) / manifest_sha / run_id
-    _need(not evidence.exists() and not evidence.is_symlink(), "run namespace already exists")
+    _need(
+        not evidence.exists() and not evidence.is_symlink(),
+        "run namespace already exists",
+    )
     (evidence / "inputs").mkdir(parents=True, mode=0o700)
     (evidence / "inputs" / "integration-manifest.json").write_bytes(manifest_raw)
     (evidence / "inputs" / "gate-c-approval.json").write_bytes(approval_raw)
@@ -422,18 +599,26 @@ def prepare(environ: Mapping[str, str]) -> tuple[Path, str]:
     return evidence, edge["commit"]
 
 
-def build_receipt(evidence: Path, source_root: Path, buildkit: str, metadata_sha: str) -> dict[str, Any]:
+def build_receipt(
+    evidence: Path, source_root: Path, buildkit: str, metadata_sha: str
+) -> dict[str, Any]:
     manifest_path = evidence / "inputs" / "integration-manifest.json"
     approval_path = evidence / "inputs" / "gate-c-approval.json"
     manifest = _read(manifest_path, "Gate B manifest")
     approval = _read(approval_path, "Gate C approval")
     prepared = _read(evidence / "prepared.json", "preparation")
-    _need(_file_sha(manifest_path) == prepared.get("gate_b_manifest_sha256"), "manifest drift")
+    _need(
+        _file_sha(manifest_path) == prepared.get("gate_b_manifest_sha256"),
+        "manifest drift",
+    )
     _need(_file_sha(approval_path) == prepared.get("approval_sha256"), "approval drift")
     validate_approval(approval, prepared["gate_b_manifest_sha256"], prepared["run_id"])
     source = source_identity(source_root, manifest)
     _need(source["commit"] == prepared.get("source_commit"), "source drift")
-    runner = {name: os.environ.get(f"RUNNER_{name.upper()}", "") for name in ("arch", "name", "os")}
+    runner = {
+        name: os.environ.get(f"RUNNER_{name.upper()}", "")
+        for name in ("arch", "name", "os")
+    }
     _need(runner == approval["runner"], "runner drift")
     tools = actual_toolchain(approval, buildkit, metadata_sha)
     _need(tools == approval["toolchain"], "toolchain drift")
@@ -457,9 +642,17 @@ def build_receipt(evidence: Path, source_root: Path, buildkit: str, metadata_sha
         "artifacts": artifacts,
         "cleanup": cleanup,
         "controller": {"commit": prepared["controller_commit"]},
-        "forbidden_mutations": {"cloud_api": False, "deploy": False, "gitea_handoff": False, "gitea_release": False},
+        "forbidden_mutations": {
+            "cloud_api": False,
+            "deploy": False,
+            "gitea_handoff": False,
+            "gitea_release": False,
+        },
         "gate": "C",
-        "gate_b": {"manifest_sha256": prepared["gate_b_manifest_sha256"], "schema": MANIFEST_SCHEMA},
+        "gate_b": {
+            "manifest_sha256": prepared["gate_b_manifest_sha256"],
+            "schema": MANIFEST_SCHEMA,
+        },
         "lane": "edge",
         "run": {
             "id": prepared["run_id"],
@@ -477,11 +670,17 @@ def build_receipt(evidence: Path, source_root: Path, buildkit: str, metadata_sha
     }
 
 
-def write_failure(evidence: Path, step: str, exit_code: int, cleanup: Path | None) -> None:
+def write_failure(
+    evidence: Path, step: str, exit_code: int, cleanup: Path | None
+) -> None:
     path = evidence / "failure.json"
     if path.exists():
         return
-    prepared = _read(evidence / "prepared.json", "preparation") if (evidence / "prepared.json").is_file() else None
+    prepared = (
+        _read(evidence / "prepared.json", "preparation")
+        if (evidence / "prepared.json").is_file()
+        else None
+    )
     cleanup_value = _read(cleanup, "cleanup") if cleanup and cleanup.is_file() else None
     _write_new(
         path,
@@ -500,7 +699,12 @@ def preserve_prepare_failure(environ: Mapping[str, str]) -> None:
     manifest_sha = environ.get("GATE_B_MANIFEST_SHA256", "")
     run_id = environ.get("GATE_C_RUN_ID", "")
     root = Path(environ.get("GATE_C_EVIDENCE_ROOT", ""))
-    if not (SHA256.fullmatch(manifest_sha) and RUN_ID.fullmatch(run_id) and root.is_dir() and not root.is_symlink()):
+    if not (
+        SHA256.fullmatch(manifest_sha)
+        and RUN_ID.fullmatch(run_id)
+        and root.is_dir()
+        and not root.is_symlink()
+    ):
         return
     evidence = root.resolve(strict=True) / manifest_sha / run_id
     if evidence.is_dir() and (evidence / "prepared.json").is_file():

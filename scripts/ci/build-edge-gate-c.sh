@@ -233,11 +233,38 @@ release_dockerfile_for() {
     release-dockerfile "$1" 2>/dev/null
 }
 
+manifest_not_found() {
+  local target="$1"
+  local inspect_rc="$2"
+  local inspect_error="$3"
+  [[ "${inspect_rc}" -eq 1 ]] || return 1
+  case "${inspect_error}" in
+    "no such manifest: ${target}" | "manifest unknown" | "manifest unknown: manifest unknown")
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 assert_fresh_remote_target() {
-  if docker manifest inspect "$1" >/dev/null 2>&1; then
-    echo "Gate C target already exists; predecessor/resume is forbidden: $1" >&2
+  local target="$1"
+  local inspect_error inspect_rc
+  if [[ ! -f "${DOCKER_CONFIG}/config.json" || -L "${DOCKER_CONFIG}/config.json" ]]; then
+    echo "Gate C authenticated Registry configuration is unavailable" >&2
     return 1
   fi
+  if inspect_error="$(docker manifest inspect "${target}" 2>&1 >/dev/null)"; then
+    echo "Gate C target already exists; predecessor/resume is forbidden: ${target}" >&2
+    return 1
+  else
+    inspect_rc="$?"
+  fi
+  if manifest_not_found "${target}" "${inspect_rc}" "${inspect_error}"; then
+    return 0
+  fi
+  printf 'Gate C cannot prove remote target absence (docker rc=%s): %s\n' \
+    "${inspect_rc}" "${inspect_error}" >&2
+  return 1
 }
 
 portable_image_id() {
@@ -359,11 +386,12 @@ for service in "${SERVICES[@]}"; do
       --tag "${target}" \
       "${GATE_C_SOURCE_ROOT}"
   fi
-  failure_step="software_${service}_scan"
-  scan_path="${GATE_C_EVIDENCE_DIR}/scans/${service}.trivy.json"
-  scan_image "${target}" "${scan_path}"
+  failure_step="software_${service}_image_identity"
   image_id="$(portable_image_id "${target}")"
   [[ "${image_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
+  failure_step="software_${service}_scan"
+  scan_path="${GATE_C_EVIDENCE_DIR}/scans/${service}.trivy.json"
+  scan_image "${image_id}" "${scan_path}"
   base_evidence=""
   case "${service}" in
     ai-ctrl-optimizer|ai-softsensor|edge-api|edge-daq|edge-monitor|license-service)
@@ -410,10 +438,10 @@ fi
 LOCAL_IMAGES+=("${host_target}")
 failure_step="host_build_scan"
 docker import --platform linux/amd64 "${work_dir}/host-bundle.tar" "${host_target}" >/dev/null
-host_scan="${GATE_C_EVIDENCE_DIR}/scans/host-bundle.trivy.json"
-scan_image "${host_target}" "${host_scan}"
 host_image_id="$(portable_image_id "${host_target}")"
 [[ "${host_image_id}" =~ ^sha256:[0-9a-f]{64}$ ]]
+host_scan="${GATE_C_EVIDENCE_DIR}/scans/host-bundle.trivy.json"
+scan_image "${host_image_id}" "${host_scan}"
 failure_step="host_push_sign"
 sign_and_record host host-bundle "${host_target}" "${host_image_id}" "${host_scan}" ""
 
