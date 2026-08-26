@@ -1,3 +1,4 @@
+import base64
 import json
 import time
 
@@ -108,6 +109,68 @@ async def test_persisted_influx_requires_latest_quality_schema(monkeypatch, tmp_
     await pub._flush_influx_buffer()
     assert not pub.influx_buffer
     assert len(pub.write_api.records) == 1
+
+
+@pytest.mark.parametrize(
+    ("buffer_type", "invalid_line", "valid_entry"),
+    [
+        (
+            "mqtt",
+            b'{"topic":"t","data":{"label":"\xe4\xb8',
+            {"topic": "valid", "data": {"value": 1}, "qos": 1, "ts": 2},
+        ),
+        (
+            "influx",
+            b'{"tag":"\xe4\xb8',
+            {
+                "tag": "valid",
+                "value": 2.0,
+                "unit": "C",
+                "quality": "good",
+                "ts_ns": 2,
+            },
+        ),
+    ],
+)
+def test_persisted_buffer_invalid_utf8_deadletters_raw_line(
+    monkeypatch, tmp_path, buffer_type, invalid_line, valid_entry
+):
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
+    buffer_file = tmp_path / f"{buffer_type}_buffer.jsonl"
+    buffer_file.write_bytes(json.dumps(valid_entry).encode("utf-8") + b"\n" + invalid_line)
+
+    pub = DataPublisher()
+
+    assert list(getattr(pub, f"{buffer_type}_buffer")) == [valid_entry]
+    dead_letter_file = getattr(pub, f"{buffer_type}_dead_letter")
+    dead_letters = [
+        json.loads(line) for line in dead_letter_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert dead_letters == [
+        {
+            "reason": "invalid_persisted_buffer_utf8",
+            "raw_line_base64": base64.b64encode(invalid_line).decode("ascii"),
+        }
+    ]
+    assert base64.b64decode(dead_letters[0]["raw_line_base64"], validate=True) == invalid_line
+
+
+@pytest.mark.parametrize("buffer_type", ["mqtt", "influx"])
+def test_persisted_buffer_deadletter_failure_is_fail_closed(monkeypatch, tmp_path, buffer_type):
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    dead_letter_dir = tmp_path / "deadletter"
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(dead_letter_dir))
+    dead_letter_dir.mkdir()
+    (dead_letter_dir / f"{buffer_type}_deadletter.jsonl").mkdir()
+    invalid_line = b'{"label":"\xe4\xb8'
+    buffer_file = tmp_path / f"{buffer_type}_buffer.jsonl"
+    buffer_file.write_bytes(invalid_line)
+
+    with pytest.raises(RuntimeError, match="dead-letter persistence failed"):
+        DataPublisher()
+
+    assert buffer_file.read_bytes() == invalid_line
 
 
 @pytest.mark.asyncio

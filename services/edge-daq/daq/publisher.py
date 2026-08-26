@@ -23,6 +23,7 @@
 """
 
 import asyncio
+import base64
 import json
 import os
 import time
@@ -981,9 +982,19 @@ class DataPublisher:
             if not path.exists():
                 return
             try:
-                with path.open("r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
+                with path.open("rb") as f:
+                    for raw_line in f:
+                        try:
+                            line = raw_line.decode("utf-8").strip()
+                        except UnicodeDecodeError:
+                            self._dead_letter(
+                                dead_letter,
+                                {
+                                    "reason": "invalid_persisted_buffer_utf8",
+                                    "raw_line_base64": base64.b64encode(raw_line).decode("ascii"),
+                                },
+                            )
+                            continue
                         if not line:
                             continue
                         try:
@@ -1047,12 +1058,16 @@ class DataPublisher:
         try:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
             if "mqtt" in path.name:
                 BUFFER_DEADLETTER_TOTAL.labels("mqtt").inc()
             else:
                 BUFFER_DEADLETTER_TOTAL.labels("influx").inc()
         except (OSError, TypeError, ValueError) as e:
-            logger.warning("dead_letter_write_failed", path=str(path), error=str(e))
+            self.last_buffer_error = f"dead_letter_write_failed: {e}"
+            logger.error("dead_letter_write_failed", path=str(path), error=str(e))
+            raise RuntimeError(f"dead-letter persistence failed: {path}") from e
 
     def _check_buffer_thresholds(self):
         """缓冲水位预警，便于监控接入报警。"""
