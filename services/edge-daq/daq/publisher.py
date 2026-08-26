@@ -1001,6 +1001,13 @@ class DataPublisher:
                             if len(target) > maxlen:
                                 target.popleft()
                         except (json.JSONDecodeError, TypeError):
+                            self._dead_letter(
+                                dead_letter,
+                                {
+                                    "reason": "invalid_persisted_buffer_json",
+                                    "entry": line,
+                                },
+                            )
                             continue
             except OSError as e:
                 logger.warning("buffer_load_failed", path=str(path), error=str(e))

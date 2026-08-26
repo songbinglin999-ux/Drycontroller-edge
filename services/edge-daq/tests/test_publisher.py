@@ -87,8 +87,9 @@ async def test_persisted_influx_requires_latest_quality_schema(monkeypatch, tmp_
         "ts_ns": time.time_ns(),
     }
     legacy = {"tag": "legacy", "value": 1.0, "unit": "A", "ts_ns": time.time_ns()}
+    malformed = '{"tag":"torn"'
     (tmp_path / "influx_buffer.jsonl").write_text(
-        f"{json.dumps(legacy)}\n{json.dumps(valid)}\n",
+        f"{json.dumps(legacy)}\n{malformed}\n{json.dumps(valid)}\n",
         encoding="utf-8",
     )
 
@@ -101,7 +102,8 @@ async def test_persisted_influx_requires_latest_quality_schema(monkeypatch, tmp_
         for line in pub.influx_dead_letter.read_text(encoding="utf-8").splitlines()
     ]
     assert dead_letters == [
-        {"reason": "invalid_persisted_buffer_schema", "entry": legacy}
+        {"reason": "invalid_persisted_buffer_schema", "entry": legacy},
+        {"reason": "invalid_persisted_buffer_json", "entry": malformed},
     ]
     await pub._flush_influx_buffer()
     assert not pub.influx_buffer
