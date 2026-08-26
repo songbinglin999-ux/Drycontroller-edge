@@ -119,6 +119,7 @@ for path in \
   scripts/manage-license-trust.py \
   scripts/manage-license-transaction.py \
   common/license_verifier.py \
+  infra/ota-helper/release_security_contract.py \
   infra/bootstrap/installer_public_config.py \
   infra/bootstrap/tailscale_client_lock.py \
   scripts/ci/assert-fresh-install-data-plane.sh \

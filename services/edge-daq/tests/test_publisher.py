@@ -1,3 +1,4 @@
+import json
 import time
 
 import pytest
@@ -72,6 +73,39 @@ async def test_influx_buffer_persist_and_flush(monkeypatch, tmp_path):
     await pub._flush_influx_buffer()
     assert len(pub.influx_buffer) == 0
     assert len(fake_write.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_persisted_influx_requires_latest_quality_schema(monkeypatch, tmp_path):
+    monkeypatch.setenv("BUFFER_DIR", str(tmp_path))
+    monkeypatch.setenv("DEAD_LETTER_DIR", str(tmp_path / "deadletter"))
+    valid = {
+        "tag": "current",
+        "value": 2.0,
+        "unit": "A",
+        "quality": "good",
+        "ts_ns": time.time_ns(),
+    }
+    legacy = {"tag": "legacy", "value": 1.0, "unit": "A", "ts_ns": time.time_ns()}
+    (tmp_path / "influx_buffer.jsonl").write_text(
+        f"{json.dumps(legacy)}\n{json.dumps(valid)}\n",
+        encoding="utf-8",
+    )
+
+    pub = DataPublisher()
+    pub.write_api = FakeWriteAPI()
+
+    assert list(pub.influx_buffer) == [valid]
+    dead_letters = [
+        json.loads(line)
+        for line in pub.influx_dead_letter.read_text(encoding="utf-8").splitlines()
+    ]
+    assert dead_letters == [
+        {"reason": "invalid_persisted_buffer_schema", "entry": legacy}
+    ]
+    await pub._flush_influx_buffer()
+    assert not pub.influx_buffer
+    assert len(pub.write_api.records) == 1
 
 
 @pytest.mark.asyncio

@@ -309,6 +309,9 @@ def test_root_release_runtime_is_disconnected_from_edge_api_writable_docker_conf
 
 def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata():
     builder = (ROOT / "tools" / "build-bundle-images.sh").read_text(encoding="utf-8")
+    installer = (ROOT / "infra" / "bootstrap" / "install-edge-host.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert 'git archive --format=tar.gz --output="$BUNDLE" HEAD -- "${SOURCE_BUNDLE_PATHS[@]}"' in builder
     for required in (
@@ -326,6 +329,9 @@ def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata
         "services/device-identity/identity_service",
     ):
         assert required in builder
+    for runtime_source in _static_installer().RUNTIME_FILES:
+        assert runtime_source in builder
+        assert runtime_source in installer
     assert "tar -czf" not in builder
     assert 'python3 scripts/validate-source-bundle.py "$BUNDLE"' in builder
     assert "source bundle contains forbidden macOS metadata" in builder

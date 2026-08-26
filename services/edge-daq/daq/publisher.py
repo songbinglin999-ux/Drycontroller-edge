@@ -948,7 +948,36 @@ class DataPublisher:
 
     def _load_persisted_buffers(self):
         """启动时加载持久化缓冲。"""
-        def load_file(path: Path, target: deque, maxlen: int):
+        def valid_mqtt(entry: object) -> bool:
+            return (
+                isinstance(entry, dict)
+                and set(entry) == {"topic", "data", "qos", "ts"}
+                and isinstance(entry["topic"], str)
+                and bool(entry["topic"])
+                and isinstance(entry["data"], dict)
+                and isinstance(entry["qos"], int)
+                and not isinstance(entry["qos"], bool)
+                and entry["qos"] in {0, 1, 2}
+                and isinstance(entry["ts"], (int, float))
+                and not isinstance(entry["ts"], bool)
+            )
+
+        def valid_influx(entry: object) -> bool:
+            return (
+                isinstance(entry, dict)
+                and set(entry) == {"tag", "value", "unit", "quality", "ts_ns"}
+                and isinstance(entry["tag"], str)
+                and bool(entry["tag"])
+                and isinstance(entry["value"], (int, float))
+                and not isinstance(entry["value"], bool)
+                and isinstance(entry["unit"], str)
+                and isinstance(entry["quality"], str)
+                and bool(entry["quality"])
+                and isinstance(entry["ts_ns"], int)
+                and not isinstance(entry["ts_ns"], bool)
+            )
+
+        def load_file(path: Path, target: deque, maxlen: int, validator, dead_letter: Path):
             if not path.exists():
                 return
             try:
@@ -959,6 +988,15 @@ class DataPublisher:
                             continue
                         try:
                             obj = json.loads(line)
+                            if not validator(obj):
+                                self._dead_letter(
+                                    dead_letter,
+                                    {
+                                        "reason": "invalid_persisted_buffer_schema",
+                                        "entry": obj,
+                                    },
+                                )
+                                continue
                             target.append(obj)
                             if len(target) > maxlen:
                                 target.popleft()
@@ -966,8 +1004,20 @@ class DataPublisher:
                             continue
             except OSError as e:
                 logger.warning("buffer_load_failed", path=str(path), error=str(e))
-        load_file(self.mqtt_buffer_file, self.mqtt_buffer, self.mqtt_buffer.maxlen)
-        load_file(self.influx_buffer_file, self.influx_buffer, self.influx_buffer.maxlen)
+        load_file(
+            self.mqtt_buffer_file,
+            self.mqtt_buffer,
+            self.mqtt_buffer.maxlen,
+            valid_mqtt,
+            self.mqtt_dead_letter,
+        )
+        load_file(
+            self.influx_buffer_file,
+            self.influx_buffer,
+            self.influx_buffer.maxlen,
+            valid_influx,
+            self.influx_dead_letter,
+        )
         MQTT_BUFFER_SIZE.set(len(self.mqtt_buffer))
         INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
         self._update_buffer_age_metrics()

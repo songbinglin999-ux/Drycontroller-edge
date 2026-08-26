@@ -33,6 +33,7 @@ SOURCE_BUNDLE_PATHS=(
   scripts/manage-license-transaction.py
   common/license_verifier.py
   common/tailscale_status.py
+  infra/ota-helper/release_security_contract.py
   infra/bootstrap/drycontroller-factory-identity.service
   infra/bootstrap/drycontroller-device-credential-rotation.service
   infra/bootstrap/drycontroller-device-credential-rotation.timer
