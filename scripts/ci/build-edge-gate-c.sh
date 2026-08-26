@@ -233,6 +233,55 @@ release_dockerfile_for() {
     release-dockerfile "$1" 2>/dev/null
 }
 
+validate_registry_auth_config() {
+  local config="${DOCKER_CONFIG}/config.json"
+  [[ -f "${config}" && ! -L "${config}" ]] || return 1
+  python3 - "${config}" <<'PY'
+import base64
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+host = os.environ.get("HARBOR_HOST", "")
+user = os.environ.get("HARBOR_USER", "")
+password = os.environ.get("HARBOR_PASSWORD", "")
+expected = base64.b64encode(f"{user}:{password}".encode()).decode()
+auths = value.get("auths") if isinstance(value, dict) else None
+entry = auths.get(host) if isinstance(auths, dict) else None
+if not host or not user or not password or not isinstance(entry, dict) or entry.get("auth") != expected:
+    raise SystemExit(1)
+PY
+}
+
+authenticate_registry_context() {
+  local login_error login_rc
+  if ! validate_registry_auth_config; then
+    echo "Gate C Docker auth does not bind the approved Registry credentials" >&2
+    return 1
+  fi
+  if login_error="$(
+    printf '%s' "${HARBOR_PASSWORD}" \
+      | docker login \
+        --username "${HARBOR_USER}" \
+        --password-stdin \
+        "${HARBOR_HOST}" \
+        2>&1 >/dev/null
+  )"; then
+    return 0
+  else
+    login_rc="$?"
+  fi
+  printf 'Gate C Registry authentication failed (docker rc=%s): %s\n' \
+    "${login_rc}" "${login_error}" >&2
+  return 1
+}
+
 manifest_not_found() {
   local target="$1"
   local inspect_rc="$2"
@@ -249,8 +298,8 @@ manifest_not_found() {
 assert_fresh_remote_target() {
   local target="$1"
   local inspect_error inspect_rc
-  if [[ ! -f "${DOCKER_CONFIG}/config.json" || -L "${DOCKER_CONFIG}/config.json" ]]; then
-    echo "Gate C authenticated Registry configuration is unavailable" >&2
+  if [[ "${target}" != "${HARBOR_HOST}/${registry_namespace}/"*":gate-c" ]]; then
+    echo "Gate C target is outside the approved Registry namespace: ${target}" >&2
     return 1
   fi
   if inspect_error="$(docker manifest inspect "${target}" 2>&1 >/dev/null)"; then
@@ -348,6 +397,9 @@ sign_and_record() {
     "${scan_relative}" "${verification_relative}" "${base_relative}" \
     >> "${GATE_C_EVIDENCE_DIR}/artifacts.tsv"
 }
+
+failure_step="registry_read_authority"
+authenticate_registry_context
 
 for service in "${SERVICES[@]}"; do
   failure_step="software_${service}_fresh_target"

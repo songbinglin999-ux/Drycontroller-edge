@@ -308,10 +308,19 @@ def test_artifact_inventory_binds_trivy_and_cosign_identity(
 
 
 def _mock_freshness_probe(
-    tmp_path: Path, *, returncode: int, stderr: str, authenticated: bool = True
+    tmp_path: Path,
+    *,
+    returncode: int,
+    stderr: str,
+    login_returncode: int = 0,
+    login_stderr: str = "",
+    docker_config_json: str | None = (
+        '{"auths":{"registry.example.test:5443":{"auth":"dGVzdDp0ZXN0"}}}'
+    ),
+    target: str = "registry.example.test:5443/dry/gate-c/edge-api:gate-c",
 ) -> subprocess.CompletedProcess[str]:
     script = BUILD.read_text(encoding="utf-8")
-    start = script.index("manifest_not_found() {")
+    start = script.index("validate_registry_auth_config() {")
     end = script.index("\nportable_image_id() {", start)
     functions = script[start:end]
     binary_dir = tmp_path / "bin"
@@ -319,31 +328,51 @@ def _mock_freshness_probe(
     docker = binary_dir / "docker"
     docker.write_text(
         "#!/usr/bin/env bash\n"
-        "printf '%s' \"${MOCK_DOCKER_STDERR}\" >&2\n"
-        'exit "${MOCK_DOCKER_RETURNCODE}"\n',
+        'printf \'%s\\n\' "$*" >> "${MOCK_DOCKER_CALLS}"\n'
+        'case "$1" in\n'
+        "  login)\n"
+        "    cat >/dev/null\n"
+        "    printf '%s' \"${MOCK_LOGIN_STDERR}\" >&2\n"
+        '    exit "${MOCK_LOGIN_RETURNCODE}"\n'
+        "    ;;\n"
+        "  manifest)\n"
+        "    printf '%s' \"${MOCK_DOCKER_STDERR}\" >&2\n"
+        '    exit "${MOCK_DOCKER_RETURNCODE}"\n'
+        "    ;;\n"
+        "esac\n"
+        "exit 99\n",
         encoding="utf-8",
     )
     docker.chmod(0o700)
     docker_config = tmp_path / "docker-config"
     docker_config.mkdir()
-    if authenticated:
+    if docker_config_json is not None:
         (docker_config / "config.json").write_text(
-            '{"auths":{"registry.example.test:5443":{"auth":"dGVzdDp0ZXN0"}}}',
+            docker_config_json,
             encoding="utf-8",
         )
     environment = {
         **os.environ,
         "DOCKER_CONFIG": str(docker_config),
+        "HARBOR_HOST": "registry.example.test:5443",
+        "HARBOR_PASSWORD": "test",
+        "HARBOR_USER": "test",
+        "MOCK_DOCKER_CALLS": str(tmp_path / "docker-calls.log"),
         "MOCK_DOCKER_RETURNCODE": str(returncode),
         "MOCK_DOCKER_STDERR": stderr,
+        "MOCK_LOGIN_RETURNCODE": str(login_returncode),
+        "MOCK_LOGIN_STDERR": login_stderr,
         "PATH": f"{binary_dir}:{os.environ['PATH']}",
     }
-    target = "registry.example.test:5443/dry/gate-c/edge-api:gate-c"
     return subprocess.run(
         (
             "bash",
             "-c",
-            f'set -u\n{functions}\nassert_fresh_remote_target "$1"',
+            (
+                f"set -euo pipefail\n{functions}\n"
+                'registry_namespace="dry/gate-c"\n'
+                'authenticate_registry_context\nassert_fresh_remote_target "$1"'
+            ),
             "gate-c-freshness-test",
             target,
         ),
@@ -364,6 +393,7 @@ def _mock_freshness_probe(
         (1, "manifest unknown: manifest unknown", True),
         (0, "", False),
         (1, "unauthorized: authentication required", False),
+        (1, "denied: requested access to the resource is denied", False),
         (1, "dial tcp 127.0.0.1:5443: connect: connection refused", False),
         (1, "Client.Timeout exceeded while awaiting headers", False),
         (1, "received unexpected HTTP status: 503 Service Unavailable", False),
@@ -376,6 +406,13 @@ def test_freshness_probe_only_accepts_explicit_not_found(
 ):
     result = _mock_freshness_probe(tmp_path, returncode=returncode, stderr=stderr)
     assert (result.returncode == 0) is accepted
+    if accepted:
+        assert (tmp_path / "docker-calls.log").read_text(
+            encoding="utf-8"
+        ).splitlines() == [
+            "login --username test --password-stdin registry.example.test:5443",
+            "manifest inspect registry.example.test:5443/dry/gate-c/edge-api:gate-c",
+        ]
 
 
 def test_freshness_probe_requires_authenticated_config(tmp_path: Path):
@@ -383,10 +420,70 @@ def test_freshness_probe_requires_authenticated_config(tmp_path: Path):
         tmp_path,
         returncode=1,
         stderr="manifest unknown: manifest unknown",
-        authenticated=False,
+        docker_config_json=None,
     )
     assert result.returncode != 0
-    assert "authenticated Registry configuration is unavailable" in result.stderr
+    assert (
+        "Docker auth does not bind the approved Registry credentials" in result.stderr
+    )
+
+
+def test_freshness_probe_rejects_empty_auths(tmp_path: Path):
+    result = _mock_freshness_probe(
+        tmp_path,
+        returncode=1,
+        stderr="manifest unknown: manifest unknown",
+        docker_config_json='{"auths":{}}',
+    )
+    assert result.returncode != 0
+
+
+def test_freshness_probe_rejects_wrong_registry_origin(tmp_path: Path):
+    result = _mock_freshness_probe(
+        tmp_path,
+        returncode=1,
+        stderr="manifest unknown: manifest unknown",
+        docker_config_json=(
+            '{"auths":{"registry.other.test:5443":{"auth":"dGVzdDp0ZXN0"}}}'
+        ),
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "docker-calls.log").exists()
+
+
+@pytest.mark.parametrize(
+    "login_stderr",
+    (
+        "unauthorized: incorrect username or password",
+        "unauthorized: credential expired",
+    ),
+)
+def test_freshness_probe_rejects_invalid_or_expired_credentials(
+    tmp_path: Path, login_stderr: str
+):
+    result = _mock_freshness_probe(
+        tmp_path,
+        returncode=1,
+        stderr="manifest unknown: manifest unknown",
+        login_returncode=1,
+        login_stderr=login_stderr,
+    )
+    assert result.returncode != 0
+    assert "Registry authentication failed" in result.stderr
+    assert (tmp_path / "docker-calls.log").read_text(encoding="utf-8").splitlines() == [
+        "login --username test --password-stdin registry.example.test:5443"
+    ]
+
+
+def test_freshness_probe_rejects_target_outside_approved_namespace(tmp_path: Path):
+    result = _mock_freshness_probe(
+        tmp_path,
+        returncode=1,
+        stderr="manifest unknown: manifest unknown",
+        target="registry.other.test:5443/dry/gate-c/edge-api:gate-c",
+    )
+    assert result.returncode != 0
+    assert "outside the approved Registry namespace" in result.stderr
 
 
 def test_receipt_binds_policy_and_requires_cleanup(
