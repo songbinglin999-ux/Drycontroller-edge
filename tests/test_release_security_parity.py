@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ast
 import hashlib
 import importlib.util
 import json
@@ -78,8 +79,57 @@ def _write_guarded_json(path: Path, payload: Any) -> None:
 def test_release_engines_publish_the_same_security_contract_version(engines):
     host, software = engines
 
-    assert host.SHARED_SECURITY_CONTRACT_VERSION == 1
-    assert software.SHARED_SECURITY_CONTRACT_VERSION == 1
+    assert host.SHARED_SECURITY_CONTRACT_VERSION.startswith("sha256:")
+    assert software.SHARED_SECURITY_CONTRACT_VERSION == host.SHARED_SECURITY_CONTRACT_VERSION
+
+
+def _top_level_contract_members(path: Path):
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    functions = {
+        node.name
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    constants = set()
+    for node in module.body:
+        if isinstance(node, ast.Assign):
+            constants.update(
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            )
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            constants.add(node.target.id)
+    return functions, constants
+
+
+def test_executable_contract_inventory_is_exhaustive_and_forces_version_gate(
+    engines, tmp_path
+):
+    host, _ = engines
+    contract = sys.modules["release_security_contract"]
+    host_path = ROOT / "infra/host-release-runner/host_release_engine.py"
+    software_path = ROOT / "infra/ota-helper/release_engine.py"
+    host_functions, host_constants = _top_level_contract_members(host_path)
+    software_functions, software_constants = _top_level_contract_members(software_path)
+
+    assert host_functions & software_functions == set(contract.CONTRACT_FUNCTIONS)
+    assert (host_constants & software_constants) - {
+        "SHARED_SECURITY_CONTRACT_VERSION"
+    } == set(contract.CONTRACT_CONSTANTS)
+    assert contract.engine_contract_digest(host_path) == contract.EXPECTED_ENGINE_DIGESTS["host"]
+    assert contract.engine_contract_digest(software_path) == contract.EXPECTED_ENGINE_DIGESTS["software"]
+
+    drifted = tmp_path / "host_release_engine.py"
+    drifted.write_text(
+        host_path.read_text(encoding="utf-8").replace(
+            'and args[1] == "pull")',
+            'and args[1] == "images")',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="security contract drift"):
+        contract.assert_engine_security_contract("host", drifted)
+    assert host.SHARED_SECURITY_CONTRACT_VERSION == contract.SHARED_SECURITY_CONTRACT_VERSION
 
 
 @pytest.mark.parametrize(

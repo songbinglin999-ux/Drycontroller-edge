@@ -96,6 +96,7 @@ def test_stage_and_manifest_are_fixed_signed_host_content(tmp_path):
     assert result["topology_digest"] == topology_digest
     paths = {record["path"] for record in result["files"]}
     assert "infra/ota-helper/release_engine.py" in paths
+    assert "infra/ota-helper/release_security_contract.py" in paths
     assert not any(path.startswith("configs/keys/") for path in paths)
 
 

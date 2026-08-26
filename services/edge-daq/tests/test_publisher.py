@@ -66,6 +66,7 @@ async def test_influx_buffer_persist_and_flush(monkeypatch, tmp_path):
 
     pub._buffer_influx("tag", 1.0, "u", time.time())
     assert len(pub.influx_buffer) == 1
+    assert pub.influx_buffer[0]["quality"] == "good"
     assert INFLUX_BUFFER_OLDEST_AGE_SEC._value.get() >= 0
 
     await pub._flush_influx_buffer()
@@ -104,6 +105,8 @@ async def test_publish_tag_data_buffers_when_mqtt_not_ready(monkeypatch, tmp_pat
 
     assert len(pub.mqtt_buffer) == 1
     assert len(pub.influx_buffer) == 1
+    assert pub.mqtt_buffer[0]["data"]["quality"] == "good"
+    assert pub.influx_buffer[0]["quality"] == "good"
 
 
 def test_backpressure_failure_returns_max_delay(monkeypatch, tmp_path):

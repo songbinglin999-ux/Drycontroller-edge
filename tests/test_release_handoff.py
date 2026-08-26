@@ -21,6 +21,7 @@ HOST_FILES = (
     "docker-compose.yml",
     "infra/ota-helper/drycontroller_ota_helper.py",
     "infra/ota-helper/release_engine.py",
+    "infra/ota-helper/release_security_contract.py",
     "infra/ota-helper/ota-apply",
     "infra/ota-helper/initialize-active-release",
     "infra/ota-helper/start-active-release",

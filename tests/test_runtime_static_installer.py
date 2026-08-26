@@ -30,6 +30,27 @@ def _load_installer():
     return module
 
 
+def _inputs(tmp_path: Path) -> dict[str, object]:
+    host_key = tmp_path / "host.pub"
+    software_key = tmp_path / "software.pub"
+    cloud_key = tmp_path / "cloud.pub"
+    cosign = tmp_path / "cosign"
+    host_key.write_bytes(b"host-key")
+    software_key.write_bytes(b"software-key")
+    cloud_key.write_bytes(b"cloud-key")
+    cosign.write_bytes(b"cosign-binary")
+    return {
+        "repo_source": ROOT,
+        "host_cosign_public_key": host_key,
+        "software_cosign_public_key": software_key,
+        "device_identity_cloud_public_key": cloud_key,
+        "cosign_binary": cosign,
+        "approved_cosign_sha256": hashlib.sha256(cosign.read_bytes()).hexdigest(),
+        "owner_uid": os.geteuid(),
+        "owner_gid": os.getegid(),
+    }
+
+
 def test_static_runtime_installer_reproduces_product_paths_modes_and_bytes(tmp_path):
     module = _load_installer()
     keys = tmp_path / "keys"
@@ -101,3 +122,76 @@ def test_static_runtime_installer_fails_before_writing_on_unapproved_cosign(tmp_
         )
 
     assert list(destination.iterdir()) == []
+
+
+def test_static_runtime_installer_rejects_directory_symlink_before_writing(tmp_path):
+    module = _load_installer()
+    destination = tmp_path / "root"
+    destination.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (destination / "usr").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(module.RuntimeInstallError, match="directory component is unsafe"):
+        module.install_static_runtime(**_inputs(tmp_path), root=destination)
+
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "directory"])
+def test_static_runtime_installer_rejects_unsafe_existing_destination(
+    tmp_path, kind
+):
+    module = _load_installer()
+    destination = tmp_path / "root"
+    target_parent = destination / "usr/local/bin"
+    target_parent.mkdir(parents=True)
+    target = target_parent / "cosign"
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"must-not-change")
+    if kind == "symlink":
+        target.symlink_to(outside)
+    elif kind == "hardlink":
+        os.link(outside, target)
+    else:
+        target.mkdir()
+
+    with pytest.raises(module.RuntimeInstallError, match="destination"):
+        module.install_static_runtime(**_inputs(tmp_path), root=destination)
+
+    assert outside.read_bytes() == b"must-not-change"
+    assert not (destination / "usr/libexec/drycontroller/host_release_engine.py").exists()
+
+
+def test_static_runtime_installer_rejects_root_symlink_escape(tmp_path):
+    module = _load_installer()
+    outside = tmp_path / "outside-root"
+    outside.mkdir()
+    root_link = tmp_path / "root-link"
+    root_link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(module.RuntimeInstallError, match="root must be a real directory"):
+        module.install_static_runtime(**_inputs(tmp_path), root=root_link)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_static_runtime_installer_rejects_wrong_type_in_directory_chain(tmp_path):
+    module = _load_installer()
+    destination = tmp_path / "root"
+    destination.mkdir()
+    (destination / "etc").write_bytes(b"not-a-directory")
+
+    with pytest.raises(module.RuntimeInstallError, match="directory component is unsafe"):
+        module.install_static_runtime(**_inputs(tmp_path), root=destination)
+
+
+def test_static_runtime_installer_rejects_writable_directory_component(tmp_path):
+    module = _load_installer()
+    destination = tmp_path / "root"
+    destination.mkdir()
+    (destination / "usr").mkdir(mode=0o777)
+    (destination / "usr").chmod(0o777)
+
+    with pytest.raises(module.RuntimeInstallError, match="directory component is untrusted"):
+        module.install_static_runtime(**_inputs(tmp_path), root=destination)

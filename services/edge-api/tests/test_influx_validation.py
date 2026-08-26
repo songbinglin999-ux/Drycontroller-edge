@@ -148,3 +148,34 @@ def test_parse_flux_tables_filters_internal_fields_and_adds_time():
     assert "_start" not in row
     assert "_stop" not in row
     assert "_value" not in row
+
+
+def test_latest_points_preserve_quality_and_time():
+    class DummyRecord:
+        values = {
+            "_time": datetime(2026, 8, 26, tzinfo=timezone.utc),
+            "tag": "M1_I",
+            "value": 10.1,
+            "unit": "A",
+            "quality": "good",
+        }
+
+    class DummyAPI:
+        def query(self, flux):
+            assert '"quality"' in flux
+            return [type("Table", (), {"records": [DummyRecord()]})()]
+
+    svc = InfluxQueryService.__new__(InfluxQueryService)
+    svc.query_api = DummyAPI()
+    rows = svc._query_and_parse_latest(
+        'keep(columns: ["_time", "tag", "value", "unit", "quality"])'
+    )
+    assert rows == [
+        {
+            "tag": "M1_I",
+            "value": 10.1,
+            "unit": "A",
+            "quality": "good",
+            "time": "2026-08-26T00:00:00+00:00",
+        }
+    ]

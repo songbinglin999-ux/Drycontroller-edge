@@ -44,6 +44,7 @@ from release_engine import docker_archive_config_digest  # noqa: E402
 HELPERS = {
     "infra/ota-helper/drycontroller_ota_helper.py": (b"# fixed helper\n", 0o644),
     "infra/ota-helper/release_engine.py": (b"# fixed engine\n", 0o644),
+    "infra/ota-helper/release_security_contract.py": (b"# fixed contract\n", 0o644),
     "infra/ota-helper/ota-apply": (b"#!/usr/bin/python3\n", 0o755),
     "infra/ota-helper/initialize-active-release": (b"#!/usr/bin/python3\n", 0o755),
     "infra/ota-helper/start-active-release": (b"#!/usr/bin/python3\n", 0o755),

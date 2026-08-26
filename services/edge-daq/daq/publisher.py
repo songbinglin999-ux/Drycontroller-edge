@@ -588,7 +588,14 @@ class DataPublisher:
         MQTT_CONNECTED.set(0)
         self.mqtt_connected = False
     
-    async def publish_tag_data(self, tag_name: str, value: float, unit: str = "", timestamp: Optional[float] = None):
+    async def publish_tag_data(
+        self,
+        tag_name: str,
+        value: float,
+        unit: str = "",
+        timestamp: Optional[float] = None,
+        quality: str = "good",
+    ):
         """
         发布标签数据
         
@@ -610,6 +617,7 @@ class DataPublisher:
             "tag": tag_name,         # 标签名
             "value": value,          # 数值
             "unit": unit,            # 单位
+            "quality": quality,      # 采集质量
             "ts": ts_sec,            # 时间戳（秒）
             "ts_ns": ts_ns,          # 时间戳（纳秒）
             "id": msg_id,            # 幂等 ID（下游可用于去重）
@@ -620,7 +628,7 @@ class DataPublisher:
         await self._publish_mqtt(topic, data, qos=1)
         
         # 写入 InfluxDB（供历史查询）
-        self._write_influxdb(tag_name, value, unit, ts_ns)
+        self._write_influxdb(tag_name, value, unit, ts_ns, quality)
     
     async def _publish_mqtt(self, topic: str, data: dict, qos: int = 1):
         """
@@ -671,7 +679,15 @@ class DataPublisher:
         except RuntimeError:
             pass
     
-    def _write_influxdb(self, tag_name: str, value: float, unit: str, ts_ns: int, retries: int = 2):
+    def _write_influxdb(
+        self,
+        tag_name: str,
+        value: float,
+        unit: str,
+        ts_ns: int,
+        quality: str = "good",
+        retries: int = 2,
+    ):
         """
         写入数据到 InfluxDB
         
@@ -684,7 +700,7 @@ class DataPublisher:
             ts_ns: 时间戳（纳秒）
         """
         if not self.write_api:
-            self._buffer_influx(tag_name, value, unit, ts_ns)
+            self._buffer_influx(tag_name, value, unit, ts_ns, quality)
             return
 
         now_ns = time.time_ns()
@@ -701,7 +717,7 @@ class DataPublisher:
                 self._rate_points = 0
             if self._rate_points >= self.influx_max_points_per_sec:
                 INFLUX_WRITE_RATE_LIMITED.inc()
-                self._buffer_influx(tag_name, value, unit, ts_ns)
+                self._buffer_influx(tag_name, value, unit, ts_ns, quality)
                 return
             self._rate_points += 1
 
@@ -709,6 +725,7 @@ class DataPublisher:
             .tag("tag", tag_name) \
             .field("value", float(value)) \
             .field("unit", unit) \
+            .field("quality", quality) \
             .time(int(ts_ns))  # 直接使用纳秒时间戳（幂等）
 
         self.influx_pending_batch.append(point)
@@ -731,7 +748,9 @@ class DataPublisher:
         self._update_buffer_age_metrics()
         self._check_buffer_thresholds()
 
-    def _buffer_influx(self, tag_name: str, value: float, unit: str, timestamp):
+    def _buffer_influx(
+        self, tag_name: str, value: float, unit: str, timestamp, quality: str = "good"
+    ):
         """将 Influx 数据加入缓冲。"""
         if len(self.influx_buffer) >= self.influx_buffer.maxlen:
             oldest = self.influx_buffer.popleft()
@@ -740,7 +759,13 @@ class DataPublisher:
             self._dead_letter(self.influx_dead_letter, oldest)
         # 统一使用 ts_ns，保证重放写入幂等（相同 measurement+tag+timestamp 会覆盖）
         ts_ns = self._to_ts_ns_any(timestamp)
-        entry = {"tag": tag_name, "value": value, "unit": unit, "ts_ns": int(ts_ns)}
+        entry = {
+            "tag": tag_name,
+            "value": value,
+            "unit": unit,
+            "quality": quality,
+            "ts_ns": int(ts_ns),
+        }
         self.influx_buffer.append(entry)
         INFLUX_BUFFER_SIZE.set(len(self.influx_buffer))
         self._persist_buffer(self.influx_buffer_file, entry, enable=self.persist_influx_buffer)
@@ -793,6 +818,7 @@ class DataPublisher:
                     .tag("tag", item["tag"]) \
                     .field("value", float(item["value"])) \
                     .field("unit", item["unit"]) \
+                    .field("quality", item["quality"]) \
                     .time(int(ts_ns))
                 self.write_api.write(
                     bucket=self.influx_bucket,
@@ -823,6 +849,7 @@ class DataPublisher:
                     tag_name = tag.get("tag")
                     val = pt._fields.get("value")
                     unit = pt._fields.get("unit", "")
+                    quality = pt._fields.get("quality", "good")
                     # pt._time 可能是纳秒或 datetime；兜底用当前时间
                     ts_ns = None
                     try:
@@ -832,7 +859,7 @@ class DataPublisher:
                         ts_ns = None
                     if ts_ns is None:
                         ts_ns = time.time_ns()
-                    self._buffer_influx(tag_name, val, unit, ts_ns)
+                    self._buffer_influx(tag_name, val, unit, ts_ns, quality)
                 except (AttributeError, TypeError, ValueError):
                     continue
             self.influx_pending_batch.clear()
@@ -858,6 +885,7 @@ class DataPublisher:
                     tag_name = tag.get("tag")
                     val = pt._fields.get("value")
                     unit = pt._fields.get("unit", "")
+                    quality = pt._fields.get("quality", "good")
                     ts_ns = None
                     try:
                         if isinstance(pt._time, int):
@@ -866,7 +894,7 @@ class DataPublisher:
                         ts_ns = None
                     if ts_ns is None:
                         ts_ns = time.time_ns()
-                    self._buffer_influx(tag_name, val, unit, ts_ns)
+                    self._buffer_influx(tag_name, val, unit, ts_ns, quality)
                 except (AttributeError, TypeError, ValueError):
                     continue
             self.influx_pending_batch.clear()

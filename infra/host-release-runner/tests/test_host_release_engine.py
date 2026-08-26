@@ -43,6 +43,7 @@ SIGNATURE = base64.b64encode(b"{}").decode("ascii")
 HELPERS = {
     "infra/ota-helper/drycontroller_ota_helper.py": (b"helper\n", 0o644),
     "infra/ota-helper/release_engine.py": (b"engine\n", 0o644),
+    "infra/ota-helper/release_security_contract.py": (b"contract\n", 0o644),
     "infra/ota-helper/ota-apply": (b"#!/usr/bin/python3\n", 0o755),
     "infra/ota-helper/initialize-active-release": (b"#!/usr/bin/python3\n", 0o755),
     "infra/ota-helper/start-active-release": (b"#!/usr/bin/python3\n", 0o755),

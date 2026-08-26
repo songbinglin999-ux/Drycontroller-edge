@@ -98,6 +98,7 @@ class InfluxQueryService:
             - tag: 标签名
             - value: 数值
             - unit: 单位
+            - quality: 采集质量
             - time: ISO 格式时间戳
         """
         if not tags:
@@ -260,7 +261,7 @@ from(bucket: "{self.bucket}")
   |> filter(fn: (r) => r["_measurement"] == "{self.measurement}")
   |> filter(fn: (r) => contains(value: r["tag"], set: tagList))
   |> pivot(rowKey: ["_time", "tag"], columnKey: ["_field"], valueColumn: "_value")
-  |> keep(columns: ["_time", "tag", "value", "unit"])
+  |> keep(columns: ["_time", "tag", "value", "unit", "quality"])
   |> sort(columns: ["_time"], desc: true)
   |> unique(column: "tag")
 """
@@ -301,6 +302,7 @@ from(bucket: "{self.bucket}")
                         "tag": values.get("tag"),
                         "value": values.get("value"),
                         "unit": values.get("unit", ""),
+                        "quality": values.get("quality"),
                         "time": values.get("_time").isoformat() if values.get("_time") else None,
                     }
                 )

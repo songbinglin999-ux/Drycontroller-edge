@@ -28,12 +28,22 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 
+_SECURITY_CONTRACT_DIR = Path(__file__).resolve().parent
+if str(_SECURITY_CONTRACT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SECURITY_CONTRACT_DIR))
+from release_security_contract import (  # noqa: E402
+    SHARED_SECURITY_CONTRACT_VERSION,
+    assert_engine_security_contract,
+)
+if not SHARED_SECURITY_CONTRACT_VERSION.startswith("sha256:"):
+    raise RuntimeError("release security contract version invalid")
+
+
 SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"
 RELEASE_JOURNAL_SCHEMA = "drycontroller.release-journal.v1"
 REGISTRY_AUTH_SCHEMA = "drycontroller.registry-auth.v2"
 HOST_ACTIVE_SCHEMA = "drycontroller.host-active.v1"
 HOST_HEALTH_CONTRACT = "drycontroller.edge-health.v1"
-SHARED_SECURITY_CONTRACT_VERSION = 1
 COSIGN_VERSION = "v3.1.3"
 COSIGN_LINUX_AMD64_SHA256 = "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
 COSIGN_TOOLCHAIN = {
@@ -1782,3 +1792,6 @@ class ReleaseEngine:
             "manifest_digest": candidate["manifest_digest"],
             "status": "succeeded",
         }
+
+
+assert_engine_security_contract("software", Path(__file__))

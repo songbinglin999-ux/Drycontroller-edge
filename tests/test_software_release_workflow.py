@@ -573,6 +573,7 @@ def test_new_host_binding_requires_completed_pair_and_full_rebuild(tmp_path: Pat
     helper_files = {
         "infra/ota-helper/drycontroller_ota_helper.py": (b"helper\n", 0o644),
         "infra/ota-helper/release_engine.py": (b"engine\n", 0o644),
+        "infra/ota-helper/release_security_contract.py": (b"contract\n", 0o644),
         "infra/ota-helper/ota-apply": (b"#!/usr/bin/python3\n", 0o755),
         "infra/ota-helper/initialize-active-release": (b"#!/usr/bin/python3\n", 0o755),
         "infra/ota-helper/start-active-release": (b"#!/usr/bin/python3\n", 0o755),
@@ -742,6 +743,7 @@ def _formal_pair_rows(sequence: int, source_commit: str):
         "docker-compose.yml": (compose, 0o644),
         "infra/ota-helper/drycontroller_ota_helper.py": (b"helper\n", 0o644),
         "infra/ota-helper/release_engine.py": (b"engine\n", 0o644),
+        "infra/ota-helper/release_security_contract.py": (b"contract\n", 0o644),
         "infra/ota-helper/ota-apply": (b"#!/usr/bin/python3\n", 0o755),
         "infra/ota-helper/initialize-active-release": (b"#!/usr/bin/python3\n", 0o755),
         "infra/ota-helper/start-active-release": (b"#!/usr/bin/python3\n", 0o755),

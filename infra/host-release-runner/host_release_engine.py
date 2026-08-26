@@ -19,6 +19,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -31,13 +32,25 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator
 
 
+_SECURITY_CONTRACT_DIR = Path(__file__).resolve().parent
+if not (_SECURITY_CONTRACT_DIR / "release_security_contract.py").is_file():
+    _SECURITY_CONTRACT_DIR = _SECURITY_CONTRACT_DIR.parent / "ota-helper"
+if str(_SECURITY_CONTRACT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SECURITY_CONTRACT_DIR))
+from release_security_contract import (  # noqa: E402
+    SHARED_SECURITY_CONTRACT_VERSION,
+    assert_engine_security_contract,
+)
+if not SHARED_SECURITY_CONTRACT_VERSION.startswith("sha256:"):
+    raise RuntimeError("release security contract version invalid")
+
+
 HOST_RELEASE_SCHEMA = "drycontroller.host-release.v1"
 HOST_ACTIVE_SCHEMA = "drycontroller.host-active.v1"
 SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"
 COORDINATOR_JOURNAL_SCHEMA = "drycontroller.host-release-coordinator.v1"
 REGISTRY_AUTH_SCHEMA = "drycontroller.registry-auth.v2"
 HOST_HEALTH_CONTRACT = "drycontroller.edge-health.v1"
-SHARED_SECURITY_CONTRACT_VERSION = 1
 COSIGN_TOOLCHAIN = {
     "version": "v3.1.3",
     "linux_amd64_sha256": "sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
@@ -124,6 +137,7 @@ _FRESH_INSTALL_GUARD = "/usr/libexec/drycontroller/assert-fresh-install-data-pla
 _SOFTWARE_HELPER_FILES = {
     "infra/ota-helper/drycontroller_ota_helper.py",
     "infra/ota-helper/release_engine.py",
+    "infra/ota-helper/release_security_contract.py",
     "infra/ota-helper/ota-apply",
     "infra/ota-helper/initialize-active-release",
     "infra/ota-helper/start-active-release",
@@ -2498,3 +2512,6 @@ class HostReleaseEngine:
                 "software_release_id": candidate["software_manifest"]["release_id"],
                 "status": "succeeded",
             }
+
+
+assert_engine_security_contract("host", Path(__file__))
