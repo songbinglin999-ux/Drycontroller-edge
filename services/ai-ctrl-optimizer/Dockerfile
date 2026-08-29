@@ -1,7 +1,7 @@
-FROM python:3.11-slim@sha256:ff05d1a05204fb9f7444c435db8e8ec104e587a413280dc9ffc27a4797554182
+FROM python:3.11-slim@sha256:272efc3f94bec901e2bc7a5c9984b3d113c317839edca2714c6a388b9476f8fc
 
 LABEL org.opencontainers.image.base.name="docker.io/library/python:3.11-slim"
-LABEL org.opencontainers.image.base.digest="sha256:ff05d1a05204fb9f7444c435db8e8ec104e587a413280dc9ffc27a4797554182"
+LABEL org.opencontainers.image.base.digest="sha256:272efc3f94bec901e2bc7a5c9984b3d113c317839edca2714c6a388b9476f8fc"
 
 WORKDIR /app
 
