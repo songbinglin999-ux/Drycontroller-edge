@@ -22,8 +22,8 @@ sudo /opt/drycontroller-identity/venv/bin/python \
 ```
 
 The command takes the shared host release lock, verifies the candidate with the
-real active-trust loader, Ed25519 verifier, and the same issued/expiry/machine
-runtime semantics as `license-service`, then durably journals each switch.
+real active-trust loader and the same Device/TPM-bound verifier consumed in
+process by `edge-api`, then durably journals each switch.
 Any ordinary failure restores the source pair immediately. A process or power
 loss leaves the journal in place; the enabled recovery oneshot restores and
 verifies the source pair before `docker.service` starts.

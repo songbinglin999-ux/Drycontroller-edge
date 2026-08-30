@@ -39,7 +39,6 @@ set -a
 set +a
 
 EDGE_API_PORT="${EDGE_API_LOCAL_PORT:-18080}"
-LICENSE_SERVICE_PORT="${LICENSE_SERVICE_PORT:-8100}"
 INFLUXDB_PORT="${INFLUXDB_PORT:-8086}"
 
 required_env_vars=(
@@ -116,7 +115,6 @@ check_mqtt() {
 }
 
 check_http "edge-api" "http://localhost:${EDGE_API_PORT}/health"
-check_http "license-service" "http://localhost:${LICENSE_SERVICE_PORT}/health"
 check_postgres
 check_influx
 check_mqtt

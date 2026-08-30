@@ -21,9 +21,6 @@ echo "🏷️  镜像版本: $VERSION"
 SERVICES=(
     "edge-api"
     "edge-daq"
-    "ai-softsensor"
-    "ai-ctrl-optimizer"
-    "license-service"
     "edge-monitor"
 )
 

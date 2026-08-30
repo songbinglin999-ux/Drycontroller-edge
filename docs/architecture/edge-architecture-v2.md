@@ -96,7 +96,7 @@
 
 **目标**：数据采集、AI 推理、控制建议、API 网关。
 
-### 4.1 edge-api（合并 license-service，唯一 command issuer）
+### 4.1 edge-api（进程内 License admission，唯一 command issuer）
 
 | 职责 | 说明 |
 |---|---|
@@ -104,11 +104,11 @@
 | 控制模式管理 | edge 模式 / 本地模式 / 模式切换 |
 | **唯一 command issuer** | 按授权层级签发 **signed control command**（`MANUAL`：人工设六频率目标；`AUTO`：人工授权模式后自动签发）；两种层级都过 range guard + ramp/slew limiter + 工艺联锁 + 签名 + 审计，AI 不旁路（见 §6.5） |
 | range guard / ramp / 工艺联锁 | 越界 setpoint 在签发前拒绝；合法 setpoint 按变化率缓变；工艺联锁不满足时标记 not_actionable |
-| 授权校验 | 合并原 license-service 的 `/verify` 逻辑，减少一个容器 |
+| 授权校验 | 进程内执行 TPM-bound License verifier，不存在独立授权容器 |
 | Alembic 迁移 | 启动时自动执行 |
 | 审计与 outbox | 控制命令、告警事件、command ACK/NAK 落库同步 |
 
-**合并说明**：原 `license-service` 仅提供一个 `/verify` 接口，合并进 edge-api 后通过内部函数调用，减少一次网络跳转和一个容器编排。该合并**不是安全闭环的前置条件**（见 §9 Phase 5）。
+**合并说明**：原独立授权容器已删除。edge-api 只读消费 License、trust policy、Device identity 与 live TPM observation，通过内部函数完成验签；不存在网络代理或第二套授权执行面。
 
 ### 4.2 ai-softsensor
 
@@ -257,13 +257,13 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 
 ## 7. 服务清单对比
 
-| 服务 | v1（当前） | v2（新架构） | 变更 |
+| 服务 | 旧 v1 | 当前架构 | 变更 |
 |---|---|---|---|
-| edge-api | ✓ | ✓ | 合并 license-service，成为唯一 command issuer |
+| edge-api | ✓ | ✓ | 内置 License admission，成为唯一 command issuer |
 | edge-daq | ✓ | ✓ | 新增通讯心跳、authority 回读和签名 command/ACK；D5100 writer 仍由开关 fail-closed |
-| ai-softsensor | ✓ | ✓ | 不变 |
-| ai-ctrl-optimizer | ✓ | ✓ | 输出从"命令"改"建议"，不直写 PLC |
-| license-service | ✓ | ✗ | 合并进 edge-api |
+| ai-softsensor | ✓ | ✗ | 源码保留，本期排除出默认 Compose 与应用发布 |
+| ai-ctrl-optimizer | ✓ | ✗ | 源码保留，本期排除出默认 Compose 与应用发布 |
+| 独立授权容器 | ✓ | ✗ | 已删除；验签合并进 edge-api |
 | edge-monitor | ✓ | ✓ | 新增 PLC 模式 / 心跳健康 / NAK 监控 |
 | ops-console | △（代码已存在，未接 compose） | ✓ | edge 本地维护控制台（Svelte/Vite，`ops-console/`），面向维护工程师，走 edge-api 管理员 API Key；当前无 Dockerfile/未接 compose，**部署形态待定**（见下） |
 | drycontroller-ota-helper.service | ✗ | ✓（systemd） | root-owned UDS；只接受 operation ID |
@@ -279,7 +279,7 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 | edge-enroll | ✓（profile: remote-debug） | ✓ | **需改造**（Tailscale 迁出后激活链路调整，见 §2.2） |
 | Grafana | — | **不加** | — |
 
-**容器数推导**：旧 v1 compose 实测 **17 个 service**。RB-3 删除 OTA agent 与两个 socket proxy 后为 **14**；若再按本节 v2 计划移除 license-service、把 tailscale 迁到 systemd，则为 **12**。ops-console 若独立容器部署再 +1。
+**当前 Compose 计数**：`docker-compose.yml` 默认服务共 **9** 个；独立授权容器和两个 AI 服务均不在运行集合，Tailscale 与 OTA helper 属于宿主 systemd 边界。应用 release 精确只有 `edge-api` + `edge-daq`。
 
 **ops-console 部署形态（推荐 edge-api StaticFiles 挂卷托管，容器数 15）**：身份与边界已由 `ops-console/README.md` 明确——edge 本地维护控制台（维护工程师用，可重启服务/看日志/调自愈参数，走 edge-api 管理员 API Key），区别于现场只读大屏（`Drycontroller-frontend`/bigscreen）和云端 cloud-console（多节点/租户/license/OTA/job）。代码已存在但未接 compose，落地排期靠后（见 §9 Phase 6）。形态对比：
 - **edge-api StaticFiles 挂卷托管（推荐）**：`npm run build` 产物（`ops-console/dist`）经宿主机目录只读挂进 edge-api，挂载在 `/console` 子路径，与 `/api/v1` 同源 → 零 CORS、WebSocket 同源；不新增容器，容器数 **15**；前端更新只替换挂卷产物，不重建 edge-api 镜像。
@@ -331,7 +331,7 @@ P0-SAFETY 在 2026-06-15 后按新责任边界推进：edge 负责工艺控制�
 | PLC 统一接口 | 采集寄存器、D5100 单路频率事务、DryHMI direct 事务、参数同步、报警同步、状态同步、ACK/NAK、D5291 stale 后 hold-last/本地接管、无扰切换、HMI/edge 控制权锁、最终物理安全兜底回读 | 停止 edge 心跳后 PLC hold-last 并拒绝新 edge 请求；edge 在线频率写入走 edge-api / D5100；edge 不可用且 PLC 授权时 DryHMI direct 走 D5550-D5599；软点写入有 ACK/NAK 与原因码；控制权切换无扰且 owner/epoch 状态可见；VFD/硬接线/设备保护可现场验收 |
 | edge 控制契约 | suggestion schema、signed command、ACK/NAK、range guard、最小变化率/冷却 gate、`MANUAL` / `AUTO` / `AUTO_PAUSED` 授权机制、owner/epoch gate | AI 不直写 PLC；未签名/越界/变化率超限/本地模式/心跳异常/非 EDGE owner/stale epoch 下 command 被拒并审计；AUTO 可一键退回 MANUAL，gate 失败自动挂起；PLC 负责 D5100 事务、hold-last 和最终输出 |
 | 监控层 | PLC 模式监控、控制权 owner/epoch、HMI 直连授权、心跳健康、NAK 告警、大屏状态 | 模式切换、心跳超时、HMI 接管、控制拒绝均可见且告警 |
-| license-service 合并 + 文档收敛 | 功能等价测试通过；旧端点/云端探测路径有兼容或迁移说明；文档与代码一致 | 功能等价测试通过，文档与代码一致 |
+| 独立授权容器移除 + 文档收敛 | Compose/监控/build/runtime 无独立授权服务；edge-api 进程内验签测试通过 | 文档与代码一致，无兼容执行层 |
 | ops-console 接入 | edge-api StaticFiles 挂卷托管（见 §7）+ 鉴权整改（代码已存在，落地排期靠后） | `dist` 挂卷只读托管于 edge-api `/console`，容器数维持 15；整改 `VITE_ADMIN_API_KEY` 把长期管理员 Key 编译进前端静态产物的泄密隐患（改登录换短期 token，不再把长期 Key 打包进 JS）；维护工程师可访问，实时数据 / 告警 / 控制模式 / 授权层级 / suggestion 可见 |
 
 ---
@@ -385,5 +385,5 @@ v2 被采纳后须持续同步以下文档，避免团队按旧链路继续实�
 - `docs/archive/ops/provisioning-bootstrap.md`：旧 Provisioning USB 路径已归档，当前激活流程以 OS Installer USB + host tailnet / activation service 为准。
 - `docs/architecture/data-flow.md`：已同步为 suggestion -> edge-api signed command -> edge-daq。
 - `docs/architecture/control-strategy.md`：已同步为 suggestion / command 双协议。
-- `docs/architecture/system-overview.md`：已同步 edge-daq command 消费与 ai-ctrl-optimizer 不直写 PLC；license-service 合并仍是后续 phase。
-- `docs/ops/后端参数配置说明.md`：license-service、Tailscale、控制 topic/ACK 参数都会受影响。
+- `docs/architecture/system-overview.md`：已同步 edge-daq command 消费、ai-ctrl-optimizer 不直写 PLC 与 edge-api 进程内 License admission。
+- `docs/ops/后端参数配置说明.md`：独立授权容器参数已删除；Tailscale 与控制 topic/ACK 参数以当前运行合同为准。

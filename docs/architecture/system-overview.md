@@ -28,11 +28,8 @@
 
 边缘侧采用容器化组合部署（见 `docker-compose.yml`）：
 
-- **`edge-api`**：统一 REST/WebSocket API，聚合实时/历史/系统状态；对控制与运维接口提供 API Key 鉴权能力。
+- **`edge-api`**：统一 REST/WebSocket API，聚合实时/历史/系统状态；对控制与运维接口提供 API Key 鉴权，并在进程内执行 TPM-bound License admission。
 - **`edge-daq`**：PLC（Modbus TCP）采集与数据发布；写入 InfluxDB；只消费 edge-api 签发的 signed control command 并回执 ACK/NAK。
-- **`ai-softsensor`**：订阅 MQTT 实时点位进行 ONNX 推理（软测量），发布结果到 MQTT/Influx。
-- **`ai-ctrl-optimizer`**：订阅数据并输出 suggestion（策略/优化）；不直写 PLC，suggestion 只能进入 edge-api / ops-console 展示与签发链路。
-- **`license-service`**：授权校验（云端激活后本地签名 license 验签）。
 - **`edge-monitor`**：系统指标采集、服务探活、自动自愈（容器重启/熔断）、告警聚合（Alertmanager）。
 - **`mosquitto`**：本地 MQTT Broker（默认禁匿名，口令文件）。
 - **`influxdb`**：本地时序库（实时/历史曲线、事件记录）。
@@ -46,19 +43,16 @@ graph LR
   PLC -->|Modbus TCP| DAQ[edge-daq]
   DAQ -->|MQTT publish| MQ[mosquitto]
   DAQ -->|write| TS[influxdb]
-  MQ -->|subscribe| SS[ai-softsensor]
-  MQ -->|subscribe| OPT[ai-ctrl-optimizer]
-  SS -->|publish| MQ
-  OPT -->|publish| MQ
   MQ -->|subscribe| API[edge-api]
   API -->|query| TS
   API -->|query| PG[postgres]
   MON[edge-monitor] -->|probe| API
   MON -->|probe| DAQ
-  MON -->|probe| SS
-  MON -->|probe| OPT
   MON -->|restart/circuit-break| DOCKER[Docker Engine]
 ```
+
+AI 服务源码仍保留在仓库中，但本期不属于默认生产 Compose、监控目标或
+`edge-app-v1` 发布集合。
 
 ---
 

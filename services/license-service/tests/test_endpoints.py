@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 
@@ -22,33 +22,37 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
         sys.path.append(entry)
 
 from license.main import app  # noqa: E402
+from common.license_verifier import canonical_license_bytes  # noqa: E402
 
 
 client = TestClient(app)
 
 
-PUBLIC_KEY = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
-SIGNED_LICENSE = {
+PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+LICENSE = {
+    "capabilities": ["cloud-session", "edge-app-ota", "production-control"],
     "device_id": "EDGE-0001",
     "expires_at": "2099-01-01T00:00:00+00:00",
-    "features": {"ai_softsensor": True, "control_optimizer": True, "edge_runtime": True, "ota": True},
+    "identity_fingerprint": "1" * 64,
     "issued_at": "2026-01-01T00:00:00+00:00",
     "issuer": "drycontroller-cloud-ops",
     "key_id": "test-key",
-    "license_id": "lic_test",
+    "license_id": "lic_" + "1" * 32,
     "line_id": "L1",
-    "machine_id": "test-machine",
     "node_name": "edge-0001",
-    "schema": "drycontroller.license.v1",
-    "signature": "lyl3M6RV7ulriukI3n40uM1PUGQKdb69OBz+X33powrSY4P5YA6B8cYwwHoV5BKlfZ5HxzuHY0nFqZPWEqE9Dg==",
+    "previous_license_id": None,
+    "product": "edge-app-v1",
+    "schema": "drycontroller.license.v2",
     "signature_alg": "ed25519",
     "tenant_id": "t-test",
-    "ts_hostname": "edge-0001",
 }
+LICENSE["signature"] = base64.b64encode(
+    PRIVATE_KEY.sign(canonical_license_bytes(LICENSE))
+).decode()
 
 
 def _write_trust_policy(root: Path) -> Path:
-    public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(PUBLIC_KEY))
+    public_key = PRIVATE_KEY.public_key()
     der = public_key.public_bytes(
         encoding=serialization.Encoding.DER,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -81,6 +85,35 @@ def _write_trust_policy(root: Path) -> Path:
     return policy_path
 
 
+def _write_identity_observation(root: Path, *, device_id: str = "EDGE-0001") -> tuple[Path, Path]:
+    identity = root / "device.json"
+    observation = root / "tpm-observation.json"
+    identity.write_text(
+        json.dumps(
+            {
+                "device_id": device_id,
+                "tenant_id": LICENSE["tenant_id"],
+                "line_id": LICENSE["line_id"],
+                "node_name": LICENSE["node_name"],
+                "identity_fingerprint": LICENSE["identity_fingerprint"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    observation.write_text(
+        json.dumps(
+            {
+                "schema": "drycontroller.tpm-identity-observation.v1",
+                "status": "ok",
+                "identity_fingerprint": LICENSE["identity_fingerprint"],
+                "observed_at": "2026-08-30T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return identity, observation
+
+
 def test_health_endpoint():
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -96,11 +129,13 @@ def test_ready_endpoint():
 def test_verify_endpoint_valid(tmp_path, monkeypatch):
     license_path = tmp_path / "license.json"
     trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
-    license_path.write_text(json.dumps(SIGNED_LICENSE), encoding="utf-8")
+    identity_path, observation_path = _write_identity_observation(tmp_path)
+    license_path.write_text(json.dumps(LICENSE), encoding="utf-8")
     monkeypatch.setenv("LICENSE_CHECK_ENABLED", "true")
     monkeypatch.setenv("LICENSE_FILE_PATH", str(license_path))
     monkeypatch.setenv("LICENSE_TRUST_POLICY_PATH", str(trust_policy_path))
-    monkeypatch.setenv("LICENSE_MACHINE_ID", "test-machine")
+    monkeypatch.setenv("DEVICE_IDENTITY_PATH", str(identity_path))
+    monkeypatch.setenv("TPM_IDENTITY_OBSERVATION_PATH", str(observation_path))
 
     resp = client.get("/verify")
     assert resp.status_code == 200
@@ -123,20 +158,24 @@ def test_verify_endpoint_missing_license(tmp_path, monkeypatch):
     assert data["reason"] == "missing_license_file"
 
 
-def test_verify_endpoint_machine_mismatch(tmp_path, monkeypatch):
+def test_verify_endpoint_device_identity_mismatch(tmp_path, monkeypatch):
     license_path = tmp_path / "license.json"
     trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
-    license_path.write_text(json.dumps(SIGNED_LICENSE), encoding="utf-8")
+    identity_path, observation_path = _write_identity_observation(
+        tmp_path, device_id="EDGE-OTHER"
+    )
+    license_path.write_text(json.dumps(LICENSE), encoding="utf-8")
     monkeypatch.setenv("LICENSE_CHECK_ENABLED", "true")
     monkeypatch.setenv("LICENSE_FILE_PATH", str(license_path))
     monkeypatch.setenv("LICENSE_TRUST_POLICY_PATH", str(trust_policy_path))
-    monkeypatch.setenv("LICENSE_MACHINE_ID", "other-machine")
+    monkeypatch.setenv("DEVICE_IDENTITY_PATH", str(identity_path))
+    monkeypatch.setenv("TPM_IDENTITY_OBSERVATION_PATH", str(observation_path))
 
     resp = client.get("/verify")
     assert resp.status_code == 200
     data = resp.json()
     assert data["valid"] is False
-    assert data["reason"] == "machine_mismatch"
+    assert data["reason"] == "device_identity_mismatch"
 
 
 def test_verify_endpoint_disabled(monkeypatch):

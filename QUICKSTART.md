@@ -56,7 +56,6 @@ edge-api              Up (healthy)
 edge-daq              Up
 ai-softsensor         Up
 ai-ctrl-optimizer     Up
-license-service       Up
 edge-monitor          Up
 postgres              Up (healthy)
 influxdb              Up (healthy)

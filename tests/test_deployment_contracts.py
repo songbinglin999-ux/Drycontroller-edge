@@ -56,15 +56,27 @@ def test_plc_deployment_defaults_match_rtu_over_tcp_contract():
     assert example["MODBUS_FRAMER"] == "rtu"
 
 
-def test_license_pair_contract_keeps_edge_api_fully_read_only():
+def test_default_compose_excludes_license_and_ai_services():
+    assert set(_compose_services()) == {
+        "alertmanager",
+        "edge-api",
+        "edge-daq",
+        "edge-monitor",
+        "influxdb",
+        "mosquitto",
+        "mosquitto-init",
+        "postgres",
+        "prometheus",
+    }
+
+
+def test_license_verification_runs_in_edge_api_without_resident_service():
     services = _compose_services()
     edge_api = services["edge-api"]
-    license_service = services["license-service"]
 
+    assert "license-service" not in services
     assert "/etc/drycontroller/license:/etc/drycontroller/license:ro" in edge_api["volumes"]
     assert "/etc/drycontroller/keys:/etc/drycontroller/keys:ro" in edge_api["volumes"]
-    assert "/etc/drycontroller/license:/etc/drycontroller/license:ro" in license_service["volumes"]
-    assert "/etc/drycontroller/keys:/etc/drycontroller/keys:ro" in license_service["volumes"]
 
     edge_api_env = _env_map(edge_api)
     assert edge_api_env["LICENSE_FILE_PATH"] == "${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}"
@@ -109,30 +121,36 @@ def test_business_containers_have_no_docker_mutation_surface():
 
 
 def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
-    helper = (ROOT / "infra/ota-helper/drycontroller_ota_helper.py").read_text(encoding="utf-8")
-    apply = (ROOT / "infra/ota-helper/ota-apply").read_text(encoding="utf-8")
-    release_engine = (ROOT / "infra/ota-helper/release_engine.py").read_text(encoding="utf-8")
-    unit = (ROOT / "infra/ota-helper/drycontroller-ota-helper.service").read_text(encoding="utf-8")
+    helper = (ROOT / "infra/ota-helper/edge_app_ota_helper.py").read_text(encoding="utf-8")
+    apply = (ROOT / "infra/ota-helper/edge-app-ota-apply").read_text(encoding="utf-8")
+    release_engine = (ROOT / "infra/ota-helper/edge_app_release.py").read_text(encoding="utf-8")
+    unit = (ROOT / "infra/ota-helper/drycontroller-edge-app-ota-helper.service").read_text(
+        encoding="utf-8"
+    )
 
-    assert 'APPLY_PROGRAM = Path("/opt/drycontroller-host/current/infra/ota-helper/ota-apply")' in helper
-    assert 'PROJECT_DIR = Path("/opt/Drycontroller-edge")' in helper
+    assert 'APPLY_PROGRAM = Path("/usr/libexec/drycontroller/ota-apply")' in helper
+    assert 'PROJECT_DIR = Path("/opt/drycontroller-host/current")' in helper
     assert 'OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")' in helper
     assert "sys.argv" not in helper
     assert "os.getenv" not in helper
     assert "if len(sys.argv) != 1:" in apply
     assert "ReleaseEngine().apply()" in apply
+    assert "from edge_app_release import ReleaseEngine" in apply
     assert "pre-check" not in apply
     assert "post-check" not in apply
-    assert 'RELEASE_JOURNAL_SCHEMA = "drycontroller.release-journal.v1"' in release_engine
-    assert 'SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"' in release_engine
-    assert '"--pull", "never"' in release_engine
-    assert '"verify-blob"' in release_engine
+    assert 'RELEASE_JOURNAL_SCHEMA = "drycontroller.edge-app-release-journal.v2"' in release_engine
+    assert 'SOFTWARE_RELEASE_SCHEMA = "drycontroller.app-release.v2"' in release_engine
+    assert 'EDGE_SERVICES = ("edge-api", "edge-daq")' in release_engine
+    assert '"--pull"' in release_engine
+    assert '"never"' in release_engine
+    assert "verify_manifest_signature(manifest" in release_engine
     assert '"verify"' in release_engine
     assert "shell=True" not in release_engine
     assert "os.getenv" not in release_engine
+    assert "release_engine" not in helper
     assert "User=root" in unit
     assert "Group=root" in unit
-    assert "ExecStart=/usr/bin/python3 /opt/drycontroller-host/current/infra/ota-helper/drycontroller_ota_helper.py" in unit
+    assert "ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py" in unit
     assert "ReadWritePaths=/run/drycontroller-ota /var/lib/drycontroller-ota /var/log/drycontroller-ota" in unit
 
 
@@ -347,18 +365,26 @@ def test_installer_retires_the_independent_license_trust_writer():
     )
 
 
-def test_edge_api_tailnet_preflight_uses_fixed_root_observer_without_localapi_socket():
+def test_edge_api_tailnet_preflight_uses_standalone_observation_without_host_release_client():
     services = _compose_services()
     edge_api = services["edge-api"]
     edge_api_env = _env_map(edge_api)
-    runner = (ROOT / "infra/host-release-runner/host_release_runner.py").read_text(encoding="utf-8")
-    client = (ROOT / "services/edge-api/app/services/host_release_ops.py").read_text(encoding="utf-8")
+    observer = (ROOT / "services/edge-api/app/services/tailnet_observation.py").read_text(
+        encoding="utf-8"
+    )
+    ops = (ROOT / "services/edge-api/app/api/v1/ops.py").read_text(encoding="utf-8")
 
     assert edge_api_env["TAILSCALE_EXPECTED_VERSION"] == "${TAILSCALE_EXPECTED_VERSION:-}"
     assert "TS_HOSTNAME" not in edge_api_env
     assert all("tailscaled.sock" not in str(volume) for volume in edge_api["volumes"])
-    assert 'path == "/tailnet/status"' in runner
-    assert '"GET", "/tailnet/status"' in client
+    assert (
+        "/run/drycontroller-tailnet-observation:/run/drycontroller-tailnet-observation:ro"
+        in edge_api["volumes"]
+    )
+    assert 'Path("/run/drycontroller-tailnet-observation/status.json")' in observer
+    assert "from app.services.tailnet_observation import load_tailnet_observation" in ops
+    assert not (ROOT / "services/edge-api/app/services/host_release_ops.py").exists()
+    assert "/host-release/" not in ops
 
 
 def _write_source_bundle(path: Path, member_name: str) -> None:

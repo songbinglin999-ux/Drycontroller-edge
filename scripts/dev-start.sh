@@ -27,11 +27,7 @@ fi
 
 # 创建必要的目录
 echo "📁 创建日志目录..."
-mkdir -p logs/edge-api logs/edge-daq logs/ai-softsensor logs/ai-ctrl-optimizer logs/license-service logs/edge-monitor
-
-# 创建模型目录
-echo "📁 创建模型目录..."
-mkdir -p services/ai-softsensor/models services/ai-ctrl-optimizer/models
+mkdir -p logs/edge-api logs/edge-daq logs/edge-monitor
 
 # MQTT 密码文件由 docker-compose 内的 mosquitto-init 生成（写入 mosquitto_secrets volume）
 
@@ -78,4 +74,3 @@ echo "停止服务:   docker-compose down"
 echo "重启服务:   docker-compose restart [服务名]"
 echo ""
 echo "✅ 开发环境启动完成！"
-

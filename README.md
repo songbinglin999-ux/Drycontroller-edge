@@ -1,9 +1,9 @@
 # Drycontroller Edge
 
 `Drycontroller-edge` is the edge IPC runtime for DryController. It runs the local
-industrial stack close to the PLC: data acquisition, AI inference, control
-optimization, local license verification, health monitoring, audit/outbox
-syncing, and bootstrap/OTA execution.
+industrial stack close to the PLC: data acquisition, control execution,
+in-process License verification, health monitoring, audit/outbox syncing, and
+application OTA execution.
 
 This repository is one of three independent DryController repos:
 
@@ -21,8 +21,11 @@ The top-level workspace audit is the source of truth for cross-repo status:
 The edge stack is in staging-ready shape for software validation, with these
 boundaries:
 
-- Edge API, license-service, databases, Prometheus, and Alertmanager default to
+- Edge API, databases, Prometheus, and Alertmanager default to
   loopback/local exposure.
+- The default production Compose set excludes `license-service`,
+  `ai-softsensor`, and `ai-ctrl-optimizer`. Their source is retained, but they
+  are not runtime services or `edge-app-v1` artifacts.
 - Edge API stays on host loopback `127.0.0.1:18080`. Successful Device-bound
   Tailnet provisioning enables a systemd socket bound only to `tailscale0:8000`
   and forwards one HTTP request at a time through the fixed marking proxy to
@@ -43,14 +46,11 @@ boundaries:
 
 | Component | Purpose |
 |---|---|
-| `edge-api` | FastAPI gateway, REST/WebSocket APIs, ops proxy, audit/outbox producer |
+| `edge-api` | FastAPI gateway, REST/WebSocket APIs, in-process License admission, audit/outbox producer |
 | `edge-daq` | PLC/Modbus data acquisition, MQTT publish, InfluxDB writes |
-| `ai-softsensor` | ONNX-based moisture soft sensor |
-| `ai-ctrl-optimizer` | Control optimization service |
-| `license-service` | Local signed license verification |
 | `edge-monitor` | Read-only system/service health, metrics, ops log proxy |
 | `edge-enroll` | Per-device credential authenticated Cloud status reporter |
-| `drycontroller-ota-helper.service` | Root-owned, operation-ID-only host OTA boundary |
+| `drycontroller-ota-helper.service` | Root-owned, operation-ID-only `edge-app-v1` OTA boundary |
 | PostgreSQL, InfluxDB, Mosquitto | Local data and message infrastructure |
 
 ## Quick Start
@@ -87,7 +87,6 @@ Important runtime files and generated state:
 |---|---|
 | `.env` | Non-secret Edge runtime configuration |
 | `configs/tags.yaml` | PLC tag map |
-| `configs/ai-config.yaml` | AI model configuration |
 | `configs/monitor.yaml` | Health and self-heal policy |
 | `configs-runtime/plc.yaml` | Cloud-downloaded PLC communication config |
 | `/etc/drycontroller/keys/cosign.pub` | OTA image signature trust root |
@@ -99,6 +98,16 @@ Important runtime files and generated state:
 `configs-runtime/plc.yaml` takes precedence over PLC fields in `.env`. This is
 intentional: Cloud Ops can update Modbus host/port/slave settings without
 changing Ubuntu network interfaces.
+
+The application-release retrofit is deliberately two-stage. Run
+`infra/bootstrap/retrofit-edge-app-runtime.sh` to install the isolated
+`edge-app-v1` host runtime and retire the Edge API path to legacy HostRelease.
+The script does not pull images, mutate containers, create release state, or
+enable the new recovery/helper units. Before reboot, create and independently
+sign an approved live two-image baseline with `scripts/create-edge-app-baseline.py`,
+initialize it through the installed `initialize-active-release`, then enable
+`drycontroller-edge-app-recovery.service` and `drycontroller-ota-helper.service`.
+An unsigned or incomplete baseline must leave both units disabled.
 
 ## API And WebSocket Notes
 

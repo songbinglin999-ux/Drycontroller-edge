@@ -137,17 +137,14 @@ def _validate_runtime(
         "TS_LOGIN_SERVER": tailscale_login_server,
         "TAILSCALE_EXPECTED_VERSION": tailscale_version,
     }
-    if expected.get("LICENSE_MACHINE_ID") != "" or set(expected) & set(generated_fields):
+    if set(expected) & set(generated_fields):
         raise ValueError("runtime environment template fields invalid")
     actual = _parse_env(contents)
     if set(actual) != set(expected) | set(generated_fields):
         raise ValueError("runtime environment fields invalid")
     generated: dict[str, str] = {}
     for name, template_value in expected.items():
-        if name == "LICENSE_MACHINE_ID":
-            if actual[name] != machine:
-                raise ValueError("runtime environment machine-id mismatch")
-        elif PLACEHOLDER.search(template_value):
+        if PLACEHOLDER.search(template_value):
             _validate_placeholder_value(template_value, actual[name], generated)
         elif actual[name] != template_value:
             raise ValueError("runtime environment fixed value mismatch")
@@ -230,7 +227,6 @@ def initialize(
             return generated[name]
 
         runtime = PLACEHOLDER.sub(replace, template)
-        runtime = re.sub(r"(?m)^LICENSE_MACHINE_ID=.*$", f"LICENSE_MACHINE_ID={machine}", runtime)
         runtime += (
             f"\nCLOUD_OPS_BASE_URL={cloud_url}\n"
             f"CLOUD_OPS_TLS_SERVER_NAME={cloud_tls_server_name}\n"

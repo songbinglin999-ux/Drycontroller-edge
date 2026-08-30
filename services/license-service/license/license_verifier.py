@@ -5,6 +5,7 @@ from common.license_verifier import (
     load_json,
     parse_dt,
     verify_license,
+    verify_installed_license,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "load_active_license_trust",
     "parse_dt",
     "verify_license",
+    "verify_installed_license",
 ]

@@ -174,7 +174,7 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 - 支持的安全机制：
   - Token / API Key 校验  
   - IP 白名单  
-  - 与 `license-service` 集成的功能开关（如 AI 功能是否可用）
+  - edge-api 进程内的 TPM-bound License capability admission
 - 要求：
   - 任何修改配置、执行控制的接口必须记录**操作人、时间、IP**  
   - 所有敏感接口应具备**最小权限控制**能力（未来可与用户体系集成）
@@ -189,7 +189,7 @@ PostgreSQL   InfluxDB      MQTT Broker   其它微服务（未来）
 - `edge-api` 只做：
   - 调用 PostgreSQL / InfluxDB 获取历史与状态  
   - 通过 MQTT 读写实时数据 / 控制消息  
-  - 与 `license-service` 交互获取授权状态
+  - 在进程内读取只读 License/trust/Device/TPM observation 并完成验签
 
 这种设计确保：
 

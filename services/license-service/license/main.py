@@ -2,7 +2,6 @@
 授权服务
 """
 
-import json
 import os
 from pathlib import Path
 
@@ -11,12 +10,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import structlog
 
 from common.logging import setup_logging
-from license.license_verifier import (
-    load_active_license_trust,
-    load_json,
-    license_runtime_error,
-    verify_license as verify_signed_license,
-)
+from license.license_verifier import load_json, verify_installed_license
 
 event_recorder = setup_logging("license-service")
 logger = structlog.get_logger(__name__)
@@ -41,14 +35,17 @@ def _license_trust_policy_path() -> Path:
     )
 
 
-def _machine_id() -> str:
-    explicit = os.getenv("LICENSE_MACHINE_ID", "").strip()
-    if explicit:
-        return explicit
-    try:
-        return Path("/etc/machine-id").read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        return ""
+def _device_identity_path() -> Path:
+    return Path(os.getenv("DEVICE_IDENTITY_PATH", "/var/lib/drycontroller/device.json"))
+
+
+def _tpm_observation_path() -> Path:
+    return Path(
+        os.getenv(
+            "TPM_IDENTITY_OBSERVATION_PATH",
+            "/run/drycontroller-identity/tpm-observation.json",
+        )
+    )
 
 
 def _result(valid: bool, reason: str, license_payload=None):
@@ -115,20 +112,15 @@ async def verify_license():
     if not trust_policy_path.is_file():
         return _result(False, "missing_trust_policy", None)
 
-    try:
-        payload = load_json(license_path)
-        trust = load_active_license_trust(trust_policy_path)
-        verify_signed_license(payload, trust)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        logger.warning("license_verify_failed", reason="signature_invalid", error=str(exc))
-        return _result(False, "signature_invalid", None)
-
-    runtime_error = license_runtime_error(payload, machine_id=_machine_id())
-    if runtime_error is not None:
-        return _result(
-            False,
-            runtime_error,
-            None if runtime_error == "malformed_license" else payload,
-        )
-
+    result = verify_installed_license(
+        license_path=license_path,
+        trust_policy_path=trust_policy_path,
+        device_identity_path=_device_identity_path(),
+        tpm_observation_path=_tpm_observation_path(),
+    )
+    if result.get("valid") is not True:
+        reason = str(result.get("reason") or "invalid_license")
+        logger.warning("license_verify_failed", reason=reason)
+        return _result(False, reason, None)
+    payload = load_json(license_path)
     return _result(True, "ok", payload)

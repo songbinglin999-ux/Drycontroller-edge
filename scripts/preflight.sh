@@ -79,7 +79,6 @@ case "$EDGE_API_READY_HOST" in
     ;;
 esac
 EDGE_DAQ_HEALTH_PORT="${EDGE_DAQ_HEALTH_PORT:-8082}"
-LICENSE_SERVICE_PORT="${LICENSE_SERVICE_PORT:-8004}"
 EDGE_MONITOR_PORT="${EDGE_MONITOR_PORT:-8080}"
 OTA_HELPER_SOCKET=/run/drycontroller-ota/helper.sock
 
@@ -262,26 +261,18 @@ PY
 }
 
 check_license_verify() {
-  if ! has_cmd curl; then
-    add_check "license.verify" fail missing_curl "install curl to run local license verification" "{}"
+  if ! has_cmd docker || ! docker compose version >/dev/null 2>&1; then
+    add_check "license.verify" fail missing_compose "docker compose is required for edge-api in-process License verification" "{}"
     return
-  fi
-  local tmp
-  tmp="$(mktemp "${TMPDIR:-/tmp}/drycontroller-license.XXXXXX")"
-  local url="http://127.0.0.1:${LICENSE_SERVICE_PORT}/verify"
-  local code
-  if ! code="$(curl -sS -m "$TIMEOUT_SEC" -o "$tmp" -w "%{http_code}" "$url" 2>/dev/null)"; then
-    code="000"
   fi
   local body
-  body="$(tr -d '\n' < "$tmp" | cut -c1-800)"
-  rm -f "$tmp"
-  local detail
-  detail="$(json_detail url "$url" http_code "$code" body "$body")"
-  if [ "$code" != "200" ]; then
-    add_check "license.verify" fail "http_${code}" "license-service /verify must return HTTP 200 and valid=true" "$detail"
+  if ! body="$(compose exec -T edge-api python -c 'import json; from app.services.license_admission import license_status; print(json.dumps(license_status(), ensure_ascii=False, separators=(",", ":")))' 2>/dev/null)"; then
+    add_check "license.verify" fail verifier_unavailable "edge-api in-process License verifier could not run" "{}"
     return
   fi
+  body="$(printf '%s' "$body" | tr -d '\n' | cut -c1-800)"
+  local detail
+  detail="$(json_detail source "edge-api-in-process" body "$body")"
   if python3 - "$body" <<'PY'
 import json
 import sys
@@ -294,7 +285,7 @@ PY
   then
     add_check "license.verify" pass ok "" "$detail"
   else
-    add_check "license.verify" fail invalid_license "license-service returned valid=false" "$detail"
+    add_check "license.verify" fail invalid_license "edge-api in-process verifier returned valid=false" "$detail"
   fi
 }
 
@@ -315,9 +306,6 @@ check_compose() {
     mosquitto
     edge-api
     edge-daq
-    ai-softsensor
-    ai-ctrl-optimizer
-    license-service
     edge-monitor
   )
   local ps_json
@@ -385,8 +373,8 @@ PY
 )"
   if python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$result"; then
     add_check "docker.containers" pass ok "" "$result"
-  elif [ "$ALLOW_DEGRADED" = true ] && python3 -c 'import json,sys; data=json.loads(sys.argv[1]); allowed={"edge-daq","ai-softsensor"}; allowed_health={"unhealthy","starting"}; bad=data.get("bad") or []; raise SystemExit(0 if bad and all(item.get("service") in allowed and item.get("state") == "running" and item.get("health") in allowed_health for item in bad) else 1)' "$result"; then
-    add_check "docker.containers" degraded factory_degraded "edge-daq/ai-softsensor may be unhealthy without PLC/data source; run --strict for final acceptance" "$result"
+  elif [ "$ALLOW_DEGRADED" = true ] && python3 -c 'import json,sys; data=json.loads(sys.argv[1]); allowed={"edge-daq"}; allowed_health={"unhealthy","starting"}; bad=data.get("bad") or []; raise SystemExit(0 if bad and all(item.get("service") in allowed and item.get("state") == "running" and item.get("health") in allowed_health for item in bad) else 1)' "$result"; then
+    add_check "docker.containers" degraded factory_degraded "edge-daq may be unhealthy without a PLC/data source; run --strict for final acceptance" "$result"
   else
     add_check "docker.containers" fail container_not_ready "all core services must be running and healthy when health exists" "$result"
   fi

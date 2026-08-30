@@ -73,8 +73,6 @@ services:
       - MQTT_PASSWORD_EDGE_API=${MQTT_PASSWORD_EDGE_API}
       - MQTT_USER_EDGE_DAQ=${MQTT_USER_EDGE_DAQ}
       - MQTT_PASSWORD_EDGE_DAQ=${MQTT_PASSWORD_EDGE_DAQ}
-      - MQTT_USER_AI_SOFTSENSOR=${MQTT_USER_AI_SOFTSENSOR}
-      - MQTT_PASSWORD_AI_SOFTSENSOR=${MQTT_PASSWORD_AI_SOFTSENSOR}
       - MQTT_USER_EDGE_MONITOR=${MQTT_USER_EDGE_MONITOR}
       - MQTT_PASSWORD_EDGE_MONITOR=${MQTT_PASSWORD_EDGE_MONITOR}
       - MQTT_INIT_FORCE=${MQTT_INIT_FORCE:-false}
@@ -92,14 +90,11 @@ services:
         : "$${MQTT_PASSWORD_EDGE_API:?missing MQTT_PASSWORD_EDGE_API}"
         : "$${MQTT_USER_EDGE_DAQ:?missing MQTT_USER_EDGE_DAQ}"
         : "$${MQTT_PASSWORD_EDGE_DAQ:?missing MQTT_PASSWORD_EDGE_DAQ}"
-        : "$${MQTT_USER_AI_SOFTSENSOR:?missing MQTT_USER_AI_SOFTSENSOR}"
-        : "$${MQTT_PASSWORD_AI_SOFTSENSOR:?missing MQTT_PASSWORD_AI_SOFTSENSOR}"
         : "$${MQTT_USER_EDGE_MONITOR:?missing MQTT_USER_EDGE_MONITOR}"
         : "$${MQTT_PASSWORD_EDGE_MONITOR:?missing MQTT_PASSWORD_EDGE_MONITOR}"
         rm -f "$${PASSFILE}"
         mosquitto_passwd -b -c "$${PASSFILE}" "$${MQTT_USER_EDGE_API}" "$${MQTT_PASSWORD_EDGE_API}"
         mosquitto_passwd -b "$${PASSFILE}" "$${MQTT_USER_EDGE_DAQ}" "$${MQTT_PASSWORD_EDGE_DAQ}"
-        mosquitto_passwd -b "$${PASSFILE}" "$${MQTT_USER_AI_SOFTSENSOR}" "$${MQTT_PASSWORD_AI_SOFTSENSOR}"
         mosquitto_passwd -b "$${PASSFILE}" "$${MQTT_USER_EDGE_MONITOR}" "$${MQTT_PASSWORD_EDGE_MONITOR}"
         # mosquitto 官方镜像默认以 uid=1883 运行；若 passwords 属主为 root 会导致 broker 启动失败
         chown 1883:1883 "$${PASSFILE}" || true
@@ -186,7 +181,7 @@ services:
       # License 只读闭环：成对激活只由宿主 root 事务管理器执行
       - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
       - LICENSE_TRUST_POLICY_PATH=${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}
-      - LICENSE_SERVICE_BASE=${LICENSE_SERVICE_BASE:-http://license-service:8000}
+      - TPM_IDENTITY_OBSERVATION_PATH=${TPM_IDENTITY_OBSERVATION_PATH:-/run/drycontroller-identity/tpm-observation.json}
       # Registry pull credentials stay in the root writer; edge-api reads only UDS status.
       - REGISTRY_CREDENTIAL_MAX_AGE_HOURS=${REGISTRY_CREDENTIAL_MAX_AGE_HOURS:-0}
       # 大屏现场状态摘要只读展示云端/tailnet 配置状态
@@ -211,8 +206,9 @@ services:
       - /etc/drycontroller/trust:/etc/drycontroller/trust:ro
       # 唯一宿主 mutation 边界：只连接 root-owned 0660 UDS，不挂 Docker socket。
       - /run/drycontroller-ota:/run/drycontroller-ota:ro
-      - /run/drycontroller-host-release:/run/drycontroller-host-release:ro
       - /run/drycontroller-registry-auth:/run/drycontroller-registry-auth:ro
+      - /run/drycontroller-identity:/run/drycontroller-identity:ro
+      - /run/drycontroller-tailnet-observation:/run/drycontroller-tailnet-observation:ro
     ports:
       # P0-N1 audit 2026-05-15：默认绑 127.0.0.1，避免 LAN/PLC 网段直达 license install
       # 端点。生产若真有外部访问需求，由前置 Caddy/Traefik 反代，并显式覆写本变量。
@@ -292,135 +288,6 @@ services:
     restart: always
     logging: *default-logging
 
-  # ==================== AI 软测量服务 ====================
-  ai-softsensor:
-    # 只读软测量默认启动；模型或数据未就绪时 /ready 可降级，但容器本身不应因缺 PLC 数据重启。
-    build:
-      context: .
-      dockerfile: services/ai-softsensor/Dockerfile
-    container_name: ai-softsensor
-    ulimits: *default-ulimits
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    environment:
-      - MQTT_BROKER=${MQTT_BROKER}
-      - MQTT_PORT=${MQTT_PORT}
-      - MQTT_USER=${MQTT_USER_AI_SOFTSENSOR}
-      - MQTT_PASSWORD=${MQTT_PASSWORD_AI_SOFTSENSOR}
-      - INFLUXDB_HOST=${INFLUXDB_HOST}
-      - INFLUXDB_PORT=${INFLUXDB_PORT}
-      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}
-      - INFLUXDB_ORG=${INFLUXDB_ORG}
-      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
-      - AI_MODEL_PATH=${AI_MODEL_PATH}
-      - LOG_LEVEL=${LOG_LEVEL}
-      - HEALTH_PORT=8080
-    volumes:
-      - /var/log/drycontroller/ai-softsensor:/logs/ai-softsensor
-      - ./configs:/app/configs:ro
-      - /var/lib/drycontroller/models/ai-softsensor:/app/models:ro
-    networks:
-      - edge-network
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-      influxdb:
-        condition: service_healthy
-    restart: always
-    logging: *default-logging
-
-  # ==================== AI 控制优化服务 ====================
-  ai-ctrl-optimizer:
-    # 默认启动；当前只作为优化/suggestion 服务骨架，不直写 PLC。
-    build:
-      context: .
-      dockerfile: services/ai-ctrl-optimizer/Dockerfile
-    container_name: ai-ctrl-optimizer
-    ulimits: *default-ulimits
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    environment:
-      - MQTT_BROKER=${MQTT_BROKER}
-      - MQTT_PORT=${MQTT_PORT}
-      - MQTT_USER=${MQTT_USER_AI_CTRL_OPTIMIZER:-}
-      - MQTT_PASSWORD=${MQTT_PASSWORD_AI_CTRL_OPTIMIZER:-}
-      - INFLUXDB_HOST=${INFLUXDB_HOST}
-      - INFLUXDB_PORT=${INFLUXDB_PORT}
-      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}
-      - INFLUXDB_ORG=${INFLUXDB_ORG}
-      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
-      - AI_MODEL_PATH=${AI_MODEL_PATH}
-      - LOG_LEVEL=${LOG_LEVEL}
-      - HEALTH_PORT=8080
-    volumes:
-      - /var/log/drycontroller/ai-ctrl-optimizer:/logs/ai-ctrl-optimizer
-      - ./configs:/app/configs:ro
-      - /var/lib/drycontroller/models/ai-ctrl-optimizer:/app/models:ro
-    networks:
-      - edge-network
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-      influxdb:
-        condition: service_healthy
-      ai-softsensor:
-        condition: service_started
-    restart: always
-    logging: *default-logging
-
-  # ==================== 授权服务 ====================
-  license-service:
-    build:
-      context: .
-      dockerfile: services/license-service/Dockerfile
-    container_name: license-service
-    ulimits: *default-ulimits
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    environment:
-      - POSTGRES_HOST=${POSTGRES_HOST}
-      - POSTGRES_PORT=${POSTGRES_PORT}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - LICENSE_CHECK_ENABLED=${LICENSE_CHECK_ENABLED}
-      - LICENSE_EXPIRY_DAYS=${LICENSE_EXPIRY_DAYS}
-      - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
-      - LICENSE_TRUST_POLICY_PATH=${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}
-      - LICENSE_MACHINE_ID=${LICENSE_MACHINE_ID:-}
-      - INFLUXDB_HOST=${INFLUXDB_HOST}
-      - INFLUXDB_PORT=${INFLUXDB_PORT}
-      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}
-      - INFLUXDB_ORG=${INFLUXDB_ORG}
-      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
-      - LOG_LEVEL=${LOG_LEVEL}
-    volumes:
-      - /var/log/drycontroller/license-service:/logs/license-service
-      - /etc/drycontroller/license:/etc/drycontroller/license:ro
-      - /etc/drycontroller/keys:/etc/drycontroller/keys:ro
-    ports:
-      # P0-N1 audit 2026-05-15：跟 edge-api 同样默认绑 127.0.0.1
-      - "${LICENSE_SERVICE_BIND_ADDR:-127.0.0.1}:${LICENSE_SERVICE_PORT}:8000"
-    networks:
-      - edge-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: always
-    logging: *default-logging
-
   # ==================== 系统监控服务 ====================
   edge-monitor:
     build:
@@ -488,7 +355,6 @@ services:
     depends_on:
       - edge-api
       - edge-daq
-      - ai-softsensor
       - alertmanager
     restart: always
     logging: *default-logging

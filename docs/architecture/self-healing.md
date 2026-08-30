@@ -19,7 +19,7 @@
 
 ### 2.1 服务级（已实现）
 
-- 目标：`edge-api`、`edge-daq`、`ai-softsensor`、`ai-ctrl-optimizer`、`license-service`、`edge-monitor` 等
+- 目标：`edge-api`、`edge-daq`、`edge-monitor` 及基础设施服务
 - 手段：HTTP/TCP/容器探活 → 阈值触发 → Docker 容器重启 → 冷却观察 → 熔断升级
 
 ### 2.2 数据级（部分实现/部分规划）
@@ -30,7 +30,7 @@
 ### 2.3 AI/OTA 级（部分实现/部分规划）
 
 - AI 模型多版本登记/校验/回滚闭环（当前未形成完整实现）
-- OTA 已由签名成对 `HostRelease`/`SoftwareRelease`、root-owned 固定状态机、候选健康验收和确定性回滚闭环承载；真正的并行蓝绿与流量切换仍未实现
+- OTA 由签名 `edge-app-v1`、root-owned 固定状态机、候选健康验收和确定性回滚承载；发布集合只含 `edge-api` 与 `edge-daq`
 
 ---
 

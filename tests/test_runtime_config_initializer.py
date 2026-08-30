@@ -101,7 +101,7 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
     assert runtime.read_bytes() == first_runtime
     runtime_text = runtime.read_text(encoding="utf-8")
     assert "change_me_" not in runtime_text
-    assert "LICENSE_MACHINE_ID=" + "a" * 32 in runtime_text
+    assert "LICENSE_MACHINE_ID" not in runtime_text
     assert "CLOUD_OPS_BASE_URL=https://ops.example.test" in runtime_text
     assert "CLOUD_OPS_TLS_SERVER_NAME=ops.example.test" in runtime_text
     assert "CLOUD_OPS_TAILNET_ADDRESS=100.100.0.10" in runtime_text
@@ -134,7 +134,6 @@ def test_public_config_generates_private_runtime_state_and_fixed_factory_channel
 @pytest.mark.parametrize(
     ("mutation", "error"),
     [
-        (lambda text: text.replace("LICENSE_MACHINE_ID=" + "a" * 32, "LICENSE_MACHINE_ID=" + "b" * 32), "machine-id"),
         (lambda text: text.replace("POSTGRES_PASSWORD=", "POSTGRES_PASSWORD=short-"), "secret value"),
         (lambda text: text + "UNEXPECTED=value\n", "fields"),
     ],

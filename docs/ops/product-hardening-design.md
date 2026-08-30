@@ -67,7 +67,7 @@ bash scripts/preflight.sh
 - bootstrap sentinel。
 - device identity。
 - signed license 文件与 license public key。
-- `license-service /verify`。
+- `edge-api` 进程内 License verifier。
 - cosign public key。
 - Docker Compose 与核心容器状态。
 - `edge-api /ready`、`edge-daq /ready`、`edge-monitor /ready`。
