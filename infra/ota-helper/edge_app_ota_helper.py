@@ -197,7 +197,7 @@ class OperationController:
             return None
         result = journal["last_result"]
         if (
-            journal["phase"] != "idle"
+            journal["phase"] not in {"idle", "committed"}
             or journal["last_operation_id"] != operation_id
             or not isinstance(result, dict)
             or result.get("action") != "apply"
@@ -292,7 +292,7 @@ class OperationController:
                 break
             oldest = min(terminal, key=lambda operation: str(operation.get("finished_at") or ""))
             operation_id = oldest["operation_id"]
-            tombstones[operation_id] = {
+            tombstone = {
                 "operation_id": operation_id,
                 "status": oldest["status"],
                 "step": "retained",
@@ -302,6 +302,10 @@ class OperationController:
                 "error": oldest.get("error"),
                 "log_available": False,
             }
+            for field in ("release_id", "manifest_digest", "sequence"):
+                if field in oldest:
+                    tombstone[field] = oldest[field]
+            tombstones[operation_id] = tombstone
             del operations[operation_id]
 
         if len(tombstones) > MAX_OPERATION_TOMBSTONES:

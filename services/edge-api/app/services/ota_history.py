@@ -121,10 +121,19 @@ async def record_ota_operation(
                     if row is not None and isinstance(row.params, dict)
                     else {}
                 )
+                stored_result = (
+                    dict(row.result or {})
+                    if row is not None and isinstance(row.result, dict)
+                    else {}
+                )
+                stored_release_identity = _release_identity(
+                    dict(stored_result.get("release_identity") or {})
+                )
+                effective_release_identity = stored_release_identity or release_identity
                 effective_req = req if request_payload is not None else stored_request
                 receipt_label = str(
                     effective_req.get("target_version")
-                    or (release_identity or {}).get("release_id")
+                    or (effective_release_identity or {}).get("release_id")
                     or op_id
                 )
                 if row is None:
@@ -141,7 +150,7 @@ async def record_ota_operation(
                 row.status = status_text
                 row.ota_version = str(
                     effective_req.get("target_version")
-                    or (release_identity or {}).get("release_id")
+                    or (effective_release_identity or {}).get("release_id")
                     or row.ota_version
                     or op_id
                 )
@@ -162,8 +171,8 @@ async def record_ota_operation(
                     "helper_container_id": operation.get("helper_container_id"),
                     "helper_image": operation.get("helper_image"),
                 }
-                if release_identity is not None:
-                    row.result["release_identity"] = release_identity
+                if effective_release_identity is not None:
+                    row.result["release_identity"] = effective_release_identity
                 await db.flush()
 
                 current_payload = _build_outbox_payload(row)

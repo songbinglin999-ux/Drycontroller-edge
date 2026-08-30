@@ -136,6 +136,50 @@ async def test_record_ota_operation_uses_signed_release_receipt_when_version_is_
 
 
 @pytest.mark.asyncio
+async def test_retained_poll_preserves_existing_signed_release_receipt(monkeypatch):
+    from app.models import OtaOperation
+    from app.services import ota_history as oh_module
+
+    release_identity = {
+        "release_id": "22222222-2222-4222-8222-222222222222",
+        "manifest_digest": "sha256:" + "2" * 64,
+        "sequence": 2,
+    }
+    existing = OtaOperation(
+        id=9,
+        operation_id="00000000000000020000000000000002",
+        ota_version=release_identity["release_id"],
+        source="online",
+        status="succeeded",
+        started_at=dt.datetime(2026, 8, 30, tzinfo=dt.timezone.utc),
+        result={
+            "exit_code": 0,
+            "error": None,
+            "helper_container_id": None,
+            "helper_image": None,
+            "release_identity": release_identity,
+        },
+    )
+    session = _FakeSession(rows=[existing])
+    monkeypatch.setattr(oh_module, "AsyncSessionLocal", lambda: session)
+
+    await oh_module.record_ota_operation(
+        {
+            "operation_id": existing.operation_id,
+            "status": "succeeded",
+            "step": "retained",
+            "finished_at": "2026-08-30T00:01:00+00:00",
+            "exit_code": 0,
+            "error": None,
+            "log_available": False,
+        }
+    )
+
+    assert existing.result["release_identity"] == release_identity
+    assert session.added[0].payload["result"]["release_identity"] == release_identity
+
+
+@pytest.mark.asyncio
 async def test_record_ota_operation_updates_existing_and_writes_outbox(monkeypatch):
     from app.models import CloudSyncOutbox, OtaOperation
     from app.services import ota_history as oh_module

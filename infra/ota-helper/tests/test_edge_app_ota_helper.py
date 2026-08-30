@@ -3,9 +3,14 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import sys
+
+import pytest
 
 
 HELPER_PATH = Path(__file__).resolve().parents[1] / "edge_app_ota_helper.py"
+if str(HELPER_PATH.parent) not in sys.path:
+    sys.path.insert(0, str(HELPER_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("edge_app_ota_helper", HELPER_PATH)
 assert SPEC is not None and SPEC.loader is not None
 helper = importlib.util.module_from_spec(SPEC)
@@ -34,8 +39,9 @@ def _slot(release_id: str, sequence: int, suffix: str) -> dict:
     }
 
 
+@pytest.mark.parametrize("journal_phase", ["idle", "committed"])
 def test_restart_after_durable_commit_marks_running_operation_succeeded_without_reapply(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, journal_phase: str
 ):
     operation_id = "00000000000000020000000000000002"
     active = _slot("22222222-2222-4222-8222-222222222222", 2, "2")
@@ -81,8 +87,8 @@ def test_restart_after_durable_commit_marks_running_operation_succeeded_without_
         json.dumps(
             {
                 "schema": "drycontroller.edge-app-release-journal.v2",
-                "phase": "idle",
-                "operation_id": None,
+                "phase": journal_phase,
+                "operation_id": operation_id if journal_phase == "committed" else None,
                 "last_operation_id": operation_id,
                 "last_result": result,
                 "high_watermark": 2,
@@ -116,6 +122,41 @@ def test_restart_after_durable_commit_marks_running_operation_succeeded_without_
     assert "target_version" not in operation
     assert "active_release_version" not in operation
     assert json.loads(state_path.read_text())["high_watermark"] == 2
+    assert json.loads(journal_path.read_text())["phase"] == journal_phase
+
+
+def test_prune_preserves_signed_release_receipt(monkeypatch):
+    operation_id = "00000000000000020000000000000002"
+    release_id = "22222222-2222-4222-8222-222222222222"
+    manifest_digest = "sha256:" + "2" * 64
+    state = {
+        "operations": {
+            operation_id: {
+                "operation_id": operation_id,
+                "status": "succeeded",
+                "step": "done",
+                "started_at": "2026-08-30T00:00:00+00:00",
+                "finished_at": "2026-08-30T00:01:00+00:00",
+                "exit_code": 0,
+                "error": None,
+                "log_available": True,
+                "release_id": release_id,
+                "manifest_digest": manifest_digest,
+                "sequence": 2,
+            }
+        },
+        "tombstones": {},
+        "high_watermark": 2,
+    }
+    controller = object.__new__(helper.OperationController)
+    monkeypatch.setattr(helper, "MAX_FULL_OPERATIONS", 0)
+
+    controller._prune_state(state)
+
+    assert state["operations"] == {}
+    assert state["tombstones"][operation_id]["release_id"] == release_id
+    assert state["tombstones"][operation_id]["manifest_digest"] == manifest_digest
+    assert state["tombstones"][operation_id]["sequence"] == 2
 
 
 def test_release_summary_uses_signed_receipt_identity_without_version(tmp_path: Path):
