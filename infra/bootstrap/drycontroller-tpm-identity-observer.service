@@ -8,7 +8,7 @@ Requires=dev-tpmrm0.device
 Type=oneshot
 User=root
 Group=root
-ExecStart=/usr/libexec/drycontroller/observe-tpm-identity.py
+ExecStart=/opt/drycontroller-identity/venv/bin/python /usr/libexec/drycontroller/observe-tpm-identity.py
 RuntimeDirectory=drycontroller-identity
 RuntimeDirectoryMode=0755
 UMask=0022
@@ -16,6 +16,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
 ReadWritePaths=/run/drycontroller-identity
 
 [Install]

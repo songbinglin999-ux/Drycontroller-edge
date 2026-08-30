@@ -397,15 +397,15 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
     monkeypatch.setattr(settings, "TS_LOGIN_SERVER", "http://headscale")
     monkeypatch.setattr(settings, "TAILSCALE_EXPECTED_VERSION", "1.98.10")
 
-    class FakeHostRunner:
-        async def get_tailnet_status(self):
-            return {
-                "ok": False,
-                "reason": "tailscale_not_running",
-                "detail": {},
-            }
-
-    monkeypatch.setattr(ops_module, "get_host_release_ops_client", lambda: FakeHostRunner())
+    monkeypatch.setattr(
+        ops_module,
+        "load_tailnet_observation",
+        lambda: {
+            "ok": False,
+            "reason": "tailscale_not_running",
+            "detail": {},
+        },
+    )
 
     async def fake_verify():
         return {"url": "mock", "status_code": 200, "body": {"valid": True}}

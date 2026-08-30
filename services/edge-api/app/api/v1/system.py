@@ -17,7 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.core.config import settings
 from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_identity
 from app.core.security import require_admin_api_key, require_readonly_http_source
-from app.services.host_release_ops import get_host_release_ops_client
+from app.services.license_admission import license_status
+from app.services.tailnet_observation import load_tailnet_observation
 from app.services.system_status import (
     SystemStatusService,
     get_system_status_service,
@@ -88,8 +89,8 @@ async def _tailnet_summary() -> dict:
         hostname = ""
         expected_node_id = ""
     try:
-        observation = await get_host_release_ops_client().get_tailnet_status()
-    except HTTPException:
+        observation = load_tailnet_observation()
+    except (OSError, ValueError):
         observation = {"ok": False, "reason": "tailnet_observer_unavailable", "detail": {}}
     result = validate_tailscale_status(
         observation,
@@ -109,27 +110,15 @@ async def _tailnet_summary() -> dict:
 
 
 async def _license_summary() -> dict:
-    url = f"{settings.LICENSE_SERVICE_BASE.rstrip('/')}/verify"
-    try:
-        async with httpx.AsyncClient(timeout=3) as client:
-            resp = await client.get(url)
-        body = resp.json() if resp.content else {}
-        valid = bool(body.get("valid"))
-        return {
-            "key": "license",
-            "label": "授权",
-            "status": "ok" if resp.status_code == 200 and valid else "critical",
-            "message": "有效" if valid else str(body.get("reason") or f"http {resp.status_code}"),
-            "detail": body,
-        }
-    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover - depends on sibling service
-        return {
-            "key": "license",
-            "label": "授权",
-            "status": "critical",
-            "message": "授权服务不可达",
-            "detail": {"error": str(exc), "url": url},
-        }
+    body = license_status()
+    valid = bool(body.get("valid"))
+    return {
+        "key": "license",
+        "label": "授权",
+        "status": "ok" if valid else "critical",
+        "message": "有效" if valid else str(body.get("reason") or "invalid"),
+        "detail": body,
+    }
 
 
 async def _cloud_summary() -> dict:

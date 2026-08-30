@@ -14,7 +14,6 @@ from common.logging import setup_logging
 from license.license_verifier import (
     load_active_license_trust,
     load_json,
-    license_runtime_error,
     verify_license as verify_signed_license,
 )
 
@@ -113,19 +112,4 @@ async def verify_license():
         logger.warning("license_verify_failed", reason="signature_invalid", error=str(exc))
         return _result(False, "signature_invalid", None)
 
-    # This retained legacy service has no live TPM observation surface. Even a
-    # correctly signed v2 License must therefore fail closed; edge-api owns the
-    # active in-process admission path.
-    runtime_error = license_runtime_error(
-        payload,
-        device_identity={},
-        tpm_observation={},
-    )
-    if runtime_error is not None:
-        return _result(
-            False,
-            runtime_error,
-            None if runtime_error == "malformed_license" else payload,
-        )
-
-    return _result(True, "ok", payload)
+    return _result(False, "legacy_ineligible", None)

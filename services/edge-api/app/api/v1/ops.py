@@ -24,7 +24,6 @@ from pydantic import BaseModel, Field
 # 与 cloud-ops 仓库的同名文件保持 byte-identical 同步，CI hash 校验保障一致性。
 # 详见 Drycontroller-cloudserver/docs/architecture/shared-schemas.md。
 from common.schemas.cloud_to_edge import (
-    HostReleaseStartRequest,
     ManualActionRequest,
     MonitorConfigUpdate,
     OtaStartRequest,
@@ -39,7 +38,6 @@ from app.core.config import settings
 from app.core.device_identity import DeviceIdentityUnavailable, load_runtime_identity
 from app.services.monitor_config import MonitorConfigService, get_monitor_config_service
 from app.services.monitor_ops import MonitorOpsClient, get_monitor_ops_client
-from app.services.host_release_ops import HostReleaseOpsClient, get_host_release_ops_client
 from app.services.health import get_system_readiness
 from app.services.ota_ops import OtaOpsClient, get_ota_ops_client
 from app.services.registry_credentials import (
@@ -55,6 +53,7 @@ from app.services.config_version import record_config_version
 from app.services.ota_history import record_ota_operation
 from app.services.preflight_history import record_preflight_run
 from app.services.license_admission import license_status, require_license_capability
+from app.services.tailnet_observation import load_tailnet_observation
 from common.tailscale_status import validate_tailscale_status
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
@@ -223,8 +222,8 @@ async def _preflight_tailnet(checks: list[dict[str, Any]], *, allow_degraded: bo
         expected_hostname = ""
         expected_node_id = ""
     try:
-        observation = await get_host_release_ops_client().get_tailnet_status()
-    except HTTPException:
+        observation = load_tailnet_observation()
+    except (OSError, ValueError):
         observation = {"ok": False, "reason": "tailnet_observer_unavailable", "detail": {}}
     result = validate_tailscale_status(
         observation,
@@ -674,15 +673,12 @@ async def ota_get_logs(
     return await client.get_logs(operation_id)
 
 
-# ==================== HostRelease（immutable runner，仅接收 operation ID） ====================
+# ==================== HostRelease（永久 legacy/ineligible） ====================
 
 
 @router.post("/host-release/start")
 async def host_release_start(
-    req: HostReleaseStartRequest,
-    client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
     _: str = Depends(require_admin_api_key),
-    writer: RegistryAuthWriterClient = Depends(get_registry_auth_writer_client),
 ):
     raise HTTPException(
         status_code=409,
@@ -693,7 +689,6 @@ async def host_release_start(
 @router.get("/host-release/operations/{operation_id}")
 async def host_release_get_operation(
     operation_id: str,
-    client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
     _: str = Depends(require_admin_api_key),
 ):
     raise HTTPException(
@@ -705,7 +700,6 @@ async def host_release_get_operation(
 @router.get("/host-release/operations/{operation_id}/logs")
 async def host_release_get_logs(
     operation_id: str,
-    client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
     _: str = Depends(require_admin_api_key),
 ):
     raise HTTPException(

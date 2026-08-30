@@ -435,5 +435,10 @@ def test_live_tpm_observer_runs_before_docker_and_is_started_by_installer():
     assert "Requires=dev-tpmrm0.device" in unit
     assert "Before=docker.service drycontroller-license-transaction-recovery.service" in unit
     assert "RequiredBy=docker.service" in unit
-    assert "ExecStart=/usr/libexec/drycontroller/observe-tpm-identity.py" in unit
+    assert (
+        "ExecStart=/opt/drycontroller-identity/venv/bin/python "
+        "/usr/libexec/drycontroller/observe-tpm-identity.py"
+    ) in unit
+    assert "DevicePolicy=closed" in unit
+    assert "DeviceAllow=/dev/tpmrm0 rw" in unit
     assert "systemctl enable --now drycontroller-tpm-identity-observer.service" in installer_script

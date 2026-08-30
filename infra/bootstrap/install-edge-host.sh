@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the public-material-only RB-6 runtime and one signed H1/T1/S1 pair.
+# Retained only to reject the legacy HostRelease/12-service installation path.
 set -euo pipefail
 
 INSTALL_PACKAGES=true
@@ -23,6 +23,9 @@ usage() {
   cat <<'EOF'
 Usage:
   sudo bash infra/bootstrap/install-edge-host.sh [options]
+
+This legacy H1/T1/S1 installer is permanently ineligible. The active product
+uses the non-destructive edge-app-v1 runtime retrofit entrypoint instead.
 
 Required public release inputs:
   --host-release FILE                 Completed signed HostRelease H1 seed
@@ -81,6 +84,8 @@ while [ $# -gt 0 ]; do
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
+
+die "legacy HostRelease/12-service installation is ineligible; use retrofit-edge-app-runtime.sh"
 
 [ "$(id -u)" -eq 0 ] || die "installer must run as root"
 [ "$(uname -s)" = "Linux" ] || die "Linux is required"

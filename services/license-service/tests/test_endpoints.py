@@ -170,7 +170,7 @@ def test_retained_service_rejects_v2_without_live_tpm_surface(tmp_path, monkeypa
 
     assert resp.status_code == 200
     assert resp.json()["valid"] is False
-    assert resp.json()["reason"] == "tpm_identity_mismatch"
+    assert resp.json()["reason"] == "legacy_ineligible"
 
 
 def test_verify_endpoint_disabled(monkeypatch):

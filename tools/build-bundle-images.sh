@@ -17,6 +17,9 @@
 #
 set -euo pipefail
 
+printf '%s\n' 'legacy 12-service bundle is permanently ineligible; use edge-app-v1 release artifacts' >&2
+exit 64
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${REPO_ROOT}/dist"
@@ -31,16 +34,8 @@ SOURCE_BUNDLE_PATHS=(
   scripts/ci/assert-fresh-install-data-plane.sh
   scripts/manage-license-trust.py
   scripts/manage-license-transaction.py
-  scripts/observe-tpm-identity.py
-  scripts/create-edge-app-baseline.py
   common/license_verifier.py
   common/tailscale_status.py
-  infra/ota-helper/edge_app_release.py
-  infra/ota-helper/drycontroller_ota_helper.py
-  infra/ota-helper/ota-apply
-  infra/ota-helper/initialize-active-release
-  infra/ota-helper/start-active-release
-  infra/ota-helper/rollback-edge-app
   infra/ota-helper/release_security_contract.py
   infra/bootstrap/drycontroller-factory-identity.service
   infra/bootstrap/drycontroller-device-credential-rotation.service
@@ -53,10 +48,8 @@ SOURCE_BUNDLE_PATHS=(
   infra/host-release-runner/initialize-initial-release
   infra/host-release-runner/drycontroller-host-release-runner.service
   infra/ota-helper/drycontroller-ota-helper.service
-  infra/ota-helper/drycontroller-edge-app-recovery.service
   infra/registry-auth-writer/registry_auth_writer.py
   infra/registry-auth-writer/drycontroller-registry-auth-writer.service
-  infra/bootstrap/drycontroller-tpm-identity-observer.service
   services/device-identity/requirements.txt
   services/device-identity/identity_service
 )

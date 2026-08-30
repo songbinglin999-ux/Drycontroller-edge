@@ -31,19 +31,18 @@ def _load_installer():
 
 
 def _inputs(tmp_path: Path) -> dict[str, object]:
-    host_key = tmp_path / "host.pub"
     software_key = tmp_path / "software.pub"
     cloud_key = tmp_path / "cloud.pub"
     cosign = tmp_path / "cosign"
-    host_key.write_bytes(b"host-key")
     software_key.write_bytes(b"software-key")
     cloud_key.write_bytes(b"cloud-key")
     cosign.write_bytes(b"cosign-binary")
     return {
         "repo_source": ROOT,
-        "host_cosign_public_key": host_key,
         "software_cosign_public_key": software_key,
+        "approved_software_public_key_sha256": hashlib.sha256(b"software-key").hexdigest(),
         "device_identity_cloud_public_key": cloud_key,
+        "approved_device_identity_cloud_public_key_sha256": hashlib.sha256(b"cloud-key").hexdigest(),
         "cosign_binary": cosign,
         "approved_cosign_sha256": hashlib.sha256(cosign.read_bytes()).hexdigest(),
         "owner_uid": os.geteuid(),
@@ -55,11 +54,9 @@ def test_static_runtime_installer_reproduces_product_paths_modes_and_bytes(tmp_p
     module = _load_installer()
     keys = tmp_path / "keys"
     keys.mkdir()
-    host_key = keys / "host.pub"
     software_key = keys / "software.pub"
     cloud_key = keys / "cloud.pub"
     cosign = keys / "cosign"
-    host_key.write_bytes(b"host-key")
     software_key.write_bytes(b"software-key")
     cloud_key.write_bytes(b"cloud-key")
     cosign.write_bytes(b"cosign-binary")
@@ -71,9 +68,10 @@ def test_static_runtime_installer_reproduces_product_paths_modes_and_bytes(tmp_p
 
     module.install_static_runtime(
         repo_source=ROOT,
-        host_cosign_public_key=host_key,
         software_cosign_public_key=software_key,
+        approved_software_public_key_sha256=hashlib.sha256(b"software-key").hexdigest(),
         device_identity_cloud_public_key=cloud_key,
+        approved_device_identity_cloud_public_key_sha256=hashlib.sha256(b"cloud-key").hexdigest(),
         cosign_binary=cosign,
         approved_cosign_sha256=hashlib.sha256(cosign.read_bytes()).hexdigest(),
         root=destination,
@@ -90,7 +88,6 @@ def test_static_runtime_installer_reproduces_product_paths_modes_and_bytes(tmp_p
         assert installed.read_bytes() == (ROOT / source).read_bytes()
         assert stat.S_IMODE(installed.stat().st_mode) == mode
     for installed, expected in (
-        ("etc/drycontroller/keys/host-release-cosign.pub", b"host-key"),
         ("etc/drycontroller/keys/cosign.pub", b"software-key"),
         ("etc/drycontroller/trust/device-identity-cloud.pub", b"cloud-key"),
         ("usr/local/bin/cosign", b"cosign-binary"),
@@ -111,9 +108,10 @@ def test_static_runtime_installer_fails_before_writing_on_unapproved_cosign(tmp_
     with pytest.raises(module.RuntimeInstallError, match="cosign checksum is not approved"):
         module.install_static_runtime(
             repo_source=ROOT,
-            host_cosign_public_key=public_input,
             software_cosign_public_key=public_input,
+            approved_software_public_key_sha256=hashlib.sha256(b"public-key").hexdigest(),
             device_identity_cloud_public_key=public_input,
+            approved_device_identity_cloud_public_key_sha256=hashlib.sha256(b"public-key").hexdigest(),
             cosign_binary=cosign,
             approved_cosign_sha256="0" * 64,
             root=destination,
@@ -160,7 +158,7 @@ def test_static_runtime_installer_rejects_unsafe_existing_destination(
         module.install_static_runtime(**_inputs(tmp_path), root=destination)
 
     assert outside.read_bytes() == b"must-not-change"
-    assert not (destination / "usr/libexec/drycontroller/host_release_engine.py").exists()
+    assert not (destination / "usr/libexec/drycontroller/edge_app_release.py").exists()
 
 
 def test_static_runtime_installer_rejects_root_symlink_escape(tmp_path):

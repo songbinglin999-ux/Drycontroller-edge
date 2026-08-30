@@ -66,6 +66,7 @@ class Commands:
     def __init__(self, running: dict[str, str]):
         self.running = dict(running)
         self.calls: list[list[str]] = []
+        self.fail_after_first_compose_service = False
 
     def __call__(self, args: list[str]) -> str:
         self.calls.append(args)
@@ -85,6 +86,9 @@ class Commands:
                 marker = '    image: "'
                 section = override.split(f"  {service}:\n", 1)[1]
                 self.running[service] = section.split(marker, 1)[1].split('"', 1)[0]
+                if self.fail_after_first_compose_service:
+                    self.fail_after_first_compose_service = False
+                    raise release.ReleaseError("partial compose failure")
         return "[]"
 
 
@@ -237,6 +241,18 @@ def test_boot_recovery_restores_old_active_after_mutation_crash(tmp_path: Path, 
     recovered = _engine(paths, commands, policy).recover()
     assert recovered["release_id"] == active["release_id"]
     assert commands.running == active["images"]
+    assert release.read_json(paths.journal)["phase"] == "idle"
+
+
+def test_partial_compose_failure_restores_both_active_services(tmp_path: Path, monkeypatch):
+    paths, _key, active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    commands.fail_after_first_compose_service = True
+
+    with pytest.raises(release.ReleaseError, match="partial compose failure"):
+        _engine(paths, commands, policy).apply()
+
+    assert commands.running == active["images"]
+    assert release.read_json(paths.active)["manifest"] == active
     assert release.read_json(paths.journal)["phase"] == "idle"
 
 

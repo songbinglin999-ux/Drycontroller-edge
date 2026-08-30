@@ -692,12 +692,11 @@ class ReleaseEngine:
             )
             self._persist(journal)
             self.fault("after_prepared")
-            mutated = False
+            mutated = True
             try:
-                self._compose(candidate)
-                mutated = True
                 journal["phase"] = "mutated"
                 self._persist(journal)
+                self._compose(candidate)
                 self.fault("after_mutated")
                 self._verify_runtime()
                 self.fault("after_health")

@@ -19,7 +19,6 @@ DIRECTORIES = {
     "/etc/drycontroller/trust": 0o755,
     "/etc/drycontroller/license": 0o755,
     "/var/lib/drycontroller": 0o700,
-    "/var/lib/drycontroller-host": 0o700,
     "/var/lib/drycontroller-ota": 0o700,
     "/var/lib/drycontroller/license-transaction": 0o700,
     "/var/lib/drycontroller/cloud-request-nonces": 0o700,
@@ -52,18 +51,6 @@ RUNTIME_FILES = {
         "/usr/libexec/drycontroller/rollback-edge-app",
         0o755,
     ),
-    "infra/ota-helper/release_security_contract.py": (
-        "/usr/libexec/drycontroller/release_security_contract.py",
-        0o644,
-    ),
-    "infra/host-release-runner/host_release_engine.py": (
-        "/usr/libexec/drycontroller/host_release_engine.py",
-        0o644,
-    ),
-    "infra/host-release-runner/host_release_runner.py": (
-        "/usr/libexec/drycontroller/host_release_runner.py",
-        0o644,
-    ),
     "common/tailscale_status.py": (
         "/usr/libexec/drycontroller/common/tailscale_status.py",
         0o644,
@@ -80,29 +67,13 @@ RUNTIME_FILES = {
         "/usr/libexec/drycontroller/observe-tpm-identity.py",
         0o755,
     ),
+    "scripts/observe-tailnet-status.py": (
+        "/usr/libexec/drycontroller/observe-tailnet-status.py",
+        0o755,
+    ),
     "scripts/create-edge-app-baseline.py": (
         "/usr/libexec/drycontroller/create-edge-app-baseline.py",
         0o755,
-    ),
-    "infra/host-release-runner/host-release-runner": (
-        "/usr/libexec/drycontroller/host-release-runner",
-        0o755,
-    ),
-    "infra/host-release-runner/host-release-apply": (
-        "/usr/libexec/drycontroller/host-release-apply",
-        0o755,
-    ),
-    "infra/host-release-runner/initialize-initial-release": (
-        "/usr/libexec/drycontroller/initialize-initial-release",
-        0o755,
-    ),
-    "scripts/ci/assert-fresh-install-data-plane.sh": (
-        "/usr/libexec/drycontroller/assert-fresh-install-data-plane",
-        0o755,
-    ),
-    "infra/host-release-runner/drycontroller-host-release-runner.service": (
-        "/etc/systemd/system/drycontroller-host-release-runner.service",
-        0o644,
     ),
     "infra/ota-helper/drycontroller-ota-helper.service": (
         "/etc/systemd/system/drycontroller-ota-helper.service",
@@ -126,6 +97,14 @@ RUNTIME_FILES = {
     ),
     "infra/bootstrap/drycontroller-tpm-identity-observer.service": (
         "/etc/systemd/system/drycontroller-tpm-identity-observer.service",
+        0o644,
+    ),
+    "infra/bootstrap/drycontroller-tailnet-observer.service": (
+        "/etc/systemd/system/drycontroller-tailnet-observer.service",
+        0o644,
+    ),
+    "infra/bootstrap/drycontroller-tailnet-observer.timer": (
+        "/etc/systemd/system/drycontroller-tailnet-observer.timer",
         0o644,
     ),
 }
@@ -370,9 +349,10 @@ def _secure_sha256(source: Path) -> str:
 def install_static_runtime(
     *,
     repo_source: Path,
-    host_cosign_public_key: Path,
     software_cosign_public_key: Path,
+    approved_software_public_key_sha256: str,
     device_identity_cloud_public_key: Path,
+    approved_device_identity_cloud_public_key_sha256: str,
     cosign_binary: Path,
     approved_cosign_sha256: str,
     root: Path = Path("/"),
@@ -383,17 +363,29 @@ def install_static_runtime(
 
     repo_source = repo_source.resolve(strict=True)
     root = Path(os.path.abspath(root))
-    if len(approved_cosign_sha256) != 64 or any(
-        character not in "0123456789abcdef" for character in approved_cosign_sha256
-    ):
-        raise RuntimeInstallError("approved cosign checksum invalid")
+    approved_hashes = {
+        "cosign": approved_cosign_sha256,
+        "software public key": approved_software_public_key_sha256,
+        "device identity Cloud public key": approved_device_identity_cloud_public_key_sha256,
+    }
+    for label, approved_hash in approved_hashes.items():
+        if len(approved_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in approved_hash
+        ):
+            raise RuntimeInstallError(f"approved {label} checksum invalid")
     actual_cosign_sha256 = _secure_sha256(cosign_binary)
     if actual_cosign_sha256 != approved_cosign_sha256:
         raise RuntimeInstallError("cosign checksum is not approved")
+    if _secure_sha256(software_cosign_public_key) != approved_software_public_key_sha256:
+        raise RuntimeInstallError("software public key checksum is not approved")
+    if (
+        _secure_sha256(device_identity_cloud_public_key)
+        != approved_device_identity_cloud_public_key_sha256
+    ):
+        raise RuntimeInstallError("device identity Cloud public key checksum is not approved")
 
     inputs = [
         *(repo_source / relative_source for relative_source in RUNTIME_FILES),
-        host_cosign_public_key,
         software_cosign_public_key,
         device_identity_cloud_public_key,
         cosign_binary,
@@ -401,7 +393,6 @@ def install_static_runtime(
     for source in inputs:
         _validate_source(source)
     external_files = (
-        (host_cosign_public_key, "/etc/drycontroller/keys/host-release-cosign.pub"),
         (software_cosign_public_key, "/etc/drycontroller/keys/cosign.pub"),
         (
             device_identity_cloud_public_key,
@@ -508,17 +499,21 @@ def install_static_runtime(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-source", required=True, type=Path)
-    parser.add_argument("--host-cosign-public-key", required=True, type=Path)
     parser.add_argument("--software-cosign-public-key", required=True, type=Path)
+    parser.add_argument("--approved-software-public-key-sha256", required=True)
     parser.add_argument("--device-identity-cloud-public-key", required=True, type=Path)
+    parser.add_argument("--approved-device-identity-cloud-public-key-sha256", required=True)
     parser.add_argument("--cosign-binary", required=True, type=Path)
     parser.add_argument("--approved-cosign-sha256", required=True)
     args = parser.parse_args()
     install_static_runtime(
         repo_source=args.repo_source,
-        host_cosign_public_key=args.host_cosign_public_key,
         software_cosign_public_key=args.software_cosign_public_key,
+        approved_software_public_key_sha256=args.approved_software_public_key_sha256,
         device_identity_cloud_public_key=args.device_identity_cloud_public_key,
+        approved_device_identity_cloud_public_key_sha256=(
+            args.approved_device_identity_cloud_public_key_sha256
+        ),
         cosign_binary=args.cosign_binary,
         approved_cosign_sha256=args.approved_cosign_sha256,
     )
