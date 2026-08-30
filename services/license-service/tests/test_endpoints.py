@@ -21,9 +21,10 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
     if entry not in sys.path:
         sys.path.append(entry)
 
-from license.main import app  # noqa: E402
+from license import main as license_main  # noqa: E402
 
 
+app = license_main.app
 client = TestClient(app)
 
 
@@ -93,21 +94,20 @@ def test_ready_endpoint():
     assert resp.json()["ready"] is True
 
 
-def test_verify_endpoint_valid(tmp_path, monkeypatch):
+def test_verify_endpoint_rejects_legacy_v1_license(tmp_path, monkeypatch):
     license_path = tmp_path / "license.json"
     trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
     license_path.write_text(json.dumps(SIGNED_LICENSE), encoding="utf-8")
     monkeypatch.setenv("LICENSE_CHECK_ENABLED", "true")
     monkeypatch.setenv("LICENSE_FILE_PATH", str(license_path))
     monkeypatch.setenv("LICENSE_TRUST_POLICY_PATH", str(trust_policy_path))
-    monkeypatch.setenv("LICENSE_MACHINE_ID", "test-machine")
 
     resp = client.get("/verify")
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
-    assert data["valid"] is True
-    assert data["reason"] == "ok"
+    assert data["valid"] is False
+    assert data["reason"] == "signature_invalid"
 
 
 def test_verify_endpoint_missing_license(tmp_path, monkeypatch):
@@ -123,7 +123,7 @@ def test_verify_endpoint_missing_license(tmp_path, monkeypatch):
     assert data["reason"] == "missing_license_file"
 
 
-def test_verify_endpoint_machine_mismatch(tmp_path, monkeypatch):
+def test_verify_endpoint_does_not_restore_machine_id_compatibility(tmp_path, monkeypatch):
     license_path = tmp_path / "license.json"
     trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
     license_path.write_text(json.dumps(SIGNED_LICENSE), encoding="utf-8")
@@ -136,7 +136,41 @@ def test_verify_endpoint_machine_mismatch(tmp_path, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["valid"] is False
-    assert data["reason"] == "machine_mismatch"
+    assert data["reason"] == "signature_invalid"
+
+
+def test_retained_service_rejects_v2_without_live_tpm_surface(tmp_path, monkeypatch):
+    license_path = tmp_path / "license.json"
+    trust_policy_path = _write_trust_policy(tmp_path / "license-trust")
+    payload = {
+        "capabilities": ["cloud-session", "edge-app-ota", "production-control"],
+        "device_id": "EDGE-0001",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+        "identity_fingerprint": "1" * 64,
+        "issued_at": "2026-01-01T00:00:00+00:00",
+        "issuer": "drycontroller-cloud-ops",
+        "key_id": "test-key",
+        "license_id": "lic_" + "1" * 32,
+        "line_id": "L1",
+        "node_name": "edge-0001",
+        "previous_license_id": None,
+        "product": "edge-app-v1",
+        "schema": "drycontroller.license.v2",
+        "signature": "test-only",
+        "signature_alg": "ed25519",
+        "tenant_id": "t-test",
+    }
+    license_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("LICENSE_CHECK_ENABLED", "true")
+    monkeypatch.setenv("LICENSE_FILE_PATH", str(license_path))
+    monkeypatch.setenv("LICENSE_TRUST_POLICY_PATH", str(trust_policy_path))
+    monkeypatch.setattr(license_main, "verify_signed_license", lambda *_args: None)
+
+    resp = client.get("/verify")
+
+    assert resp.status_code == 200
+    assert resp.json()["valid"] is False
+    assert resp.json()["reason"] == "tpm_identity_mismatch"
 
 
 def test_verify_endpoint_disabled(monkeypatch):

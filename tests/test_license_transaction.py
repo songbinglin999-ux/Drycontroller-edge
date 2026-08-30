@@ -49,21 +49,27 @@ def _license(
     private_key: Ed25519PrivateKey,
     key_id: str,
     *,
-    machine_id: str = "machine-1",
+    identity_fingerprint: str = "11" * 32,
     issued_at: str = "2026-01-01T00:00:00Z",
     expires_at: str = "2099-01-01T00:00:00Z",
-    padding: int = 0,
 ) -> bytes:
     unsigned = {
+        "capabilities": ["cloud-session", "edge-app-ota", "production-control"],
+        "device_id": "EDGE-ABCDEF123456",
         "expires_at": expires_at,
+        "identity_fingerprint": identity_fingerprint,
         "issued_at": issued_at,
+        "issuer": "drycontroller-cloud-ops",
         "key_id": key_id,
-        "license_id": f"lic-{key_id}",
-        "machine_id": machine_id,
+        "license_id": "lic_" + hashlib.sha256(key_id.encode()).hexdigest()[:32],
+        "line_id": "LINE-A",
+        "node_name": "edge-abcdef123456",
+        "previous_license_id": None,
+        "product": "edge-app-v1",
+        "schema": "drycontroller.license.v2",
         "signature_alg": "ed25519",
+        "tenant_id": "t1",
     }
-    if padding:
-        unsigned["padding"] = "x" * padding
     payload = {
         **unsigned,
         "signature": base64.b64encode(
@@ -105,7 +111,19 @@ def _fixture(tmp_path: Path):
         "lock_path": tmp_path / "release" / "release.lock",
         "expected_uid": os.getuid(),
         "trust_parent_mode": 0o700,
-        "machine_id": "machine-1",
+        "device_identity": {
+            "device_id": "EDGE-ABCDEF123456",
+            "tenant_id": "t1",
+            "line_id": "LINE-A",
+            "node_name": "edge-abcdef123456",
+            "identity_fingerprint": "11" * 32,
+        },
+        "tpm_observation": {
+            "schema": "drycontroller.tpm-identity-observation.v1",
+            "status": "ok",
+            "identity_fingerprint": "11" * 32,
+            "observed_at": "2026-08-30T00:00:00Z",
+        },
     }
     return kwargs, old_key, new_key, new_trust, candidate_license
 
@@ -202,7 +220,9 @@ def test_candidate_pair_and_expected_active_are_fail_closed(tmp_path: Path):
     with pytest.raises(ValueError, match="key_id"):
         transaction.activate(new_trust, bad_license, "license-old")
 
-    _assert_live(kwargs, old_license, candidate_license.read_bytes())
+    assert kwargs["license_path"].read_bytes() == old_license
+    trust = load_active_license_trust(kwargs["trust_root"] / "policy.json")
+    verify_license(json.loads(old_license), trust)
     assert not (kwargs["state_root"] / "journal.json").exists()
 
 
@@ -217,7 +237,7 @@ def test_candidate_pair_and_expected_active_are_fail_closed(tmp_path: Path):
             {"issued_at": "2020-01-01T00:00:00Z", "expires_at": "2021-01-01T00:00:00Z"},
             "expired",
         ),
-        ({"machine_id": "other-machine"}, "machine_mismatch"),
+        ({"identity_fingerprint": "22" * 32}, "tpm_identity_mismatch"),
     ],
 )
 def test_candidate_reuses_runtime_license_semantics(
@@ -239,38 +259,20 @@ def test_candidate_reuses_runtime_license_semantics(
     assert not (kwargs["state_root"] / "journal.json").exists()
 
 
-def test_maximum_size_pair_rollback_crash_journal_is_recoverable(tmp_path: Path):
+def test_oversized_candidate_fails_before_mutation(tmp_path: Path):
     kwargs, old_key, new_key, new_trust, candidate_license = _fixture(tmp_path)
-    padding = TRANSACTION.MAX_LICENSE_BYTES - 2048
-    old_license = _license(old_key, "license-old", padding=padding)
-    new_license = _license(new_key, "license-new", padding=padding)
-    assert TRANSACTION.MAX_LICENSE_BYTES - 4096 < len(old_license) <= TRANSACTION.MAX_LICENSE_BYTES
-    assert TRANSACTION.MAX_LICENSE_BYTES - 4096 < len(new_license) <= TRANSACTION.MAX_LICENSE_BYTES
-    kwargs["license_path"].write_bytes(old_license)
-    candidate_license.write_bytes(new_license)
-    TRANSACTION.LicenseTransaction(**kwargs).activate(
-        new_trust, candidate_license, "license-old"
-    )
+    old_license = _license(old_key, "license-old")
+    candidate_license.write_bytes(b"{" + b"x" * TRANSACTION.MAX_LICENSE_BYTES + b"}")
 
-    def crash(point: str) -> None:
-        if point == "after_state":
-            raise TRANSACTION.InjectedCrash(point)
+    with pytest.raises(ValueError, match="size is invalid"):
+        TRANSACTION.LicenseTransaction(**kwargs).activate(
+            new_trust, candidate_license, "license-old"
+        )
 
-    with pytest.raises(TRANSACTION.InjectedCrash):
-        TRANSACTION.LicenseTransaction(**kwargs, fault=crash).rollback("license-new")
-
-    journal = kwargs["state_root"] / "journal.json"
-    payload = json.loads(journal.read_text(encoding="utf-8"))
-    assert set(payload) == {
-        "operation",
-        "phase",
-        "schema",
-        "source_policy",
-        "source_state",
-    }
-    assert journal.stat().st_size < TRANSACTION.MAX_STATE_BYTES
-    assert TRANSACTION.LicenseTransaction(**kwargs).recover() is True
-    _assert_live(kwargs, new_license, old_license)
+    assert kwargs["license_path"].read_bytes() == old_license
+    trust = load_active_license_trust(kwargs["trust_root"] / "policy.json")
+    verify_license(json.loads(old_license), trust)
+    assert not (kwargs["state_root"] / "journal.json").exists()
 
 
 def test_shared_release_lock_rejects_concurrent_mutation(tmp_path: Path):
@@ -420,3 +422,18 @@ def test_boot_recovery_runs_before_docker_and_is_installed():
     assert static_installer.DIRECTORIES["/etc/drycontroller/license"] == 0o755
     assert static_installer.DIRECTORIES["/var/lib/drycontroller/license-transaction"] == 0o700
     assert "systemctl enable drycontroller-license-transaction-recovery.service" in installer_script
+
+
+def test_live_tpm_observer_runs_before_docker_and_is_started_by_installer():
+    unit = (
+        ROOT / "infra/bootstrap/drycontroller-tpm-identity-observer.service"
+    ).read_text(encoding="utf-8")
+    installer_script = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Requires=dev-tpmrm0.device" in unit
+    assert "Before=docker.service drycontroller-license-transaction-recovery.service" in unit
+    assert "RequiredBy=docker.service" in unit
+    assert "ExecStart=/usr/libexec/drycontroller/observe-tpm-identity.py" in unit
+    assert "systemctl enable --now drycontroller-tpm-identity-observer.service" in installer_script

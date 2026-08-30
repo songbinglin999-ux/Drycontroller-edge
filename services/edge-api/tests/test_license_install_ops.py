@@ -325,9 +325,14 @@ def test_registry_refresh_reports_root_writer_failure_without_secret_disclosure(
     assert "never-persisted" not in response.text
 
 
-def test_ota_start_requires_registry_credential_status():
+def test_ota_start_requires_registry_credential_status(monkeypatch):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
+    monkeypatch.setattr(
+        ops_module,
+        "require_license_capability",
+        lambda capability: {"valid": True, "capabilities": [capability]},
+    )
     resp = _client(registry_writer=_MissingRegistryWriter()).post(
         "/api/v1/ops/ota/start",
         json={"operation_id": "a" * 32},
@@ -336,6 +341,30 @@ def test_ota_start_requires_registry_credential_status():
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "registry_credential_missing"
+
+
+def test_ota_start_rejects_missing_license_before_registry_or_helper(monkeypatch):
+    settings.ADMIN_API_KEYS = ["admin-1"]
+    settings.API_KEY_HEADER = "X-API-Key"
+    class Writer:
+        async def status(self):
+            raise AssertionError("registry status must not be read before License admission")
+
+    def reject(_capability):
+        raise HTTPException(
+            status_code=409,
+            detail={"success": False, "error": "license_not_admitted"},
+        )
+
+    monkeypatch.setattr(ops_module, "require_license_capability", reject)
+    response = _client(registry_writer=Writer()).post(
+        "/api/v1/ops/ota/start",
+        json={"operation_id": "a" * 32},
+        headers={"X-API-Key": "admin-1"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "license_not_admitted"
 
 
 def test_ota_start_rejects_every_execution_input_except_operation_id():

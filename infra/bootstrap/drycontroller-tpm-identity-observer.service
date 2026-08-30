@@ -1,0 +1,22 @@
+[Unit]
+Description=DryController live TPM identity observer
+After=dev-tpmrm0.device
+Before=docker.service drycontroller-license-transaction-recovery.service
+Requires=dev-tpmrm0.device
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/libexec/drycontroller/observe-tpm-identity.py
+RuntimeDirectory=drycontroller-identity
+RuntimeDirectoryMode=0755
+UMask=0022
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/drycontroller-identity
+
+[Install]
+RequiredBy=docker.service

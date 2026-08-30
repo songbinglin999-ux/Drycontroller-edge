@@ -1,13 +1,13 @@
 [Unit]
 Description=DryController root OTA operation helper
-After=docker.service
+After=docker.service drycontroller-edge-app-recovery.service
 Requires=docker.service
 
 [Service]
 Type=simple
 User=root
 Group=root
-ExecStart=/usr/bin/python3 /opt/drycontroller-host/current/infra/ota-helper/drycontroller_ota_helper.py
+ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=drycontroller-ota

@@ -20,8 +20,7 @@ assert SPEC and SPEC.loader
 helper = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(helper)
 
-from release_engine import (  # noqa: E402
-    COSIGN_TOOLCHAIN,
+from edge_app_release import (  # noqa: E402
     RELEASE_JOURNAL_SCHEMA,
     canonical_manifest_digest,
 )
@@ -29,24 +28,21 @@ from release_engine import (  # noqa: E402
 
 def _idle_journal() -> dict:
     manifest = {
-        "schema": "drycontroller.software-release.v1",
+        "schema": "drycontroller.app-release.v2",
+        "profile": "edge-app-v1",
         "release_id": "11111111-1111-4111-8111-111111111111",
-        "host_release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        "topology_digest": "sha256:" + "1" * 64,
         "sequence": 1,
-        "version": "1.0.0",
         "source_commit": "1" * 40,
-        "registry": "registry.example.com",
-        "signing_key_sha256": "sha256:" + "2" * 64,
-        "cosign": COSIGN_TOOLCHAIN,
-        "services": {"edge-api": "registry.example.com/drycontroller/edge-api@sha256:" + "3" * 64},
-        "image_ids": {"edge-api": "sha256:" + "4" * 64},
+        "deployment_digest": "sha256:" + "2" * 64,
+        "images": {
+            "edge-api": "registry.example.com/drycontroller/edge-api@sha256:" + "3" * 64,
+            "edge-daq": "registry.example.com/drycontroller/edge-daq@sha256:" + "4" * 64,
+        },
     }
     return {
         "schema": RELEASE_JOURNAL_SCHEMA,
         "phase": "idle",
         "operation_id": None,
-        "last_operation_id": None,
         "active": {
             "manifest": manifest,
             "manifest_digest": canonical_manifest_digest(manifest),
@@ -55,7 +51,6 @@ def _idle_journal() -> dict:
         },
         "candidate": None,
         "previous": None,
-        "effect": None,
         "error": None,
     }
 

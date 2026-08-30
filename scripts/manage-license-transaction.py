@@ -26,7 +26,9 @@ from common.license_verifier import (  # noqa: E402
     LicenseTrust,
     license_runtime_error,
     load_active_license_trust,
+    load_json,
     load_license_trust_policy,
+    load_tpm_observation,
     parse_license_trust,
     verify_license,
 )
@@ -249,7 +251,8 @@ class LicenseTransaction:
         license_parent_mode: int = 0o755,
         state_parent_mode: int = 0o700,
         lock_parent_mode: int = 0o700,
-        machine_id: str = "",
+        device_identity: dict[str, Any] | None = None,
+        tpm_observation: dict[str, Any] | None = None,
         fault: Callable[[str], None] | None = None,
     ) -> None:
         self.trust_root = trust_root
@@ -265,7 +268,8 @@ class LicenseTransaction:
         self.license_parent_mode = license_parent_mode
         self.state_parent_mode = state_parent_mode
         self.lock_parent_mode = lock_parent_mode
-        self.machine_id = machine_id
+        self.device_identity = device_identity or {}
+        self.tpm_observation = tpm_observation or {}
         self.fault = fault or (lambda _point: None)
 
     def _prepare_roots(self) -> None:
@@ -479,9 +483,11 @@ class LicenseTransaction:
 
     def _verify_runtime(self, payload: dict[str, Any], trust: LicenseTrust) -> None:
         verify_license(payload, trust)
-        if not self.machine_id:
-            raise ValueError("current machine id is unavailable")
-        runtime_error = license_runtime_error(payload, machine_id=self.machine_id)
+        runtime_error = license_runtime_error(
+            payload,
+            device_identity=self.device_identity,
+            tpm_observation=self.tpm_observation,
+        )
         if runtime_error is not None:
             raise ValueError(f"license runtime validation failed: {runtime_error}")
 
@@ -625,15 +631,20 @@ class LicenseTransaction:
 
 def production_transaction() -> LicenseTransaction:
     try:
-        machine_id = Path("/etc/machine-id").read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        machine_id = ""
+        device_identity = load_json(Path("/var/lib/drycontroller/device.json"))
+        tpm_observation = load_tpm_observation(
+            Path("/run/drycontroller-identity/tpm-observation.json")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        device_identity = {}
+        tpm_observation = {}
     return LicenseTransaction(
         trust_root=Path("/etc/drycontroller/keys/license-trust"),
         license_path=Path("/etc/drycontroller/license/license.json"),
         state_root=Path("/var/lib/drycontroller/license-transaction"),
         lock_path=Path("/var/lib/drycontroller-ota/release.lock"),
-        machine_id=machine_id,
+        device_identity=device_identity,
+        tpm_observation=tpm_observation,
     )
 
 

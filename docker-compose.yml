@@ -186,7 +186,7 @@ services:
       # License 只读闭环：成对激活只由宿主 root 事务管理器执行
       - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
       - LICENSE_TRUST_POLICY_PATH=${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}
-      - LICENSE_SERVICE_BASE=${LICENSE_SERVICE_BASE:-http://license-service:8000}
+      - TPM_IDENTITY_OBSERVATION_PATH=${TPM_IDENTITY_OBSERVATION_PATH:-/run/drycontroller-identity/tpm-observation.json}
       # Registry pull credentials stay in the root writer; edge-api reads only UDS status.
       - REGISTRY_CREDENTIAL_MAX_AGE_HOURS=${REGISTRY_CREDENTIAL_MAX_AGE_HOURS:-0}
       # 大屏现场状态摘要只读展示云端/tailnet 配置状态
@@ -213,6 +213,7 @@ services:
       - /run/drycontroller-ota:/run/drycontroller-ota:ro
       - /run/drycontroller-host-release:/run/drycontroller-host-release:ro
       - /run/drycontroller-registry-auth:/run/drycontroller-registry-auth:ro
+      - /run/drycontroller-identity:/run/drycontroller-identity:ro
     ports:
       # P0-N1 audit 2026-05-15：默认绑 127.0.0.1，避免 LAN/PLC 网段直达 license install
       # 端点。生产若真有外部访问需求，由前置 Caddy/Traefik 反代，并显式覆写本变量。

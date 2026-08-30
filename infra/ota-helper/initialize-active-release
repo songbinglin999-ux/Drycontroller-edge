@@ -9,21 +9,14 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-from release_engine import ReleaseEngine, ReleaseError
+from edge_app_release import ReleaseEngine, ReleaseError
 
 
 _MAX_SEED_BYTES = 64 * 1024
 
 
 def main() -> int:
-    lock_descriptor: int | None = None
-    if len(sys.argv) == 4 and sys.argv[1] == "--lock-fd":
-        try:
-            lock_descriptor = int(sys.argv[2])
-        except ValueError:
-            return 64
-        path = Path(sys.argv[3])
-    elif len(sys.argv) == 2:
+    if len(sys.argv) == 2:
         path = Path(sys.argv[1])
     else:
         return 64
@@ -31,11 +24,7 @@ def main() -> int:
         if path.stat().st_size > _MAX_SEED_BYTES:
             raise ReleaseError("initial release seed too large")
         seed = json.loads(path.read_text(encoding="utf-8"))
-        engine = ReleaseEngine()
-        if lock_descriptor is None:
-            result = engine.initialize_active(seed)
-        else:
-            result = engine.initialize_active_with_lock_fd(seed, lock_descriptor)
+        result = ReleaseEngine().initialize_active(seed)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ReleaseError) as exc:
         print(f"[initialize-active-release] failed: {exc}", flush=True)
         return 1

@@ -111,11 +111,15 @@ def test_business_containers_have_no_docker_mutation_surface():
 def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
     helper = (ROOT / "infra/ota-helper/drycontroller_ota_helper.py").read_text(encoding="utf-8")
     apply = (ROOT / "infra/ota-helper/ota-apply").read_text(encoding="utf-8")
-    release_engine = (ROOT / "infra/ota-helper/release_engine.py").read_text(encoding="utf-8")
+    release_engine = (ROOT / "infra/ota-helper/edge_app_release.py").read_text(encoding="utf-8")
     unit = (ROOT / "infra/ota-helper/drycontroller-ota-helper.service").read_text(encoding="utf-8")
+    recovery = (ROOT / "infra/ota-helper/drycontroller-edge-app-recovery.service").read_text(
+        encoding="utf-8"
+    )
+    compact_release_engine = " ".join(release_engine.split())
 
-    assert 'APPLY_PROGRAM = Path("/opt/drycontroller-host/current/infra/ota-helper/ota-apply")' in helper
-    assert 'PROJECT_DIR = Path("/opt/Drycontroller-edge")' in helper
+    assert 'APPLY_PROGRAM = Path("/usr/libexec/drycontroller/ota-apply")' in helper
+    assert 'PROJECT_DIR = Path("/opt/drycontroller-host/current")' in helper
     assert 'OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")' in helper
     assert "sys.argv" not in helper
     assert "os.getenv" not in helper
@@ -123,17 +127,20 @@ def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
     assert "ReleaseEngine().apply()" in apply
     assert "pre-check" not in apply
     assert "post-check" not in apply
-    assert 'RELEASE_JOURNAL_SCHEMA = "drycontroller.release-journal.v1"' in release_engine
-    assert 'SOFTWARE_RELEASE_SCHEMA = "drycontroller.software-release.v1"' in release_engine
-    assert '"--pull", "never"' in release_engine
-    assert '"verify-blob"' in release_engine
+    assert 'RELEASE_JOURNAL_SCHEMA = "drycontroller.edge-app-release-journal.v2"' in release_engine
+    assert 'SOFTWARE_RELEASE_SCHEMA = "drycontroller.app-release.v2"' in release_engine
+    assert 'EDGE_RELEASE_PROFILE = "edge-app-v1"' in release_engine
+    assert 'EDGE_SERVICES = ("edge-api", "edge-daq")' in release_engine
+    assert '"--pull", "never",' in compact_release_engine
     assert '"verify"' in release_engine
     assert "shell=True" not in release_engine
     assert "os.getenv" not in release_engine
     assert "User=root" in unit
     assert "Group=root" in unit
-    assert "ExecStart=/usr/bin/python3 /opt/drycontroller-host/current/infra/ota-helper/drycontroller_ota_helper.py" in unit
+    assert "ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py" in unit
+    assert "After=docker.service drycontroller-edge-app-recovery.service" in unit
     assert "ReadWritePaths=/run/drycontroller-ota /var/lib/drycontroller-ota /var/log/drycontroller-ota" in unit
+    assert "ExecStart=/usr/libexec/drycontroller/start-active-release" in recovery
 
 
 def test_host_release_runner_is_outside_its_signed_update_surface():

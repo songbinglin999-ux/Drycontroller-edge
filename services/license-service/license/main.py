@@ -41,16 +41,6 @@ def _license_trust_policy_path() -> Path:
     )
 
 
-def _machine_id() -> str:
-    explicit = os.getenv("LICENSE_MACHINE_ID", "").strip()
-    if explicit:
-        return explicit
-    try:
-        return Path("/etc/machine-id").read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        return ""
-
-
 def _result(valid: bool, reason: str, license_payload=None):
     payload = {"success": True, "valid": valid, "reason": reason, "license": license_payload}
     event_recorder.record_event(
@@ -123,7 +113,14 @@ async def verify_license():
         logger.warning("license_verify_failed", reason="signature_invalid", error=str(exc))
         return _result(False, "signature_invalid", None)
 
-    runtime_error = license_runtime_error(payload, machine_id=_machine_id())
+    # This retained legacy service has no live TPM observation surface. Even a
+    # correctly signed v2 License must therefore fail closed; edge-api owns the
+    # active in-process admission path.
+    runtime_error = license_runtime_error(
+        payload,
+        device_identity={},
+        tpm_observation={},
+    )
     if runtime_error is not None:
         return _result(
             False,

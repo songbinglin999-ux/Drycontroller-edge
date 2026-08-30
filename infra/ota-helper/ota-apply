@@ -8,7 +8,7 @@ import sys
 
 sys.dont_write_bytecode = True
 
-from release_engine import ReleaseEngine, ReleaseError
+from edge_app_release import ReleaseEngine, ReleaseError
 
 
 def main() -> int:

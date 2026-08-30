@@ -28,6 +28,30 @@ DIRECTORIES = {
 }
 
 RUNTIME_FILES = {
+    "infra/ota-helper/edge_app_release.py": (
+        "/usr/libexec/drycontroller/edge_app_release.py",
+        0o644,
+    ),
+    "infra/ota-helper/drycontroller_ota_helper.py": (
+        "/usr/libexec/drycontroller/drycontroller_ota_helper.py",
+        0o644,
+    ),
+    "infra/ota-helper/ota-apply": (
+        "/usr/libexec/drycontroller/ota-apply",
+        0o755,
+    ),
+    "infra/ota-helper/initialize-active-release": (
+        "/usr/libexec/drycontroller/initialize-active-release",
+        0o755,
+    ),
+    "infra/ota-helper/start-active-release": (
+        "/usr/libexec/drycontroller/start-active-release",
+        0o755,
+    ),
+    "infra/ota-helper/rollback-edge-app": (
+        "/usr/libexec/drycontroller/rollback-edge-app",
+        0o755,
+    ),
     "infra/ota-helper/release_security_contract.py": (
         "/usr/libexec/drycontroller/release_security_contract.py",
         0o644,
@@ -50,6 +74,14 @@ RUNTIME_FILES = {
     ),
     "scripts/manage-license-transaction.py": (
         "/usr/libexec/drycontroller/manage-license-transaction.py",
+        0o755,
+    ),
+    "scripts/observe-tpm-identity.py": (
+        "/usr/libexec/drycontroller/observe-tpm-identity.py",
+        0o755,
+    ),
+    "scripts/create-edge-app-baseline.py": (
+        "/usr/libexec/drycontroller/create-edge-app-baseline.py",
         0o755,
     ),
     "infra/host-release-runner/host-release-runner": (
@@ -76,6 +108,10 @@ RUNTIME_FILES = {
         "/etc/systemd/system/drycontroller-ota-helper.service",
         0o644,
     ),
+    "infra/ota-helper/drycontroller-edge-app-recovery.service": (
+        "/etc/systemd/system/drycontroller-edge-app-recovery.service",
+        0o644,
+    ),
     "infra/registry-auth-writer/registry_auth_writer.py": (
         "/usr/libexec/drycontroller/registry_auth_writer.py",
         0o644,
@@ -86,6 +122,10 @@ RUNTIME_FILES = {
     ),
     "infra/bootstrap/drycontroller-license-transaction-recovery.service": (
         "/etc/systemd/system/drycontroller-license-transaction-recovery.service",
+        0o644,
+    ),
+    "infra/bootstrap/drycontroller-tpm-identity-observer.service": (
+        "/etc/systemd/system/drycontroller-tpm-identity-observer.service",
         0o644,
     ),
 }

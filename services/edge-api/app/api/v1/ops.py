@@ -54,6 +54,7 @@ from app.services.audit import api_key_actor, write_audit
 from app.services.config_version import record_config_version
 from app.services.ota_history import record_ota_operation
 from app.services.preflight_history import record_preflight_run
+from app.services.license_admission import license_status, require_license_capability
 from common.tailscale_status import validate_tailscale_status
 
 # 运维接口必须走管理员鉴权：这些接口包含重启/修改自愈等高危动作
@@ -137,14 +138,12 @@ def _restore_or_remove(path: Path, old_data: bytes | None, mode: int = 0o640) ->
 
 
 async def _call_license_verify() -> dict:
-    url = f"{settings.LICENSE_SERVICE_BASE.rstrip('/')}/verify"
-    try:
-        async with httpx.AsyncClient(timeout=8) as hc:
-            resp = await hc.get(url)
-        body = resp.json() if resp.content else {}
-        return {"url": url, "status_code": resp.status_code, "body": body}
-    except (httpx.HTTPError, ValueError) as exc:
-        return {"url": url, "status_code": 0, "error": str(exc)}
+    body = license_status()
+    return {
+        "source": "edge-api-in-process",
+        "status_code": 200 if body.get("valid") is True else 409,
+        "body": body,
+    }
 
 
 def _license_verify_ok(result: dict) -> bool:
@@ -466,7 +465,7 @@ async def run_preflight(
         "license.verify",
         "pass" if _license_verify_ok(verify_result) else "fail",
         "ok" if _license_verify_ok(verify_result) else "license_verify_failed",
-        hint="license-service /verify must return valid=true",
+        hint="the in-process TPM-bound License verifier must return valid=true",
         detail=verify_result,
     )
 
@@ -643,6 +642,7 @@ async def ota_start(
     _: str = Depends(require_admin_api_key),
     writer: RegistryAuthWriterClient = Depends(get_registry_auth_writer_client),
 ):
+    require_license_capability("edge-app-ota")
     credential = registry_credential_check(await writer.status())
     if not credential["ok"]:
         raise HTTPException(
@@ -684,13 +684,10 @@ async def host_release_start(
     _: str = Depends(require_admin_api_key),
     writer: RegistryAuthWriterClient = Depends(get_registry_auth_writer_client),
 ):
-    credential = registry_credential_check(await writer.status())
-    if not credential["ok"]:
-        raise HTTPException(
-            status_code=409,
-            detail={"success": False, "error": credential["reason"], "credential": credential["detail"]},
-        )
-    return await client.start(req.operation_id)
+    raise HTTPException(
+        status_code=409,
+        detail={"success": False, "error": "host_release_legacy_ineligible"},
+    )
 
 
 @router.get("/host-release/operations/{operation_id}")
@@ -699,7 +696,10 @@ async def host_release_get_operation(
     client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
     _: str = Depends(require_admin_api_key),
 ):
-    return await client.get_operation(operation_id)
+    raise HTTPException(
+        status_code=409,
+        detail={"success": False, "error": "host_release_legacy_ineligible"},
+    )
 
 
 @router.get("/host-release/operations/{operation_id}/logs")
@@ -708,7 +708,10 @@ async def host_release_get_logs(
     client: HostReleaseOpsClient = Depends(get_host_release_ops_client),
     _: str = Depends(require_admin_api_key),
 ):
-    return await client.get_logs(operation_id)
+    raise HTTPException(
+        status_code=409,
+        detail={"success": False, "error": "host_release_legacy_ineligible"},
+    )
 
 
 # ==================== PLC 通讯参数下发（不改网卡，仅改应用层） ====================
