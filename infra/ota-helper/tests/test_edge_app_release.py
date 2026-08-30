@@ -256,6 +256,81 @@ def test_partial_compose_failure_restores_both_active_services(tmp_path: Path, m
     assert release.read_json(paths.journal)["phase"] == "idle"
 
 
+def test_partial_rollback_failure_restores_both_active_services(tmp_path: Path, monkeypatch):
+    paths, _key, _active, candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    engine = _engine(paths, commands, policy)
+    engine.apply()
+    commands.fail_after_first_compose_service = True
+
+    with pytest.raises(release.ReleaseError, match="partial compose failure"):
+        engine.rollback()
+
+    assert commands.running == candidate["images"]
+    assert release.read_json(paths.active)["manifest"] == candidate
+    assert release.read_json(paths.journal)["phase"] == "idle"
+
+
+def test_rollback_crash_recovers_original_slots_and_runtime(tmp_path: Path, monkeypatch):
+    paths, _key, active, candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    _engine(paths, commands, policy).apply()
+
+    def crash(point: str) -> None:
+        if point == "rollback_after_runtime":
+            raise Crash(point)
+
+    with pytest.raises(Crash):
+        _engine(paths, commands, policy, fault=crash).rollback()
+    assert commands.running == active["images"]
+    assert release.read_json(paths.journal)["phase"] == "mutated"
+
+    recovered = _engine(paths, commands, policy).recover()
+    assert recovered["release_id"] == candidate["release_id"]
+    assert commands.running == candidate["images"]
+    assert release.read_json(paths.active)["manifest"] == candidate
+    assert release.read_json(paths.previous)["manifest"] == active
+    assert release.read_json(paths.journal)["phase"] == "idle"
+
+
+def test_rollback_crash_between_slot_writes_recovers_original_pair(tmp_path: Path, monkeypatch):
+    paths, _key, active, candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    _engine(paths, commands, policy).apply()
+
+    def crash(point: str) -> None:
+        if point == "rollback_after_active_write":
+            raise Crash(point)
+
+    with pytest.raises(Crash):
+        _engine(paths, commands, policy, fault=crash).rollback()
+    assert release.read_json(paths.active)["manifest"] == active
+    assert release.read_json(paths.previous)["manifest"] == active
+    assert release.read_json(paths.journal)["phase"] == "mutated"
+
+    _engine(paths, commands, policy).recover()
+    assert commands.running == candidate["images"]
+    assert release.read_json(paths.active)["manifest"] == candidate
+    assert release.read_json(paths.previous)["manifest"] == active
+    assert release.read_json(paths.journal)["phase"] == "idle"
+
+
+def test_rollback_committed_crash_finishes_swapped_pair(tmp_path: Path, monkeypatch):
+    paths, _key, active, candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    _engine(paths, commands, policy).apply()
+
+    def crash(point: str) -> None:
+        if point == "rollback_after_committed":
+            raise Crash(point)
+
+    with pytest.raises(Crash):
+        _engine(paths, commands, policy, fault=crash).rollback()
+    assert release.read_json(paths.journal)["phase"] == "committed"
+
+    _engine(paths, commands, policy).recover()
+    assert commands.running == active["images"]
+    assert release.read_json(paths.active)["manifest"] == active
+    assert release.read_json(paths.previous)["manifest"] == candidate
+    assert release.read_json(paths.journal)["phase"] == "idle"
+
+
 def test_manifest_rejects_legacy_or_third_service():
     with pytest.raises(release.ReleaseError, match="canonical v2"):
         release.validate_manifest({"schema": "drycontroller.software-release.v1"})

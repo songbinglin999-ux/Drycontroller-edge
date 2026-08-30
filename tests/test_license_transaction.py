@@ -441,4 +441,5 @@ def test_live_tpm_observer_runs_before_docker_and_is_started_by_installer():
     ) in unit
     assert "DevicePolicy=closed" in unit
     assert "DeviceAllow=/dev/tpmrm0 rw" in unit
+    assert "RemainAfterExit=yes" in unit
     assert "systemctl enable --now drycontroller-tpm-identity-observer.service" in installer_script

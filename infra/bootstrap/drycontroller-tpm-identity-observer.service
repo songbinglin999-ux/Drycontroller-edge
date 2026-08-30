@@ -6,6 +6,7 @@ Requires=dev-tpmrm0.device
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 User=root
 Group=root
 ExecStart=/opt/drycontroller-identity/venv/bin/python /usr/libexec/drycontroller/observe-tpm-identity.py

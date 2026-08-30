@@ -753,10 +753,39 @@ class ReleaseEngine:
             previous = validate_slot(read_json(self.paths.previous))
             self._verify_slot(previous, images=False)
             self._prove_local(previous)
-            self._compose(previous)
-            self._verify_runtime()
-            atomic_write(self.paths.active, previous)
-            atomic_write(self.paths.previous, active)
+            operation_id = uuid.uuid4().hex
+            journal = self._journal(
+                phase="prepared",
+                operation_id=operation_id,
+                active=active,
+                previous=previous,
+                candidate=previous,
+            )
+            self._persist(journal)
+            self.fault("rollback_after_prepared")
+            journal["phase"] = "mutated"
+            self._persist(journal)
+            self.fault("rollback_after_mutated")
+            try:
+                self._compose(previous)
+                self._verify_runtime()
+                self.fault("rollback_after_runtime")
+                atomic_write(self.paths.active, previous)
+                self.fault("rollback_after_active_write")
+                atomic_write(self.paths.previous, active)
+                self._persist(
+                    self._journal(
+                        phase="committed",
+                        operation_id=operation_id,
+                        active=previous,
+                        previous=active,
+                        candidate=None,
+                    )
+                )
+            except Exception:
+                self._restore(active, previous, operation_id)
+                raise
+            self.fault("rollback_after_committed")
             self._persist(
                 self._journal(
                     phase="idle",
