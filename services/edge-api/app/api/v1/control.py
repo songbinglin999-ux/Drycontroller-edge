@@ -10,7 +10,6 @@ from app.core.security import require_control_api_key, require_readonly_http_sou
 from app.services.audit import api_key_actor
 from app.services.control_orchestrator import ControlOrchestrator, get_control_orchestrator
 from app.services.control_state import ControlStateService, get_control_state_service
-from app.services.license_admission import require_license_capability
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
@@ -59,7 +58,6 @@ async def set_manual_control(
     orchestrator: ControlOrchestrator = Depends(get_control_orchestrator),
     state_service: ControlStateService = Depends(get_control_state_service),
 ):
-    require_license_capability("production-control")
     actor = api_key_actor(api_key, role="control")
     manual_state = await state_service.note_manual_intervention(
         line=req.line,
@@ -127,7 +125,6 @@ async def set_control_mode(
             detail="AUTO_PAUSED is not operator-selectable; authorize AUTO again after clearing the cause.",
         )
     if requested_mode == "AUTO":
-        require_license_capability("production-control")
         resp = await state_service.authorize_auto(line=req.line, actor=actor, reason=req.reason)
         if not resp.get("success"):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=resp)
@@ -144,7 +141,6 @@ async def dispatch_auto_control(
     state_service: ControlStateService = Depends(get_control_state_service),
 ):
     body = req or AutoDispatchRequest()
-    require_license_capability("production-control")
     return await state_service.dispatch_auto(
         line=body.line,
         actor=api_key_actor(api_key, role="control"),

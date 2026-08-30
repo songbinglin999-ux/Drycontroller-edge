@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Retained only to reject the legacy HostRelease/12-service installation path.
+# Install the public-material-only RB-6 runtime and one signed H1/T1/S1 pair.
 set -euo pipefail
 
 INSTALL_PACKAGES=true
@@ -23,9 +23,6 @@ usage() {
   cat <<'EOF'
 Usage:
   sudo bash infra/bootstrap/install-edge-host.sh [options]
-
-This legacy H1/T1/S1 installer is permanently ineligible. The active product
-uses the non-destructive edge-app-v1 runtime retrofit entrypoint instead.
 
 Required public release inputs:
   --host-release FILE                 Completed signed HostRelease H1 seed
@@ -85,8 +82,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-die "legacy HostRelease/12-service installation is ineligible; use retrofit-edge-app-runtime.sh"
-
 [ "$(id -u)" -eq 0 ] || die "installer must run as root"
 [ "$(uname -s)" = "Linux" ] || die "Linux is required"
 [ "$(uname -m)" = "x86_64" ] || die "Linux amd64 is required"
@@ -123,15 +118,7 @@ for path in \
   infra/bootstrap/initialize-runtime-config.py \
   scripts/manage-license-trust.py \
   scripts/manage-license-transaction.py \
-  scripts/observe-tpm-identity.py \
-  scripts/create-edge-app-baseline.py \
   common/license_verifier.py \
-  infra/ota-helper/edge_app_release.py \
-  infra/ota-helper/drycontroller_ota_helper.py \
-  infra/ota-helper/ota-apply \
-  infra/ota-helper/initialize-active-release \
-  infra/ota-helper/start-active-release \
-  infra/ota-helper/rollback-edge-app \
   infra/ota-helper/release_security_contract.py \
   infra/bootstrap/installer_public_config.py \
   infra/bootstrap/tailscale_client_lock.py \
@@ -144,7 +131,6 @@ for path in \
   infra/host-release-runner/initialize-initial-release \
   infra/host-release-runner/drycontroller-host-release-runner.service \
   infra/ota-helper/drycontroller-ota-helper.service \
-  infra/ota-helper/drycontroller-edge-app-recovery.service \
   infra/registry-auth-writer/registry_auth_writer.py \
   infra/registry-auth-writer/drycontroller-registry-auth-writer.service \
   infra/bootstrap/drycontroller-factory-identity.service \
@@ -154,7 +140,6 @@ for path in \
   infra/bootstrap/drycontroller-device-credential-rotation.service \
   infra/bootstrap/drycontroller-device-credential-rotation.timer \
   infra/bootstrap/drycontroller-license-transaction-recovery.service \
-  infra/bootstrap/drycontroller-tpm-identity-observer.service \
   services/device-identity/requirements.txt; do
   [ -f "${REPO_SOURCE}/${path}" ] || die "installer source missing: $path"
 done
@@ -519,7 +504,6 @@ initialize_release() {
 
 enable_services() {
   systemctl daemon-reload
-  systemctl enable --now drycontroller-tpm-identity-observer.service
   systemctl enable drycontroller-license-transaction-recovery.service
   systemctl enable drycontroller-tailnet-edge-api.socket
   systemctl enable --now tailscaled.service
@@ -540,7 +524,6 @@ enable_services() {
     || die "TPM factory identity service did not become healthy"
   systemctl enable --now drycontroller-device-credential-rotation.timer
   systemctl enable --now drycontroller-registry-auth-writer.service
-  systemctl enable --now drycontroller-edge-app-recovery.service
   systemctl enable --now drycontroller-ota-helper.service
   systemctl enable --now drycontroller-host-release-runner.service
 }

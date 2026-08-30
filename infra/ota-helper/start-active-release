@@ -8,14 +8,25 @@ import sys
 
 sys.dont_write_bytecode = True
 
-from edge_app_release import ReleaseEngine, ReleaseError
+from release_engine import ReleaseEngine, ReleaseError
 
 
 def main() -> int:
-    if len(sys.argv) != 1:
+    lock_descriptor: int | None = None
+    if len(sys.argv) == 3 and sys.argv[1] == "--lock-fd":
+        try:
+            lock_descriptor = int(sys.argv[2])
+        except ValueError:
+            return 64
+    elif len(sys.argv) != 1:
         return 64
     try:
-        result = ReleaseEngine().start_active()
+        engine = ReleaseEngine()
+        result = (
+            engine.start_active()
+            if lock_descriptor is None
+            else engine.start_active_with_lock_fd(lock_descriptor)
+        )
     except ReleaseError as exc:
         print(f"[start-active-release] failed: {exc}", flush=True)
         return 1

@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 
 sys.dont_write_bytecode = True
 
-from edge_app_release import ReleaseError, validate_release_journal  # noqa: E402
+from release_engine import ReleaseError, validate_release_journal
 
 
 SOCKET_PATH = Path("/run/drycontroller-ota/helper.sock")
@@ -29,8 +29,8 @@ STATE_PATH = Path("/var/lib/drycontroller-ota/operations.json")
 REQUEST_PATH = Path("/var/lib/drycontroller-ota/request.json")
 RELEASE_JOURNAL_PATH = Path("/var/lib/drycontroller-ota/release-journal.json")
 LOG_PATH = Path("/var/log/drycontroller-ota/operations.log")
-APPLY_PROGRAM = Path("/usr/libexec/drycontroller/ota-apply")
-PROJECT_DIR = Path("/opt/drycontroller-host/current")
+APPLY_PROGRAM = Path("/opt/drycontroller-host/current/infra/ota-helper/ota-apply")
+PROJECT_DIR = Path("/opt/Drycontroller-edge")
 OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")
 TERMINAL_STATUSES = {"succeeded", "failed"}
 APPLY_TIMEOUT_SECONDS = 30 * 60

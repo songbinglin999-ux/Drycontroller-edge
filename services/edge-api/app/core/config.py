@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     # License 只读校验：成对激活只由宿主 root 事务管理器执行
     LICENSE_FILE_PATH: str = "/etc/drycontroller/license/license.json"
     LICENSE_TRUST_POLICY_PATH: str = "/etc/drycontroller/keys/license-trust/policy.json"
-    TPM_IDENTITY_OBSERVATION_PATH: str = "/run/drycontroller-identity/tpm-observation.json"
+    LICENSE_SERVICE_BASE: str = "http://license-service:8000"
     
     # OTA Agent（执行面，建议仅由 edge-api 代理调用）
     REGISTRY_CREDENTIAL_MAX_AGE_HOURS: float = 0.0

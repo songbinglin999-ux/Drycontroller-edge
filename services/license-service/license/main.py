@@ -14,6 +14,7 @@ from common.logging import setup_logging
 from license.license_verifier import (
     load_active_license_trust,
     load_json,
+    license_runtime_error,
     verify_license as verify_signed_license,
 )
 
@@ -38,6 +39,16 @@ def _license_trust_policy_path() -> Path:
             "/etc/drycontroller/keys/license-trust/policy.json",
         )
     )
+
+
+def _machine_id() -> str:
+    explicit = os.getenv("LICENSE_MACHINE_ID", "").strip()
+    if explicit:
+        return explicit
+    try:
+        return Path("/etc/machine-id").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
 
 
 def _result(valid: bool, reason: str, license_payload=None):
@@ -112,4 +123,12 @@ async def verify_license():
         logger.warning("license_verify_failed", reason="signature_invalid", error=str(exc))
         return _result(False, "signature_invalid", None)
 
-    return _result(False, "legacy_ineligible", None)
+    runtime_error = license_runtime_error(payload, machine_id=_machine_id())
+    if runtime_error is not None:
+        return _result(
+            False,
+            runtime_error,
+            None if runtime_error == "malformed_license" else payload,
+        )
+
+    return _result(True, "ok", payload)

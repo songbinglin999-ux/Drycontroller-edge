@@ -290,10 +290,7 @@ def test_control_write_and_recommendation_endpoints_still_require_control_key():
     assert resp.status_code == 401
 
 
-def test_control_mode_auto_authorize_endpoint(monkeypatch):
-    monkeypatch.setattr(
-        "app.api.v1.control.require_license_capability", lambda _capability: {"valid": True}
-    )
+def test_control_mode_auto_authorize_endpoint():
     resp = client.post(
         "/api/v1/control/mode",
         json={"line": "L1", "mode": "AUTO", "operator_id": "operator-a", "reason": "shift_start"},
@@ -312,10 +309,7 @@ def test_control_mode_rejects_auto_paused_as_operator_mode():
     assert resp.status_code == 400
 
 
-def test_control_auto_dispatch_endpoint(monkeypatch):
-    monkeypatch.setattr(
-        "app.api.v1.control.require_license_capability", lambda _capability: {"valid": True}
-    )
+def test_control_auto_dispatch_endpoint():
     resp = client.post(
         "/api/v1/control/auto/dispatch",
         json={"line": "L1", "timeout_sec": 1.0},
@@ -325,10 +319,7 @@ def test_control_auto_dispatch_endpoint(monkeypatch):
     assert resp.json()["status"] == "dispatched"
 
 
-def test_manual_control_set_endpoint(monkeypatch):
-    monkeypatch.setattr(
-        "app.api.v1.control.require_license_capability", lambda _capability: {"valid": True}
-    )
+def test_manual_control_set_endpoint():
     resp = client.post(
         "/api/v1/control/manual/set",
         json={
@@ -346,26 +337,6 @@ def test_manual_control_set_endpoint(monkeypatch):
     assert resp.json()["status"] == "sent"
     operator_request = resp.json()["manual_command"]["evidence"][0]
     assert operator_request["auto_reauthorization_required"] is True
-
-
-def test_production_control_rejects_invalid_license_before_state_mutation(monkeypatch):
-    from fastapi import HTTPException
-
-    def reject(_capability):
-        raise HTTPException(
-            status_code=409,
-            detail={"success": False, "error": "license_not_admitted"},
-        )
-
-    monkeypatch.setattr("app.api.v1.control.require_license_capability", reject)
-    response = client.post(
-        "/api/v1/control/manual/set",
-        json={"line": "L1", "target_softpoint": "VFM1_FREQ_SP", "value": 20.0},
-        headers={settings.API_KEY_HEADER: "test-control"},
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["error"] == "license_not_admitted"
 
 
 def test_control_recommendation_dismiss_endpoint():

@@ -17,9 +17,6 @@
 #
 set -euo pipefail
 
-printf '%s\n' 'legacy 12-service bundle is permanently ineligible; use edge-app-v1 release artifacts' >&2
-exit 64
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${REPO_ROOT}/dist"
