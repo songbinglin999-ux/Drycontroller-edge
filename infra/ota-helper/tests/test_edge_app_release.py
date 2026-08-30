@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
+import socket
 import sys
+import threading
+import time
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
@@ -222,6 +226,52 @@ def _engine(paths, commands, policy, **kwargs):
     )
 
 
+class _ReadyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        return
+
+
+def _unused_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def test_default_health_checker_waits_for_delayed_service(monkeypatch):
+    port = _unused_port()
+    monkeypatch.setattr(release, "HEALTH_TIMEOUT_SECONDS", 1.0, raising=False)
+    monkeypatch.setattr(release, "HEALTH_POLL_SECONDS", 0.02, raising=False)
+    monkeypatch.setattr(release, "HEALTH_ATTEMPT_TIMEOUT_SECONDS", 0.05, raising=False)
+
+    def delayed_server() -> None:
+        time.sleep(0.12)
+        with HTTPServer(("127.0.0.1", port), _ReadyHandler) as server:
+            server.handle_request()
+
+    worker = threading.Thread(target=delayed_server, daemon=True)
+    worker.start()
+    release.ReleaseEngine._health(f"http://127.0.0.1:{port}/ready")
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+
+
+def test_default_health_checker_times_out_with_last_error(monkeypatch):
+    port = _unused_port()
+    monkeypatch.setattr(release, "HEALTH_TIMEOUT_SECONDS", 0.15, raising=False)
+    monkeypatch.setattr(release, "HEALTH_POLL_SECONDS", 0.02, raising=False)
+    monkeypatch.setattr(release, "HEALTH_ATTEMPT_TIMEOUT_SECONDS", 0.03, raising=False)
+    started = time.monotonic()
+
+    with pytest.raises(release.ReleaseError, match="last error"):
+        release.ReleaseEngine._health(f"http://127.0.0.1:{port}/ready")
+
+    assert time.monotonic() - started >= 0.12
+
+
 def test_apply_and_offline_rollback_mutate_only_two_services(tmp_path: Path, monkeypatch):
     paths, _key, active, candidate, commands, policy = _fixture(tmp_path, monkeypatch)
     commands.calls.clear()
@@ -238,9 +288,146 @@ def test_apply_and_offline_rollback_mutate_only_two_services(tmp_path: Path, mon
     assert release.validate_slot(release.read_json(paths.previous))["manifest"] == active
 
     commands.calls.clear()
-    rollback = _engine(paths, commands, policy).rollback()
+    rollback = _engine(paths, commands, policy).rollback(
+        operation_id="0" * 31 + "2",
+        expected_active_release_id=candidate["release_id"],
+        target_release_id=active["release_id"],
+    )
     assert rollback["release_id"] == active["release_id"]
     assert not any(args[:2] == ["/usr/bin/docker", "pull"] for args in commands.calls)
+
+
+def test_same_apply_operation_replays_committed_result_without_mutation(tmp_path: Path, monkeypatch):
+    paths, _key, _active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    engine = _engine(paths, commands, policy)
+    first = engine.apply()
+    commands.calls.clear()
+
+    def unexpected_policy_fetch(_operation_id: str):
+        raise AssertionError("committed operation replay must not fetch Cloud policy")
+
+    second = release.ReleaseEngine(
+        paths=paths,
+        command_runner=commands,
+        policy_fetcher=unexpected_policy_fetch,
+        health_checker=lambda _url: None,
+    ).apply()
+
+    assert second == first
+    assert not any(args[:2] == ["/usr/bin/docker", "pull"] for args in commands.calls)
+    assert not any(args[0].endswith("docker-compose") for args in commands.calls)
+
+
+def test_different_operation_cannot_reuse_committed_sequence(tmp_path: Path, monkeypatch):
+    paths, _key, _active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    _engine(paths, commands, policy).apply()
+    second_operation = "0" * 31 + "2"
+    release.atomic_write(paths.request, {"operation_id": second_operation})
+    policy.update({"operation_id": second_operation, "node_id": 2})
+    commands.calls.clear()
+
+    with pytest.raises(release.ReleaseError, match="sequence"):
+        _engine(paths, commands, policy).apply()
+
+    assert not any(args[:2] == ["/usr/bin/docker", "pull"] for args in commands.calls)
+    assert not any(args[0].endswith("docker-compose") for args in commands.calls)
+
+
+def test_journal_rejects_tampered_operation_result_and_high_watermark(tmp_path: Path, monkeypatch):
+    paths, _key, _active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    _engine(paths, commands, policy).apply()
+    journal = release.read_json(paths.journal)
+
+    wrong_operation = dict(journal)
+    wrong_operation["last_operation_id"] = "f" * 32
+    with pytest.raises(release.ReleaseError, match="binding mismatch"):
+        release.validate_release_journal(wrong_operation)
+
+    regressed = dict(journal)
+    regressed["high_watermark"] = 1
+    with pytest.raises(release.ReleaseError, match="regressed"):
+        release.validate_release_journal(regressed)
+
+
+def test_initialize_active_is_idempotent_for_exact_verified_seed(tmp_path: Path, monkeypatch):
+    paths, _key, _active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    slot = release.read_json(paths.active)
+    seed = {name: slot[name] for name in ("manifest", "manifest_digest", "manifest_signature")}
+
+    result = _engine(paths, commands, policy).initialize_active(seed)
+
+    assert result["status"] == "already_active"
+    assert release.read_json(paths.journal)["phase"] == "idle"
+
+
+def test_initialize_active_recovers_crash_after_active_before_journal(tmp_path: Path, monkeypatch):
+    paths, _key, _active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    slot = release.read_json(paths.active)
+    seed = {name: slot[name] for name in ("manifest", "manifest_digest", "manifest_signature")}
+    paths.active.unlink()
+    paths.journal.unlink()
+
+    def crash(point: str) -> None:
+        if point == "initialize_after_active_write":
+            raise Crash(point)
+
+    with pytest.raises(Crash):
+        _engine(paths, commands, policy, fault=crash).initialize_active(seed)
+    assert paths.active.exists()
+    assert not paths.journal.exists()
+
+    result = _engine(paths, commands, policy).initialize_active(seed)
+
+    assert result["status"] == "already_active"
+    assert release.read_json(paths.journal)["phase"] == "idle"
+
+
+def test_initialize_active_rejects_mismatched_existing_seed(tmp_path: Path, monkeypatch):
+    paths, _key, _active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    slot = release.read_json(paths.active)
+    seed = {name: slot[name] for name in ("manifest", "manifest_digest", "manifest_signature")}
+    seed["manifest_signature"] = base64.b64encode(b"different").decode()
+
+    with pytest.raises(release.ReleaseError, match="does not match"):
+        _engine(paths, commands, policy).initialize_active(seed)
+
+
+def test_rollback_retry_is_bound_and_does_not_swap_twice(tmp_path: Path, monkeypatch):
+    paths, _key, active, candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    engine = _engine(paths, commands, policy)
+    engine.apply()
+    operation_id = "0" * 31 + "2"
+    request = {
+        "operation_id": operation_id,
+        "expected_active_release_id": candidate["release_id"],
+        "target_release_id": active["release_id"],
+    }
+    first = engine.rollback(**request)
+    commands.calls.clear()
+
+    second = engine.rollback(**request)
+
+    assert second == first
+    assert release.read_json(paths.active)["manifest"] == active
+    assert release.read_json(paths.previous)["manifest"] == candidate
+    assert not any(args[0].endswith("docker-compose") for args in commands.calls)
+
+
+def test_rollback_rejects_wrong_binding_before_compose(tmp_path: Path, monkeypatch):
+    paths, _key, active, candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    engine = _engine(paths, commands, policy)
+    engine.apply()
+    commands.calls.clear()
+
+    with pytest.raises(release.ReleaseError, match="expected active"):
+        engine.rollback(
+            operation_id="0" * 31 + "2",
+            expected_active_release_id=active["release_id"],
+            target_release_id=active["release_id"],
+        )
+
+    assert release.read_json(paths.active)["manifest"] == candidate
+    assert not any(args[0].endswith("docker-compose") for args in commands.calls)
 
 
 @pytest.mark.parametrize("failure", ["license", "signature", "device"])
@@ -304,7 +491,11 @@ def test_partial_rollback_failure_restores_both_active_services(tmp_path: Path, 
     commands.fail_after_first_compose_service = True
 
     with pytest.raises(release.ReleaseError, match="partial compose failure"):
-        engine.rollback()
+        engine.rollback(
+            operation_id="0" * 31 + "2",
+            expected_active_release_id=candidate["release_id"],
+            target_release_id=_active["release_id"],
+        )
 
     assert commands.running == candidate["images"]
     assert release.read_json(paths.active)["manifest"] == candidate
@@ -320,7 +511,11 @@ def test_rollback_crash_recovers_original_slots_and_runtime(tmp_path: Path, monk
             raise Crash(point)
 
     with pytest.raises(Crash):
-        _engine(paths, commands, policy, fault=crash).rollback()
+        _engine(paths, commands, policy, fault=crash).rollback(
+            operation_id="0" * 31 + "2",
+            expected_active_release_id=candidate["release_id"],
+            target_release_id=active["release_id"],
+        )
     assert commands.running == active["images"]
     assert release.read_json(paths.journal)["phase"] == "mutated"
 
@@ -341,7 +536,11 @@ def test_rollback_crash_between_slot_writes_recovers_original_pair(tmp_path: Pat
             raise Crash(point)
 
     with pytest.raises(Crash):
-        _engine(paths, commands, policy, fault=crash).rollback()
+        _engine(paths, commands, policy, fault=crash).rollback(
+            operation_id="0" * 31 + "2",
+            expected_active_release_id=candidate["release_id"],
+            target_release_id=active["release_id"],
+        )
     assert release.read_json(paths.active)["manifest"] == active
     assert release.read_json(paths.previous)["manifest"] == active
     assert release.read_json(paths.journal)["phase"] == "mutated"
@@ -362,7 +561,11 @@ def test_rollback_committed_crash_finishes_swapped_pair(tmp_path: Path, monkeypa
             raise Crash(point)
 
     with pytest.raises(Crash):
-        _engine(paths, commands, policy, fault=crash).rollback()
+        _engine(paths, commands, policy, fault=crash).rollback(
+            operation_id="0" * 31 + "2",
+            expected_active_release_id=candidate["release_id"],
+            target_release_id=active["release_id"],
+        )
     assert release.read_json(paths.journal)["phase"] == "committed"
 
     _engine(paths, commands, policy).recover()

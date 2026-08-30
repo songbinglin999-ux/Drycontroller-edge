@@ -53,6 +53,8 @@ def test_active_workflow_and_executor_do_not_reach_legacy_release_paths():
     active = (ROOT / ".gitea/workflows/edge-app-release.yml").read_text()
     script = (ROOT / "scripts/ci/build-edge-app-release.sh").read_text()
     helper = (ROOT / "infra/ota-helper/edge_app_ota_helper.py").read_text()
+    rollback = (ROOT / "infra/ota-helper/rollback-edge-app").read_text()
+    docker_e2e = (ROOT / "tests/test_edge_app_release_runtime_docker.py").read_text()
     legacy_helper = (ROOT / "infra/ota-helper/drycontroller_ota_helper.py").read_text()
     ops = (ROOT / "services/edge-api/app/api/v1/ops.py").read_text()
 
@@ -69,8 +71,21 @@ def test_active_workflow_and_executor_do_not_reach_legacy_release_paths():
     assert 'readonly COSIGN_BINARY="/usr/local/bin/cosign"' in script
     assert 'readonly TRIVY_BINARY="/usr/local/bin/trivy"' in script
     assert "verify-edge-app-toolchain.py" in script
+    assert "verify-edge-app-migration-scope.py" in script
+    assert "EDGE_APP_APPROVED_DB_BASELINE_COMMIT" in script
     assert "cosign public key fingerprint is not approved" in script
     assert "EDGE_APP_COSIGN_PUBLIC_KEY_SHA256" in active
+    assert "EDGE_APP_APPROVED_DB_BASELINE_COMMIT" in active
+    assert "test_edge_app_ota_helper.py" in active
+    assert "test_edge_app_migration_gate.py" in active
+    assert "test_ota_outbox.py" in active
+    assert "infra/ota-helper/tests/test_ota_helper.py" not in active
+    assert '--operation-id' in rollback
+    assert '--expected-active-release-id' in rollback
+    assert '--target-release-id' in rollback
+    assert "uuid.uuid4" not in rollback
+    assert "health_checker=" not in docker_e2e
+    assert '"stop", "edge-daq"' in docker_e2e
 
 
 def test_non_destructive_runtime_retrofit_retires_legacy_runner_without_touching_app_data():

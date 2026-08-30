@@ -106,6 +106,36 @@ async def test_record_ota_operation_adds_operation_and_outbox(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_record_ota_operation_uses_signed_release_receipt_when_version_is_absent(monkeypatch):
+    from app.services import ota_history as oh_module
+
+    release_id = "22222222-2222-4222-8222-222222222222"
+    manifest_digest = "sha256:" + "2" * 64
+    session = _FakeSession()
+    monkeypatch.setattr(oh_module, "AsyncSessionLocal", lambda: session)
+
+    await oh_module.record_ota_operation(
+        {
+            "operation_id": "00000000000000020000000000000002",
+            "status": "succeeded",
+            "release_id": release_id,
+            "manifest_digest": manifest_digest,
+            "sequence": 2,
+            "exit_code": 0,
+        }
+    )
+
+    row = session.added[0]
+    assert row.ota_version == release_id
+    assert row.result["release_identity"] == {
+        "release_id": release_id,
+        "manifest_digest": manifest_digest,
+        "sequence": 2,
+    }
+    assert session.added[1].payload["result"]["release_identity"] == row.result["release_identity"]
+
+
+@pytest.mark.asyncio
 async def test_record_ota_operation_updates_existing_and_writes_outbox(monkeypatch):
     from app.models import CloudSyncOutbox, OtaOperation
     from app.services import ota_history as oh_module

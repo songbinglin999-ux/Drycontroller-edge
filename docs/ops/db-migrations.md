@@ -13,6 +13,11 @@
 > - `operation_audit_logs` / `alarm_events` / `control_command_history` / `ota_operations` /
 >   `preflight_runs` / `config_versions`：**active**（producer 同步写本地历史 + `cloud_sync_outbox`，drainer `app/services/outbox_drain.py:CloudSyncOutboxDrainer` 在 `main.py` lifespan 启动，cloud-ops 侧 `*/from-edge` consumer 已就位；见顶层 `architecture-audit-2026-05-06.md` P1-N5）
 
+> **Edge App Release v1 边界：** 日常两镜像 OTA 不得携带 Alembic revision
+> 变化。发布 workflow 必须证明受保护数据库 baseline commit 到候选 source
+> commit 的 `services/edge-api/alembic/versions/` 零差异。需要迁移时继续使用
+> 明确的 SSH 维护窗口、数据库备份和人工验收流程；本期不做自动 downgrade。
+
 ---
 
 ## edge-api 与 cloud-ops 的差异点

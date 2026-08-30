@@ -275,7 +275,9 @@ volumes:
     )
 
 
-def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(tmp_path: Path):
+def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(
+    tmp_path: Path, monkeypatch
+):
     docker = shutil.which("docker")
     if docker is None:
         pytest.skip("Docker is unavailable")
@@ -432,8 +434,10 @@ def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(tmp_
             }
 
         image_signature_calls: list[list[str]] = []
+        fail_next_runtime = False
 
         def docker_commands(args: list[str]) -> str:
+            nonlocal fail_next_runtime
             if args[:2] == ["/usr/local/bin/cosign", "verify"]:
                 image_signature_calls.append(args)
                 return "verified"
@@ -443,23 +447,21 @@ def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(tmp_
                 actual = [docker, "compose", *args[1:]]
             else:
                 raise AssertionError(f"unexpected release command: {args}")
-            return _run(actual, cwd=tmp_path, timeout=300)
+            output = _run(actual, cwd=tmp_path, timeout=300)
+            if args[0].endswith("docker-compose") and fail_next_runtime:
+                fail_next_runtime = False
+                _run([docker, "stop", "edge-daq"], cwd=tmp_path, timeout=30)
+            return output
 
         current_policy: dict = {}
-        fail_health = False
-
-        def health(url: str) -> None:
-            nonlocal fail_health
-            if fail_health:
-                fail_health = False
-                raise release.ReleaseError("injected candidate health failure")
-            _wait_http(url)
+        monkeypatch.setattr(release, "HEALTH_TIMEOUT_SECONDS", 90.0, raising=False)
+        monkeypatch.setattr(release, "HEALTH_POLL_SECONDS", 0.2, raising=False)
+        monkeypatch.setattr(release, "HEALTH_ATTEMPT_TIMEOUT_SECONDS", 1.0, raising=False)
 
         engine = release.ReleaseEngine(
             paths=paths,
             command_runner=docker_commands,
             policy_fetcher=lambda _operation_id: current_policy,
-            health_checker=health,
         )
         engine.initialize_active(
             {
@@ -494,15 +496,19 @@ def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(tmp_
                 [docker, "inspect", service, "--format", "{{.Config.Image}}"]
             ) == image_sets[2][service]
 
-        fail_health = True
-        with pytest.raises(release.ReleaseError, match="health failure"):
+        fail_next_runtime = True
+        with pytest.raises(release.ReleaseError, match="health check failed"):
             apply(3)
         for service in release.EDGE_SERVICES:
             assert _run(
                 [docker, "inspect", service, "--format", "{{.Config.Image}}"]
             ) == image_sets[2][service]
 
-        assert engine.rollback()["status"] == "rolled_back"
+        assert engine.rollback(
+            operation_id="00000000000000040000000000000004",
+            expected_active_release_id=manifests[2]["release_id"],
+            target_release_id=manifests[1]["release_id"],
+        )["status"] == "rolled_back"
         for service in release.EDGE_SERVICES:
             assert _run(
                 [docker, "inspect", service, "--format", "{{.Config.Image}}"]

@@ -188,6 +188,55 @@ class OperationController:
             return False
         return journal["phase"] == "idle"
 
+    def _committed_apply_result(self, operation_id: str) -> dict[str, Any] | None:
+        try:
+            journal = validate_release_journal(
+                json.loads(self.release_journal_path.read_text(encoding="utf-8"))
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ReleaseError):
+            return None
+        result = journal["last_result"]
+        if (
+            journal["phase"] != "idle"
+            or journal["last_operation_id"] != operation_id
+            or not isinstance(result, dict)
+            or result.get("action") != "apply"
+            or result.get("status") != "committed"
+        ):
+            return None
+        return dict(result)
+
+    def _complete_committed_operation(
+        self,
+        state: dict[str, Any],
+        operation_id: str,
+        result: dict[str, Any],
+        *,
+        log_end: int,
+    ) -> None:
+        operation = state["operations"][operation_id]
+        operation.update(
+            {
+                "active_manifest_digest": result["manifest_digest"],
+                "active_release_id": result["release_id"],
+                "active_release_sequence": result["sequence"],
+                "error": None,
+                "exit_code": 0,
+                "finished_at": utc_now(),
+                "log_end": log_end,
+                "manifest_digest": result["manifest_digest"],
+                "release_id": result["release_id"],
+                "sequence": result["sequence"],
+                "status": "succeeded",
+                "step": "done",
+            }
+        )
+        state["high_watermark"] = max(
+            state["high_watermark"],
+            operation_sequence(operation_id),
+        )
+        self._prune_state(state)
+
     def _recover_interrupted_operation(self) -> None:
         state = self._read_state()
         interrupted = [
@@ -197,6 +246,17 @@ class OperationController:
         ]
         if len(interrupted) == 1:
             operation_id = interrupted[0].get("operation_id")
+            if isinstance(operation_id, str):
+                committed = self._committed_apply_result(operation_id)
+                if committed is not None:
+                    self._complete_committed_operation(
+                        state,
+                        operation_id,
+                        committed,
+                        log_end=self.log_path.stat().st_size,
+                    )
+                    self._write_state(state)
+                    return
             if isinstance(operation_id, str) and self._request_operation_id() == operation_id:
                 self._active_operation_id = operation_id
                 worker = threading.Thread(target=self._run, args=(operation_id,), daemon=True)
@@ -387,15 +447,10 @@ class OperationController:
         operation_id: str,
         *,
         prune: bool = False,
-        advance_high_watermark: bool = False,
         **values: Any,
     ) -> None:
         state = self._read_state()
         state["operations"][operation_id].update(values)
-        if advance_high_watermark:
-            state["high_watermark"] = max(
-                state["high_watermark"], operation_sequence(operation_id)
-            )
         if prune:
             self._prune_state(state)
         self._write_state(state)
@@ -593,46 +648,47 @@ class OperationController:
                 self._active_operation_id = None
             return
 
-        release_summary = self._release_summary()
+        committed = self._committed_apply_result(operation_id)
         with self._lock:
-            succeeded = exit_code == 0 and error is None
-            release_values: dict[str, Any] = {
-                "active_release_id": release_summary.get("release_id"),
-                "active_release_version": release_summary.get("version"),
-                "active_manifest_digest": release_summary.get("manifest_digest"),
-            }
-            if succeeded:
-                release_values["target_version"] = release_summary.get("version")
-                release_values["release_id"] = release_summary.get("release_id")
-                release_values["manifest_digest"] = release_summary.get("manifest_digest")
-            self._patch(
-                operation_id,
-                prune=True,
-                advance_high_watermark=succeeded,
-                status="succeeded" if succeeded else "failed",
-                step="done",
-                finished_at=utc_now(),
-                exit_code=exit_code,
-                error=error if error is not None else (None if succeeded else "fixed_state_machine_failed"),
-                log_end=self.log_path.stat().st_size,
-                **release_values,
-            )
+            if committed is not None:
+                state = self._read_state()
+                self._complete_committed_operation(
+                    state,
+                    operation_id,
+                    committed,
+                    log_end=self.log_path.stat().st_size,
+                )
+                self._write_state(state)
+            else:
+                summary = self._release_summary()
+                self._patch(
+                    operation_id,
+                    prune=True,
+                    status="failed",
+                    step="done",
+                    finished_at=utc_now(),
+                    exit_code=exit_code,
+                    error=error or "fixed_state_machine_failed",
+                    log_end=self.log_path.stat().st_size,
+                    active_release_id=summary.get("release_id"),
+                    active_manifest_digest=summary.get("manifest_digest"),
+                    active_release_sequence=summary.get("sequence"),
+                )
             self._active_operation_id = None
 
-    def _release_summary(self) -> dict[str, str | None]:
+    def _release_summary(self) -> dict[str, Any]:
         try:
-            journal = json.loads(self.release_journal_path.read_text(encoding="utf-8"))
-            active = journal.get("active") if isinstance(journal, dict) else None
-            manifest = active.get("manifest") if isinstance(active, dict) else None
-            digest = active.get("manifest_digest") if isinstance(active, dict) else None
-            if not isinstance(manifest, dict):
-                return {}
+            journal = validate_release_journal(
+                json.loads(self.release_journal_path.read_text(encoding="utf-8"))
+            )
+            active = journal["active"]
+            manifest = active["manifest"]
             return {
-                "release_id": str(manifest.get("release_id") or "") or None,
-                "version": str(manifest.get("version") or "") or None,
-                "manifest_digest": str(digest or "") or None,
+                "release_id": manifest["release_id"],
+                "manifest_digest": active["manifest_digest"],
+                "sequence": manifest["sequence"],
             }
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ReleaseError):
             return {}
 
 

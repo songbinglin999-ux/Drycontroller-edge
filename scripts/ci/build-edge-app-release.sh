@@ -4,6 +4,7 @@ set -euo pipefail
 
 : "${RELEASE_VERSION:?missing RELEASE_VERSION}"
 : "${RELEASE_SOURCE_COMMIT:?missing RELEASE_SOURCE_COMMIT}"
+: "${EDGE_APP_APPROVED_DB_BASELINE_COMMIT:?missing EDGE_APP_APPROVED_DB_BASELINE_COMMIT}"
 : "${HARBOR_HOST:?missing HARBOR_HOST}"
 : "${HARBOR_PROJECT:?missing HARBOR_PROJECT}"
 : "${HARBOR_USER:?missing HARBOR_USER}"
@@ -17,6 +18,7 @@ set -euo pipefail
 
 [[ "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
 [[ "${RELEASE_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+[[ "${EDGE_APP_APPROVED_DB_BASELINE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
 [[ "${CLOUD_OPS_RELEASE_API_URL}" == https://* ]]
 [[ "${COSIGN_PUBLIC_KEY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
 
@@ -24,6 +26,9 @@ readonly DOCKER_BINARY="/usr/bin/docker"
 readonly COSIGN_BINARY="/usr/local/bin/cosign"
 readonly TRIVY_BINARY="/usr/local/bin/trivy"
 readonly PYTHON_BINARY="/usr/bin/python3"
+"${PYTHON_BINARY}" scripts/ci/verify-edge-app-migration-scope.py \
+  --approved-baseline "${EDGE_APP_APPROVED_DB_BASELINE_COMMIT}" \
+  --source "${RELEASE_SOURCE_COMMIT}"
 "${PYTHON_BINARY}" scripts/ci/verify-edge-app-toolchain.py >/dev/null
 
 release_dir="$(/usr/bin/mktemp -d "${RUNNER_TEMP:-/tmp}/drycontroller-edge-app.XXXXXX")"

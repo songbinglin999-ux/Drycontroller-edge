@@ -107,7 +107,18 @@ enable the new recovery/helper units. Before reboot, create and independently
 sign an approved live two-image baseline with `scripts/create-edge-app-baseline.py`,
 initialize it through the installed `initialize-active-release`, then enable
 `drycontroller-edge-app-recovery.service` and `drycontroller-ota-helper.service`.
-An unsigned or incomplete baseline must leave both units disabled.
+The initializer is safe to rerun only with the byte-identical signed seed and
+revalidates both images plus the live containers before rebuilding a missing
+journal. An unsigned, mismatched, or incomplete baseline must leave both units
+disabled. Manual rollback requires a fixed operation ID plus the expected
+active and target previous release IDs; retrying the same bound request returns
+the durable result without swapping the slots again.
+
+Daily `edge-app-v1` OTA is application-only. The release workflow compares the
+signed source commit with the protected `EDGE_APP_APPROVED_DB_BASELINE_COMMIT`
+repository variable and fails closed if the approved range changes any
+`services/edge-api/alembic/versions/` file. Database migrations remain an
+explicit SSH maintenance and backup operation.
 
 ## API And WebSocket Notes
 

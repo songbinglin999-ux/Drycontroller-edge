@@ -19,6 +19,7 @@ import shlex
 import stat
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -70,16 +71,35 @@ JOURNAL_FIELDS = {
     "schema",
     "phase",
     "operation_id",
+    "last_operation_id",
+    "last_result",
+    "high_watermark",
     "active",
     "previous",
     "candidate",
     "error",
+}
+APPLY_RESULT_FIELDS = {
+    "action",
+    "operation_id",
+    "status",
+    "release_id",
+    "manifest_digest",
+    "sequence",
+    "previous_release_id",
+}
+ROLLBACK_RESULT_FIELDS = APPLY_RESULT_FIELDS | {
+    "expected_active_release_id",
+    "target_release_id",
 }
 OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 MAX_JSON_BYTES = 1024 * 1024
+HEALTH_TIMEOUT_SECONDS = 180.0
+HEALTH_POLL_SECONDS = 2.0
+HEALTH_ATTEMPT_TIMEOUT_SECONDS = 5.0
 FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -200,6 +220,53 @@ def validate_slot(value: object) -> dict[str, Any]:
     return value
 
 
+def _validate_release_id(value: object, label: str) -> str:
+    try:
+        canonical = str(uuid.UUID(str(value)))
+    except ValueError as exc:
+        raise ReleaseError(f"{label} must be a canonical UUID") from exc
+    if canonical != value:
+        raise ReleaseError(f"{label} must be a canonical UUID")
+    return canonical
+
+
+def validate_release_result(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ReleaseError("release result invalid")
+    action = value.get("action")
+    if action not in {"apply", "rollback"}:
+        raise ReleaseError("release result action invalid")
+    expected_fields = APPLY_RESULT_FIELDS if action == "apply" else ROLLBACK_RESULT_FIELDS
+    if set(value) != expected_fields:
+        raise ReleaseError("release result fields invalid")
+    operation_id = value.get("operation_id")
+    if not isinstance(operation_id, str) or OPERATION_ID.fullmatch(operation_id) is None:
+        raise ReleaseError("release result operation invalid")
+    expected_status = "committed" if action == "apply" else "rolled_back"
+    if value.get("status") != expected_status:
+        raise ReleaseError("release result status invalid")
+    _validate_release_id(value.get("release_id"), "release result release_id")
+    _validate_release_id(value.get("previous_release_id"), "release result previous_release_id")
+    if action == "rollback":
+        _validate_release_id(
+            value.get("expected_active_release_id"),
+            "rollback expected_active_release_id",
+        )
+        _validate_release_id(value.get("target_release_id"), "rollback target_release_id")
+        if (
+            value["release_id"] != value["target_release_id"]
+            or value["previous_release_id"] != value["expected_active_release_id"]
+        ):
+            raise ReleaseError("rollback result binding invalid")
+    digest = value.get("manifest_digest")
+    if not isinstance(digest, str) or DIGEST.fullmatch(digest) is None:
+        raise ReleaseError("release result manifest digest invalid")
+    sequence = value.get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise ReleaseError("release result sequence invalid")
+    return value
+
+
 def validate_release_journal(value: object) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != JOURNAL_FIELDS:
         raise ReleaseError("release journal fields invalid")
@@ -217,6 +284,41 @@ def validate_release_journal(value: object) -> dict[str, Any]:
             validate_slot(value[name])
     if value.get("active") is None:
         raise ReleaseError("release journal active slot missing")
+    if value["phase"] == "idle" and operation_id is not None:
+        raise ReleaseError("idle release journal operation must be empty")
+    if value["phase"] in {"prepared", "mutated", "committed"} and operation_id is None:
+        raise ReleaseError("release journal operation missing")
+    high_watermark = value.get("high_watermark")
+    if isinstance(high_watermark, bool) or not isinstance(high_watermark, int) or high_watermark < 1:
+        raise ReleaseError("release journal high watermark invalid")
+    slot_sequences = [
+        value[name]["manifest"]["sequence"]
+        for name in ("active", "previous")
+        if value.get(name) is not None
+    ]
+    if high_watermark < max(slot_sequences):
+        raise ReleaseError("release journal high watermark regressed")
+    last_operation_id = value.get("last_operation_id")
+    last_result = value.get("last_result")
+    if last_operation_id is None:
+        if last_result is not None:
+            raise ReleaseError("release journal last result missing operation")
+    else:
+        if not isinstance(last_operation_id, str) or OPERATION_ID.fullmatch(last_operation_id) is None:
+            raise ReleaseError("release journal last operation invalid")
+        result = validate_release_result(last_result)
+        if result["operation_id"] != last_operation_id:
+            raise ReleaseError("release journal last operation binding mismatch")
+        active = value["active"]
+        if (
+            result["release_id"] != active["manifest"]["release_id"]
+            or result["manifest_digest"] != active["manifest_digest"]
+            or result["sequence"] != active["manifest"]["sequence"]
+            or result["sequence"] > high_watermark
+        ):
+            raise ReleaseError("release journal last result does not match active release")
+    if value["phase"] == "committed" and operation_id != last_operation_id:
+        raise ReleaseError("committed release journal result missing")
     if value.get("error") is not None and not isinstance(value["error"], str):
         raise ReleaseError("release journal error invalid")
     return value
@@ -492,12 +594,30 @@ class ReleaseEngine:
 
     @staticmethod
     def _health(url: str) -> None:
-        try:
-            with urllib.request.urlopen(url, timeout=10) as response:
-                if response.status != 200:
-                    raise ReleaseError("release health check failed")
-        except (OSError, urllib.error.URLError) as exc:
-            raise ReleaseError("release health check failed") from exc
+        deadline = time.monotonic() + HEALTH_TIMEOUT_SECONDS
+        last_error: Exception | None = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                detail = (
+                    f"{type(last_error).__name__}: {last_error}"
+                    if last_error is not None
+                    else "no response"
+                )
+                raise ReleaseError(f"release health check failed; last error: {detail}") from last_error
+            try:
+                with urllib.request.urlopen(
+                    url,
+                    timeout=min(HEALTH_ATTEMPT_TIMEOUT_SECONDS, remaining),
+                ) as response:
+                    if response.status == 200:
+                        return
+                    last_error = ReleaseError(f"unexpected HTTP status {response.status}")
+            except (OSError, urllib.error.URLError) as exc:
+                last_error = exc
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(HEALTH_POLL_SECONDS, remaining))
 
     def _cloud_credentials(self) -> tuple[str, str]:
         values: dict[str, str] = {}
@@ -646,6 +766,9 @@ class ReleaseEngine:
         *,
         phase: str,
         operation_id: str | None,
+        last_operation_id: str | None,
+        last_result: dict[str, Any] | None,
+        high_watermark: int,
         active: dict[str, Any],
         previous: dict[str, Any] | None,
         candidate: dict[str, Any] | None,
@@ -655,6 +778,9 @@ class ReleaseEngine:
             "active": active,
             "candidate": candidate,
             "error": error,
+            "high_watermark": high_watermark,
+            "last_operation_id": last_operation_id,
+            "last_result": last_result,
             "operation_id": operation_id,
             "phase": phase,
             "previous": previous,
@@ -665,13 +791,22 @@ class ReleaseEngine:
         validate_release_journal(journal)
         atomic_write(self.paths.journal, journal)
 
+    def _load_journal(self) -> dict[str, Any]:
+        return validate_release_journal(read_json(self.paths.journal))
+
+    @staticmethod
+    def _journal_metadata(journal: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "last_operation_id": journal["last_operation_id"],
+            "last_result": journal["last_result"],
+            "high_watermark": journal["high_watermark"],
+        }
+
     def _load_active(self) -> dict[str, Any]:
         return validate_slot(read_json(self.paths.active))
 
     def initialize_active(self, seed: object) -> dict[str, Any]:
         with self._lock():
-            if self.paths.active.exists() or self.paths.previous.exists():
-                raise ReleaseError("edge-app-v1 active baseline already exists")
             if not isinstance(seed, dict) or set(seed) != {
                 "manifest",
                 "manifest_digest",
@@ -682,19 +817,74 @@ class ReleaseEngine:
             slot = self._slot(manifest, str(seed["manifest_signature"]))
             if seed["manifest_digest"] != slot["manifest_digest"]:
                 raise ReleaseError("initial release manifest digest mismatch")
+            if self.paths.previous.exists():
+                raise ReleaseError("edge-app-v1 baseline previous release must be absent")
+            if self.paths.active.exists():
+                existing = self._load_active()
+                if any(
+                    existing[name] != slot[name]
+                    for name in ("manifest", "manifest_digest", "manifest_signature")
+                ):
+                    raise ReleaseError("existing edge-app-v1 active baseline does not match seed")
+                self._verify_slot(existing, images=True)
+                self._prove_running_matches(existing)
+                if self.paths.journal.exists():
+                    journal = self._load_journal()
+                    if (
+                        journal["phase"] != "idle"
+                        or journal["active"] != existing
+                        or journal["previous"] is not None
+                        or journal["candidate"] is not None
+                        or journal["last_operation_id"] is not None
+                        or journal["last_result"] is not None
+                        or journal["high_watermark"] != manifest["sequence"]
+                    ):
+                        raise ReleaseError("existing edge-app-v1 baseline journal is not initial state")
+                else:
+                    self._persist(
+                        self._journal(
+                            phase="idle",
+                            operation_id=None,
+                            last_operation_id=None,
+                            last_result=None,
+                            high_watermark=manifest["sequence"],
+                            active=existing,
+                            previous=None,
+                            candidate=None,
+                        )
+                    )
+                return {
+                    "manifest_digest": existing["manifest_digest"],
+                    "previous": None,
+                    "release_id": manifest["release_id"],
+                    "sequence": manifest["sequence"],
+                    "status": "already_active",
+                }
+            if self.paths.journal.exists():
+                raise ReleaseError("edge-app-v1 baseline journal exists without active release")
             self._verify_slot(slot, images=True)
             self._prove_running_matches(slot)
             atomic_write(self.paths.active, slot)
+            self.fault("initialize_after_active_write")
             self._persist(
                 self._journal(
                     phase="idle",
                     operation_id=None,
+                    last_operation_id=None,
+                    last_result=None,
+                    high_watermark=manifest["sequence"],
                     active=slot,
                     previous=None,
                     candidate=None,
                 )
             )
-            return {"release_id": manifest["release_id"], "previous": None, "status": "active"}
+            return {
+                "manifest_digest": slot["manifest_digest"],
+                "previous": None,
+                "release_id": manifest["release_id"],
+                "sequence": manifest["sequence"],
+                "status": "active",
+            }
 
     def _prove_running_matches(self, slot: dict[str, Any]) -> None:
         for service in EDGE_SERVICES:
@@ -736,8 +926,6 @@ class ReleaseEngine:
             or not signature
         ):
             raise ReleaseError("release policy manifest binding mismatch")
-        if manifest["sequence"] <= active["manifest"]["sequence"]:
-            raise ReleaseError("release sequence must increase")
         return self._slot(manifest, signature)
 
     def _read_operation_id(self) -> str:
@@ -749,7 +937,13 @@ class ReleaseEngine:
             raise ReleaseError("release request operation_id invalid")
         return operation_id
 
-    def _restore(self, active: dict[str, Any], previous: dict[str, Any] | None, operation_id: str | None) -> None:
+    def _restore(
+        self,
+        active: dict[str, Any],
+        previous: dict[str, Any] | None,
+        operation_id: str | None,
+        metadata: dict[str, Any],
+    ) -> None:
         self._prove_local(active)
         self._compose(active)
         self._verify_runtime()
@@ -763,6 +957,7 @@ class ReleaseEngine:
             self._journal(
                 phase="idle",
                 operation_id=None,
+                **metadata,
                 active=active,
                 previous=previous,
                 candidate=None,
@@ -771,36 +966,28 @@ class ReleaseEngine:
         )
 
     def _recover_locked(self) -> None:
-        journal = validate_release_journal(read_json(self.paths.journal))
+        journal = self._load_journal()
         if journal["phase"] == "idle":
             return
         if journal["phase"] == "committed":
-            active = validate_slot(journal["active"])
-            previous = validate_slot(journal["previous"]) if journal["previous"] else None
-            atomic_write(self.paths.active, active)
-            if previous:
-                atomic_write(self.paths.previous, previous)
-            self.paths.candidate.unlink(missing_ok=True)
-            self._persist(
-                self._journal(
-                    phase="idle",
-                    operation_id=None,
-                    active=active,
-                    previous=previous,
-                    candidate=None,
-                )
-            )
+            self._finish_committed(journal)
             return
         active = validate_slot(journal["active"])
         previous = validate_slot(journal["previous"]) if journal["previous"] else None
         if journal["phase"] == "mutated":
-            self._restore(active, previous, journal["operation_id"])
+            self._restore(
+                active,
+                previous,
+                journal["operation_id"],
+                self._journal_metadata(journal),
+            )
             return
         self.paths.candidate.unlink(missing_ok=True)
         self._persist(
             self._journal(
                 phase="idle",
                 operation_id=None,
+                **self._journal_metadata(journal),
                 active=active,
                 previous=previous,
                 candidate=None,
@@ -808,18 +995,89 @@ class ReleaseEngine:
             )
         )
 
+    def _finish_committed(self, journal: dict[str, Any]) -> None:
+        journal = validate_release_journal(journal)
+        if journal["phase"] != "committed":
+            raise ReleaseError("release journal is not committed")
+        active = validate_slot(journal["active"])
+        previous = validate_slot(journal["previous"]) if journal["previous"] else None
+        atomic_write(self.paths.active, active)
+        if previous is None:
+            self.paths.previous.unlink(missing_ok=True)
+        else:
+            atomic_write(self.paths.previous, previous)
+        self.paths.candidate.unlink(missing_ok=True)
+        self.paths.history.mkdir(parents=True, exist_ok=True)
+        atomic_write(self.paths.history / f"{journal['operation_id']}.json", journal)
+        idle = dict(journal)
+        idle.update({"phase": "idle", "operation_id": None, "candidate": None, "error": None})
+        self._persist(idle)
+
+    @staticmethod
+    def _apply_replay(journal: dict[str, Any], operation_id: str) -> dict[str, Any] | None:
+        if journal["last_operation_id"] != operation_id:
+            return None
+        result = validate_release_result(journal["last_result"])
+        active = journal["active"]
+        if (
+            result["action"] != "apply"
+            or result["release_id"] != active["manifest"]["release_id"]
+            or result["manifest_digest"] != active["manifest_digest"]
+            or result["sequence"] != active["manifest"]["sequence"]
+        ):
+            raise ReleaseError("release operation replay does not match committed release")
+        return dict(result)
+
+    @staticmethod
+    def _rollback_replay(
+        journal: dict[str, Any],
+        operation_id: str,
+        expected_active_release_id: str,
+        target_release_id: str,
+    ) -> dict[str, Any] | None:
+        if journal["last_operation_id"] != operation_id:
+            return None
+        result = validate_release_result(journal["last_result"])
+        previous = journal["previous"]
+        if (
+            result["action"] != "rollback"
+            or result["expected_active_release_id"] != expected_active_release_id
+            or result["target_release_id"] != target_release_id
+            or journal["active"]["manifest"]["release_id"] != target_release_id
+            or previous is None
+            or previous["manifest"]["release_id"] != expected_active_release_id
+        ):
+            raise ReleaseError("rollback operation replay binding mismatch")
+        return dict(result)
+
     def recover(self) -> dict[str, Any]:
         with self._lock():
             self._recover_locked()
-            return {"status": "recovered", "release_id": self._load_active()["manifest"]["release_id"]}
+            active = self._load_active()
+            return {
+                "status": "recovered",
+                "release_id": active["manifest"]["release_id"],
+                "manifest_digest": active["manifest_digest"],
+                "sequence": active["manifest"]["sequence"],
+            }
 
     def apply(self) -> dict[str, Any]:
         with self._lock():
             self._recover_locked()
+            state = self._load_journal()
             active = self._load_active()
-            previous = validate_slot(read_json(self.paths.previous)) if self.paths.previous.exists() else None
+            if active != state["active"]:
+                raise ReleaseError("active release file does not match journal")
+            previous = state["previous"]
             operation_id = self._read_operation_id()
+            replay = self._apply_replay(state, operation_id)
+            if replay is not None:
+                self._verify_slot(active, images=False)
+                self._prove_local(active)
+                return replay
             candidate = self._validate_policy(self.policy_fetcher(operation_id), operation_id, active)
+            if candidate["manifest"]["sequence"] <= state["high_watermark"]:
+                raise ReleaseError("release sequence must increase beyond committed high watermark")
 
             self._verify_license()
             self._verify_slot(candidate, images=True)
@@ -829,13 +1087,13 @@ class ReleaseEngine:
             journal = self._journal(
                 phase="prepared",
                 operation_id=operation_id,
+                **self._journal_metadata(state),
                 active=active,
                 previous=previous,
                 candidate=candidate,
             )
             self._persist(journal)
             self.fault("after_prepared")
-            mutated = True
             try:
                 journal["phase"] = "mutated"
                 self._persist(journal)
@@ -845,37 +1103,32 @@ class ReleaseEngine:
                 self.fault("after_health")
                 atomic_write(self.paths.previous, active)
                 atomic_write(self.paths.active, candidate)
+                result = {
+                    "action": "apply",
+                    "manifest_digest": candidate["manifest_digest"],
+                    "operation_id": operation_id,
+                    "previous_release_id": active["manifest"]["release_id"],
+                    "release_id": candidate["manifest"]["release_id"],
+                    "sequence": candidate["manifest"]["sequence"],
+                    "status": "committed",
+                }
                 journal = self._journal(
                     phase="committed",
                     operation_id=operation_id,
+                    last_operation_id=operation_id,
+                    last_result=result,
+                    high_watermark=candidate["manifest"]["sequence"],
                     active=candidate,
                     previous=active,
                     candidate=None,
                 )
                 self._persist(journal)
-                self.fault("after_committed")
-                self.paths.candidate.unlink(missing_ok=True)
-                self.paths.history.mkdir(parents=True, exist_ok=True)
-                atomic_write(self.paths.history / f"{operation_id}.json", journal)
-                self._persist(
-                    self._journal(
-                        phase="idle",
-                        operation_id=None,
-                        active=candidate,
-                        previous=active,
-                        candidate=None,
-                    )
-                )
             except Exception:
-                if mutated:
-                    self._restore(active, previous, operation_id)
+                self._restore(active, previous, operation_id, self._journal_metadata(state))
                 raise
-            return {
-                "manifest_digest": candidate["manifest_digest"],
-                "previous_release_id": active["manifest"]["release_id"],
-                "release_id": candidate["manifest"]["release_id"],
-                "status": "committed",
-            }
+            self.fault("after_committed")
+            self._finish_committed(journal)
+            return result
 
     def start_active(self) -> dict[str, Any]:
         with self._lock():
@@ -885,21 +1138,51 @@ class ReleaseEngine:
             self._prove_local(active)
             self._compose(active)
             self._verify_runtime()
-            return {"release_id": active["manifest"]["release_id"], "status": "active"}
+            return {
+                "release_id": active["manifest"]["release_id"],
+                "manifest_digest": active["manifest_digest"],
+                "sequence": active["manifest"]["sequence"],
+                "status": "active",
+            }
 
-    def rollback(self) -> dict[str, Any]:
+    def rollback(
+        self,
+        *,
+        operation_id: str,
+        expected_active_release_id: str,
+        target_release_id: str,
+    ) -> dict[str, Any]:
         with self._lock():
+            if not isinstance(operation_id, str) or OPERATION_ID.fullmatch(operation_id) is None:
+                raise ReleaseError("rollback operation_id invalid")
+            _validate_release_id(expected_active_release_id, "rollback expected active release")
+            _validate_release_id(target_release_id, "rollback target release")
             self._recover_locked()
+            state = self._load_journal()
+            replay = self._rollback_replay(
+                state,
+                operation_id,
+                expected_active_release_id,
+                target_release_id,
+            )
+            if replay is not None:
+                return replay
             active = self._load_active()
+            if active != state["active"]:
+                raise ReleaseError("active release file does not match journal")
             if not self.paths.previous.exists():
                 raise ReleaseError("verified previous release is unavailable")
             previous = validate_slot(read_json(self.paths.previous))
+            if active["manifest"]["release_id"] != expected_active_release_id:
+                raise ReleaseError("rollback expected active release does not match")
+            if previous["manifest"]["release_id"] != target_release_id:
+                raise ReleaseError("rollback target previous release does not match")
             self._verify_slot(previous, images=False)
             self._prove_local(previous)
-            operation_id = uuid.uuid4().hex
             journal = self._journal(
                 phase="prepared",
                 operation_id=operation_id,
+                **self._journal_metadata(state),
                 active=active,
                 previous=previous,
                 candidate=previous,
@@ -916,30 +1199,31 @@ class ReleaseEngine:
                 atomic_write(self.paths.active, previous)
                 self.fault("rollback_after_active_write")
                 atomic_write(self.paths.previous, active)
-                self._persist(
-                    self._journal(
-                        phase="committed",
-                        operation_id=operation_id,
-                        active=previous,
-                        previous=active,
-                        candidate=None,
-                    )
-                )
-            except Exception:
-                self._restore(active, previous, operation_id)
-                raise
-            self.fault("rollback_after_committed")
-            self._persist(
-                self._journal(
-                    phase="idle",
-                    operation_id=None,
+                result = {
+                    "action": "rollback",
+                    "expected_active_release_id": expected_active_release_id,
+                    "manifest_digest": previous["manifest_digest"],
+                    "operation_id": operation_id,
+                    "previous_release_id": active["manifest"]["release_id"],
+                    "release_id": previous["manifest"]["release_id"],
+                    "sequence": previous["manifest"]["sequence"],
+                    "status": "rolled_back",
+                    "target_release_id": target_release_id,
+                }
+                journal = self._journal(
+                    phase="committed",
+                    operation_id=operation_id,
+                    last_operation_id=operation_id,
+                    last_result=result,
+                    high_watermark=state["high_watermark"],
                     active=previous,
                     previous=active,
                     candidate=None,
                 )
-            )
-            return {
-                "release_id": previous["manifest"]["release_id"],
-                "previous_release_id": active["manifest"]["release_id"],
-                "status": "rolled_back",
-            }
+                self._persist(journal)
+            except Exception:
+                self._restore(active, previous, operation_id, self._journal_metadata(state))
+                raise
+            self.fault("rollback_after_committed")
+            self._finish_committed(journal)
+            return result

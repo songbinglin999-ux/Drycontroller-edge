@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from typing import Any
+import uuid
 
 import structlog
 from sqlalchemy import select
@@ -11,6 +13,7 @@ from app.core.database import AsyncSessionLocal
 from app.models import CloudSyncOutbox, OtaOperation
 
 logger = structlog.get_logger(__name__)
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def _parse_dt(value: Any) -> dt.datetime | None:
@@ -37,6 +40,30 @@ def _iso(value: dt.datetime | None) -> str | None:
 def _operation_id(payload: dict[str, Any]) -> str | None:
     value = payload.get("operation_id")
     return str(value).strip() if value else None
+
+
+def _release_identity(operation: dict[str, Any]) -> dict[str, Any] | None:
+    release_id = operation.get("release_id")
+    manifest_digest = operation.get("manifest_digest")
+    sequence = operation.get("sequence")
+    try:
+        canonical_release_id = str(uuid.UUID(str(release_id)))
+    except ValueError:
+        return None
+    if (
+        canonical_release_id != release_id
+        or not isinstance(manifest_digest, str)
+        or DIGEST.fullmatch(manifest_digest) is None
+        or isinstance(sequence, bool)
+        or not isinstance(sequence, int)
+        or sequence < 1
+    ):
+        return None
+    return {
+        "release_id": canonical_release_id,
+        "manifest_digest": manifest_digest,
+        "sequence": sequence,
+    }
 
 
 def _build_outbox_payload(row: OtaOperation) -> dict[str, Any]:
@@ -81,6 +108,7 @@ async def record_ota_operation(
     status_text = str(operation.get("status") or "unknown")
     parsed_started_at = _parse_dt(operation.get("started_at"))
     finished_at = _parse_dt(operation.get("finished_at"))
+    release_identity = _release_identity(operation)
 
     try:
         async with AsyncSessionLocal() as db:
@@ -94,11 +122,16 @@ async def record_ota_operation(
                     else {}
                 )
                 effective_req = req if request_payload is not None else stored_request
+                receipt_label = str(
+                    effective_req.get("target_version")
+                    or (release_identity or {}).get("release_id")
+                    or op_id
+                )
                 if row is None:
                     row = OtaOperation(
                         tenant_id=tenant_id,
                         operation_id=op_id,
-                        ota_version=str(operation.get("target_version") or effective_req.get("target_version") or "unknown"),
+                        ota_version=receipt_label,
                         source=str(operation.get("mode") or effective_req.get("mode") or "online"),
                         status=status_text,
                         started_at=parsed_started_at or dt.datetime.now(dt.timezone.utc),
@@ -106,7 +139,12 @@ async def record_ota_operation(
                     db.add(row)
 
                 row.status = status_text
-                row.ota_version = str(operation.get("target_version") or effective_req.get("target_version") or row.ota_version or "unknown")
+                row.ota_version = str(
+                    effective_req.get("target_version")
+                    or (release_identity or {}).get("release_id")
+                    or row.ota_version
+                    or op_id
+                )
                 row.source = str(operation.get("mode") or effective_req.get("mode") or row.source or "online")
                 if parsed_started_at is not None:
                     row.started_at = parsed_started_at
@@ -124,6 +162,8 @@ async def record_ota_operation(
                     "helper_container_id": operation.get("helper_container_id"),
                     "helper_image": operation.get("helper_image"),
                 }
+                if release_identity is not None:
+                    row.result["release_identity"] = release_identity
                 await db.flush()
 
                 current_payload = _build_outbox_payload(row)
