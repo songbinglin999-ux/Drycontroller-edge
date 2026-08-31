@@ -68,7 +68,7 @@ def test_active_workflow_and_executor_do_not_reach_legacy_release_paths():
     assert "license-service" not in script
     assert "HOST_RELEASE" not in script
     assert 'readonly DOCKER_BINARY="/usr/bin/docker"' in script
-    assert 'readonly COSIGN_BINARY="/usr/local/bin/cosign"' in script
+    assert 'readonly COSIGN_BINARY="/usr/local/libexec/drycontroller/cosign"' in script
     assert 'readonly TRIVY_BINARY="/usr/local/bin/trivy"' in script
     assert "verify-edge-app-toolchain.py" in script
     assert "verify-edge-app-migration-scope.py" in script
@@ -126,6 +126,9 @@ def test_edge_app_toolchain_verifier_binds_fixed_files_versions_and_platform(
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    assert module.TOOLS["cosign"]["path"] == Path(
+        "/usr/local/libexec/drycontroller/cosign"
+    )
     for name, version in (("docker", "24.0.2"), ("cosign", "v3.1.3"), ("trivy", "0.70.0")):
         binary = tmp_path / name
         binary.write_bytes(name.encode())

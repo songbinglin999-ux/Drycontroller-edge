@@ -23,7 +23,7 @@ set -euo pipefail
 [[ "${COSIGN_PUBLIC_KEY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
 
 readonly DOCKER_BINARY="/usr/bin/docker"
-readonly COSIGN_BINARY="/usr/local/bin/cosign"
+readonly COSIGN_BINARY="/usr/local/libexec/drycontroller/cosign"
 readonly TRIVY_BINARY="/usr/local/bin/trivy"
 readonly PYTHON_BINARY="/usr/bin/python3"
 "${PYTHON_BINARY}" scripts/ci/verify-edge-app-migration-scope.py \

@@ -21,7 +21,7 @@ TOOLS = {
         "version": "24.0.2",
     },
     "cosign": {
-        "path": Path("/usr/local/bin/cosign"),
+        "path": Path("/usr/local/libexec/drycontroller/cosign"),
         "sha256": "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
         "version": "v3.1.3",
     },
