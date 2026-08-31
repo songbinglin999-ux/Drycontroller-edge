@@ -18,7 +18,7 @@ TOOLS = {
     "docker": {
         "path": Path("/usr/bin/docker"),
         "sha256": "94afb5edf9d3565bd339dd61bdb9b53247e8c28bce4d04f021b90f845918bd9e",
-        "version": "24.0.2",
+        "version": "29.4.1-1",
     },
     "cosign": {
         "path": Path("/usr/local/libexec/drycontroller/cosign"),

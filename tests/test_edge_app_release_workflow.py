@@ -129,7 +129,12 @@ def test_edge_app_toolchain_verifier_binds_fixed_files_versions_and_platform(
     assert module.TOOLS["cosign"]["path"] == Path(
         "/usr/local/libexec/drycontroller/cosign"
     )
-    for name, version in (("docker", "24.0.2"), ("cosign", "v3.1.3"), ("trivy", "0.70.0")):
+    assert module.TOOLS["docker"]["version"] == "29.4.1-1"
+    for name, version in (
+        ("docker", "29.4.1-1"),
+        ("cosign", "v3.1.3"),
+        ("trivy", "0.70.0"),
+    ):
         binary = tmp_path / name
         binary.write_bytes(name.encode())
         binary.chmod(0o755)
@@ -141,7 +146,13 @@ def test_edge_app_toolchain_verifier_binds_fixed_files_versions_and_platform(
     monkeypatch.setattr(module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(module, "_trusted_ancestors", lambda *_args: None)
-    outputs = iter(("24.0.2|linux/amd64", "GitVersion: v3.1.3\nPlatform: linux/amd64", "Version: 0.70.0"))
+    outputs = iter(
+        (
+            "29.4.1-1|linux/amd64",
+            "GitVersion: v3.1.3\nPlatform: linux/amd64",
+            "Version: 0.70.0",
+        )
+    )
     monkeypatch.setattr(module, "_output", lambda _command: next(outputs))
 
     receipt = module.verify_release_toolchain(owner_uid=os.getuid(), owner_gid=os.getgid())
