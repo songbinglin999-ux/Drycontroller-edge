@@ -99,7 +99,12 @@ Important runtime files and generated state:
 intentional: Cloud Ops can update Modbus host/port/slave settings without
 changing Ubuntu network interfaces.
 
-The application-release retrofit is deliberately two-stage. Run
+The application-release retrofit is deliberately two-stage. On an existing
+host that predates the device-identity runtime, first run the create-once
+`infra/bootstrap/install-device-identity-runtime.py` with an independently
+approved offline wheelhouse manifest. It refuses an existing identity runtime
+and installs through an atomic staging directory; it does not configure the
+network, Docker, application containers, or device identity state. Then run
 `infra/bootstrap/retrofit-edge-app-runtime.sh` to install the isolated
 `edge-app-v1` host runtime and retire the Edge API path to legacy HostRelease.
 The script does not pull images, mutate containers, create release state, or
