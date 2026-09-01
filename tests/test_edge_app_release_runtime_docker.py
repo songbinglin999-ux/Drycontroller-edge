@@ -292,10 +292,11 @@ def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(
                 pytest.fail(f"required E2E port is already in use: {port}")
 
     suffix = uuid.uuid4().hex[:10]
-    project = f"drycontroller-edge-e2e-{suffix}"
+    project = release.COMPOSE_PROJECT_NAME
+    resource_prefix = f"drycontroller-edge-e2e-{suffix}"
     registry_name = f"drycontroller-edge-registry-{suffix}"
-    configs_volume = f"{project}-configs"
-    configs_loader = f"{project}-configs-loader"
+    configs_volume = f"{resource_prefix}-configs"
+    configs_loader = f"{resource_prefix}-configs-loader"
     registry_port = _free_port()
     registry = f"127.0.0.1:{registry_port}"
     built_tags: list[str] = []
@@ -368,14 +369,36 @@ def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(
 
         compose = tmp_path / "docker-compose.yml"
         _write_compose(compose, project, image_sets[1], configs_volume)
-        _run([docker, "compose", "--file", str(compose), "up", "-d"], timeout=300)
+        state = tmp_path / "state"
+        state.mkdir(mode=0o700)
+        state.chmod(0o700)
+        override = state / "edge-app-images.yml"
+        override.write_text(
+            "services:\n"
+            f"  edge-api:\n    image: {json.dumps(image_sets[1]['edge-api'])}\n"
+            f"  edge-daq:\n    image: {json.dumps(image_sets[1]['edge-daq'])}\n"
+        )
+        _run(
+            [
+                docker,
+                "compose",
+                "--project-name",
+                release.COMPOSE_PROJECT_NAME,
+                "--project-directory",
+                str(tmp_path),
+                "--file",
+                str(compose),
+                "--file",
+                str(override),
+                "up",
+                "-d",
+            ],
+            timeout=300,
+        )
         _wait_http("http://127.0.0.1:18080/ready")
         _wait_http("http://127.0.0.1:8082/ready")
         _wait_container_health(docker, release.EDGE_SERVICES)
 
-        state = tmp_path / "state"
-        state.mkdir(mode=0o700)
-        state.chmod(0o700)
         paths = release.ReleasePaths(
             lock=state / "release.lock",
             journal=state / "release-journal.json",
@@ -517,7 +540,21 @@ def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(
         assert json.loads(paths.active.read_text())["manifest"]["release_id"] == manifests[1]["release_id"]
     finally:
         subprocess.run(
-            [docker, "compose", "--file", str(tmp_path / "docker-compose.yml"), "down", "-v", "--remove-orphans"],
+            [
+                docker,
+                "compose",
+                "--project-name",
+                release.COMPOSE_PROJECT_NAME,
+                "--project-directory",
+                str(tmp_path),
+                "--file",
+                str(tmp_path / "docker-compose.yml"),
+                "--file",
+                str(tmp_path / "state/edge-app-images.yml"),
+                "down",
+                "-v",
+                "--remove-orphans",
+            ],
             cwd=tmp_path,
             check=False,
             stdout=subprocess.DEVNULL,

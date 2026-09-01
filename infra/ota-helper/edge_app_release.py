@@ -96,15 +96,19 @@ OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+CONTAINER_ID = re.compile(r"^[0-9a-f]{64}$")
+COMPOSE_CONFIG_HASH = re.compile(r"^[0-9a-f]{64}$")
 MAX_JSON_BYTES = 1024 * 1024
 HEALTH_TIMEOUT_SECONDS = 180.0
 HEALTH_POLL_SECONDS = 2.0
 HEALTH_ATTEMPT_TIMEOUT_SECONDS = 5.0
+COMPOSE_BINARY = "/usr/libexec/docker/cli-plugins/docker-compose"
+COMPOSE_PROJECT_NAME = "drycontroller-edge"
 FIXED_ENV = {
     "HOME": "/root",
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "DOCKER_HOST": "unix:///run/docker.sock",
-    "COMPOSE_PROJECT_NAME": "drycontroller-edge",
+    "COMPOSE_PROJECT_NAME": COMPOSE_PROJECT_NAME,
 }
 REGISTRY_AUTH_SCHEMA = "drycontroller.registry-auth.v2"
 REGISTRY = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$")
@@ -172,6 +176,148 @@ def deployment_digest(compose: Path) -> str:
         "schema": "drycontroller.app-deployment-contract.v1",
     }
     return "sha256:" + hashlib.sha256(canonical_json_bytes(contract)).hexdigest()
+
+
+def compose_command(
+    *,
+    project: Path,
+    compose: Path,
+    override: Path,
+    command: list[str],
+) -> list[str]:
+    return [
+        COMPOSE_BINARY,
+        "--project-name",
+        COMPOSE_PROJECT_NAME,
+        "--project-directory",
+        str(project),
+        "--file",
+        str(compose),
+        "--file",
+        str(override),
+        *command,
+    ]
+
+
+def prove_compose_runtime(
+    *,
+    project: Path,
+    compose: Path,
+    override: Path,
+    images: dict[str, str],
+    command_runner: Callable[[list[str]], str],
+    expected_image_ids: dict[str, str] | None = None,
+    require_healthy: bool = True,
+) -> None:
+    try:
+        rendered = json.loads(
+            command_runner(
+                compose_command(
+                    project=project,
+                    compose=compose,
+                    override=override,
+                    command=["config", "--format", "json"],
+                )
+            )
+        )
+        services = rendered["services"]
+        networks = rendered.get("networks", {})
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ReleaseError("rendered edge-app-v1 deployment invalid") from exc
+    if (
+        not isinstance(rendered, dict)
+        or rendered.get("name") != COMPOSE_PROJECT_NAME
+        or not isinstance(services, dict)
+        or not isinstance(networks, dict)
+    ):
+        raise ReleaseError("rendered edge-app-v1 deployment invalid")
+    expected_config_files = f"{compose},{override}"
+    for service_name in EDGE_SERVICES:
+        service = services.get(service_name)
+        expected_image = images.get(service_name)
+        if not isinstance(service, dict) or expected_image != service.get("image"):
+            raise ReleaseError("rendered edge-app-v1 image does not match release")
+        raw_hash = command_runner(
+            compose_command(
+                project=project,
+                compose=compose,
+                override=override,
+                command=["config", "--hash", service_name],
+            )
+        ).strip()
+        tokens = raw_hash.split()
+        if (
+            len(tokens) != 2
+            or tokens[0] != service_name
+            or COMPOSE_CONFIG_HASH.fullmatch(tokens[1]) is None
+        ):
+            raise ReleaseError("rendered edge-app-v1 config hash invalid")
+        config_hash = tokens[1]
+        container_id = command_runner(
+            compose_command(
+                project=project,
+                compose=compose,
+                override=override,
+                command=["ps", "--quiet", service_name],
+            )
+        ).strip()
+        if CONTAINER_ID.fullmatch(container_id) is None:
+            raise ReleaseError("canonical edge-app-v1 container is unavailable")
+        try:
+            image = json.loads(
+                command_runner(["/usr/bin/docker", "image", "inspect", expected_image])
+            )[0]
+            image_id = image["Id"]
+            container = json.loads(
+                command_runner(["/usr/bin/docker", "inspect", container_id])
+            )[0]
+            labels = container["Config"]["Labels"]
+            running_networks = set(container["NetworkSettings"]["Networks"])
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise ReleaseError("running edge-app-v1 inspection invalid") from exc
+        if (
+            not isinstance(image_id, str)
+            or DIGEST.fullmatch(image_id) is None
+            or not isinstance(labels, dict)
+        ):
+            raise ReleaseError("running edge-app-v1 inspection invalid")
+        expected_networks: set[str] = set()
+        service_networks = service.get("networks", {})
+        if not isinstance(service_networks, dict):
+            raise ReleaseError("rendered edge-app-v1 networks invalid")
+        for network_name in service_networks:
+            network = networks.get(network_name)
+            if not isinstance(network, dict) or not isinstance(network.get("name"), str):
+                raise ReleaseError("rendered edge-app-v1 networks invalid")
+            expected_networks.add(network["name"])
+        approved_image_id = expected_image_ids.get(service_name) if expected_image_ids else image_id
+        # The Compose config hash binds the fully rendered immutable container
+        # configuration (including env, mounts, ports, and declared networks).
+        # Network attachment itself remains mutable, so compare it explicitly.
+        checks = {
+            "approved-image": approved_image_id == image_id,
+            "container-id": container.get("Id") == container_id,
+            "image-id": container.get("Image") == image_id,
+            "image-reference": container["Config"].get("Image") == expected_image,
+            "running": container["State"].get("Running") is True,
+            "health": (
+                not require_healthy
+                or container["State"].get("Health", {}).get("Status") == "healthy"
+            ),
+            "project": labels.get("com.docker.compose.project") == COMPOSE_PROJECT_NAME,
+            "service": labels.get("com.docker.compose.service") == service_name,
+            "config-hash": labels.get("com.docker.compose.config-hash") == config_hash,
+            "working-dir": labels.get("com.docker.compose.project.working_dir") == str(project),
+            "config-files": (
+                labels.get("com.docker.compose.project.config_files") == expected_config_files
+            ),
+            "networks": running_networks == expected_networks,
+        }
+        failed = [name for name, passed in checks.items() if not passed]
+        if failed:
+            raise ReleaseError(
+                "running edge-app-v1 does not match canonical Compose: " + ",".join(failed)
+            )
 
 
 def validate_manifest(value: object) -> dict[str, Any]:
@@ -715,19 +861,19 @@ class ReleaseEngine:
     def _compose(self, slot: dict[str, Any]) -> None:
         override = self._override(slot)
         self.command_runner(
-            [
-                "/usr/libexec/docker/cli-plugins/docker-compose",
-                "--file",
-                str(self.paths.compose),
-                "--file",
-                str(override),
-                "up",
-                "-d",
-                "--no-deps",
-                "--pull",
-                "never",
-                *EDGE_SERVICES,
-            ]
+            compose_command(
+                project=self.paths.project,
+                compose=self.paths.compose,
+                override=override,
+                command=[
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--pull",
+                    "never",
+                    *EDGE_SERVICES,
+                ],
+            )
         )
 
     def _verify_runtime(self) -> None:
@@ -886,18 +1032,21 @@ class ReleaseEngine:
                 "status": "active",
             }
 
-    def _prove_running_matches(self, slot: dict[str, Any]) -> None:
-        for service in EDGE_SERVICES:
-            raw = self.command_runner(["/usr/bin/docker", "inspect", service])
-            try:
-                inspected = json.loads(raw)
-                container = inspected[0]
-                image = container["Config"]["Image"]
-                health = container["State"]["Health"]["Status"]
-            except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise ReleaseError("running edge-app-v1 inspection invalid") from exc
-            if image != slot["manifest"]["images"][service] or health != "healthy":
-                raise ReleaseError("running edge-app-v1 does not match baseline")
+    def _prove_running_matches(
+        self,
+        slot: dict[str, Any],
+        *,
+        require_healthy: bool = True,
+    ) -> None:
+        override = self._override(slot)
+        prove_compose_runtime(
+            project=self.paths.project,
+            compose=self.paths.compose,
+            override=override,
+            images=slot["manifest"]["images"],
+            command_runner=self.command_runner,
+            require_healthy=require_healthy,
+        )
 
     def _validate_policy(self, value: object, operation_id: str, active: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(value, dict) or set(value) != POLICY_FIELDS:
@@ -947,6 +1096,7 @@ class ReleaseEngine:
         self._prove_local(active)
         self._compose(active)
         self._verify_runtime()
+        self._prove_running_matches(active, require_healthy=False)
         atomic_write(self.paths.active, active)
         if previous is None:
             self.paths.previous.unlink(missing_ok=True)
@@ -1100,6 +1250,7 @@ class ReleaseEngine:
                 self._compose(candidate)
                 self.fault("after_mutated")
                 self._verify_runtime()
+                self._prove_running_matches(candidate, require_healthy=False)
                 self.fault("after_health")
                 atomic_write(self.paths.previous, active)
                 atomic_write(self.paths.active, candidate)
@@ -1138,6 +1289,7 @@ class ReleaseEngine:
             self._prove_local(active)
             self._compose(active)
             self._verify_runtime()
+            self._prove_running_matches(active, require_healthy=False)
             return {
                 "release_id": active["manifest"]["release_id"],
                 "manifest_digest": active["manifest_digest"],
@@ -1195,6 +1347,7 @@ class ReleaseEngine:
             try:
                 self._compose(previous)
                 self._verify_runtime()
+                self._prove_running_matches(previous, require_healthy=False)
                 self.fault("rollback_after_runtime")
                 atomic_write(self.paths.active, previous)
                 self.fault("rollback_after_active_write")

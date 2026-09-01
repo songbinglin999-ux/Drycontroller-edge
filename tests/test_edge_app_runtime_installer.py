@@ -46,6 +46,8 @@ def test_installer_writes_only_edge_app_runtime_with_exact_modes(tmp_path: Path)
     module.install_edge_app_runtime(**_inputs(tmp_path), root=destination)
 
     assert not any("host-release" in source for source in module.RUNTIME_FILES)
+    assert module.DIRECTORIES["/var/lib/drycontroller/edge-daq"] == 0o700
+    assert module.DIRECTORIES["/var/lib/drycontroller/edge-daq/data"] == 0o700
     for source, (absolute_destination, mode) in module.RUNTIME_FILES.items():
         installed = destination / absolute_destination.removeprefix("/")
         assert installed.read_bytes() == (ROOT / source).read_bytes()

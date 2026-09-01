@@ -67,25 +67,84 @@ def _manifest(paths: release.ReleasePaths, *, release_id: str, sequence: int, su
 
 
 class Commands:
-    def __init__(self, running: dict[str, str]):
+    def __init__(self, running: dict[str, str], *, project: Path, compose: Path):
         self.running = dict(running)
+        self.project = project
+        self.compose = compose
+        self.override = project / "edge-app-images.yml"
         self.calls: list[list[str]] = []
         self.fail_after_first_compose_service = False
+        self.container_ids = {"edge-api": "a" * 64, "edge-daq": "b" * 64}
+
+    def _image_id(self, service: str) -> str:
+        return self.running[service].rsplit("@", 1)[1]
+
+    def _config_hash(self, service: str) -> str:
+        return hashlib.sha256(f"{service}:{self.running[service]}".encode()).hexdigest()
 
     def __call__(self, args: list[str]) -> str:
         self.calls.append(args)
+        if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            reference = args[3]
+            assert any(f"/{name}@" in reference for name in release.EDGE_SERVICES)
+            return json.dumps(
+                [{"Id": reference.rsplit("@", 1)[1], "Config": {"Env": []}}]
+            )
         if args[:2] == ["/usr/bin/docker", "inspect"]:
-            service = args[2]
+            service = next(
+                name for name, container_id in self.container_ids.items() if args[2] == container_id
+            )
             return json.dumps(
                 [
                     {
-                        "Config": {"Image": self.running[service]},
-                        "State": {"Health": {"Status": "healthy"}},
+                        "Id": self.container_ids[service],
+                        "Image": self._image_id(service),
+                        "Config": {
+                            "Image": self.running[service],
+                            "Env": [],
+                            "Labels": {
+                                "com.docker.compose.project": "drycontroller-edge",
+                                "com.docker.compose.service": service,
+                                "com.docker.compose.config-hash": self._config_hash(service),
+                                "com.docker.compose.project.working_dir": str(self.project),
+                                "com.docker.compose.project.config_files": (
+                                    f"{self.compose},{self.override}"
+                                ),
+                            },
+                        },
+                        "Mounts": [],
+                        "NetworkSettings": {"Networks": {}, "Ports": {}},
+                        "State": {"Running": True, "Health": {"Status": "healthy"}},
                     }
                 ]
             )
         if args[0].endswith("docker-compose"):
-            override = Path(args[args.index("--file", 3) + 1]).read_text()
+            file_options = [index for index, value in enumerate(args) if value == "--file"]
+            self.override = Path(args[file_options[-1] + 1])
+            if args[-3:] == ["config", "--format", "json"]:
+                return json.dumps(
+                    {
+                        "name": "drycontroller-edge",
+                        "networks": {},
+                        "services": {
+                            service: {
+                                "image": self.running[service],
+                                "environment": {},
+                                "networks": {},
+                                "ports": [],
+                                "volumes": [],
+                            }
+                            for service in release.EDGE_SERVICES
+                        },
+                        "volumes": {},
+                    }
+                )
+            if args[-3:-1] == ["config", "--hash"]:
+                service = args[-1]
+                return f"{service} {self._config_hash(service)}\n"
+            if args[-3:-1] == ["ps", "--quiet"]:
+                return self.container_ids[args[-1]] + "\n"
+            override = self.override.read_text()
             for service in release.EDGE_SERVICES:
                 marker = '    image: "'
                 section = override.split(f"  {service}:\n", 1)[1]
@@ -145,7 +204,7 @@ def _fixture(tmp_path: Path, monkeypatch):
         sequence=2,
         suffix="2",
     )
-    commands = Commands(active["images"])
+    commands = Commands(active["images"], project=compose.parent, compose=compose)
     monkeypatch.setattr(release, "verify_installed_license", lambda **_kwargs: {"valid": True})
     engine = release.ReleaseEngine(
         paths=paths,
@@ -279,7 +338,11 @@ def test_apply_and_offline_rollback_mutate_only_two_services(tmp_path: Path, mon
     result = _engine(paths, commands, policy).apply()
 
     assert result["release_id"] == candidate["release_id"]
-    compose_calls = [args for args in commands.calls if args[0].endswith("docker-compose")]
+    compose_calls = [
+        args
+        for args in commands.calls
+        if args[0].endswith("docker-compose") and "up" in args
+    ]
     assert len(compose_calls) == 1
     assert compose_calls[0][-2:] == ["edge-api", "edge-daq"]
     assert "--no-deps" in compose_calls[0]

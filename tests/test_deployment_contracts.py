@@ -56,6 +56,17 @@ def test_plc_deployment_defaults_match_rtu_over_tcp_contract():
     assert example["MODBUS_FRAMER"] == "rtu"
 
 
+def test_edge_daq_binds_line_identity_and_persists_publish_buffer():
+    edge_daq = _compose_services()["edge-daq"]
+    environment = _env_map(edge_daq)
+    example = _env_example()
+
+    assert environment["LINE_ID"] == "${LINE_ID:?missing LINE_ID}"
+    assert environment["BUFFER_DIR"] == "/data/edge-daq"
+    assert example["LINE_ID"] == "L1"
+    assert "/var/lib/drycontroller/edge-daq/data:/data/edge-daq" in edge_daq["volumes"]
+
+
 def test_default_compose_excludes_license_and_ai_services():
     assert set(_compose_services()) == {
         "alertmanager",

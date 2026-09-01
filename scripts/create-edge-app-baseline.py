@@ -22,6 +22,7 @@ from edge_app_release import (  # noqa: E402
     canonical_json_bytes,
     canonical_manifest_digest,
     deployment_digest,
+    prove_compose_runtime,
     validate_manifest,
     verify_manifest_signature,
 )
@@ -30,6 +31,7 @@ from edge_app_release import (  # noqa: E402
 IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 COMPOSE = Path("/opt/drycontroller-host/current/docker-compose.yml")
+IMAGE_OVERRIDE = Path("/var/lib/drycontroller-ota/edge-app-images.yml")
 PUBLIC_KEY = Path("/etc/drycontroller/keys/cosign.pub")
 
 
@@ -57,6 +59,7 @@ def snapshot(
     expected_ids: dict[str, str],
     command_runner=_run,
     compose: Path = COMPOSE,
+    override: Path = IMAGE_OVERRIDE,
     public_key: Path = PUBLIC_KEY,
 ) -> dict:
     if str(uuid.UUID(release_id)) != release_id or sequence < 1:
@@ -66,18 +69,8 @@ def snapshot(
         if IMAGE_ID.fullmatch(expected_ids.get(service, "")) is None:
             raise ReleaseError("approved baseline image ID invalid")
         try:
-            container = json.loads(
-                command_runner(["/usr/bin/docker", "inspect", service])
-            )[0]
-            image_id = container["Image"]
-            health = container["State"]["Health"]["Status"]
-        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ReleaseError("live baseline inspection invalid") from exc
-        if image_id != expected_ids[service] or health != "healthy":
-            raise ReleaseError("live baseline differs from approval")
-        try:
             image = json.loads(
-                command_runner(["/usr/bin/docker", "image", "inspect", image_id])
+                command_runner(["/usr/bin/docker", "image", "inspect", expected_ids[service]])
             )[0]
             references = sorted(
                 set(
@@ -101,6 +94,14 @@ def snapshot(
             ]
         )
         images[service] = references[0]
+    prove_compose_runtime(
+        project=compose.parent,
+        compose=compose,
+        override=override,
+        images=images,
+        command_runner=command_runner,
+        expected_image_ids=expected_ids,
+    )
     manifest = validate_manifest(
         {
             "schema": "drycontroller.app-release.v2",

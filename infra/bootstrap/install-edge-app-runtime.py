@@ -24,6 +24,8 @@ DIRECTORIES = {
     "/etc/drycontroller/keys": 0o755,
     "/etc/drycontroller/license": 0o755,
     "/var/lib/drycontroller": 0o700,
+    "/var/lib/drycontroller/edge-daq": 0o700,
+    "/var/lib/drycontroller/edge-daq/data": 0o700,
     "/var/lib/drycontroller-ota": 0o700,
     "/var/lib/drycontroller/license-transaction": 0o700,
     "/var/lib/drycontroller/cloud-request-nonces": 0o700,

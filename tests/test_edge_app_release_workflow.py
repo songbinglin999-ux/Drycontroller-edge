@@ -4,6 +4,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from typing import Callable
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,9 +164,141 @@ def test_edge_app_toolchain_verifier_binds_fixed_files_versions_and_platform(
     assert set(receipt["tools"]) == {"docker", "cosign", "trivy"}
 
 
-def test_baseline_snapshot_is_read_only_and_requires_approved_live_ids(tmp_path: Path):
+def _baseline_runner(
+    *,
+    compose: Path,
+    override: Path,
+    ids: dict[str, str],
+    drift: str | None = None,
+) -> tuple[Callable[[list[str]], str], list[list[str]]]:
+    images = {
+        service: f"registry.test/{service}@{image_id}" for service, image_id in ids.items()
+    }
+    container_ids = {"edge-api": "a" * 64, "edge-daq": "b" * 64}
+    config_hashes = {"edge-api": "c" * 64, "edge-daq": "d" * 64}
+    calls: list[list[str]] = []
+    rendered = {
+        "name": "drycontroller-edge",
+        "networks": {"edge-network": {"name": "drycontroller-edge_edge-network"}},
+        "services": {
+            service: {
+                "image": images[service],
+                "environment": {"SERVICE": service},
+                "networks": {"edge-network": None},
+                "ports": [
+                    {
+                        "host_ip": "127.0.0.1",
+                        "target": 8000 if service == "edge-api" else 8080,
+                        "published": "18080" if service == "edge-api" else "8082",
+                        "protocol": "tcp",
+                    }
+                ],
+                "volumes": [
+                    {
+                        "type": "bind",
+                        "source": str(compose.parent / service),
+                        "target": "/data",
+                    }
+                ],
+            }
+            for service in ids
+        },
+        "volumes": {},
+    }
+
+    def run(args: list[str]) -> str:
+        calls.append(args)
+        if args[0].endswith("docker-compose"):
+            if args[-3:] == ["config", "--format", "json"]:
+                return json.dumps(rendered)
+            service = args[-1]
+            if args[-3:-1] == ["config", "--hash"]:
+                return f"{service} {config_hashes[service]}\n"
+            if args[-3:-1] == ["ps", "--quiet"]:
+                return container_ids[service] + "\n"
+        if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            reference = args[3]
+            service = next(
+                name
+                for name in ids
+                if reference in {ids[name], images[name]}
+            )
+            return json.dumps(
+                [
+                    {
+                        "Id": ids[service],
+                        "Config": {"Env": ["BASE=base"]},
+                        "RepoDigests": [images[service]],
+                    }
+                ]
+            )
+        if args[:2] == ["/usr/bin/docker", "inspect"]:
+            service = next(name for name in ids if args[2] == container_ids[name])
+            target = 8000 if service == "edge-api" else 8080
+            published = "18080" if service == "edge-api" else "8082"
+            return json.dumps(
+                [
+                    {
+                        "Id": container_ids[service],
+                        "Image": ids[service],
+                        "Config": {
+                            "Image": images[service],
+                            "Env": ["BASE=base", f"SERVICE={service}"],
+                            "Labels": {
+                                "com.docker.compose.project": (
+                                    "wrong-project" if drift == "project" else "drycontroller-edge"
+                                ),
+                                "com.docker.compose.service": service,
+                                "com.docker.compose.config-hash": (
+                                    "e" * 64
+                                    if drift == "config-hash"
+                                    else config_hashes[service]
+                                ),
+                                "com.docker.compose.project.working_dir": str(compose.parent),
+                                "com.docker.compose.project.config_files": (
+                                    f"{compose},{override}"
+                                ),
+                            },
+                        },
+                        "Mounts": [
+                            {
+                                "Type": "bind",
+                                "Source": str(compose.parent / service),
+                                "Destination": "/data",
+                                "RW": True,
+                            }
+                        ],
+                        "NetworkSettings": {
+                            "Networks": {
+                                (
+                                    "wrong-network"
+                                    if drift == "network"
+                                    else "drycontroller-edge_edge-network"
+                                ): {}
+                            },
+                            "Ports": {
+                                f"{target}/tcp": [
+                                    {
+                                        "HostIp": "127.0.0.1",
+                                        "HostPort": published,
+                                    }
+                                ]
+                            },
+                        },
+                        "State": {"Running": True, "Health": {"Status": "healthy"}},
+                    }
+                ]
+            )
+        return ""
+
+    return run, calls
+
+
+def test_baseline_snapshot_is_read_only_and_requires_canonical_compose(tmp_path: Path):
     compose = tmp_path / "compose.yml"
     compose.write_text("services: {}\n")
+    override = tmp_path / "edge-app-images.yml"
+    override.write_text("services: {}\n")
     public_key = tmp_path / "cosign.pub"
     public_key.write_text("test")
     output = tmp_path / "manifest.json"
@@ -171,20 +306,7 @@ def test_baseline_snapshot_is_read_only_and_requires_approved_live_ids(tmp_path:
         "edge-api": "sha256:" + "1" * 64,
         "edge-daq": "sha256:" + "2" * 64,
     }
-    calls: list[list[str]] = []
-
-    def run(args: list[str]) -> str:
-        calls.append(args)
-        if args[:2] == ["/usr/bin/docker", "inspect"]:
-            return json.dumps(
-                [{"Image": ids[args[2]], "State": {"Health": {"Status": "healthy"}}}]
-            )
-        if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
-            service = "edge-api" if args[3] == ids["edge-api"] else "edge-daq"
-            return json.dumps(
-                [{"RepoDigests": [f"registry.test/{service}@{ids[service]}"]}]
-            )
-        return ""
+    run, calls = _baseline_runner(compose=compose, override=override, ids=ids)
 
     manifest = baseline.snapshot(
         output=output,
@@ -194,8 +316,46 @@ def test_baseline_snapshot_is_read_only_and_requires_approved_live_ids(tmp_path:
         expected_ids=ids,
         command_runner=run,
         compose=compose,
+        override=override,
         public_key=public_key,
     )
 
     assert set(manifest["images"]) == {"edge-api", "edge-daq"}
     assert all("pull" not in call and "up" not in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["project", "config-hash", "network"],
+)
+def test_baseline_snapshot_rejects_noncanonical_compose_runtime(
+    tmp_path: Path,
+    drift: str,
+):
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services: {}\n")
+    override = tmp_path / "edge-app-images.yml"
+    override.write_text("services: {}\n")
+    ids = {
+        "edge-api": "sha256:" + "1" * 64,
+        "edge-daq": "sha256:" + "2" * 64,
+    }
+    run, _calls = _baseline_runner(
+        compose=compose,
+        override=override,
+        ids=ids,
+        drift=drift,
+    )
+
+    with pytest.raises(baseline.ReleaseError, match="canonical Compose"):
+        baseline.snapshot(
+            output=tmp_path / "manifest.json",
+            release_id="11111111-1111-4111-8111-111111111111",
+            sequence=1,
+            source_commit="3" * 40,
+            expected_ids=ids,
+            command_runner=run,
+            compose=compose,
+            override=override,
+            public_key=tmp_path / "cosign.pub",
+        )

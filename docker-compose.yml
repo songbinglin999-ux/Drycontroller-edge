@@ -257,6 +257,8 @@ services:
       - MQTT_PORT=${MQTT_PORT}
       - MQTT_USER=${MQTT_USER_EDGE_DAQ}
       - MQTT_PASSWORD=${MQTT_PASSWORD_EDGE_DAQ}
+      - LINE_ID=${LINE_ID:?missing LINE_ID}
+      - BUFFER_DIR=/data/edge-daq
       # 开发/演示环境：当前 mosquitto 为 1883 明文；edge-daq 默认强制 TLS，因此需显式允许不安全连接
       # 生产环境请改为 MQTT_TLS=true 并配置 broker TLS/ACL
       - MQTT_ALLOW_INSECURE=true
@@ -271,6 +273,7 @@ services:
       - HEALTH_PORT=8080
     volumes:
       - /var/log/drycontroller/edge-daq:/logs/edge-daq
+      - /var/lib/drycontroller/edge-daq/data:/data/edge-daq
       - ./configs:/app/configs:ro
       # 运行时可变配置（只读）：例如 PLC 通讯参数（由 edge-api 落盘后重启生效）
       - /var/lib/drycontroller/configs-runtime:/app/configs-runtime:ro
