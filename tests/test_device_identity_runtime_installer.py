@@ -46,6 +46,11 @@ def _fake_runner(calls: list[tuple[list[str], dict[str, str]]]):
             python.parent.mkdir(parents=True)
             python.write_text("#!/bin/sh\nexit 0\n")
             python.chmod(0o755)
+        elif "install" in args:
+            python = Path(args[0])
+            uvicorn = python.with_name("uvicorn")
+            uvicorn.write_text(f"#!{python}\nexit 0\n")
+            uvicorn.chmod(0o755)
 
     return run
 
@@ -85,11 +90,15 @@ def test_installer_creates_only_the_identity_runtime_from_approved_wheels(
         ["-m", "pip"],
         ["-m", "pip"],
         ["-c", "from identity_service.backend import TpmIdentityBackend"],
+        ["--version"],
     ]
     assert "--no-index" in calls[1][0]
     staging = Path(calls[0][0][3]).parent
     assert staging.name.startswith(module.STAGING_PREFIX)
-    assert calls[3][1]["PYTHONPATH"] == str(staging)
+    assert calls[3][1]["PYTHONPATH"] == str(installed)
+    assert (installed / "venv/bin/uvicorn").read_text().splitlines()[0] == (
+        f"#!{installed}/venv/bin/python"
+    )
     assert not staging.exists()
 
 
@@ -179,6 +188,31 @@ def test_installer_failure_removes_only_its_staging_directory(tmp_path: Path):
             **_inputs(tmp_path),
             root=destination,
             command_runner=fail,
+        )
+
+    assert not (destination / "opt/drycontroller-identity").exists()
+    assert not any(
+        path.name.startswith(module.STAGING_PREFIX)
+        for path in (destination / "opt").iterdir()
+    )
+
+
+def test_installer_directory_fsync_failure_removes_renamed_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    module = _load_installer()
+    destination = tmp_path / "root"
+    destination.mkdir(mode=0o755)
+
+    def fail_fsync(_path: Path) -> None:
+        raise OSError("expected directory fsync failure")
+
+    monkeypatch.setattr(module, "_fsync_directory", fail_fsync)
+    with pytest.raises(OSError, match="expected directory fsync failure"):
+        module.install_device_identity_runtime(
+            **_inputs(tmp_path),
+            root=destination,
+            command_runner=_fake_runner([]),
         )
 
     assert not (destination / "opt/drycontroller-identity").exists()

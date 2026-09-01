@@ -160,6 +160,62 @@ def _run_command(args: list[str], environment: dict[str, str]) -> None:
         raise RuntimeInstallError("identity runtime command failed")
 
 
+def _relocate_venv_scripts(stage: Path, final: Path, expected_uid: int) -> None:
+    bin_directory = stage / "venv/bin"
+    old_prefix = str(stage).encode()
+    new_prefix = str(final).encode()
+    for script in bin_directory.iterdir():
+        metadata = script.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            continue
+        descriptor = os.open(script, os.O_RDWR | os.O_NOFOLLOW)
+        try:
+            observed = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(observed.st_mode)
+                or observed.st_nlink != 1
+                or observed.st_uid != expected_uid
+                or observed.st_size > MAX_WHEEL_BYTES
+                or observed.st_mode & 0o022
+                or (observed.st_dev, observed.st_ino)
+                != (metadata.st_dev, metadata.st_ino)
+            ):
+                raise RuntimeInstallError(
+                    f"identity venv entry is unsafe: {script.name}"
+                )
+            content = b""
+            while chunk := os.read(descriptor, 1024 * 1024):
+                content += chunk
+            if old_prefix not in content:
+                continue
+            relocated = content.replace(old_prefix, new_prefix)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            os.ftruncate(descriptor, 0)
+            view = memoryview(relocated)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    uvicorn = bin_directory / "uvicorn"
+    try:
+        shebang = uvicorn.read_bytes().splitlines()[0]
+    except (IndexError, OSError) as exc:
+        raise RuntimeInstallError("identity uvicorn entrypoint is unavailable") from exc
+    expected_shebang = f"#!{final}/venv/bin/python".encode()
+    if not shebang.startswith(expected_shebang) or old_prefix in shebang:
+        raise RuntimeInstallError("identity uvicorn entrypoint is not relocatable")
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def install_device_identity_runtime(
     *,
     repo_source: Path,
@@ -197,6 +253,7 @@ def install_device_identity_runtime(
     stage_absolute = f"/opt/{stage_name}"
     final = root / DESTINATION.relative_to("/")
     stage = root / stage_absolute.removeprefix("/")
+    renamed_identity: tuple[int, int] | None = None
     try:
         if (root / "opt").exists():
             static._validate_destination(
@@ -271,27 +328,45 @@ def install_device_identity_runtime(
             environment,
         )
         command_runner([str(python), "-m", "pip", "check"], environment)
+        if not python.exists() or not os.access(python, os.X_OK):
+            raise RuntimeInstallError("device identity Python runtime is incomplete")
+        _relocate_venv_scripts(stage, final, owner_uid)
+        shutil.rmtree(stage / "wheelhouse")
+        os.sync()
+        stage_metadata = stage.lstat()
+        renamed_identity = (stage_metadata.st_dev, stage_metadata.st_ino)
+        os.rename(stage, final)
+        final_python = final / "venv/bin/python"
         command_runner(
             [
-                str(python),
+                str(final_python),
                 "-c",
                 "from identity_service.backend import TpmIdentityBackend",
             ],
-            {**environment, "PYTHONPATH": str(stage)},
+            {**environment, "PYTHONPATH": str(final)},
         )
-        if not python.exists() or not os.access(python, os.X_OK):
-            raise RuntimeInstallError("device identity Python runtime is incomplete")
-        shutil.rmtree(stage / "wheelhouse")
-        os.sync()
-        os.rename(stage, final)
-        opt_descriptor = os.open(opt, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(opt_descriptor)
-        finally:
-            os.close(opt_descriptor)
+        command_runner([str(final / "venv/bin/uvicorn"), "--version"], environment)
+        _fsync_directory(opt)
     except BaseException:
         if stage.exists():
             shutil.rmtree(stage)
+        elif renamed_identity is not None:
+            try:
+                final_metadata = final.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    stat.S_ISDIR(final_metadata.st_mode)
+                    and not stat.S_ISLNK(final_metadata.st_mode)
+                    and (final_metadata.st_dev, final_metadata.st_ino)
+                    == renamed_identity
+                ):
+                    shutil.rmtree(final)
+                    try:
+                        _fsync_directory(opt)
+                    except OSError:
+                        pass
         raise
     finally:
         os.close(root_fd)
