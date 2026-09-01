@@ -220,3 +220,61 @@ def test_installer_directory_fsync_failure_removes_renamed_runtime(
         path.name.startswith(module.STAGING_PREFIX)
         for path in (destination / "opt").iterdir()
     )
+
+
+def test_installer_publish_does_not_replace_concurrent_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    module = _load_installer()
+    destination = tmp_path / "root"
+    destination.mkdir(mode=0o755)
+    original_publish = module._rename_no_replace
+
+    def occupy_then_publish(stage: Path, final: Path) -> None:
+        final.mkdir()
+        (final / "marker").write_text("pre-existing")
+        original_publish(stage, final)
+
+    monkeypatch.setattr(module, "_rename_no_replace", occupy_then_publish)
+    with pytest.raises(module.RuntimeInstallError, match="already exists"):
+        module.install_device_identity_runtime(
+            **_inputs(tmp_path),
+            root=destination,
+            command_runner=_fake_runner([]),
+        )
+
+    assert (destination / "opt/drycontroller-identity/marker").read_text() == (
+        "pre-existing"
+    )
+    assert not any(
+        path.name.startswith(module.STAGING_PREFIX)
+        for path in (destination / "opt").iterdir()
+    )
+
+
+def test_installer_cleanup_does_not_remove_replacement_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    module = _load_installer()
+    destination = tmp_path / "root"
+    destination.mkdir(mode=0o755)
+    final = destination / "opt/drycontroller-identity"
+    moved = destination / "opt/moved-installed-runtime"
+
+    def swap_then_fail(_path: Path) -> None:
+        final.rename(moved)
+        final.mkdir()
+        (final / "marker").write_text("replacement")
+        raise OSError("expected directory fsync failure")
+
+    monkeypatch.setattr(module, "_fsync_directory", swap_then_fail)
+    with pytest.raises(OSError, match="expected directory fsync failure"):
+        module.install_device_identity_runtime(
+            **_inputs(tmp_path),
+            root=destination,
+            command_runner=_fake_runner([]),
+        )
+
+    assert (final / "marker").read_text() == "replacement"
+    assert moved.is_dir()
+    assert list(moved.iterdir()) == []

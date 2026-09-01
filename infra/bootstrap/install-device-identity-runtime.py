@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import importlib.util
 import os
@@ -32,6 +34,8 @@ STAGING_PREFIX = ".drycontroller-identity.install-"
 MAX_WHEEL_BYTES = 128 * 1024 * 1024
 MAX_WHEELHOUSE_BYTES = 512 * 1024 * 1024
 WHEEL_LINE = re.compile(r"^([a-f0-9]{64}) [ *]\./([A-Za-z0-9_.+-]+\.whl)$")
+AT_FDCWD = -100
+RENAME_NOREPLACE = 1
 
 RUNTIME_FILES = {
     "common/tailscale_status.py": ("common/tailscale_status.py", 0o644),
@@ -216,6 +220,70 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _rename_no_replace(source: Path, destination: Path) -> None:
+    if os.uname().sysname != "Linux":
+        if destination.exists() or destination.is_symlink():
+            raise RuntimeInstallError("device identity runtime already exists")
+        os.rename(source, destination)
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as exc:
+        raise RuntimeInstallError("atomic no-replace rename is unavailable") from exc
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        AT_FDCWD,
+        os.fsencode(source),
+        AT_FDCWD,
+        os.fsencode(destination),
+        RENAME_NOREPLACE,
+    )
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise RuntimeInstallError("device identity runtime already exists")
+    raise OSError(error, os.strerror(error), destination)
+
+
+def _cleanup_open_runtime(
+    runtime_fd: int,
+    opt_fd: int,
+    candidate_names: tuple[str, ...],
+    expected_identity: tuple[int, int],
+) -> None:
+    with os.scandir(runtime_fd) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.name, dir_fd=runtime_fd)
+            else:
+                os.unlink(entry.name, dir_fd=runtime_fd)
+    for candidate_name in candidate_names:
+        try:
+            observed_fd = os.open(
+                candidate_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=opt_fd,
+            )
+        except FileNotFoundError:
+            continue
+        try:
+            observed = os.fstat(observed_fd)
+        finally:
+            os.close(observed_fd)
+        if (observed.st_dev, observed.st_ino) == expected_identity:
+            os.rmdir(candidate_name, dir_fd=opt_fd)
+            return
+
+
 def install_device_identity_runtime(
     *,
     repo_source: Path,
@@ -253,7 +321,9 @@ def install_device_identity_runtime(
     stage_absolute = f"/opt/{stage_name}"
     final = root / DESTINATION.relative_to("/")
     stage = root / stage_absolute.removeprefix("/")
-    renamed_identity: tuple[int, int] | None = None
+    opt_fd: int | None = None
+    runtime_fd: int | None = None
+    runtime_identity: tuple[int, int] | None = None
     try:
         if (root / "opt").exists():
             static._validate_destination(
@@ -268,6 +338,7 @@ def install_device_identity_runtime(
         if final.exists() or final.is_symlink():
             raise RuntimeInstallError("device identity runtime already exists")
         opt = root / "opt"
+        opt_fd = os.open(opt, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         if any(path.name.startswith(STAGING_PREFIX) for path in opt.iterdir()):
             raise RuntimeInstallError(
                 "stale device identity runtime staging path exists"
@@ -334,8 +405,12 @@ def install_device_identity_runtime(
         shutil.rmtree(stage / "wheelhouse")
         os.sync()
         stage_metadata = stage.lstat()
-        renamed_identity = (stage_metadata.st_dev, stage_metadata.st_ino)
-        os.rename(stage, final)
+        runtime_fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened_stage = os.fstat(runtime_fd)
+        runtime_identity = (opened_stage.st_dev, opened_stage.st_ino)
+        if runtime_identity != (stage_metadata.st_dev, stage_metadata.st_ino):
+            raise RuntimeInstallError("device identity staging directory changed")
+        _rename_no_replace(stage, final)
         final_python = final / "venv/bin/python"
         command_runner(
             [
@@ -348,27 +423,25 @@ def install_device_identity_runtime(
         command_runner([str(final / "venv/bin/uvicorn"), "--version"], environment)
         _fsync_directory(opt)
     except BaseException:
-        if stage.exists():
-            shutil.rmtree(stage)
-        elif renamed_identity is not None:
+        if runtime_fd is not None and opt_fd is not None and runtime_identity:
+            _cleanup_open_runtime(
+                runtime_fd,
+                opt_fd,
+                (stage.name, final.name),
+                runtime_identity,
+            )
             try:
-                final_metadata = final.lstat()
-            except FileNotFoundError:
+                os.fsync(opt_fd)
+            except OSError:
                 pass
-            else:
-                if (
-                    stat.S_ISDIR(final_metadata.st_mode)
-                    and not stat.S_ISLNK(final_metadata.st_mode)
-                    and (final_metadata.st_dev, final_metadata.st_ino)
-                    == renamed_identity
-                ):
-                    shutil.rmtree(final)
-                    try:
-                        _fsync_directory(opt)
-                    except OSError:
-                        pass
+        elif stage.exists():
+            shutil.rmtree(stage)
         raise
     finally:
+        if runtime_fd is not None:
+            os.close(runtime_fd)
+        if opt_fd is not None:
+            os.close(opt_fd)
         os.close(root_fd)
 
 
