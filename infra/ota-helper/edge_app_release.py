@@ -199,16 +199,15 @@ def compose_command(
     ]
 
 
-def prove_compose_runtime(
+def verify_rendered_compose(
     *,
     project: Path,
     compose: Path,
     override: Path,
     images: dict[str, str],
+    expected_line_id: str,
     command_runner: Callable[[list[str]], str],
-    expected_image_ids: dict[str, str] | None = None,
-    require_healthy: bool = True,
-) -> None:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         rendered = json.loads(
             command_runner(
@@ -231,12 +230,46 @@ def prove_compose_runtime(
         or not isinstance(networks, dict)
     ):
         raise ReleaseError("rendered edge-app-v1 deployment invalid")
+    edge_daq = services.get("edge-daq")
+    edge_daq_environment = edge_daq.get("environment") if isinstance(edge_daq, dict) else None
+    if (
+        not isinstance(expected_line_id, str)
+        or not expected_line_id
+        or not isinstance(edge_daq_environment, dict)
+        or edge_daq_environment.get("LINE_ID") != expected_line_id
+    ):
+        raise ReleaseError("rendered edge-app-v1 LINE_ID does not match device identity")
+    for service_name in EDGE_SERVICES:
+        service = services.get(service_name)
+        if not isinstance(service, dict) or images.get(service_name) != service.get("image"):
+            raise ReleaseError("rendered edge-app-v1 image does not match release")
+    return services, networks
+
+
+def prove_compose_runtime(
+    *,
+    project: Path,
+    compose: Path,
+    override: Path,
+    images: dict[str, str],
+    expected_line_id: str,
+    command_runner: Callable[[list[str]], str],
+    expected_image_ids: dict[str, str] | None = None,
+    require_healthy: bool = True,
+) -> None:
+    services, networks = verify_rendered_compose(
+        project=project,
+        compose=compose,
+        override=override,
+        images=images,
+        expected_line_id=expected_line_id,
+        command_runner=command_runner,
+    )
     expected_config_files = f"{compose},{override}"
     for service_name in EDGE_SERVICES:
         service = services.get(service_name)
         expected_image = images.get(service_name)
-        if not isinstance(service, dict) or expected_image != service.get("image"):
-            raise ReleaseError("rendered edge-app-v1 image does not match release")
+        assert isinstance(service, dict) and isinstance(expected_image, str)
         raw_hash = command_runner(
             compose_command(
                 project=project,
@@ -545,6 +578,13 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReleaseError(f"invalid release JSON: {path.name}")
     return value
+
+
+def read_device_line_id(path: Path) -> str:
+    line_id = read_json(path).get("line_id")
+    if not isinstance(line_id, str) or not line_id or line_id.strip() != line_id:
+        raise ReleaseError("device identity line_id invalid")
+    return line_id
 
 
 def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -858,8 +898,20 @@ class ReleaseEngine:
             temporary.unlink(missing_ok=True)
         return target
 
-    def _compose(self, slot: dict[str, Any]) -> None:
+    def _verify_rendered(self, slot: dict[str, Any]) -> Path:
         override = self._override(slot)
+        verify_rendered_compose(
+            project=self.paths.project,
+            compose=self.paths.compose,
+            override=override,
+            images=slot["manifest"]["images"],
+            expected_line_id=read_device_line_id(self.paths.device),
+            command_runner=self.command_runner,
+        )
+        return override
+
+    def _compose(self, slot: dict[str, Any]) -> None:
+        override = self._verify_rendered(slot)
         self.command_runner(
             compose_command(
                 project=self.paths.project,
@@ -1044,6 +1096,7 @@ class ReleaseEngine:
             compose=self.paths.compose,
             override=override,
             images=slot["manifest"]["images"],
+            expected_line_id=read_device_line_id(self.paths.device),
             command_runner=self.command_runner,
             require_healthy=require_healthy,
         )
@@ -1093,6 +1146,7 @@ class ReleaseEngine:
         operation_id: str | None,
         metadata: dict[str, Any],
     ) -> None:
+        self._verify_rendered(active)
         self._prove_local(active)
         self._compose(active)
         self._verify_runtime()
@@ -1231,6 +1285,7 @@ class ReleaseEngine:
 
             self._verify_license()
             self._verify_slot(candidate, images=True)
+            self._verify_rendered(candidate)
             self._prove_local(active)
             self._pull(candidate["manifest"])
             atomic_write(self.paths.candidate, candidate)
@@ -1286,6 +1341,7 @@ class ReleaseEngine:
             self._recover_locked()
             active = self._load_active()
             self._verify_slot(active, images=False)
+            self._verify_rendered(active)
             self._prove_local(active)
             self._compose(active)
             self._verify_runtime()
@@ -1330,6 +1386,7 @@ class ReleaseEngine:
             if previous["manifest"]["release_id"] != target_release_id:
                 raise ReleaseError("rollback target previous release does not match")
             self._verify_slot(previous, images=False)
+            self._verify_rendered(previous)
             self._prove_local(previous)
             journal = self._journal(
                 phase="prepared",

@@ -253,6 +253,7 @@ services:
       MQTT_USER: e2e
       MQTT_PASSWORD: e2e
       MQTT_ALLOW_INSECURE: \"true\"
+      LINE_ID: LINE-E2E
       CONTROL_SIGNATURE_SECRET: e2e-control-secret
       INFLUXDB_HOST: influxdb
       INFLUXDB_PORT: \"8086\"
@@ -471,7 +472,7 @@ def test_real_edge_api_and_edge_daq_ota_success_failure_and_manual_rollback(
             else:
                 raise AssertionError(f"unexpected release command: {args}")
             output = _run(actual, cwd=tmp_path, timeout=300)
-            if args[0].endswith("docker-compose") and fail_next_runtime:
+            if args[0].endswith("docker-compose") and "up" in args and fail_next_runtime:
                 fail_next_runtime = False
                 _run([docker, "stop", "edge-daq"], cwd=tmp_path, timeout=30)
             return output

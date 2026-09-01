@@ -67,20 +67,36 @@ def _manifest(paths: release.ReleasePaths, *, release_id: str, sequence: int, su
 
 
 class Commands:
-    def __init__(self, running: dict[str, str], *, project: Path, compose: Path):
+    def __init__(
+        self,
+        running: dict[str, str],
+        *,
+        project: Path,
+        compose: Path,
+        line_id: str,
+    ):
         self.running = dict(running)
         self.project = project
         self.compose = compose
+        self.line_id = line_id
         self.override = project / "edge-app-images.yml"
         self.calls: list[list[str]] = []
         self.fail_after_first_compose_service = False
+        self.fail_next_ownership_proof = False
+        self.fail_ownership_after_next_compose = False
         self.container_ids = {"edge-api": "a" * 64, "edge-daq": "b" * 64}
 
     def _image_id(self, service: str) -> str:
         return self.running[service].rsplit("@", 1)[1]
 
-    def _config_hash(self, service: str) -> str:
-        return hashlib.sha256(f"{service}:{self.running[service]}".encode()).hexdigest()
+    def _override_image(self, service: str) -> str:
+        content = self.override.read_text()
+        section = content.split(f"  {service}:\n", 1)[1]
+        return section.split('    image: "', 1)[1].split('"', 1)[0]
+
+    def _config_hash(self, service: str, image: str | None = None) -> str:
+        reference = image or self.running[service]
+        return hashlib.sha256(f"{service}:{reference}".encode()).hexdigest()
 
     def __call__(self, args: list[str]) -> str:
         self.calls.append(args)
@@ -94,6 +110,10 @@ class Commands:
             service = next(
                 name for name, container_id in self.container_ids.items() if args[2] == container_id
             )
+            config_hash = self._config_hash(service)
+            if self.fail_next_ownership_proof:
+                self.fail_next_ownership_proof = False
+                config_hash = "f" * 64
             return json.dumps(
                 [
                     {
@@ -105,7 +125,7 @@ class Commands:
                             "Labels": {
                                 "com.docker.compose.project": "drycontroller-edge",
                                 "com.docker.compose.service": service,
-                                "com.docker.compose.config-hash": self._config_hash(service),
+                                "com.docker.compose.config-hash": config_hash,
                                 "com.docker.compose.project.working_dir": str(self.project),
                                 "com.docker.compose.project.config_files": (
                                     f"{self.compose},{self.override}"
@@ -128,8 +148,12 @@ class Commands:
                         "networks": {},
                         "services": {
                             service: {
-                                "image": self.running[service],
-                                "environment": {},
+                                "image": self._override_image(service),
+                                "environment": (
+                                    {"LINE_ID": self.line_id}
+                                    if service == "edge-daq"
+                                    else {}
+                                ),
                                 "networks": {},
                                 "ports": [],
                                 "volumes": [],
@@ -141,7 +165,7 @@ class Commands:
                 )
             if args[-3:-1] == ["config", "--hash"]:
                 service = args[-1]
-                return f"{service} {self._config_hash(service)}\n"
+                return f"{service} {self._config_hash(service, self._override_image(service))}\n"
             if args[-3:-1] == ["ps", "--quiet"]:
                 return self.container_ids[args[-1]] + "\n"
             override = self.override.read_text()
@@ -152,6 +176,9 @@ class Commands:
                 if self.fail_after_first_compose_service:
                     self.fail_after_first_compose_service = False
                     raise release.ReleaseError("partial compose failure")
+            if self.fail_ownership_after_next_compose:
+                self.fail_ownership_after_next_compose = False
+                self.fail_next_ownership_proof = True
         return "[]"
 
 
@@ -204,7 +231,12 @@ def _fixture(tmp_path: Path, monkeypatch):
         sequence=2,
         suffix="2",
     )
-    commands = Commands(active["images"], project=compose.parent, compose=compose)
+    commands = Commands(
+        active["images"],
+        project=compose.parent,
+        compose=compose,
+        line_id=identity["line_id"],
+    )
     monkeypatch.setattr(release, "verify_installed_license", lambda **_kwargs: {"valid": True})
     engine = release.ReleaseEngine(
         paths=paths,
@@ -517,6 +549,23 @@ def test_identity_license_and_signature_fail_before_pull_or_compose(
     assert not any(args[0].endswith("docker-compose") for args in commands.calls)
 
 
+def test_line_id_drift_fails_before_pull_or_compose_mutation(tmp_path: Path, monkeypatch):
+    paths, _key, active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    commands.calls.clear()
+    commands.line_id = "WRONG-LINE"
+
+    with pytest.raises(release.ReleaseError, match="LINE_ID"):
+        _engine(paths, commands, policy).apply()
+
+    assert commands.running == active["images"]
+    assert not any(args[:2] == ["/usr/bin/docker", "pull"] for args in commands.calls)
+    assert not any(
+        args[0].endswith("docker-compose") and "up" in args for args in commands.calls
+    )
+    assert not paths.candidate.exists()
+    assert release.read_json(paths.journal)["phase"] == "idle"
+
+
 def test_boot_recovery_restores_old_active_after_mutation_crash(tmp_path: Path, monkeypatch):
     paths, _key, active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
 
@@ -545,6 +594,28 @@ def test_partial_compose_failure_restores_both_active_services(tmp_path: Path, m
     assert commands.running == active["images"]
     assert release.read_json(paths.active)["manifest"] == active
     assert release.read_json(paths.journal)["phase"] == "idle"
+
+
+def test_post_apply_ownership_failure_restores_active_without_commit(
+    tmp_path: Path,
+    monkeypatch,
+):
+    paths, _key, active, _candidate, commands, policy = _fixture(tmp_path, monkeypatch)
+    commands.fail_ownership_after_next_compose = True
+
+    with pytest.raises(release.ReleaseError, match="canonical Compose"):
+        _engine(paths, commands, policy).apply()
+
+    compose_up_calls = [
+        args for args in commands.calls if args[0].endswith("docker-compose") and "up" in args
+    ]
+    assert len(compose_up_calls) == 2
+    assert commands.running == active["images"]
+    assert release.read_json(paths.active)["manifest"] == active
+    assert not paths.previous.exists()
+    journal = release.read_json(paths.journal)
+    assert journal["phase"] == "idle"
+    assert journal["active"]["manifest"] == active
 
 
 def test_partial_rollback_failure_restores_both_active_services(tmp_path: Path, monkeypatch):

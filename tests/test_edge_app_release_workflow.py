@@ -183,7 +183,10 @@ def _baseline_runner(
         "services": {
             service: {
                 "image": images[service],
-                "environment": {"SERVICE": service},
+                "environment": {
+                    "SERVICE": service,
+                    **({"LINE_ID": "LINE-A"} if service == "edge-daq" else {}),
+                },
                 "networks": {"edge-network": None},
                 "ports": [
                     {
@@ -205,6 +208,10 @@ def _baseline_runner(
         },
         "volumes": {},
     }
+    if drift == "line-id":
+        rendered["services"]["edge-daq"]["environment"]["LINE_ID"] = "WRONG-LINE"
+    elif drift == "missing-line-id":
+        del rendered["services"]["edge-daq"]["environment"]["LINE_ID"]
 
     def run(args: list[str]) -> str:
         calls.append(args)
@@ -215,6 +222,8 @@ def _baseline_runner(
             if args[-3:-1] == ["config", "--hash"]:
                 return f"{service} {config_hashes[service]}\n"
             if args[-3:-1] == ["ps", "--quiet"]:
+                if drift == "ps-id":
+                    return "not-a-container-id\n"
                 return container_ids[service] + "\n"
         if args[:3] == ["/usr/bin/docker", "image", "inspect"]:
             reference = args[3]
@@ -226,7 +235,11 @@ def _baseline_runner(
             return json.dumps(
                 [
                     {
-                        "Id": ids[service],
+                        "Id": (
+                            "sha256:" + "e" * 64
+                            if drift == "approved-image" and reference == images[service]
+                            else ids[service]
+                        ),
                         "Config": {"Env": ["BASE=base"]},
                         "RepoDigests": [images[service]],
                     }
@@ -239,24 +252,42 @@ def _baseline_runner(
             return json.dumps(
                 [
                     {
-                        "Id": container_ids[service],
-                        "Image": ids[service],
+                        "Id": (
+                            "f" * 64 if drift == "container-id" else container_ids[service]
+                        ),
+                        "Image": (
+                            "sha256:" + "e" * 64
+                            if drift == "container-image-id"
+                            else ids[service]
+                        ),
                         "Config": {
-                            "Image": images[service],
+                            "Image": (
+                                "registry.test/wrong@sha256:" + "e" * 64
+                                if drift == "image-reference"
+                                else images[service]
+                            ),
                             "Env": ["BASE=base", f"SERVICE={service}"],
                             "Labels": {
                                 "com.docker.compose.project": (
                                     "wrong-project" if drift == "project" else "drycontroller-edge"
                                 ),
-                                "com.docker.compose.service": service,
+                                "com.docker.compose.service": (
+                                    "wrong-service" if drift == "service" else service
+                                ),
                                 "com.docker.compose.config-hash": (
                                     "e" * 64
                                     if drift == "config-hash"
                                     else config_hashes[service]
                                 ),
-                                "com.docker.compose.project.working_dir": str(compose.parent),
+                                "com.docker.compose.project.working_dir": (
+                                    "/wrong"
+                                    if drift == "working-dir"
+                                    else str(compose.parent)
+                                ),
                                 "com.docker.compose.project.config_files": (
-                                    f"{compose},{override}"
+                                    "/wrong/config.yml"
+                                    if drift == "config-files"
+                                    else f"{compose},{override}"
                                 ),
                             },
                         },
@@ -285,7 +316,12 @@ def _baseline_runner(
                                 ]
                             },
                         },
-                        "State": {"Running": True, "Health": {"Status": "healthy"}},
+                        "State": {
+                            "Running": drift != "stopped",
+                            "Health": {
+                                "Status": "unhealthy" if drift == "unhealthy" else "healthy"
+                            },
+                        },
                     }
                 ]
             )
@@ -301,6 +337,8 @@ def test_baseline_snapshot_is_read_only_and_requires_canonical_compose(tmp_path:
     override.write_text("services: {}\n")
     public_key = tmp_path / "cosign.pub"
     public_key.write_text("test")
+    device = tmp_path / "device.json"
+    device.write_text(json.dumps({"line_id": "LINE-A"}))
     output = tmp_path / "manifest.json"
     ids = {
         "edge-api": "sha256:" + "1" * 64,
@@ -317,6 +355,7 @@ def test_baseline_snapshot_is_read_only_and_requires_canonical_compose(tmp_path:
         command_runner=run,
         compose=compose,
         override=override,
+        device=device,
         public_key=public_key,
     )
 
@@ -325,17 +364,36 @@ def test_baseline_snapshot_is_read_only_and_requires_canonical_compose(tmp_path:
 
 
 @pytest.mark.parametrize(
-    "drift",
-    ["project", "config-hash", "network"],
+    ("drift", "error"),
+    [
+        ("project", "canonical Compose"),
+        ("service", "canonical Compose"),
+        ("config-hash", "canonical Compose"),
+        ("working-dir", "canonical Compose"),
+        ("config-files", "canonical Compose"),
+        ("network", "canonical Compose"),
+        ("ps-id", "container is unavailable"),
+        ("container-id", "canonical Compose"),
+        ("approved-image", "canonical Compose"),
+        ("container-image-id", "canonical Compose"),
+        ("image-reference", "canonical Compose"),
+        ("stopped", "canonical Compose"),
+        ("unhealthy", "canonical Compose"),
+        ("line-id", "LINE_ID"),
+        ("missing-line-id", "LINE_ID"),
+    ],
 )
 def test_baseline_snapshot_rejects_noncanonical_compose_runtime(
     tmp_path: Path,
     drift: str,
+    error: str,
 ):
     compose = tmp_path / "compose.yml"
     compose.write_text("services: {}\n")
     override = tmp_path / "edge-app-images.yml"
     override.write_text("services: {}\n")
+    device = tmp_path / "device.json"
+    device.write_text(json.dumps({"line_id": "LINE-A"}))
     ids = {
         "edge-api": "sha256:" + "1" * 64,
         "edge-daq": "sha256:" + "2" * 64,
@@ -347,7 +405,7 @@ def test_baseline_snapshot_rejects_noncanonical_compose_runtime(
         drift=drift,
     )
 
-    with pytest.raises(baseline.ReleaseError, match="canonical Compose"):
+    with pytest.raises(baseline.ReleaseError, match=error):
         baseline.snapshot(
             output=tmp_path / "manifest.json",
             release_id="11111111-1111-4111-8111-111111111111",
@@ -357,5 +415,6 @@ def test_baseline_snapshot_rejects_noncanonical_compose_runtime(
             command_runner=run,
             compose=compose,
             override=override,
+            device=device,
             public_key=tmp_path / "cosign.pub",
         )

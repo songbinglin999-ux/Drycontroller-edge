@@ -23,6 +23,7 @@ from edge_app_release import (  # noqa: E402
     canonical_manifest_digest,
     deployment_digest,
     prove_compose_runtime,
+    read_device_line_id,
     validate_manifest,
     verify_manifest_signature,
 )
@@ -32,6 +33,7 @@ IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 COMPOSE = Path("/opt/drycontroller-host/current/docker-compose.yml")
 IMAGE_OVERRIDE = Path("/var/lib/drycontroller-ota/edge-app-images.yml")
+DEVICE = Path("/var/lib/drycontroller/device.json")
 PUBLIC_KEY = Path("/etc/drycontroller/keys/cosign.pub")
 
 
@@ -60,6 +62,7 @@ def snapshot(
     command_runner=_run,
     compose: Path = COMPOSE,
     override: Path = IMAGE_OVERRIDE,
+    device: Path = DEVICE,
     public_key: Path = PUBLIC_KEY,
 ) -> dict:
     if str(uuid.UUID(release_id)) != release_id or sequence < 1:
@@ -99,6 +102,7 @@ def snapshot(
         compose=compose,
         override=override,
         images=images,
+        expected_line_id=read_device_line_id(device),
         command_runner=command_runner,
         expected_image_ids=expected_ids,
     )
