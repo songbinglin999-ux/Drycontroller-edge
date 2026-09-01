@@ -401,10 +401,7 @@ def test_boot_recovery_runs_before_docker_and_is_installed():
     unit = (
         ROOT / "infra/bootstrap/drycontroller-license-transaction-recovery.service"
     ).read_text(encoding="utf-8")
-    installer_script = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(
-        encoding="utf-8"
-    )
-    static_path = ROOT / "infra/bootstrap/install-static-runtime.py"
+    static_path = ROOT / "infra/bootstrap/install-edge-app-runtime.py"
     static_spec = importlib.util.spec_from_file_location(
         "license_static_installer", static_path
     )
@@ -421,7 +418,6 @@ def test_boot_recovery_runs_before_docker_and_is_installed():
     )
     assert static_installer.DIRECTORIES["/etc/drycontroller/license"] == 0o755
     assert static_installer.DIRECTORIES["/var/lib/drycontroller/license-transaction"] == 0o700
-    assert "systemctl enable drycontroller-license-transaction-recovery.service" in installer_script
 
 
 def test_live_tpm_observer_runs_before_docker_and_is_started_by_retrofit():

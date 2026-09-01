@@ -8,7 +8,7 @@ export LOG_ROOT="${LOG_ROOT:-/tmp/drycontroller-logs}"
 mkdir -p "$LOG_ROOT"
 
 if [ "${CI:-}" = "true" ]; then
-  pytest --cov=services --cov=common --cov-report=term-missing --cov-report=xml:coverage.xml --junitxml=junit.xml "$@"
+  python -m pytest --cov=services --cov=common --cov-report=term-missing --cov-report=xml:coverage.xml --junitxml=junit.xml "$@"
 else
   PY_BIN="${PYTHON_BIN:-}"
   if [ -z "$PY_BIN" ]; then
@@ -28,6 +28,5 @@ else
   python -m pip install --upgrade pip
   python -m pip install -r requirements-test.txt
 
-  pytest --cov=services --cov=common --cov-report=term-missing "$@"
+  python -m pytest --cov=services --cov=common --cov-report=term-missing "$@"
 fi
-

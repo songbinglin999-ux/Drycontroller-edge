@@ -51,8 +51,8 @@ graph LR
   MON -->|restart/circuit-break| DOCKER[Docker Engine]
 ```
 
-AI 服务源码仍保留在仓库中，但本期不属于默认生产 Compose、监控目标或
-`edge-app-v1` 发布集合。
+AI 服务、配置和 Edge API 产品接口已从活动仓删除；恢复任何 AI 产品能力
+必须先由根活动审计明确授权。
 
 ---
 
@@ -98,8 +98,7 @@ AI 服务源码仍保留在仓库中，但本期不属于默认生产 Compose、
 
 非 PLC、非控制优化类的产品能力补齐总设计见：`Drycontroller-cloudserver/docs/ops/product-hardening-design.md`。
 
-- **AI 模型版本登记与自动回滚**：当前未形成“多版本登记 + 校验 + 回退”的完整闭环。
-- **OTA 蓝绿发布**：当前签名成对 `HostRelease`/`SoftwareRelease` 已通过 root-owned 固定状态机完成候选健康验收和确定性回滚，但尚未实现并行环境与流量切换意义上的蓝绿发布。
+- **OTA 蓝绿发布**：当前 `edge-app-v1` 只支持精确两服务的候选健康验收和确定性回滚；不实现 HostRelease 或并行环境与流量切换意义上的蓝绿发布。
 - **数据级补偿（Influx 不可用时缓存补写）**：当前未形成统一的本地缓存补写机制。
 
 ---

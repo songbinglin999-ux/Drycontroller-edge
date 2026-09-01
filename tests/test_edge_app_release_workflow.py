@@ -58,15 +58,23 @@ def test_active_workflow_and_executor_do_not_reach_legacy_release_paths():
     helper = (ROOT / "infra/ota-helper/edge_app_ota_helper.py").read_text()
     rollback = (ROOT / "infra/ota-helper/rollback-edge-app").read_text()
     docker_e2e = (ROOT / "tests/test_edge_app_release_runtime_docker.py").read_text()
-    legacy_helper = (ROOT / "infra/ota-helper/drycontroller_ota_helper.py").read_text()
     ops = (ROOT / "services/edge-api/app/api/v1/ops.py").read_text()
 
     assert "build-edge-app-release.sh" in active
     assert "edge-app-v1" in active
     assert "from edge_app_release import" in helper
     assert "from release_engine import" not in helper
-    assert "from release_engine import" in legacy_helper
-    assert "from edge_app_release import" not in legacy_helper
+    for retired in (
+        ".gitea/workflows/edge-software-release.yml",
+        ".gitea/workflows/edge-host-release.yml",
+        "scripts/ci/build-software-release.sh",
+        "scripts/ci/software_release_builder.py",
+        "infra/host-release-runner/host_release_runner.py",
+        "infra/host-release-runner/host_release_engine.py",
+        "infra/ota-helper/release_engine.py",
+        "infra/ota-helper/drycontroller_ota_helper.py",
+    ):
+        assert not (ROOT / retired).exists()
     assert "/host-release/" not in ops
     assert "license-service" not in script
     assert "HOST_RELEASE" not in script

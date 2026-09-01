@@ -36,7 +36,6 @@ class Settings(BaseSettings):
     INFLUXDB_TOKEN: str = ""
     INFLUXDB_ORG: str = "edge-org"
     INFLUXDB_BUCKET: str = "industrial-data"
-    TRAINING_MEASUREMENT: str = "softsensor_training_data"
     SYSTEM_METRICS_MEASUREMENT: str = "system_metrics"
     SYSTEM_HEALTH_MEASUREMENT: str = "system_health"
     
@@ -68,7 +67,6 @@ class Settings(BaseSettings):
     # 配置文件路径
     CONFIG_DIR: str = "/app/configs"
     TAGS_CONFIG: str = "/app/configs/tags.yaml"
-    AI_CONFIG: str = "/app/configs/ai-config.yaml"
     QOS_CONFIG: str = "/app/configs/qos.yaml"
     LIMITS_CONFIG: str = "/app/configs/limits.yaml"
     MONITOR_CONFIG: str = "/app/configs/monitor.yaml"

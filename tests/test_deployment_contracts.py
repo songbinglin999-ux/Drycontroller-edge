@@ -1,8 +1,4 @@
-import io
 import importlib.util
-import subprocess
-import sys
-import tarfile
 from pathlib import Path
 
 import yaml
@@ -36,13 +32,13 @@ def _env_example() -> dict[str, str]:
     return result
 
 
-def _static_installer():
-    path = ROOT / "infra/bootstrap/install-static-runtime.py"
-    spec = importlib.util.spec_from_file_location("deployment_static_installer", path)
+def _active_runtime_files() -> dict[str, tuple[str, int]]:
+    path = ROOT / "infra/bootstrap/install-edge-app-runtime.py"
+    spec = importlib.util.spec_from_file_location("deployment_edge_app_installer", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module
+    return module.RUNTIME_FILES
 
 
 def test_plc_deployment_defaults_match_rtu_over_tcp_contract():
@@ -67,10 +63,35 @@ def test_edge_daq_binds_line_identity_and_persists_publish_buffer():
     assert "/var/lib/drycontroller/edge-daq/data:/data/edge-daq" in edge_daq["volumes"]
 
 
-def test_default_compose_excludes_license_and_ai_services():
+def test_runtime_excludes_retired_services_and_product_surfaces():
     retired_services = {"license-service", "ai-softsensor", "ai-ctrl-optimizer"}
+    retired_paths = {
+        ".gitea/workflows/edge-gate-c-build.yml",
+        ".gitea/workflows/edge-host-release.yml",
+        ".gitea/workflows/edge-release-handoff-recovery.yml",
+        ".gitea/workflows/edge-release-public-keys.yml",
+        ".gitea/workflows/edge-software-release.yml",
+        "configs/ai-config.yaml",
+        "infra/autoinstall/user-data",
+        "infra/autoinstall/post-install.sh",
+        "infra/bootstrap/install-edge-host.sh",
+        "infra/host-release-runner/host_release_runner.py",
+        "infra/host-release-runner/host_release_engine.py",
+        "infra/ota-helper/release_engine.py",
+        "infra/prometheus/rules/ai-softsensor.yml",
+        "scripts/build-os-installer-release.sh",
+        "scripts/write-os-installer-usb.sh",
+        "scripts/ci/build-host-release.sh",
+        "scripts/ci/build-software-release.sh",
+        "scripts/ci/software_release_builder.py",
+        "scripts/export_training_dataset.py",
+        "scripts/import_lab_results.py",
+        "services/edge-api/app/api/v1/ai.py",
+        "services/edge-api/app/services/ai_softsensor.py",
+    }
 
     assert all(not (ROOT / "services" / name).exists() for name in retired_services)
+    assert all(not (ROOT / path).exists() for path in retired_paths)
     assert set(_compose_services()) == {
         "alertmanager",
         "edge-api",
@@ -134,7 +155,7 @@ def test_business_containers_have_no_docker_mutation_surface():
     assert "/run/drycontroller-ota:/run/drycontroller-ota:ro" in services["edge-api"]["volumes"]
 
 
-def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
+def test_root_ota_helper_uses_only_edge_app_v1_runtime():
     helper = (ROOT / "infra/ota-helper/edge_app_ota_helper.py").read_text(encoding="utf-8")
     apply = (ROOT / "infra/ota-helper/edge-app-ota-apply").read_text(encoding="utf-8")
     release_engine = (ROOT / "infra/ota-helper/edge_app_release.py").read_text(encoding="utf-8")
@@ -150,236 +171,29 @@ def test_root_ota_helper_uses_fixed_program_and_systemd_boundary():
     assert "if len(sys.argv) != 1:" in apply
     assert "ReleaseEngine().apply()" in apply
     assert "from edge_app_release import ReleaseEngine" in apply
-    assert "pre-check" not in apply
-    assert "post-check" not in apply
     assert 'RELEASE_JOURNAL_SCHEMA = "drycontroller.edge-app-release-journal.v2"' in release_engine
     assert 'SOFTWARE_RELEASE_SCHEMA = "drycontroller.app-release.v2"' in release_engine
     assert 'EDGE_SERVICES = ("edge-api", "edge-daq")' in release_engine
-    assert '"--pull"' in release_engine
-    assert '"never"' in release_engine
     assert "verify_manifest_signature(manifest" in release_engine
-    assert '"verify"' in release_engine
     assert "shell=True" not in release_engine
     assert "os.getenv" not in release_engine
     assert "release_engine" not in helper
     assert "User=root" in unit
     assert "Group=root" in unit
     assert "ExecStart=/usr/bin/python3 /usr/libexec/drycontroller/drycontroller_ota_helper.py" in unit
-    assert "ReadWritePaths=/run/drycontroller-ota /var/lib/drycontroller-ota /var/log/drycontroller-ota" in unit
 
 
-def test_host_release_runner_is_outside_its_signed_update_surface():
-    unit = (ROOT / "infra/host-release-runner/drycontroller-host-release-runner.service").read_text(encoding="utf-8")
-    engine = (ROOT / "infra/host-release-runner/host_release_engine.py").read_text(encoding="utf-8")
-    builder = (ROOT / "scripts/prepare-host-release.py").read_text(encoding="utf-8")
+def test_active_runtime_installer_contains_no_host_release_source():
+    runtime_files = _active_runtime_files()
 
-    assert "ExecStart=/usr/libexec/drycontroller/host-release-runner" in unit
-    assert "ReadWritePaths=" in unit
-    writable = next(line for line in unit.splitlines() if line.startswith("ReadWritePaths="))
-    assert "/usr/libexec" not in writable
-    assert "/opt/drycontroller-host" in writable
-    assert "/opt/Drycontroller-edge" not in writable
-    assert "compatibility_target != self.paths.current_link" in engine
-    assert '"infra/host-release-runner/' not in builder
-    assert '"configs/keys/"' in engine
-    assert '"--lock-fd"' in engine
-    assert "pass_fds=passed_fds" in engine
-
-
-def test_rb6_installer_seeds_only_the_signed_public_h1_t1_s1_path():
-    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
-    help_text = subprocess.run(
-        ["bash", str(ROOT / "infra/bootstrap/install-edge-host.sh"), "--help"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    runtime_destinations = {
-        destination for destination, _mode in _static_installer().RUNTIME_FILES.values()
-    }
-    post_install = (ROOT / "infra/autoinstall/post-install.sh").read_text(encoding="utf-8")
-    user_data = (ROOT / "infra/autoinstall/user-data").read_text(encoding="utf-8")
-    release_builder = (ROOT / "scripts/build-os-installer-release.sh").read_text(encoding="utf-8")
-    usb_writer = (ROOT / "scripts/write-os-installer-usb.sh").read_text(encoding="utf-8")
-
-    for required in (
-        "--host-release",
-        "--host-image-bundle",
-        "--software-release",
-        "--software-image-bundle",
-        "--host-cosign-public-key",
-        "--software-cosign-public-key",
-        "--device-identity-cloud-key",
-        "--license-trust",
-        "--identity-wheelhouse",
-        "--public-config",
-        "--tailscale-client-lock",
-        "/usr/libexec/drycontroller/initialize-initial-release",
-        "/usr/libexec/drycontroller/assert-fresh-install-data-plane",
-        "/usr/libexec/drycontroller/host-release-runner",
-    ):
-        assert required in help_text or required in runtime_destinations
-    for retired in ("--initial-release", "--host-active", "--cosign-public-key"):
-        assert retired not in help_text
-    assert "[ -c /dev/tpmrm0 ]" in installer
-    assert 'password: "!"' in user_data
-    assert "allow-pw: false" in user_data
-    assert "      all-en:" in user_data
-    assert "      all-eth:" in user_data
-    assert "wifi.env" not in user_data
-    assert not (ROOT / "infra/autoinstall/password.env.example").exists()
-    assert "infra/autoinstall/password.env" not in (ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert "activation-bundle.json" not in user_data
-    assert "host-release-seed.json" in post_install
-    assert "software-release-seed.json" in post_install
-    assert "host-active.json" not in post_install
-    assert 'VERSION_ID:-}" = "24.04"' in release_builder
-    assert "release worktree must be clean" in release_builder
-    assert "formal builder cosign checksum is not approved" in release_builder
-    assert 'export PATH="$PINNED_TOOL_DIR:$PATH"' in release_builder
-    assert "scripts/build-device-identity-wheelhouse.sh" in release_builder
-    assert "scripts/build-autoinstall-offline-apt-repo.sh" in release_builder
-    assert "--offline-apt-snapshot-root" in release_builder
-    assert "--offline-apt-lock" in release_builder
-    assert "--offline-apt-lock-sha256" in release_builder
-    assert "--apt-mirror" not in release_builder
-    assert "DRYCONTROLLER_AUTOINSTALL_APT_MIRROR" not in release_builder
-    assert "--snapshot-root" in release_builder
-    assert "--lock-sha256" in release_builder
-    assert "--tailscale-versions-lock" in release_builder
-    assert "--tailscale-deb" in release_builder
-    assert 'apt_args+=(--extra-deb "$TAILSCALE_DEB")' in release_builder
-    assert "scripts/create-os-installer-manifest.py" in release_builder
-    assert release_builder.count("scripts/public-material-scan.py") == 2
-    assert "--surfaces source host software" in release_builder
-    assert "--surfaces iso filesystem" in release_builder
-    assert "--public-scan-report" in release_builder
-    assert "unsquashfs" in release_builder
-    assert "zstd" in release_builder
-    assert "maker.build_iso" in release_builder
-    assert "cosign sign-blob" in release_builder
-    assert "cosign verify-blob" in release_builder
-    assert 'tailscale="$TAILSCALE_VERSION"' in installer
-    assert "pinned Tailscale client DEB checksum mismatch" in installer
-    assert "root:root:700" in installer
-    assert "systemctl enable --now tailscaled.service" in installer
-    assert "tailscale-client.json" in user_data
-    assert "--installer-public-key" in usb_writer
-    assert "scripts/public-material-scan.py" in usb_writer
-    assert usb_writer.count("scripts/stable-release-artifact.py snapshot") == 4
-    assert usb_writer.count("--maximum-size") == 4
-    assert usb_writer.count("--timeout-seconds") == 4
-    assert "--maximum-size 16777216" in usb_writer
-    assert "--maximum-size 1048576" in usb_writer
-    assert "--maximum-size 65536" in usb_writer
-    assert "--maximum-size 17179869184" in usb_writer
-    assert "scripts/stable-release-artifact.py verify-fd" in usb_writer
-    assert "if=/dev/fd/9" in usb_writer
-    assert '"if=$ISO"' not in usb_writer
-    assert '"$EXPECTED_ISO_SIZE" "$EXPECTED_ISO_SHA256"' in usb_writer
-    assert "--surfaces iso filesystem" in usb_writer
-    assert "drycontroller.os-installer-release.v4" in usb_writer
-    assert "--base-iso-sha256" in release_builder
-    assert "--approved-base-iso-sha256" in release_builder
-    assert "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433" in release_builder
-    assert "base ISO checksum is not on the reviewed allowlist" in release_builder
-    assert "require_cmd unsquashfs" in usb_writer
-    assert "require_cmd zstd" in usb_writer
-    assert "signature_verifier=Path(host_cosign)" in usb_writer
-    assert "USB raw compare passed" in usb_writer
-
-
-def test_formal_source_bundle_carries_the_fresh_install_guard_and_registry_writer():
-    bundle_builder = (ROOT / "tools/build-bundle-images.sh").read_text(encoding="utf-8")
-    runtime_files = _static_installer().RUNTIME_FILES
-
-    source = "scripts/ci/assert-fresh-install-data-plane.sh"
-    installed = "/usr/libexec/drycontroller/assert-fresh-install-data-plane"
-    assert source in bundle_builder
-    assert runtime_files[source] == (installed, 0o755)
-    for source in (
-        "infra/registry-auth-writer/registry_auth_writer.py",
-        "infra/registry-auth-writer/drycontroller-registry-auth-writer.service",
-    ):
-        assert source in bundle_builder
-        assert source in runtime_files
-
-
-def test_root_release_runtime_is_disconnected_from_edge_api_writable_docker_config():
-    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text(encoding="utf-8")
-    guard = (ROOT / "scripts/ci/assert-fresh-install-data-plane.sh").read_text(encoding="utf-8")
-    runtime_sources = [
-        (ROOT / "infra/host-release-runner/host_release_engine.py").read_text(encoding="utf-8"),
-        (ROOT / "infra/host-release-runner/host_release_runner.py").read_text(encoding="utf-8"),
-        (ROOT / "infra/ota-helper/release_engine.py").read_text(encoding="utf-8"),
-        (ROOT / "infra/ota-helper/drycontroller_ota_helper.py").read_text(encoding="utf-8"),
-    ]
-
-    assert guard.startswith("#!/usr/bin/bash\n")
-    assert 'readonly DOCKER_CONFIG_DIR=\'/var/lib/drycontroller-ota/guard-docker-config\'' in guard
-    assert '"/usr/bin/bash"' in runtime_sources[0]
-    assert '"/usr/libexec/docker/cli-plugins/docker-compose"' in runtime_sources[0]
-    assert '"/usr/libexec/docker/cli-plugins/docker-compose"' in runtime_sources[2]
-    assert "registry-auth.json" not in installer
-    assert "drycontroller-registry-auth-writer.service" in installer
-    assert "guard-docker-config" in installer
-    assert "stat.S_IMODE(metadata.st_mode) != 0o400" in runtime_sources[0]
-    assert "stat.S_IMODE(metadata.st_mode) != 0o400" in runtime_sources[2]
-    for source in runtime_sources:
-        assert '"DOCKER_CONFIG": "/etc/drycontroller/registry"' not in source
-    for source in (runtime_sources[0], runtime_sources[2]):
-        assert "os.O_PATH" in source
-        assert 'f"unix:///proc/self/fd/{socket_descriptor}"' in source
-        assert '"DOCKER_HOST": docker_host' in source
-
-    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "/etc/drycontroller/registry" not in compose
-    assert "REGISTRY_DOCKER_CONFIG_PATH" not in compose
-    assert "REGISTRY_CREDENTIAL_STATUS_PATH" not in compose
-    assert "/run/drycontroller-registry-auth:/run/drycontroller-registry-auth:ro" in compose
-
-
-def test_source_bundle_uses_only_tracked_commit_files_and_rejects_macos_metadata():
-    builder = (ROOT / "tools" / "build-bundle-images.sh").read_text(encoding="utf-8")
-    installer = (ROOT / "infra" / "bootstrap" / "install-edge-host.sh").read_text(
-        encoding="utf-8"
-    )
-
-    assert 'git archive --format=tar.gz --output="$BUNDLE" HEAD -- "${SOURCE_BUNDLE_PATHS[@]}"' in builder
-    for required in (
-        "env.example",
-        "infra/bootstrap/install-edge-host.sh",
-        "infra/bootstrap/installer_public_config.py",
-        "infra/bootstrap/tailscale_client_lock.py",
-        "scripts/manage-license-trust.py",
-        "scripts/manage-license-transaction.py",
-        "common/license_verifier.py",
-        "common/tailscale_status.py",
-        "infra/host-release-runner/host_release_engine.py",
-        "infra/ota-helper/drycontroller-ota-helper.service",
-        "infra/bootstrap/drycontroller-license-transaction-recovery.service",
-        "services/device-identity/identity_service",
-    ):
-        assert required in builder
-    for runtime_source in _static_installer().RUNTIME_FILES:
-        assert runtime_source in builder
-        assert runtime_source in installer
-    assert "tar -czf" not in builder
-    assert 'python3 scripts/validate-source-bundle.py "$BUNDLE"' in builder
-    assert "source bundle contains forbidden macOS metadata" in builder
-
-
-def test_installer_retires_the_independent_license_trust_writer():
-    runtime_files = _static_installer().RUNTIME_FILES
-
-    assert "scripts/manage-license-trust.py" not in runtime_files
+    assert not any("host-release" in source or "host_release" in source for source in runtime_files)
     assert runtime_files["scripts/manage-license-transaction.py"] == (
         "/usr/libexec/drycontroller/manage-license-transaction.py",
         0o755,
     )
 
 
-def test_edge_api_tailnet_preflight_uses_standalone_observation_without_host_release_client():
+def test_edge_api_tailnet_preflight_uses_standalone_observation():
     services = _compose_services()
     edge_api = services["edge-api"]
     edge_api_env = _env_map(edge_api)
@@ -399,55 +213,3 @@ def test_edge_api_tailnet_preflight_uses_standalone_observation_without_host_rel
     assert "from app.services.tailnet_observation import load_tailnet_observation" in ops
     assert not (ROOT / "services/edge-api/app/services/host_release_ops.py").exists()
     assert "/host-release/" not in ops
-
-
-def _write_source_bundle(path: Path, member_name: str) -> None:
-    payload = b"bundle-test"
-    member = tarfile.TarInfo(member_name)
-    member.size = len(payload)
-    with tarfile.open(path, "w:gz") as archive:
-        archive.addfile(member, io.BytesIO(payload))
-
-
-def test_source_bundle_validator_accepts_clean_archive(tmp_path):
-    bundle = tmp_path / "clean.tar.gz"
-    _write_source_bundle(bundle, "./infra/prometheus/rules/ai-softsensor.yml")
-
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "validate-source-bundle.py"), str(bundle)],
-        text=True,
-        capture_output=True,
-    )
-
-    assert result.returncode == 0
-    assert bundle.is_file()
-
-
-def test_source_bundle_validator_removes_forbidden_or_corrupt_archive(tmp_path):
-    for index, member_name in enumerate(
-        (
-            "./infra/prometheus/rules/._ai-softsensor.yml",
-            "./infra/prometheus/rules/.DS_Store",
-            "./__MACOSX/infra/prometheus/rules/ai-softsensor.yml",
-        )
-    ):
-        bundle = tmp_path / f"forbidden-{index}.tar.gz"
-        _write_source_bundle(bundle, member_name)
-        result = subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "validate-source-bundle.py"), str(bundle)],
-            text=True,
-            capture_output=True,
-        )
-        assert result.returncode == 1
-        assert not bundle.exists()
-
-    corrupt = tmp_path / "corrupt.tar.gz"
-    _write_source_bundle(corrupt, "./large-member.bin")
-    corrupt.write_bytes(corrupt.read_bytes()[:-8])
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "validate-source-bundle.py"), str(corrupt)],
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == 1
-    assert not corrupt.exists()

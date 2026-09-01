@@ -5,7 +5,7 @@ MQTT → WebSocket 转发服务
 主要用于将后端采集的实时数据推送到前端大屏或监控界面。
 
 主要功能：
-- 订阅多个 MQTT 主题流（realtime、ai、system）
+- 订阅 MQTT 主题流（realtime、system）
 - 缓存各流的最新数据
 - 支持 WebSocket 客户端订阅和过滤
 - 消息广播到所有订阅者
@@ -60,16 +60,14 @@ class MQTTWebSocketRelay:
         """
         启动转发服务
         
-        注册三个核心数据流：
+        注册两个核心数据流：
         - realtime: 实时采集数据
-        - ai: AI 推理结果
         - system: 系统状态信息
         """
         if self.started:
             return
         self.loop = asyncio.get_running_loop()
         self._register_stream("realtime", "realtime/#")
-        self._register_stream("ai", "ai/#")
         self._register_stream("system", "system/#")
         self.started = True
         logger.info("ws_stream_relay_started")
@@ -103,7 +101,7 @@ class MQTTWebSocketRelay:
         注册一个数据流
         
         Args:
-            stream_name: 流名称（如 realtime、ai、system）
+            stream_name: 流名称（如 realtime、system）
             topic_pattern: MQTT 主题模式（如 realtime/#）
         """
         queue = event_bus.subscribe(topic_pattern)
@@ -221,7 +219,7 @@ class MQTTWebSocketRelay:
         注册一个 WebSocket 订阅者
         
         Args:
-            stream_name: 要订阅的流名称（realtime/ai/system）
+            stream_name: 要订阅的流名称（realtime/system）
             predicate: 可选的消息过滤函数，返回 True 表示接收
             queue_size: 消息队列大小，默认 200
             

@@ -48,7 +48,7 @@ def test_validate_aggregation_rejects_unknown():
     "value",
     [
         "DRYER1.OUT.TEMP",
-        "softsensor_training_data",
+        "system_metrics",
         "industrial-data",
         "edge-api:metrics",
         "L1",
@@ -75,20 +75,6 @@ def test_validate_identifier_bad(value: str):
         InfluxQueryService._validate_identifier(value)
 
 
-@pytest.mark.parametrize(
-    "value",
-    ["-7d", "-12h", "now()", "2026-05-19T01:02:03Z", "2026-05-19T01:02:03.123Z"],
-)
-def test_validate_range_bound_ok(value: str):
-    assert InfluxQueryService._validate_range_bound(value, "start") == value
-
-
-@pytest.mark.parametrize("value", ["7d", "-7months", 'now() |> drop()', "2026-05-19", ""])
-def test_validate_range_bound_bad(value: str):
-    with pytest.raises(ValueError):
-        InfluxQueryService._validate_range_bound(value, "start")
-
-
 @pytest.mark.asyncio
 async def test_public_query_builders_reject_injected_user_values():
     svc = InfluxQueryService.__new__(InfluxQueryService)
@@ -99,8 +85,6 @@ async def test_public_query_builders_reject_injected_user_values():
         await svc.latest_points(['A.TAG") |> drop()'])
     with pytest.raises(ValueError):
         await svc.history_points('A.TAG") |> drop()')
-    with pytest.raises(ValueError):
-        await svc.training_samples("softsensor_training_data", '-7d) |> drop()')
     with pytest.raises(ValueError):
         await svc.system_metric_trend("system_metrics", 'cpu") |> drop()')
     with pytest.raises(ValueError):

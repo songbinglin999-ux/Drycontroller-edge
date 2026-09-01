@@ -51,7 +51,6 @@ class DummyWsStream:
     ("path", "stream_name"),
     [
         ("/api/ws/realtime?line=L1&tags=FTT1", "realtime"),
-        ("/api/ws/ai?line=L1", "ai"),
         ("/api/ws/system?line=L1", "system"),
     ],
 )

@@ -4,7 +4,6 @@ InfluxDB 查询服务
 本模块封装了 InfluxDB 时序数据库的查询操作，提供以下功能：
 - 实时数据查询：获取指定标签的最新数据点
 - 历史数据查询：支持时间窗口聚合的历史趋势查询
-- 训练数据查询：用于 AI 模型训练的样本数据导出
 - 系统指标查询：服务健康状态和性能指标查询
 
 使用 Flux 查询语言与 InfluxDB 2.x 交互。
@@ -28,10 +27,6 @@ from app.core.config import settings
 DURATION_PATTERN = re.compile(r"^\d+(s|m|h|d|w)$")
 # Flux 字符串插值白名单：覆盖现有点位/measurement/field/line/status 命名。
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
-# Flux range 边界：支持相对时间（-7d）、now() 和 UTC RFC3339 时间。
-RANGE_BOUND_PATTERN = re.compile(
-    r"^(now\(\)|-\d+(s|m|h|d|w)|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)$"
-)
 # 支持的聚合函数集合
 VALID_AGGREGATIONS = {"mean", "max", "min", "sum", "last", "first"}
 
@@ -43,7 +38,6 @@ class InfluxQueryService:
     提供对 InfluxDB 时序数据库的异步查询封装，支持：
     - 实时数据点查询（latest_points）
     - 历史趋势查询（history_points）
-    - 训练样本导出（training_samples）
     - 系统指标趋势（system_metric_trend）
     - 服务告警查询（active_service_alarms）
     """
@@ -145,39 +139,6 @@ class InfluxQueryService:
             InfluxDB 查询结果表列表
         """
         return await asyncio.to_thread(self.query_api.query, flux)
-
-    async def training_samples(
-        self,
-        measurement: str,
-        start: str,
-        stop: str = "now()",
-        line: Optional[str] = None,
-        require_lab: bool = True,
-    ) -> List[Dict[str, Any]]:
-        """
-        查询 AI 模型训练样本数据
-        
-        用于导出软测量模型训练所需的历史数据，支持按产线过滤
-        以及是否要求包含实验室化验值。
-        
-        Args:
-            measurement: 测量表名（如 softsensor_training_data）
-            start: 起始时间（Flux 格式，如 -7d）
-            stop: 结束时间（默认 now()）
-            line: 可选的产线 ID 过滤
-            require_lab: 是否要求样本包含实验室化验值
-            
-        Returns:
-            训练样本字典列表
-        """
-        measurement = self._validate_identifier(measurement, "measurement")
-        start = self._validate_range_bound(start, "start")
-        stop = self._validate_range_bound(stop, "stop")
-        if line is not None:
-            line = self._validate_identifier(line, "line")
-        flux = self._build_training_flux(measurement, start, stop, line, require_lab)
-        tables = await self._query_flux(flux)
-        return self._tables_to_dicts(tables)
 
     async def system_metric_trend(
         self,
@@ -333,41 +294,6 @@ from(bucket: "{self.bucket}")
                 )
         return result
 
-    def _build_training_flux(
-        self,
-        measurement: str,
-        start: str,
-        stop: str,
-        line: Optional[str],
-        require_lab: bool,
-    ) -> str:
-        """
-        构建训练数据查询的 Flux 语句
-        
-        查询逻辑：
-        1. 按时间范围和测量表过滤
-        2. 可选按产线 ID 过滤
-        3. 透视数据结构
-        4. 可选要求包含实验室化验值（moisture_lab 字段）
-        """
-        # 产线过滤条件
-        line_filter = (
-            f'  |> filter(fn: (r) => r["line_id"] == "{line}")' if line else ""
-        )
-        # 实验室数据过滤条件（用于确保样本有标签）
-        lab_filter = (
-            "  |> filter(fn: (r) => exists r.moisture_lab)" if require_lab else ""
-        )
-        return f"""
-from(bucket: "{self.bucket}")
-  |> range(start: {start}, stop: {stop})
-  |> filter(fn: (r) => r["_measurement"] == "{measurement}")
-{line_filter}
-  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-{lab_filter}
-  |> sort(columns: ["_time"], desc: false)
-"""
-
     def _build_system_metric_flux(
         self,
         measurement: str,
@@ -479,16 +405,6 @@ from(bucket: "{self.bucket}")
         if not value or not IDENTIFIER_PATTERN.match(value):
             raise ValueError(f"Invalid {label} format.")
         return value
-
-    @staticmethod
-    def _validate_range_bound(value: str, label: str) -> str:
-        """
-        校验 Flux range(start/stop) 的未加引号表达式。
-        """
-        if not RANGE_BOUND_PATTERN.match(value):
-            raise ValueError(f"Invalid {label} range format.")
-        return value
-
 
 @lru_cache(maxsize=1)
 def get_influx_service() -> InfluxQueryService:

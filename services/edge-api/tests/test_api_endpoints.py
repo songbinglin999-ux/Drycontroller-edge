@@ -15,7 +15,6 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
     if entry not in sys.path:
         sys.path.append(entry)
 
-from app.api.v1.ai import router as ai_router, get_ai_softsensor_service
 from app.api.v1.system import _identity_summary, router as system_router, get_system_status_service
 from app.api.v1.control import (
     get_control_orchestrator,
@@ -29,19 +28,6 @@ from app.core.database import get_db
 settings.CONTROL_API_KEYS = ["test-control"]
 settings.ADMIN_API_KEYS = ["test-admin"]
 settings.READONLY_WS_ALLOWLIST = ["testclient"]
-
-
-class DummyAISvc:
-    async def get_lab_samples(self, **kwargs):
-        if kwargs.get("start") == "bad":
-            raise ValueError("Invalid start range format.")
-        return {
-            "success": True,
-            "count": 1,
-            "data": [
-                {"time": "2025-01-01T00:00:00Z", "line_id": "L1", "moisture_lab": 12.8}
-            ],
-        }
 
 
 class DummySystemSvc:
@@ -178,29 +164,14 @@ async def _override_get_db():
 
 
 app = FastAPI()
-app.include_router(ai_router, prefix="/api/v1/ai")
 app.include_router(system_router, prefix="/api/v1/system")
 app.include_router(control_router, prefix="/api/v1/control")
 app.include_router(alarm_router, prefix="/api/v1/alarms")
-app.dependency_overrides[get_ai_softsensor_service] = lambda: DummyAISvc()
 app.dependency_overrides[get_system_status_service] = lambda: DummySystemSvc()
 app.dependency_overrides[get_control_orchestrator] = lambda: DummyControlOrchestrator()
 app.dependency_overrides[get_control_state_service] = lambda: DummyControlState()
 app.dependency_overrides[get_db] = _override_get_db
 client = TestClient(app)
-
-
-def test_ai_lab_samples_endpoint():
-    resp = client.get("/api/v1/ai/lab/samples?start=-1d&limit=1")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["count"] == 1
-    assert body["data"][0]["line_id"] == "L1"
-
-
-def test_ai_lab_samples_validation_error_returns_400():
-    resp = client.get("/api/v1/ai/lab/samples?start=bad")
-    assert resp.status_code == 400
 
 
 def test_system_metric_trend_endpoint():
@@ -214,7 +185,6 @@ def test_v1_readonly_routes_reject_non_allowlisted_source():
     try:
         settings.READONLY_WS_ALLOWLIST = ["192.168.0.0/16"]
         for path in (
-            "/api/v1/ai/lab/samples?start=-1d&limit=1",
             "/api/v1/system/metrics/trend?field=cpu_percent",
             "/api/v1/alarms/active?period=10m",
         ):

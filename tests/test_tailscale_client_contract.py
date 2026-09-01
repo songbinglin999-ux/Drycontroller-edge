@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -13,13 +11,6 @@ from common.tailscale_status import inspect_tailscale_status, validate_tailscale
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_MODULE = ROOT / "infra" / "bootstrap" / "tailscale_client_lock.py"
-RUNNER_DIR = ROOT / "infra" / "host-release-runner"
-if str(RUNNER_DIR) not in sys.path:
-    sys.path.insert(0, str(RUNNER_DIR))
-
-import host_release_runner  # noqa: E402
-
-
 def _lock_module():
     spec = importlib.util.spec_from_file_location("tailscale_client_lock", LOCK_MODULE)
     assert spec is not None and spec.loader is not None
@@ -90,31 +81,6 @@ def test_actual_tailscale_status_matches_version_server_identity_and_online_stat
     assert result["detail"]["node_id"] == "node-7"
     assert result["detail"]["ssh_enabled"] is True
     assert "redacted" not in json.dumps(result)
-
-
-def test_root_runner_exposes_only_sanitized_tailnet_observation(monkeypatch):
-    observation = {
-        "ok": True,
-        "reason": "observed",
-        "detail": {"version": "1.98.10", "node_id": "node-7"},
-    }
-    response: dict[str, object] = {}
-    handler = SimpleNamespace(
-        path="/tailnet/status",
-        _json=lambda status, payload: response.update(status=status, payload=payload),
-    )
-    monkeypatch.setattr(host_release_runner, "read_tailscale_status", lambda: observation)
-    monkeypatch.setattr(host_release_runner, "_edge_api_ingress_active", lambda: True)
-
-    host_release_runner.RequestHandler.do_GET(handler)
-
-    assert response == {
-        "status": 200,
-        "payload": {
-            **observation,
-            "detail": {**observation["detail"], "edge_api_ingress_active": True},
-        },
-    }
 
 
 @pytest.mark.parametrize(
@@ -193,7 +159,6 @@ def test_tailnet_product_ingress_is_interface_bound_and_preflight_gated():
     socket_unit = (ROOT / "infra/bootstrap/drycontroller-tailnet-edge-api.socket").read_text()
     service_unit = (ROOT / "infra/bootstrap/drycontroller-tailnet-edge-api.service").read_text()
     compose = (ROOT / "docker-compose.yml").read_text()
-    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text()
 
     assert "ListenStream=0.0.0.0:8000" in socket_unit
     assert "BindToDevice=tailscale0" in socket_unit
@@ -201,10 +166,6 @@ def test_tailnet_product_ingress_is_interface_bound_and_preflight_gated():
     assert "systemd-socket-proxyd" not in service_unit
     assert '"127.0.0.1:${EDGE_API_LOCAL_PORT:-18080}:8000"' in compose
     assert "EDGE_API_BIND_ADDR" not in compose
-    assert "drycontroller-tailnet-edge-api.socket" in installer
-    assert "drycontroller-tailnet-edge-api.service" in installer
-    assert "systemctl enable drycontroller-tailnet-edge-api.socket" in installer
-
     observation = {
         "ok": True,
         "reason": "observed",

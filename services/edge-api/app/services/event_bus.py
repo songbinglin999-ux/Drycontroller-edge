@@ -67,7 +67,7 @@ class EventBus:
         event = await queue.get()
         
         # 发布本地事件
-        event_bus.publish("ai/moisture", {"value": 12.5})
+        event_bus.publish("system/L1/status", {"status": "healthy"})
     """
 
     def __init__(
@@ -83,8 +83,8 @@ class EventBus:
             default_patterns: 默认订阅的主题模式列表
         """
         self._mqtt = mqtt_adapter
-        # 默认订阅实时数据、AI推理、系统状态三类主题
-        self._default_patterns = default_patterns or ["realtime/#", "ai/#", "system/#"]
+        # 默认订阅实时数据和系统状态两类主题
+        self._default_patterns = default_patterns or ["realtime/#", "system/#"]
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # 存储各主题模式对应的 MQTT 回调函数
         self._mqtt_callbacks: Dict[str, Callable[[str, str], None]] = {}
@@ -335,4 +335,3 @@ class EventBus:
 
 # 全局事件总线单例
 event_bus = EventBus()
-

@@ -60,9 +60,8 @@ def refresh_metrics() -> None:
     EDGE_API_EVENT_BUS_SUBSCRIPTIONS.set(len(subs) if isinstance(subs, list) else 0)
 
     EDGE_API_WS_STREAM_STARTED.set(1 if ws_stream.started else 0)
-    # streams: {"realtime": {...}, "ai": {...}, "system": {...}}
-    for name in ("realtime", "ai", "system"):
+    # streams: {"realtime": {...}, "system": {...}}
+    for name in ("realtime", "system"):
         stream = ws_stream.streams.get(name) if getattr(ws_stream, "streams", None) else None
         subscribers = stream.get("subscribers") if isinstance(stream, dict) else None
         EDGE_API_WS_STREAM_SUBSCRIBERS.labels(name).set(len(subscribers) if isinstance(subscribers, dict) else 0)
-

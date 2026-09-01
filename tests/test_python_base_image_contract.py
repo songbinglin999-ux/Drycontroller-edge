@@ -37,7 +37,7 @@ def _valid_inspect(contract, *, architecture: str = "amd64") -> dict[str, object
     }
 
 
-def test_contract_scans_exactly_the_six_local_python_service_dockerfiles():
+def test_contract_scans_exactly_the_three_local_python_service_dockerfiles():
     contract = _contract()
 
     records = contract.verify_dockerfiles(ROOT)
@@ -138,7 +138,7 @@ def test_image_contract_uses_portable_config_digest_not_containerd_inspect_id(tm
     assert record["image_id"] != containerd_inspect_id
 
 
-def test_receipt_binds_all_six_image_config_digests_to_the_signed_manifest(tmp_path: Path):
+def test_receipt_binds_all_three_image_config_digests_to_the_signed_manifest(tmp_path: Path):
     contract = _contract()
     receipt_dir = tmp_path / "receipts"
     receipt_dir.mkdir()
@@ -209,25 +209,5 @@ def test_receipt_set_rejects_missing_or_extra_service_receipts(
         encoding="utf-8",
     )
 
-    with pytest.raises(contract.ContractError, match="exactly six services"):
+    with pytest.raises(contract.ContractError, match="exactly three services"):
         contract.verify_receipts(receipt_dir, manifest_path)
-
-
-def test_formal_builder_verifies_built_and_inherited_python_images_before_signing():
-    script = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-
-    assert "python_base_image_contract.py verify-dockerfiles" in script
-    assert script.count("python_base_image_contract.py verify-image") == 3
-    assert "python_base_image_contract.py verify-receipts" in script
-    changed_loop = script.split('for service in "${SERVICES[@]}"; do', 1)[1].split(
-        "\ndone\n", 1
-    )[0]
-    verify_image = changed_loop.index("python_base_image_contract.py verify-image")
-    assert verify_image < changed_loop.index("release_step_push")
-    assert verify_image < changed_loop.index("release_step_sign_image")
-    assert script.rindex("python_base_image_contract.py verify-receipts") < script.rindex(
-        "release_step_sign_manifest"
-    )
-    assert script.rindex("python_base_image_contract.py verify-receipts") < script.rindex(
-        "release_step_complete_cloud"
-    )

@@ -326,14 +326,12 @@ def test_production_identity_units_allow_only_the_kernel_tpm_resource_manager():
     tailnet_source = (
         Path(__file__).resolve().parents[1] / "identity_service" / "tailnet.py"
     ).read_text(encoding="utf-8")
-    installer = (infra / "install-edge-host.sh").read_text(encoding="utf-8")
     assert "Environment=DRYCONTROLLER_IDENTITY_BACKEND=tpm" in factory_unit
     assert "RuntimeDirectory=drycontroller-tailnet-join" in factory_unit
     assert "RuntimeDirectoryMode=0700" in factory_unit
     assert "ProtectSystem=strict" in factory_unit
     assert '["/usr/bin/systemctl", "start", TAILNET_EDGE_API_SOCKET]' in tailnet_source
     assert '["/usr/bin/systemctl", "enable"' not in tailnet_source
-    assert "systemctl enable drycontroller-tailnet-edge-api.socket" in installer
 
 
 @pytest.mark.asyncio

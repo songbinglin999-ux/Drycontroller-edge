@@ -3,7 +3,6 @@
 # 约定的用户名（由 docker-compose 的 mosquitto-init 创建）：
 # - edge_api
 # - edge_daq
-# - ai_softsensor
 # - edge_monitor
 #
 # Topic 约定（与代码默认一致）：
@@ -11,7 +10,6 @@
 # - system/<LINE>/status
 # - system/<LINE>/alarms
 # - system/bootstrap
-# - ai/<LINE>/...
 # - control/<LINE>/tags
 # - control/<LINE>/acks
 # - events/system/self_heal
@@ -21,7 +19,6 @@ topic read $SYS/#
 topic read realtime/+/tags
 topic read system/+/status
 topic read system/+/alarms
-topic read ai/+/# 
 topic read control/+/acks
 topic write control/+/tags
 
@@ -31,13 +28,8 @@ topic write control/+/acks
 topic write realtime/+/tags
 topic write system/+/alarms
 
-user ai_softsensor
-topic read realtime/+/tags
-topic write ai/+/moisture
-
 user edge_monitor
 topic write system/+/status
 topic write system/bootstrap
 topic write events/system/self_heal
-
 

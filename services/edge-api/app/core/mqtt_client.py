@@ -146,9 +146,8 @@ class MQTTManager:
             self.connected = True
             logger.info("mqtt_connected")
             
-            # 自动订阅三个核心主题
+            # 自动订阅当前两个核心主题
             self.subscribe("realtime/#")  # 实时数据
-            self.subscribe("ai/#")         # AI 推理结果
             self.subscribe("system/#")     # 系统状态
         else:
             logger.error("mqtt_connection_failed", return_code=rc)

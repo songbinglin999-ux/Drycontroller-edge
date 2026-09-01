@@ -208,9 +208,8 @@ async def test_proxy_marks_request_seen_by_loopback_backend() -> None:
     assert b"X-DryController-Tailnet-Ingress: 1\r\n" in observed[0]
 
 
-def test_installer_uses_marking_proxy_instead_of_blind_tcp_proxy() -> None:
+def test_marking_proxy_unit_is_hardened() -> None:
     service = (ROOT / "infra/bootstrap/drycontroller-tailnet-edge-api.service").read_text()
-    installer = (ROOT / "infra/bootstrap/install-edge-host.sh").read_text()
 
     assert "systemd-socket-proxyd" not in service
     assert "/usr/local/libexec/drycontroller/tailnet-edge-api-proxy.py" in service
@@ -219,7 +218,3 @@ def test_installer_uses_marking_proxy_instead_of_blind_tcp_proxy() -> None:
     assert "AmbientCapabilities=" in service
     assert "ProtectSystem=strict" in service
     assert "ReadWritePaths=" not in service
-    assert (
-        'install -o root -g root -m 0755 "${REPO_SOURCE}/infra/bootstrap/tailnet-edge-api-proxy.py"'
-        in installer
-    )

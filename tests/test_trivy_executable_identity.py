@@ -3,11 +3,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,109 +127,3 @@ def test_path_shadow_cannot_replace_fixed_trivy(tmp_path: Path, monkeypatch: pyt
     assert receipt["version"] == EXPECTED_VERSION
     assert receipt["sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
     assert not marker.exists()
-
-
-def test_formal_builders_share_fixed_trivy_contract_and_ignore_path_shadow():
-    host = (ROOT / "scripts/ci/build-host-release.sh").read_text(encoding="utf-8")
-    software = (ROOT / "scripts/ci/build-software-release.sh").read_text(encoding="utf-8")
-
-    for builder in (host, software):
-        verify = builder.index("python3 scripts/ci/verify-trivy-executable.py")
-        first_scan = builder.index('"${TRIVY_BINARY}" image')
-        assert verify < first_scan
-        assert f'TRIVY_BINARY="{EXPECTED_PATH}"' in builder
-        assert "command -v trivy" not in builder
-        assert "\ntrivy image" not in builder
-        assert "\n  trivy image" not in builder
-
-
-def test_formal_workflows_establish_same_identity_and_clean_trivy_state_on_failure():
-    for relative in (
-        ".gitea/workflows/edge-host-release.yml",
-        ".gitea/workflows/edge-software-release.yml",
-    ):
-        workflow = (ROOT / relative).read_text(encoding="utf-8")
-        establish = workflow.index("Establish pinned Trivy executable")
-        if relative.endswith("edge-host-release.yml"):
-            authorize = workflow.index(
-                "Authorize exact release controller and candidate",
-                workflow.index("\n  release:\n"),
-            )
-            checkout = workflow.index("Checkout exact approved candidate", establish)
-            resolve = workflow.index(
-                "Resolve/bind exact candidate identity", checkout
-            )
-            publish = workflow.index(
-                "Publish completed public release handoff", resolve
-            )
-            assert authorize < establish < checkout < resolve
-        else:
-            checkout = workflow.index("      - name: Checkout", establish)
-            resolve = checkout
-            publish = -1
-        prime = workflow.index("Prime pinned Trivy database")
-        builder = workflow.index("bash scripts/ci/build-")
-        cleanup = workflow.index("Remove pinned Trivy state")
-
-        assert establish < checkout <= resolve < prime < builder < cleanup
-        if publish != -1:
-            assert builder < publish < cleanup
-        cleanup_block = workflow[cleanup:]
-        assert "if: ${{ always() }}" in cleanup_block
-        assert 'rm -rf -- "${TRIVY_CACHE_DIR}"' in cleanup_block
-        assert 'rm -f -- "${TRIVY_DB_PACKAGE}"' in cleanup_block
-        assert 'test ! -e "${TRIVY_CACHE_DIR}"' in cleanup_block
-        assert 'test ! -e "${TRIVY_DB_PACKAGE}"' in cleanup_block
-        assert f"{EXPECTED_SHA256}  {EXPECTED_PATH}" in workflow
-        assert f"Version: {EXPECTED_VERSION}" in workflow
-        establish_block = workflow[establish:prime]
-        assert f"test -f {EXPECTED_PATH}" in establish_block
-        assert f"test ! -L {EXPECTED_PATH}" in establish_block
-        assert f"/usr/bin/chown root:root {EXPECTED_PATH}" in establish_block
-        assert f"/usr/bin/chmod 0755 {EXPECTED_PATH}" in establish_block
-
-        parsed = yaml.safe_load(workflow)
-        builder_step = next(
-            step
-            for step in parsed["jobs"]["release"]["steps"]
-            if step.get("name", "").startswith("Build and complete")
-        )
-        assert builder_step["env"]["PATH"] == "/usr/local/bin:/usr/bin:/bin"
-
-    verifier = _load_verifier()
-    assert verifier.TRIVY_BINARY == EXPECTED_PATH
-    assert verifier.TRIVY_VERSION == EXPECTED_VERSION
-    assert verifier.TRIVY_BINARY_SHA256 == EXPECTED_SHA256
-
-
-def test_formal_workflow_failure_cleanup_removes_pinned_trivy_state(tmp_path: Path):
-    for name in ("edge-host-release.yml", "edge-software-release.yml"):
-        workflow = yaml.safe_load(
-            (ROOT / ".gitea/workflows" / name).read_text(encoding="utf-8")
-        )
-        cleanup = next(
-            step
-            for step in workflow["jobs"]["release"]["steps"]
-            if step.get("name") == "Remove pinned Trivy state"
-        )
-        cache_dir = tmp_path / name / "cache"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "residue").write_text("db", encoding="utf-8")
-        package = tmp_path / name / "trivy-db.tar.gz"
-        package.write_text("package", encoding="utf-8")
-
-        completed = subprocess.run(
-            ["/bin/bash", "-c", cleanup["run"]],
-            check=False,
-            capture_output=True,
-            env={
-                **os.environ,
-                "TRIVY_CACHE_DIR": str(cache_dir),
-                "TRIVY_DB_PACKAGE": str(package),
-            },
-            text=True,
-        )
-
-        assert completed.returncode == 0, completed.stderr
-        assert not cache_dir.exists()
-        assert not package.exists()

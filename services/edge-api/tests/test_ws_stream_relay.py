@@ -46,16 +46,16 @@ async def test_handle_message_updates_latest_and_broadcasts():
 async def test_handle_message_parses_json_string_and_skips_bad_json():
     relay = MQTTWebSocketRelay()
     relay.loop = asyncio.get_running_loop()
-    relay.streams["ai"] = {"pattern": "ai/#", "subscribers": {}, "queue": asyncio.Queue()}
-    q = relay.register_subscriber("ai")
+    relay.streams["system"] = {"pattern": "system/#", "subscribers": {}, "queue": asyncio.Queue()}
+    q = relay.register_subscriber("system")
 
-    relay._handle_message("ai", "ai/L1/moisture", '{"line":"L1","tag":"MOISTURE.PREDICTED","value":12.3}')
+    relay._handle_message("system", "system/L1/status", '{"line":"L1","status":"healthy"}')
     await asyncio.sleep(0)
     msg = q.get_nowait()
-    assert msg["value"] == 12.3
+    assert msg["status"] == "healthy"
 
     # bad json should not crash nor enqueue
-    relay._handle_message("ai", "ai/L1/moisture", "{bad json")
+    relay._handle_message("system", "system/L1/status", "{bad json")
     await asyncio.sleep(0)
     assert q.empty()
 
@@ -91,5 +91,4 @@ def test_register_unknown_stream_raises():
     relay = MQTTWebSocketRelay()
     with pytest.raises(ValueError):
         relay.register_subscriber("unknown")
-
 

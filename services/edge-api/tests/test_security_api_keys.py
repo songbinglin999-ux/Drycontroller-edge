@@ -368,7 +368,7 @@ def test_cloud_signature_concurrent_replay_is_rejected(tmp_path):
 
 def test_cloud_nonce_store_has_dedicated_writable_mount():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    path = ROOT / "infra/bootstrap/install-static-runtime.py"
+    path = ROOT / "infra/bootstrap/install-edge-app-runtime.py"
     spec = importlib.util.spec_from_file_location("nonce_static_installer", path)
     assert spec is not None and spec.loader is not None
     installer = importlib.util.module_from_spec(spec)

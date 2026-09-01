@@ -60,9 +60,6 @@ rate_limiting:
     - path: "/api/v1/control/*"
       requests_per_minute: 10
       
-    - path: "/api/v1/ai/*"
-      requests_per_minute: 30
-      
 # ==================== 数据库连接池 ====================
 database:
   postgres:

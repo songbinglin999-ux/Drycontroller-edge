@@ -9,7 +9,7 @@ This repository is one of three independent DryController repos:
 
 | Repo | Role | Branch |
 |---|---|---|
-| `Drycontroller-edge` | Edge IPC runtime and OS Installer USB assets | `master` |
+| `Drycontroller-edge` | Edge IPC runtime | `master` |
 | `Drycontroller-cloudserver` | Cloud Ops, Cloud Console, Headscale, activation tooling | `main` |
 | `Drycontroller-frontend` | Large-screen dashboard frontend | `main` |
 
@@ -34,13 +34,13 @@ boundaries:
   ambiguous/chunked framing, bodies over 1 MiB, pipelined requests, slow reads,
   and connections above its fixed concurrency limit.
   LAN/PLC interfaces never receive the Cloud admin listener.
-- WebSocket realtime, AI, and system streams require the current mutual-auth
+- WebSocket realtime and system streams require the current mutual-auth
   handshake: client `hello` nonce, server HMAC proof, client `auth`, then
   `auth_ok`.
 - Local audit outbox is active for audit and control-command domains. Other
   edge event classes remain backlog unless the top-level audit says otherwise.
-- OS Installer USB assets are maintained here. Physical USB write, BIOS boot,
-  and IPC installation still require real hardware acceptance.
+- The retired HostRelease/12-service OS Installer path has been removed. A new
+  OS/USB contract requires an explicit audit decision before implementation.
 
 ## Runtime Components
 
@@ -55,9 +55,9 @@ boundaries:
 
 ## Quick Start
 
-Use this only for local development or staging simulation. RB-5A deliberately
-does not produce deployable factory media; the retired shared factory credential
-path has been removed and production media stays fail-closed until RB-5B/RB-6.
+Use this only for local development or staging simulation. The retired factory
+media path has been removed; this repository currently produces no deployable
+OS/USB media.
 
 ```bash
 cp env.example .env
@@ -106,7 +106,7 @@ approved offline wheelhouse manifest. It refuses an existing identity runtime
 and installs through an atomic staging directory; it does not configure the
 network, Docker, application containers, or device identity state. Then run
 `infra/bootstrap/retrofit-edge-app-runtime.sh` to install the isolated
-`edge-app-v1` host runtime and retire the Edge API path to legacy HostRelease.
+`edge-app-v1` host runtime and retire any installed legacy HostRelease unit.
 The script does not pull images, mutate containers, create release state, or
 enable the new recovery/helper units. Before reboot, create and independently
 sign an approved live two-image baseline with `scripts/create-edge-app-baseline.py`,
@@ -139,7 +139,6 @@ POST /api/v1/control/manual/set
 POST /api/v1/control/auto/dispatch
 POST /api/v1/ops/plc-config/apply
 WS   /api/ws/realtime
-WS   /api/ws/ai
 WS   /api/ws/system
 ```
 
@@ -196,7 +195,7 @@ staging/security work include:
 
 ```bash
 services/edge-api/.venv/bin/python -m pytest services/edge-api/tests -q
-bash -n infra/bootstrap/install-edge-host.sh
+bash -n infra/bootstrap/retrofit-edge-app-runtime.sh
 ../scripts/agent-test-env.sh pytest services/device-identity/tests services/edge-api/tests -q
 ```
 
@@ -207,7 +206,6 @@ claiming a path is verified.
 
 | Doc | Purpose |
 |---|---|
-| `docs/ops/edge-os-autoinstall.md` | OS Installer USB operator flow |
 | `docs/ops/db-migrations.md` | Edge Alembic migration flow |
 | `docs/archive/ops/provisioning-bootstrap.md` | Retired Provisioning USB bootstrap boundary |
 | `CONTRIBUTING.md` | Git hooks and contribution rules |
@@ -219,9 +217,9 @@ Current open work is tracked in the top-level audit, not in this README. As of
 the latest audit snapshot, important edge-adjacent items include:
 
 - Finish remaining outbox producers/drainers beyond audit and control-command.
-- Complete RB-4 signed release identity and deterministic rollback before OTA deployment.
+- Keep the signed `edge-app-v1` identity and deterministic rollback contract verified.
 - Keep the root OTA helper and its UDS unavailable to every container except `edge-api`.
-- Complete real hardware acceptance for OS Installer USB.
+- Do not restore an OS/USB release path without a new explicit audit decision.
 
 Do not close or reinterpret those boundaries from this README; update
 `../architecture-audit-2026-05-06.md` when verified state changes.

@@ -9,7 +9,7 @@ P1-8 Phase C: 当前所有 service 都通过 `os.getenv("MQTT_TOPIC_*", "<defaul
 - 所有 topic 含 `{line_id}` 占位符——按产线隔离（一个 broker 多产线场景）。
   调用方按 `TOPIC.format(line_id=...)` 渲染。例外见 GLOBAL_* 段。
 - topic segment 层次：`<domain>/<line_id>/<entity>[/<verb>]`
-  - domain ∈ {realtime, control, ai, system, events}
+  - domain ∈ {realtime, control, system, events}
   - entity 由 domain 决定（tags / alarms / status / acks ...）
 - env var 名约定：`MQTT_TOPIC_<UPPER_SNAKE>`，default 字面量以本文件常量为准。
 
@@ -25,13 +25,9 @@ from __future__ import annotations
 # Per-line topics (use .format(line_id=...) at call site)
 # --------------------------------------------------------------------------
 
-#: edge-daq publishes PLC sampled tags here; ai-softsensor + edge-api subscribe.
-#: env var: MQTT_TOPIC_REALTIME (edge-daq publisher.py, ai-softsensor mqtt_handler.py)
+#: edge-daq publishes PLC sampled tags here; edge-api subscribes.
+#: env var: MQTT_TOPIC_REALTIME (edge-daq publisher.py)
 REALTIME_TAGS_TPL = "realtime/{line_id}/tags"
-
-#: ai-softsensor publishes inferred moisture here; edge-api subscribes.
-#: env var: legacy "mqtt_topic" config key (ai-softsensor inference config)
-AI_MOISTURE_TPL = "ai/{line_id}/moisture"
 
 #: edge-monitor publishes per-line service health snapshot; edge-api+cloud subscribe.
 #: env var: MQTT_TOPIC_STATUS (edge-monitor monitor/main.py)
@@ -70,9 +66,6 @@ GLOBAL_BOOTSTRAP = "system/bootstrap"
 
 #: edge-api subscribes to all real-time data across lines.
 WILDCARD_REALTIME = "realtime/#"
-
-#: edge-api subscribes to all AI inference outputs.
-WILDCARD_AI = "ai/#"
 
 #: edge-api subscribes to all system events (status / alarms / etc.).
 WILDCARD_SYSTEM = "system/#"

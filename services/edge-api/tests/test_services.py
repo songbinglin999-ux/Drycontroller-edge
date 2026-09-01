@@ -18,7 +18,6 @@ for entry in {str(ROOT), str(SERVICE_ROOT)}:
         sys.path.append(entry)
 
 from app.services.realtime_data import RealtimeDataService  # noqa: E402
-from app.services.ai_softsensor import AISoftsensorService  # noqa: E402
 from app.services.system_status import SystemStatusService  # noqa: E402
 from app.services.event_bus import EventBus  # noqa: E402
 from app.services.control_core.models import (  # noqa: E402
@@ -45,27 +44,6 @@ class DummyInflux:
         aggregation: str,
     ) -> List[Dict[str, Any]]:
         return [{"time": "2025-01-01T00:00:00Z", "value": 12.3}]
-
-    async def training_samples(
-        self,
-        measurement: str,
-        start: str,
-        stop: str,
-        line: Optional[str],
-        require_lab: bool,
-    ) -> List[Dict[str, Any]]:
-        row = {
-            "time": "2025-01-01T00:00:00Z",
-            "line_id": line or "L1",
-            "moisture_predicted": 12.4,
-            "moisture_lab": 12.8,
-            "feature_window_start": 1700000000,
-        }
-        if require_lab:
-            return [row]
-        row_no_lab = dict(row)
-        row_no_lab.pop("moisture_lab", None)
-        return [row, row_no_lab]
 
     async def system_metric_trend(
         self,
@@ -146,122 +124,22 @@ def test_realtime_data_service_tags_payload(monkeypatch):
 async def test_realtime_data_service_history_payload(monkeypatch):
     monkeypatch.setattr(
         "app.services.realtime_data.get_all_tag_names",
-        lambda: ["MOISTURE.PREDICTED"],
+        lambda: ["FTT1"],
     )
     service = RealtimeDataService(
         influx_service=cast(InfluxQueryService, DummyInflux()),
     )
 
     result = await service.get_history_payload(
-        tag="MOISTURE.PREDICTED",
+        tag="FTT1",
         period="1h",
         window="1m",
         aggregation="mean",
     )
 
     assert result["success"] is True
-    assert result["data"]["tag"] == "MOISTURE.PREDICTED"
+    assert result["data"]["tag"] == "FTT1"
     assert len(result["data"]["points"]) == 1
-
-
-class DummyRealtimeForAI(RealtimeDataService):
-    async def get_history_payload(self, tag, period, window, aggregation):
-        return {
-            "success": True,
-            "data": {"tag": tag, "points": [{"time": "2025-01-01T00:00Z", "value": 12.0}]},
-            "count": 1,
-            "timestamp": 1,
-        }
-
-
-class DummyStream:
-    def __init__(self, payload: Optional[dict] = None) -> None:
-        self.payload = payload or {"line": "L1", "value": 12.4}
-
-    def get_latest(self, stream_name: str, line: Optional[str] = None):
-        if stream_name != "ai":
-            return None
-        current = dict(self.payload)
-        if line:
-            current["line"] = line
-        return current
-
-
-def test_ai_softsensor_current(monkeypatch):
-    dummy_stream = DummyStream()
-    monkeypatch.setattr("app.services.ai_softsensor.ws_stream", dummy_stream)
-    dummy_influx = cast(InfluxQueryService, DummyInflux())
-    service = AISoftsensorService(
-        realtime_service=DummyRealtimeForAI(),
-        influx_service=dummy_influx,
-    )
-
-    payload = service.get_current_moisture("L2")
-    assert payload is not None
-
-    assert payload["success"] is True
-    assert payload["data"]["line"] == "L2"
-
-
-@pytest.mark.asyncio
-async def test_ai_softsensor_history(monkeypatch):
-    dummy_stream = DummyStream()
-    monkeypatch.setattr("app.services.ai_softsensor.ws_stream", dummy_stream)
-    dummy_influx = cast(InfluxQueryService, DummyInflux())
-    service = AISoftsensorService(
-        realtime_service=DummyRealtimeForAI(),
-        influx_service=dummy_influx,
-    )
-
-    payload = await service.get_moisture_history("1h", "5m", "mean")
-
-    assert payload["data"]["tag"] == AISoftsensorService.PREDICTED_TAG
-    assert payload["count"] == 1
-
-
-def test_ai_softsensor_model_info(tmp_path, monkeypatch):
-    config_path = tmp_path / "ai-config.yaml"
-    config_path.write_text(
-        "softsensor:\n"
-        "  model_name: moisture-predictor\n"
-        "  model_version: v1.0.0\n"
-        "  input_features:\n"
-        "    - TAG1\n"
-        "optimizer:\n"
-        "  model_name: control-optimizer\n"
-        "  model_version: v0.1.0\n",
-        encoding="utf-8",
-    )
-    dummy_stream = DummyStream()
-    monkeypatch.setattr("app.services.ai_softsensor.ws_stream", dummy_stream)
-
-    dummy_influx = cast(InfluxQueryService, DummyInflux())
-    service = AISoftsensorService(
-        realtime_service=DummyRealtimeForAI(),
-        influx_service=dummy_influx,
-        config_path=config_path,
-    )
-
-    payload = service.get_models_info()
-
-    assert payload["data"]["softsensor"]["model_name"] == "moisture-predictor"
-    assert payload["data"]["optimizer"]["model_version"] == "v0.1.0"
-
-
-@pytest.mark.asyncio
-async def test_ai_softsensor_lab_samples(monkeypatch):
-    dummy_stream = DummyStream()
-    monkeypatch.setattr("app.services.ai_softsensor.ws_stream", dummy_stream)
-    dummy_influx = cast(InfluxQueryService, DummyInflux())
-    service = AISoftsensorService(
-        realtime_service=DummyRealtimeForAI(),
-        influx_service=dummy_influx,
-    )
-
-    payload = await service.get_lab_samples(line="L2", limit=1)
-
-    assert payload["count"] == 1
-    assert payload["data"][0]["line_id"] == "L2"
 
 
 def test_system_status_service(monkeypatch):
@@ -601,13 +479,13 @@ async def test_event_bus_mqtt_dispatch():
     adapter = DummyMQTTAdapter()
     bus = EventBus(mqtt_adapter=adapter, default_patterns=[])
     await bus.start()
-    queue = bus.subscribe("ai/#")
+    queue = bus.subscribe("system/#")
 
-    callback = adapter.callbacks["ai/#"]
-    callback("ai/L1/predict", '{"line":"L1"}')
+    callback = adapter.callbacks["system/#"]
+    callback("system/L1/status", '{"line":"L1"}')
 
     event = await asyncio.wait_for(queue.get(), timeout=0.1)
-    assert event["topic"] == "ai/L1/predict"
+    assert event["topic"] == "system/L1/status"
     assert event["data"]["line"] == "L1"
     await bus.stop()
 
@@ -624,12 +502,12 @@ def test_mqtt_manager_isolates_unexpected_callback_failures():
     def good_callback(topic: str, payload: str) -> None:
         calls.append(f"{topic}:{payload}")
 
-    manager.message_callbacks["ai/#"].extend([bad_callback, good_callback])
+    manager.message_callbacks["system/#"].extend([bad_callback, good_callback])
 
     class Msg:
-        topic = "ai/L1/predict"
+        topic = "system/L1/status"
         payload = b'{"line":"L1"}'
 
     manager._on_message(None, None, Msg())
 
-    assert calls == ['ai/L1/predict:{"line":"L1"}']
+    assert calls == ['system/L1/status:{"line":"L1"}']

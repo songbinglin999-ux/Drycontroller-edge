@@ -78,15 +78,6 @@ async def websocket_realtime(
     await _stream_websocket(websocket, "realtime", predicate)
 
 
-@router.websocket("/ws/ai")
-async def websocket_ai(
-    websocket: WebSocket,
-    line: Optional[str] = Query(None, description="按产线过滤，例如 L1"),
-):
-    predicate = _build_line_predicate(line)
-    await _stream_websocket(websocket, "ai", predicate)
-
-
 @router.websocket("/ws/system")
 async def websocket_system(
     websocket: WebSocket,

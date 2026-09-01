@@ -206,7 +206,7 @@ def verify_receipts(receipt_dir: Path, manifest_path: Path) -> dict[str, object]
     expected_paths = {receipt_dir / f"{service}.json" for service in PYTHON_SERVICES}
     actual_paths = set(receipt_dir.glob("*.json"))
     if actual_paths != expected_paths:
-        raise ContractError("Python base receipt set must cover exactly six services")
+        raise ContractError("Python base receipt set must cover exactly three services")
 
     proven_images: dict[str, str] = {}
     expected_fields = {"base_digest", "base_name", "image_id", "platform", "service"}
