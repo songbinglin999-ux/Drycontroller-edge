@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the immutable base identity of the six local Python service images."""
+"""Verify the immutable base identity of the three local Python service images."""
 
 from __future__ import annotations
 
@@ -16,12 +16,9 @@ from typing import Any
 
 
 PYTHON_SERVICES = (
-    "ai-ctrl-optimizer",
-    "ai-softsensor",
     "edge-api",
     "edge-daq",
     "edge-monitor",
-    "license-service",
 )
 PYTHON_BASE_NAME = "docker.io/library/python:3.11-slim"
 PYTHON_BASE_DIGEST = "sha256:272efc3f94bec901e2bc7a5c9984b3d113c317839edca2714c6a388b9476f8fc"

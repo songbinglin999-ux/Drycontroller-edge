@@ -261,8 +261,8 @@ edge 对外（LAN / 大屏 / HMI）的 HTTP/WS 面按强度分两类，**不可�
 |---|---|---|---|
 | edge-api | ✓ | ✓ | 内置 License admission，成为唯一 command issuer |
 | edge-daq | ✓ | ✓ | 新增通讯心跳、authority 回读和签名 command/ACK；D5100 writer 仍由开关 fail-closed |
-| ai-softsensor | ✓ | ✗ | 源码保留，本期排除出默认 Compose 与应用发布 |
-| ai-ctrl-optimizer | ✓ | ✗ | 源码保留，本期排除出默认 Compose 与应用发布 |
+| ai-softsensor | ✓ | ✗ | 服务源码已从活动仓删除；恢复须由根活动审计重新授权 |
+| ai-ctrl-optimizer | ✓ | ✗ | 服务源码已从活动仓删除；恢复须由根活动审计重新授权 |
 | 独立授权容器 | ✓ | ✗ | 已删除；验签合并进 edge-api |
 | edge-monitor | ✓ | ✓ | 新增 PLC 模式 / 心跳健康 / NAK 监控 |
 | ops-console | △（代码已存在，未接 compose） | ✓ | edge 本地维护控制台（Svelte/Vite，`ops-console/`），面向维护工程师，走 edge-api 管理员 API Key；当前无 Dockerfile/未接 compose，**部署形态待定**（见下） |

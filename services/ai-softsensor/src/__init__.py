@@ -1,2 +1,0 @@
-# AI Soft Sensor Service
-

@@ -54,8 +54,6 @@ docker-compose ps
 NAME                   STATUS
 edge-api              Up (healthy)
 edge-daq              Up
-ai-softsensor         Up
-ai-ctrl-optimizer     Up
 edge-monitor          Up
 postgres              Up (healthy)
 influxdb              Up (healthy)
@@ -107,8 +105,6 @@ curl "http://localhost:8000/api/v1/data/latest?tags=FTT1_T&tags=VF1_I" | jq
 # 订阅实时数据
 mosquitto_sub -h localhost -t "realtime/+/tags" -v
 
-# 订阅 AI 预测结果
-mosquitto_sub -h localhost -t "ai/+/moisture" -v
 ```
 
 ### 方式 3: WebSocket 推送
@@ -118,9 +114,6 @@ mosquitto_sub -h localhost -t "ai/+/moisture" -v
 
 # 实时点位（可加 line/tags 查询参数）
 websocat ws://localhost:8000/api/ws/realtime
-
-# AI 推理结果
-websocat ws://localhost:8000/api/ws/ai?line=L1
 
 # 系统健康状态
 websocat ws://localhost:8000/api/ws/system
@@ -148,7 +141,6 @@ docker-compose logs -f
 # 查看特定服务日志
 docker-compose logs -f edge-api
 docker-compose logs -f edge-daq
-docker-compose logs -f ai-softsensor
 ```
 
 ### 重启服务
@@ -169,34 +161,6 @@ docker-compose down
 
 # 停止并删除数据卷
 docker-compose down -v
-```
-
-## 测试 AI 功能
-
-### 1. 查看 AI 含水率预测
-
-```bash
-curl http://localhost:8000/api/v1/ai/moisture/current | jq
-```
-
-期望输出：
-
-```json
-{
-  "success": true,
-  "data": {
-    "predicted_moisture": 12.3,
-    "confidence": 0.92,
-    "model_version": "v1.0.0",
-    "timestamp": "2025-01-01T12:00:00Z"
-  }
-}
-```
-
-### 2. 获取控制优化建议
-
-```bash
-curl http://localhost:8000/api/v1/ai/optimization/recommendation | jq
 ```
 
 ## 测试控制建议与 MANUAL 写入
@@ -308,7 +272,6 @@ docker-compose restart postgres
 2. 🏗️ 了解系统架构：[docs/architecture/system-overview.md](docs/architecture/system-overview.md)
 3. 🚢 学习生产部署：[docs/archive/ops/deployment-guide.md](docs/archive/ops/deployment-guide.md)
 4. 🔧 配置 PLC 连接：修改 `configs/tags.yaml` 和 `.env` 中的 PLC 配置
-5. 🤖 部署 AI 模型：将训练好的 `.onnx` 模型放入 `services/ai-softsensor/models/`
 
 ## 获取帮助
 

@@ -68,6 +68,9 @@ def test_edge_daq_binds_line_identity_and_persists_publish_buffer():
 
 
 def test_default_compose_excludes_license_and_ai_services():
+    retired_services = {"license-service", "ai-softsensor", "ai-ctrl-optimizer"}
+
+    assert all(not (ROOT / "services" / name).exists() for name in retired_services)
     assert set(_compose_services()) == {
         "alertmanager",
         "edge-api",

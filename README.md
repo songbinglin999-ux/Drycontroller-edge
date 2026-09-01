@@ -23,9 +23,9 @@ boundaries:
 
 - Edge API, databases, Prometheus, and Alertmanager default to
   loopback/local exposure.
-- The default production Compose set excludes `license-service`,
-  `ai-softsensor`, and `ai-ctrl-optimizer`. Their source is retained, but they
-  are not runtime services or `edge-app-v1` artifacts.
+- The retired `license-service`, `ai-softsensor`, and `ai-ctrl-optimizer`
+  service trees are absent from this repository; they are not runtime services
+  or `edge-app-v1` artifacts.
 - Edge API stays on host loopback `127.0.0.1:18080`. Successful Device-bound
   Tailnet provisioning enables a systemd socket bound only to `tailscale0:8000`
   and forwards one HTTP request at a time through the fixed marking proxy to
