@@ -213,3 +213,28 @@ def test_edge_api_tailnet_preflight_uses_standalone_observation():
     assert "from app.services.tailnet_observation import load_tailnet_observation" in ops
     assert not (ROOT / "services/edge-api/app/services/host_release_ops.py").exists()
     assert "/host-release/" not in ops
+
+
+def test_factory_device_prep_keeps_lane_contract_and_secret_free_surface():
+    prep = (ROOT / "infra/bootstrap/prep-factory-device.sh").read_text(encoding="utf-8")
+    wrapper = (ROOT / "scripts/prep-device-from-mac.sh").read_text(encoding="utf-8")
+    example = (ROOT / "infra/bootstrap/factory-device-public-config.example.json").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"169.254.203.2/30"' in example
+    assert "169.254.203.2/30" in prep and "169.254.203.2:8765" in prep
+    assert "factory-closed.json" in prep and "/var/lib/drycontroller/device.json" in prep
+    assert "PasswordAuthentication no" in prep
+    assert "install-device-identity-runtime.py" in prep
+    assert "initialize-runtime-config.py" in prep
+    assert "drycontroller-factory-identity.service" in prep
+    assert "xorriso" not in prep and "dd " not in prep and "diskutil" not in prep
+
+    assert "DEVICE_IDENTITY_SIGNING_PRIVATE_KEY" in wrapper
+    assert "print(base64.b64encode(public).decode())" in wrapper
+    assert "approved-wheelhouse-manifest-sha256" in prep
+    assert "status --porcelain" in wrapper
+    install_lines = [line for line in prep.splitlines() if "apt-get install" in line]
+    assert install_lines and all("python3.12-venv" in line for line in install_lines)
+    assert "docker-ce" not in prep and "docker.io" not in prep and "containerd" not in prep
