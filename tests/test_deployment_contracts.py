@@ -223,12 +223,19 @@ def test_factory_device_prep_keeps_lane_contract_and_secret_free_surface():
     )
 
     assert '"169.254.203.2/30"' in example
+    assert '"cloud_ops_tailnet_address": "100.100.0.10"' in example
     assert "169.254.203.2/30" in prep and "169.254.203.2:8765" in prep
     assert "factory-closed.json" in prep and "/var/lib/drycontroller/device.json" in prep
     assert "PasswordAuthentication no" in prep
     assert "install-device-identity-runtime.py" in prep
     assert "initialize-runtime-config.py" in prep
     assert "drycontroller-factory-identity.service" in prep
+    assert "drycontroller-device-credential-rotation.service" in prep
+    assert "drycontroller-device-credential-rotation.timer" in prep
+    assert "systemctl enable --now drycontroller-device-credential-rotation.timer" in prep
+    assert "drycontroller-edge-status-report.service" in prep
+    assert "drycontroller-edge-status-report.timer" in prep
+    assert "systemctl enable --now drycontroller-edge-status-report.timer" in prep
     assert "xorriso" not in prep and "dd " not in prep and "diskutil" not in prep
 
     assert "DEVICE_IDENTITY_SIGNING_PRIVATE_KEY" in wrapper

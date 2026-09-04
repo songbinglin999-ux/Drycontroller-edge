@@ -1,7 +1,7 @@
 {
   "schema": "drycontroller.os-installer-public-config.v3",
   "cloud_ops_base_url": "https://ops.example.com",
-  "cloud_ops_tailnet_address": "100.100.0.1",
+  "cloud_ops_tailnet_address": "100.100.0.10",
   "tailscale_login_server": "https://headscale.example.com",
   "factory_interface": "enp2s0",
   "factory_address": "169.254.203.2/30"

@@ -20,6 +20,7 @@ class IdentityStateStore:
         self.factory_closed_path = private_dir / "factory-closed.json"
         self.candidate_path = private_dir / "credential-candidate.json"
         self.rotation_candidate_path = private_dir / "rotation-candidate.json"
+        self.recovery_candidate_path = private_dir / "recovery-candidate.json"
         self.tailnet_join_attempt_path = private_dir / "tailnet-join-attempt.json"
         self.active_device_path = active_device_path
 
@@ -260,6 +261,69 @@ class IdentityStateStore:
         self._write_json(self.active_device_path, rotated)
         self.rotation_candidate_path.unlink(missing_ok=True)
         return rotated
+
+    def recovery_candidate(self) -> dict[str, Any] | None:
+        return self._read_json(self.recovery_candidate_path)
+
+    def create_recovery_candidate(self) -> dict[str, Any]:
+        active = self.active()
+        if not active:
+            raise IdentityStateError("active device identity is unavailable")
+        existing = self.recovery_candidate()
+        if existing:
+            if (
+                existing.get("device_id") != active.get("device_id")
+                or existing.get("identity_fingerprint") != active.get("identity_fingerprint")
+                or existing.get("previous_runtime_credential_hash")
+                != active.get("runtime_credential_hash")
+            ):
+                raise IdentityStateError("recovery candidate does not match the active identity")
+            return existing
+        if self.rotation_candidate():
+            raise IdentityStateError("credential rotation candidate must be resolved before recovery")
+        credential = secrets.token_urlsafe(48)
+        candidate = {
+            "schema": "drycontroller.runtime-credential-recovery.v1",
+            "request_id": secrets.token_hex(16),
+            "device_id": active["device_id"],
+            "identity_fingerprint": active["identity_fingerprint"],
+            "previous_runtime_credential_hash": active["runtime_credential_hash"],
+            "runtime_credential": credential,
+            "runtime_credential_hash": hashlib.sha256(credential.encode("utf-8")).hexdigest(),
+        }
+        self._write_json(self.recovery_candidate_path, candidate)
+        return candidate
+
+    def promote_recovery(
+        self,
+        *,
+        request_id: str,
+        runtime_credential_hash: str,
+        credential_expires_at: str,
+    ) -> dict[str, Any]:
+        active = self.active()
+        candidate = self.recovery_candidate()
+        if not active or not candidate:
+            raise IdentityStateError("credential recovery state is unavailable")
+        if (
+            candidate.get("request_id") != request_id
+            or candidate.get("runtime_credential_hash") != runtime_credential_hash
+            or candidate.get("device_id") != active.get("device_id")
+            or candidate.get("identity_fingerprint") != active.get("identity_fingerprint")
+            or candidate.get("previous_runtime_credential_hash")
+            != active.get("runtime_credential_hash")
+        ):
+            raise IdentityStateError("credential recovery confirmation does not match the candidate")
+        recovered = {
+            **active,
+            "runtime_credential": candidate["runtime_credential"],
+            "runtime_credential_hash": runtime_credential_hash,
+            "credential_expires_at": credential_expires_at,
+            "credential_request_id": request_id,
+        }
+        self._write_json(self.active_device_path, recovered)
+        self.recovery_candidate_path.unlink(missing_ok=True)
+        return recovered
 
     def _ensure_directories(self) -> None:
         self.private_dir.mkdir(mode=0o700, parents=True, exist_ok=True)

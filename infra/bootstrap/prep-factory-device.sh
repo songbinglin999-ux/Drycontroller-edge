@@ -87,6 +87,8 @@ for path in \
   "$BUNDLE/repo/infra/bootstrap/initialize-runtime-config.py" \
   "$BUNDLE/repo/infra/bootstrap/install-device-identity-runtime.py" \
   "$BUNDLE/repo/infra/bootstrap/drycontroller-factory-identity.service" \
+  "$BUNDLE/repo/infra/bootstrap/drycontroller-device-credential-rotation.service" \
+  "$BUNDLE/repo/infra/bootstrap/drycontroller-device-credential-rotation.timer" \
   "$BUNDLE/repo/env.example" \
   "$BUNDLE/wheelhouse/SHA256SUMS" \
   "$BUNDLE/wheelhouse.manifest.sha256" \
@@ -199,8 +201,22 @@ step "enable factory identity endpoint (lane ${FROZEN_FACTORY_ADDRESS})"
 install -o root -g root -m 0644 \
   "$BUNDLE/repo/infra/bootstrap/drycontroller-factory-identity.service" \
   /etc/systemd/system/drycontroller-factory-identity.service
+install -o root -g root -m 0644 \
+  "$BUNDLE/repo/infra/bootstrap/drycontroller-device-credential-rotation.service" \
+  /etc/systemd/system/drycontroller-device-credential-rotation.service
+install -o root -g root -m 0644 \
+  "$BUNDLE/repo/infra/bootstrap/drycontroller-device-credential-rotation.timer" \
+  /etc/systemd/system/drycontroller-device-credential-rotation.timer
+install -o root -g root -m 0644 \
+  "$BUNDLE/repo/infra/bootstrap/drycontroller-edge-status-report.service" \
+  /etc/systemd/system/drycontroller-edge-status-report.service
+install -o root -g root -m 0644 \
+  "$BUNDLE/repo/infra/bootstrap/drycontroller-edge-status-report.timer" \
+  /etc/systemd/system/drycontroller-edge-status-report.timer
 systemctl daemon-reload
 systemctl enable --now drycontroller-factory-identity.service >/dev/null
+systemctl enable --now drycontroller-device-credential-rotation.timer >/dev/null
+systemctl enable --now drycontroller-edge-status-report.timer >/dev/null
 
 step "harden ssh (key-only for ${SSH_USER}; console rescue stays)"
 id "$SSH_USER" >/dev/null 2>&1 || fail "user ${SSH_USER} is missing; install convention requires it" 2
@@ -241,6 +257,10 @@ PY
 
 systemctl is-active --quiet drycontroller-factory-identity.service \
   || fail "factory identity service is not active" 5
+systemctl is-active --quiet drycontroller-device-credential-rotation.timer \
+  || fail "device credential rotation timer is not active" 5
+systemctl is-active --quiet drycontroller-edge-status-report.timer \
+  || fail "edge status report timer is not active" 5
 
 printf '[factory-device-prep] PASS %s\n' "$SELF_CHECK"
 printf '[factory-device-prep] device is lane-ready: put it on the factory lane and power it on for the station watch.\n'

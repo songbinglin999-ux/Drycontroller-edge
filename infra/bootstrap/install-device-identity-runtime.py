@@ -64,8 +64,16 @@ RUNTIME_FILES = {
         "identity_service/rotation.py",
         0o644,
     ),
+    "services/device-identity/identity_service/recovery.py": (
+        "identity_service/recovery.py",
+        0o644,
+    ),
     "services/device-identity/identity_service/state.py": (
         "identity_service/state.py",
+        0o644,
+    ),
+    "services/device-identity/identity_service/status_reporter.py": (
+        "identity_service/status_reporter.py",
         0o644,
     ),
     "services/device-identity/identity_service/tailnet.py": (

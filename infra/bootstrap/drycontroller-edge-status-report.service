@@ -1,0 +1,20 @@
+[Unit]
+Description=Report DryController Edge host status to Cloud Ops
+After=network-online.target docker.service drycontroller-tailnet.service
+Wants=network-online.target docker.service drycontroller-tailnet.service
+ConditionPathExists=/var/lib/drycontroller/device.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/drycontroller-identity
+EnvironmentFile=-/etc/drycontroller/cloud-ops.env
+ExecStart=/opt/drycontroller-identity/venv/bin/python -m identity_service.status_reporter
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+DevicePolicy=closed
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

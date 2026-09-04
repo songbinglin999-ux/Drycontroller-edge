@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the DryController Edge status card every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Persistent=true
+Unit=drycontroller-edge-status-report.service
+
+[Install]
+WantedBy=timers.target
