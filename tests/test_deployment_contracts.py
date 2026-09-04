@@ -1,5 +1,9 @@
 import importlib.util
+import json
 from pathlib import Path
+import re
+import subprocess
+import sys
 
 import yaml
 
@@ -224,6 +228,9 @@ def test_factory_device_prep_keeps_lane_contract_and_secret_free_surface():
 
     assert '"169.254.203.2/30"' in example
     assert '"cloud_ops_tailnet_address": "100.100.0.10"' in example
+    assert 'TAILNET_ADDRESS="100.100.0.10"' in wrapper
+    assert "default 100.100.0.10" in wrapper
+    assert "100.100.0.1\"" not in wrapper
     assert "169.254.203.2/30" in prep and "169.254.203.2:8765" in prep
     assert "factory-closed.json" in prep and "/var/lib/drycontroller/device.json" in prep
     assert "PasswordAuthentication no" in prep
@@ -236,6 +243,11 @@ def test_factory_device_prep_keeps_lane_contract_and_secret_free_surface():
     assert "drycontroller-edge-status-report.service" in prep
     assert "drycontroller-edge-status-report.timer" in prep
     assert "systemctl enable --now drycontroller-edge-status-report.timer" in prep
+    preflight_end = prep.index('step "verify bundle integrity"')
+    first_mutation = prep.index('step "install host prerequisites"')
+    assert prep.index('"$BUNDLE/repo/infra/bootstrap/drycontroller-edge-status-report.service"') < preflight_end
+    assert prep.index('"$BUNDLE/repo/infra/bootstrap/drycontroller-edge-status-report.timer"') < preflight_end
+    assert preflight_end < first_mutation
     assert "xorriso" not in prep and "dd " not in prep and "diskutil" not in prep
 
     assert "DEVICE_IDENTITY_SIGNING_PRIVATE_KEY" in wrapper
@@ -245,3 +257,35 @@ def test_factory_device_prep_keeps_lane_contract_and_secret_free_surface():
     install_lines = [line for line in prep.splitlines() if "apt-get install" in line]
     assert install_lines and all("python3.12-venv" in line for line in install_lines)
     assert "docker-ce" not in prep and "docker.io" not in prep and "containerd" not in prep
+
+
+def test_factory_device_wrapper_assembles_the_cloud_tailnet_default(tmp_path):
+    wrapper = (ROOT / "scripts/prep-device-from-mac.sh").read_text(encoding="utf-8")
+    default = re.search(r'^TAILNET_ADDRESS="([^"]+)"$', wrapper, re.MULTILINE)
+    assembler = re.search(
+        r'python3 - "\$BUNDLE/public-config\.json" .*? <<\'PY\'\n(?P<program>.*?)\nPY\n',
+        wrapper,
+        re.DOTALL,
+    )
+    assert default is not None
+    assert assembler is not None
+
+    output = tmp_path / "public-config.json"
+    subprocess.run(
+        [
+            sys.executable,
+            "-",
+            str(output),
+            "https://ops.example.com",
+            default.group(1),
+            "https://headscale.example.com",
+            "enp2s0",
+        ],
+        input=assembler.group("program"),
+        text=True,
+        check=True,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["cloud_ops_tailnet_address"] == "100.100.0.10"
+    assert '"100.100.0.1"' not in output.read_text(encoding="utf-8")

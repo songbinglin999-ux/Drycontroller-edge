@@ -17,7 +17,7 @@ EDGE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 TARGET=""
 INTERFACE=""
 CLOUD_URL="https://ops.example.com"
-TAILNET_ADDRESS="100.100.0.1"
+TAILNET_ADDRESS="100.100.0.10"
 LOGIN_SERVER="https://headscale.example.com"
 AUTHORIZED_KEYS=""
 CACHE="${HOME}/.cache/drycontroller/device-prep"
@@ -39,7 +39,7 @@ Usage:
 Options:
   --interface NAME        device NIC cabled to the factory lane (required)
   --cloud-url URL         default https://ops.example.com
-  --tailnet-address IP    default 100.100.0.1
+  --tailnet-address IP    default 100.100.0.10
   --login-server URL      default https://headscale.example.com
   --authorized-keys FILE  default ~/.ssh/id_ed25519.pub (or id_rsa.pub)
   --cache DIR             bundle cache (default ~/.cache/drycontroller/device-prep)

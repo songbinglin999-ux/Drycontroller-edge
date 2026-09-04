@@ -89,6 +89,8 @@ for path in \
   "$BUNDLE/repo/infra/bootstrap/drycontroller-factory-identity.service" \
   "$BUNDLE/repo/infra/bootstrap/drycontroller-device-credential-rotation.service" \
   "$BUNDLE/repo/infra/bootstrap/drycontroller-device-credential-rotation.timer" \
+  "$BUNDLE/repo/infra/bootstrap/drycontroller-edge-status-report.service" \
+  "$BUNDLE/repo/infra/bootstrap/drycontroller-edge-status-report.timer" \
   "$BUNDLE/repo/env.example" \
   "$BUNDLE/wheelhouse/SHA256SUMS" \
   "$BUNDLE/wheelhouse.manifest.sha256" \
