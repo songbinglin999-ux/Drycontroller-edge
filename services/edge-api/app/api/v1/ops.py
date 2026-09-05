@@ -476,13 +476,6 @@ async def run_preflight(
         degraded_ok=True,
         allow_degraded=allow_degraded,
     )
-    await _preflight_http_check(
-        checks,
-        "edge_monitor.ready",
-        f"{settings.MONITOR_API_BASE.rstrip('/')}/ready",
-        degraded_ok=False,
-        allow_degraded=allow_degraded,
-    )
     if req.check_ota:
         await _preflight_ota_helper(checks)
         await _preflight_registry_credential(checks, writer)

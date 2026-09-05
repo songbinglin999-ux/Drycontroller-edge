@@ -398,7 +398,8 @@ def test_ota_start_rejects_every_execution_input_except_operation_id():
     assert resp.status_code == 422
 
 
-def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("daq_ready", [True, False])
+def test_preflight_uses_current_app_services(tmp_path: Path, monkeypatch, daq_ready):
     settings.ADMIN_API_KEYS = ["admin-1"]
     settings.API_KEY_HEADER = "X-API-Key"
     settings.LICENSE_FILE_PATH = str(tmp_path / "license.json")
@@ -426,7 +427,11 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
         return {"url": "mock", "status_code": 200, "body": {"valid": True}}
 
     async def fake_http_check(checks, check_id, url, *, degraded_ok, allow_degraded, timeout=5.0):
-        ops_module._preflight_check(checks, check_id, "pass", "ok", detail={"url": url})
+        ready = url == "http://edge-daq:8080/ready" and daq_ready
+        ops_module._preflight_check(
+            checks, check_id, "pass" if ready else "fail", "ok" if ready else "unreachable",
+            detail={"url": url},
+        )
 
     monkeypatch.setattr(ops_module, "_call_license_verify", fake_verify)
     monkeypatch.setattr(ops_module, "_preflight_http_check", fake_http_check)
@@ -443,16 +448,19 @@ def test_preflight_returns_pass_with_degraded_allowed(tmp_path: Path, monkeypatc
         headers={"X-API-Key": "admin-1"},
     )
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["success"] is True
-    assert body["status"] == "degraded"
-    assert body["summary"]["fail"] == 0
+    assert resp.status_code == (200 if daq_ready else 409)
+    body = resp.json() if daq_ready else resp.json()["detail"]
+    assert body["success"] is daq_ready
+    assert body["status"] == ("degraded" if daq_ready else "fail")
+    assert body["summary"]["fail"] == (0 if daq_ready else 1)
     checks = {item["id"]: item for item in body["checks"]}
+    assert "edge_monitor.ready" not in checks
+    assert checks["edge_api.ready"]["status"] == "pass"
+    assert checks["edge_daq.ready"]["status"] == ("pass" if daq_ready else "fail")
     assert checks["tailnet.identity"]["status"] == "degraded"
     assert checks["tailnet.identity"]["reason"] == "tailscale_not_running"
     assert checks["tailnet.application_e2e"]["status"] == "degraded"
-    assert recorded[0]["status"] == "degraded"
+    assert recorded[0]["status"] == body["status"]
 
 
 @pytest.mark.asyncio

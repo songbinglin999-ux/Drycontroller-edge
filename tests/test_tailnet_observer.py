@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import configparser
 import importlib.util
 import json
 import stat
@@ -10,6 +11,15 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_observer_keeps_observation_between_oneshot_timer_runs():
+    unit = configparser.ConfigParser()
+    unit.read(ROOT / "infra/bootstrap/drycontroller-tailnet-observer.service")
+    service = unit["Service"]
+    assert service["Type"] == "oneshot"
+    assert service["RuntimeDirectory"] == "drycontroller-tailnet-observation"
+    assert service.get("RuntimeDirectoryPreserve") == "yes"
 
 
 def _load(path: Path, name: str):

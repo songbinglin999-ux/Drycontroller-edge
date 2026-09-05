@@ -1329,7 +1329,7 @@ class ReleaseEngine:
                     candidate=None,
                 )
                 self._persist(journal)
-            except Exception:
+            except Exception:  # noqa: BLE001 — Restore verified pre-apply state on any transaction failure, then re-raise.
                 self._restore(active, previous, operation_id, self._journal_metadata(state))
                 raise
             self.fault("after_committed")
@@ -1431,7 +1431,7 @@ class ReleaseEngine:
                     candidate=None,
                 )
                 self._persist(journal)
-            except Exception:
+            except Exception:  # noqa: BLE001 — Restore pre-rollback state on any transaction failure, then re-raise.
                 self._restore(active, previous, operation_id, self._journal_metadata(state))
                 raise
             self.fault("rollback_after_committed")
