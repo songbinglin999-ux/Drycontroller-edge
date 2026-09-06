@@ -7,9 +7,11 @@ import json
 import pytest
 
 from identity_service.state import IdentityStateStore
+from identity_service import status_reporter
 from identity_service.status_reporter import (
     StatusReportError,
     _active_identity,
+    _cpu_percent,
     _docker_services,
     _memory_percent,
     _tailnet_ipv4,
@@ -75,6 +77,32 @@ def test_proc_metrics_are_bounded(tmp_path):
 
     assert _memory_percent(meminfo) == 75.0
     assert _uptime(uptime) == 1234
+
+
+def test_cpu_averages_a_short_spike_over_five_seconds(monkeypatch):
+    elapsed = 0.0
+
+    def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    def cpu_times():
+        # Eight CPUs: first 100 ms fully busy, then 10% busy.
+        total = round(elapsed * 800)
+        idle = round(max(0.0, elapsed - 0.1) * 800 * 0.9)
+        return 10000 + total, 5000 + idle
+
+    monkeypatch.setattr(status_reporter, "_cpu_times", cpu_times)
+    assert _cpu_percent(sleep=sleep) == 11.8
+    assert elapsed == 5.0
+
+
+@pytest.mark.parametrize("after", [(100, 50), (99, 50), (200, 49)])
+def test_cpu_rejects_invalid_counter_deltas(monkeypatch, after):
+    samples = iter([(100, 50), after])
+    monkeypatch.setattr(status_reporter, "_cpu_times", lambda: next(samples))
+    with pytest.raises(StatusReportError, match="host CPU sample is invalid"):
+        _cpu_percent(sleep=lambda _seconds: None)
 
 
 def test_docker_services_preserve_health_and_failures():

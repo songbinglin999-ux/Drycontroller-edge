@@ -96,7 +96,8 @@ def _cpu_times(path: Path = Path("/proc/stat")) -> tuple[int, int]:
 
 def _cpu_percent(*, sleep: Callable[[float], None] = time.sleep) -> float:
     total_before, idle_before = _cpu_times()
-    sleep(0.1)
+    # The minute report should average short bursts instead of retaining a 100 ms spike.
+    sleep(5.0)
     total_after, idle_after = _cpu_times()
     total_delta = total_after - total_before
     idle_delta = idle_after - idle_before

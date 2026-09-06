@@ -214,13 +214,13 @@ class InfluxQueryService:
         2. 透视表结构，将字段转为列
         3. 按时间倒序排序，取每个标签的唯一最新值
         """
-        tag_list = json.dumps(tags)
+        # Static equality predicates let InfluxDB filter in storage instead of per row in Flux.
+        tag_filter = " or ".join(f'r["tag"] == {json.dumps(tag)}' for tag in tags)
         return f"""
-tagList = {tag_list}
 from(bucket: "{self.bucket}")
   |> range(start: -{lookback})
   |> filter(fn: (r) => r["_measurement"] == "{self.measurement}")
-  |> filter(fn: (r) => contains(value: r["tag"], set: tagList))
+  |> filter(fn: (r) => {tag_filter})
   |> pivot(rowKey: ["_time", "tag"], columnKey: ["_field"], valueColumn: "_value")
   |> keep(columns: ["_time", "tag", "value", "unit", "quality"])
   |> sort(columns: ["_time"], desc: true)

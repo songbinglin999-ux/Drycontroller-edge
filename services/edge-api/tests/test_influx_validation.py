@@ -91,6 +91,24 @@ async def test_public_query_builders_reject_injected_user_values():
         await svc.active_service_alarms("system_health", severity='down") |> drop()')
 
 
+@pytest.mark.asyncio
+async def test_latest_query_pushes_tag_selection_to_storage(monkeypatch):
+    svc = InfluxQueryService.__new__(InfluxQueryService)
+    svc.bucket = "industrial-data"
+    svc.measurement = "industrial_data"
+    queries = []
+    monkeypatch.setattr(svc, "_query_and_parse_latest", lambda query: queries.append(query) or [])
+
+    await svc.latest_points(["M1_I", "M2_I"], lookback="5m")
+
+    # contains evaluates each historical row in Flux instead of using the storage predicate.
+    assert 'r["tag"] == "M1_I" or r["tag"] == "M2_I"' in queries[0]
+    assert "contains(" not in queries[0]
+    assert "range(start: -5m)" in queries[0]
+    assert await svc.latest_points([]) == []
+    assert len(queries) == 1
+
+
 def test_parse_flux_tables_filters_internal_fields_and_adds_time():
     # 构造最小的 flux 返回结构：table.records[].values
     class DummyRecord:
