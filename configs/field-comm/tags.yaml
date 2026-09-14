@@ -1,0 +1,8 @@
+# Derived from canonical configs/tags.yaml: only the verified communication point.
+tags:
+  diagnostic:
+    heartbeat:
+      - {name: PLC_LEGACY_HEARTBEAT_TOGGLE, signal_type: DI, type: bool, unit: "", description: "我方标记：PLC_LEGACY_HEARTBEAT_TOGGLE；集成商标记：M1001 0.5秒1/0.5秒0 心跳；上位机只读诊断心跳，不是控制授权"}
+acquisition:
+  scan_interval: 0.3
+  batch_size: 1

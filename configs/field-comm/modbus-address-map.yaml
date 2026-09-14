@@ -1,0 +1,2 @@
+# Derived from canonical address map. No writable addresses or heartbeat writes.
+PLC_LEGACY_HEARTBEAT_TOGGLE: {address: 31001, function_code: 1, byte_order: big, type: bool, diagnostic: heartbeat, legacy_device: M1001, control_softpoint: false}

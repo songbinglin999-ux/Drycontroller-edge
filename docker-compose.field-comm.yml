@@ -1,0 +1,13 @@
+services:
+  edge-daq:
+    environment:
+      PLC_HOST: "192.0.2.200"
+      PLC_PORT: "2000"
+      PLC_SLAVE_ID: "1"
+      MODBUS_FRAMER: "socket"
+      USE_SIMULATOR: "false"
+      PLC_SCAN_INTERVAL: "0.3"
+      TAGS_CONFIG: /app/configs/field-comm/tags.yaml
+      MODBUS_ADDRESS_MAP: /app/configs/field-comm/modbus-address-map.yaml
+      CONTROL_ENABLE_D5100_WRITER: "false"
+      CONTROL_ALLOWED_TAGS: PLC_LEGACY_HEARTBEAT_TOGGLE

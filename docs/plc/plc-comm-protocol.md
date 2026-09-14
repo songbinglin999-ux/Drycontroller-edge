@@ -144,3 +144,26 @@ D5100/DryHMI direct 最小联调：
 用户随后提供6张专用屏照片（画面时钟均17:07，拍摄时间与远程采样未证明同步）：进料、预发酵、一级烘干、发酵、二级烘干、出料页面上可见的电流均标32769A；预发酵/一级/二级的蒸汽温度均0℃；出料湿度0%HR。与本次Modbus电流原始字32769及相应温湿度零值相符，支持异常值并非仅由独立诊断客户端产生；屏能显示页面不等于传感器数据有效。照片未覆盖两锅炉温度，也未提供控件绑定地址，且大量相同值不能证明逐点映射正确或长期刷新正常。
 
 屏将32769直接标为A，而当前地址表电流scale=0.1；故障样本不足以判断哪方倍率正确，不能因此修改倍率或将0x8001转成有效电流。后续应核对电流采集模块型号、供电/信号及原程序赋值，再用一个有效非零样本对照屏和原始字。照片中的“报警值”属于设置项，不与电流测量值混为一谈；当前证据不能区分传感器未供电/未接、通道模式不符、模块异常或程序映射问题。
+
+
+## 9. dry-edge-tmp 通讯固化（2026-09-14 已应用）
+
+本节为当前运行状态，前述临时测试/旧DAQ配置为历史证据。用户批准“先把通讯固化”，仅固化已验证M1001点，不接入未验收工艺量，也不恢复控制。
+
+- 主机：dry-edge-tmp / 100.100.0.11；管理口enp3s0f1保留DHCP（本次198.51.100.151/24）和默认网关198.51.100.1。冲突探测无回应后增加192.0.2.250/24，持久文件为`/etc/netplan/60-drycontroller-plc.yaml`，`netplan generate/get`验证成功。当前以只增地址生效，未down管理口、未执行主机重启。
+- 目标：192.0.2.200:2000、站号1、MODBUS_FRAMER=socket。仅采集canonical `PLC_LEGACY_HEARTBEAT_TOGGLE`，FC01/31001，间隔0.3秒；作为普通只读点发布到现有MQTT/Influx通路。
+- 可复现配置：本仓`configs/field-comm/tags.yaml`和`configs/field-comm/modbus-address-map.yaml`仅从canonical tags/address-map选择这一点，不定义新位号。`docker-compose.field-comm.yml`是本次现场配置，在该主机安装为`/home/dryops/Drycontroller-edge/docker-compose.override.yml`，标准Compose启动时自动合并；两份点表位于同目录configs/field-comm，由既有只读configs挂载提供。
+- 写入边界：配置不含PLC_HEARTBEAT/EDGE_HOST_ALIVE，因此不派生D5291周期写；无writable软点令控制索引为空，CONTROL_ENABLE_D5100_WRITER=false令频率事务提前拒绝。未改通用点表、程序逻辑、签名、鉴权、License或控制许可。M1001暂不进入旧寄存器心跳超时算法，`/ready=200`及control.ready仅证明通路/订阅可用，不能解释为控制授权或已验证卡死心跳告警。
+- 本次不更换镜像：DAQ仍为`sha256:cf8ab59f0cdd4fa3836bbb3ea1b7abc1bbb73fbea2f547046e5337d7af745815`，API仍为`sha256:85596bb1ca3021a7f27479ecc9920fe738d675b87bdabe3dbbb8ddfb244fb81d`。这是未注册临时Edge上旧Compose栈的窄配置固化，不代表完成正式edge-app-v1发布/License激活，也不授权更新旧整栈镜像。
+
+### 验证与回退
+
+独立审查GO；审查实际导入现有代码，Mock验证仅FC01/31001读取并发布、普通控制索引为空、D5291无写配置及D5100写关闭。现场main/plc_reader/modbus_client/control/frequency_transaction与审查源码哈希一致。应用前、每次重建前后均核对DAQ镜像ID。
+
+应用后DAQ由unhealthy变healthy，`/health`与`/ready`均HTTP200，MQTT和Influx连接正常、缓冲为0。两次8秒MQTT订阅各收到27条fresh/good心跳且各16次变化。首段完整45秒抓包116请求/116响应，第二次强制重建后完整45秒抓包123请求/123响应；全为源192.0.2.250到PLC2000的FC01/31001读，0写请求，响应包含0/1。第二次容器于04:57:33Z创建，镜像不变，连接failure_count=0。04:58:43Z验收后停止10分钟自动回滚timer，确认未触发回退。
+
+备份/证据保存在目标机root-only目录`/var/lib/drycontroller/comm-backup-20260914`：原compose/env/netplan备份、`rollback.py`、两段PCAP/packet-proof JSON与`accepted.json`。回退脚本只移除本次新增配置/辅助地址并重建原DAQ，执行前验证原镜像ID；回退会恢复旧的不通PLC参数，不能作为正常采集方案。首次验收订阅使用DAQ发布账号未收到数据，改用已有API消费账号后验证通过，未修改MQTT ACL或泄露凭据。
+
+持久文件SHA256：netplan `98527391de0537dede9bda838409cd3b594ac47a33d40bd38bcca898fb8e1714`；compose override `3ec8e3668704766189d343d2114464b012dd2dbba60e01dc4267563bca56577b`；tags `8cb6cfe58594546a92355701efbd24fbfb1672e0f92682a193e7bd374207a9a3`；address-map `c982b76f09d6377e046463ae850814ef9f33f69caf5f7a74a2104cb392dc8c2f`。
+
+验收边界：服务强制重建恢复已实测，主机断电/重启恢复仅完成持久配置校验，未实测；M1001卡死告警、真实网络中断恢复、全量工艺数据有效性、正式注册/发布及控制仍未验收。工艺量不在此次profile中发布。
