@@ -1,14 +1,16 @@
-# PLC 通讯协议（给 PLC 工程师）
+# PLC 通讯协议与现场接入记录
 
-只保留 PLC 侧需要做的事情，其他上位链路细节已去掉。
+本文记录 PLC 接口要求、现场实测和 Edge 通讯配置。接口设计不等于现场已部署；当前原程序只读接入以第 9 节为准。
+
+> **当前配置入口（2026-09-14 验收）：** [dry-edge-tmp 通讯固化、验收与回退](#field-comm-current)。PLC `192.0.2.200:2000`，标准 Modbus TCP / 站号 `1`；Edge PLC 侧 `192.0.2.250/24`；仅以 `0.3` 秒间隔读取 M1001（FC01 / 31001），全部控制写关闭。主机重启、断网恢复、卡死告警及工艺数据仍未验收。
 
 > 2026-06-26 边界：当前 SamSoar CSV 只证明 PLC 原工程把 `D30-D35` 输出到 `AO140-AO151`，没有证明 PLC 与变频器通讯或读取实际频率。DryController 不采集、不写入、不读回这条旧链路；edge 在线六频率目标走 `D5100-D5299` 事务，DryHMI edge-down direct 走 `D5550-D5599` 事务。PLC 需提供 D5100/D5550 请求/ACK/NAK/读回、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、状态/安全覆盖和报警码，用于 HMI/edge-api 替代人工设定频率；真实 VFD 实际频率/状态要等反馈线或通讯补齐并签收后再作为后续验收项。
 
 ## 1. 通讯参数
 - **本次已实测参数（2026-09-14）：标准 Modbus TCP（MBAP帧、不带RTU CRC），IP `192.0.2.200`，端口 `2000`，站号 `1`。** 用户工程截图显示上述网口参数、Modbus TCP/IP从站勾选，子网掩码255.255.255.0、网关192.0.2.1。
-- **只读证据：** 从 `dry-edge-tmp` 经临时同网段地址192.0.2.250访问，ping 2/2成功（平均0.909ms），TCP2000连接成功；同一连接间隔1秒连续3次FC03读取协议地址40000起2个寄存器，均返回有效MBAP与PDU、原始值 `[32769, 32769]`。首帧请求 `00010000000601039c400002`，响应 `00010000000701030480018001`。仅证明基本只读通讯，未验证原始值工艺含义、全量点表、心跳、控制或屏与Edge并发。目标MAC `02:00:00:00:00:01`，交换机端口7；实际硬件型号尚未读取。
-- **历史订正：** 用户先前提供的192.0.2.100对应另一MAC `02:00:00:00:00:02` / 端口8，其TCP2000拒绝连接证据不能归给上述PLC。原“2026-06-20现场实测RTU-over-TCP/2022/站号1”陈述已撤回；本次才取得实际Modbus读响应，运行配置未据此自动更改。
-- **网络前提：** Edge原LAN为198.51.100.151/24，经198.51.100.1路由；本次成功依赖临时同网段地址和仅到192.0.2.200的主机路由。测试后均已删除并核验原状态，持续采集前须安排正式PLC网段接入。未写PLC、未开启交换机镜像。
+- **首次读通证据（历史阶段）：** 从 `dry-edge-tmp` 经临时同网段地址192.0.2.250访问，ping 2/2成功（平均0.909ms），TCP2000连接成功；同一连接间隔1秒连续3次FC03读取协议地址40000起2个寄存器，均返回有效MBAP与PDU、原始值 `[32769, 32769]`。首帧请求 `00010000000601039c400002`，响应 `00010000000701030480018001`。仅证明基本只读通讯，未验证原始值工艺含义、全量点表、心跳、控制或屏与Edge并发。目标MAC `02:00:00:00:00:01`，交换机端口7；实际硬件型号尚未读取。
+- **历史订正：** 用户先前提供的192.0.2.100对应另一MAC `02:00:00:00:00:02` / 端口8，其TCP2000拒绝连接证据不能归给上述PLC。原“2026-06-20现场实测RTU-over-TCP/2022/站号1”陈述已撤回；2026-09-14才取得实际Modbus读响应；运行配置随后经用户批准完成固化，见第9节。
+- **网络状态：** 首次诊断使用的临时192.0.2.250/32和目标主机路由已清理；随后经批准持久化192.0.2.250/24，保留管理网DHCP（当次198.51.100.151/24）及默认网关198.51.100.1。配置路径与恢复验收见第9节；未写PLC、未开启交换机镜像。
 - 端口区别：厂商SamSoar2022帮助文档区分固定下载/监视2022（监视站号1、单连接）与Modbus TCP/IP从站默认2000（可配置）；见 [项目留存的厂商帮助文件](source-materials/vendor-help-not-included) 中 `Inst/Communication/EthernetConfig.html`。
 - 并发连接：上述厂商帮助文档说明 Modbus TCP/IP 从站最多支持6个客户端，启用自由口后从站支持5个；不能把专用屏使用2000端口直接判为端口独占或拒绝连接的根因。现场型号、固件及连接占用仍需核对。
 - 功能码：读 3（保持寄存器，D 字读点）、读 1（线圈，料位/限位等位元件）、读 4（输入寄存器）；写 6/16（控制写，本期按只读决策锁停、未启用）
@@ -146,13 +148,15 @@ D5100/DryHMI direct 最小联调：
 屏将32769直接标为A，而当前地址表电流scale=0.1；故障样本不足以判断哪方倍率正确，不能因此修改倍率或将0x8001转成有效电流。后续应核对电流采集模块型号、供电/信号及原程序赋值，再用一个有效非零样本对照屏和原始字。照片中的“报警值”属于设置项，不与电流测量值混为一谈；当前证据不能区分传感器未供电/未接、通道模式不符、模块异常或程序映射问题。
 
 
+<a id="field-comm-current"></a>
+
 ## 9. dry-edge-tmp 通讯固化（2026-09-14 已应用）
 
 本节为当前运行状态，前述临时测试/旧DAQ配置为历史证据。用户批准“先把通讯固化”，仅固化已验证M1001点，不接入未验收工艺量，也不恢复控制。
 
 - 主机：dry-edge-tmp / 100.100.0.11；管理口enp3s0f1保留DHCP（本次198.51.100.151/24）和默认网关198.51.100.1。冲突探测无回应后增加192.0.2.250/24，持久文件为`/etc/netplan/60-drycontroller-plc.yaml`，`netplan generate/get`验证成功。当前以只增地址生效，未down管理口、未执行主机重启。
 - 目标：192.0.2.200:2000、站号1、MODBUS_FRAMER=socket。仅采集canonical `PLC_LEGACY_HEARTBEAT_TOGGLE`，FC01/31001，间隔0.3秒；作为普通只读点发布到现有MQTT/Influx通路。
-- 可复现配置：本仓`configs/field-comm/tags.yaml`和`configs/field-comm/modbus-address-map.yaml`仅从canonical tags/address-map选择这一点，不定义新位号。`docker-compose.field-comm.yml`是本次现场配置，在该主机安装为`/home/dryops/Drycontroller-edge/docker-compose.override.yml`，标准Compose启动时自动合并；两份点表位于同目录configs/field-comm，由既有只读configs挂载提供。
+- 可复现配置：本仓 [tags.yaml](../../configs/field-comm/tags.yaml) 和 [modbus-address-map.yaml](../../configs/field-comm/modbus-address-map.yaml)仅从canonical tags/address-map选择这一点，不定义新位号。[docker-compose.field-comm.yml](../../docker-compose.field-comm.yml) 是本次现场配置，在该主机安装为`/home/dryops/Drycontroller-edge/docker-compose.override.yml`，标准Compose启动时自动合并；两份点表位于同目录configs/field-comm，由既有只读configs挂载提供。
 - 写入边界：配置不含PLC_HEARTBEAT/EDGE_HOST_ALIVE，因此不派生D5291周期写；无writable软点令控制索引为空，CONTROL_ENABLE_D5100_WRITER=false令频率事务提前拒绝。未改通用点表、程序逻辑、签名、鉴权、License或控制许可。M1001暂不进入旧寄存器心跳超时算法，`/ready=200`及control.ready仅证明通路/订阅可用，不能解释为控制授权或已验证卡死心跳告警。
 - 本次不更换镜像：DAQ仍为`sha256:cf8ab59f0cdd4fa3836bbb3ea1b7abc1bbb73fbea2f547046e5337d7af745815`，API仍为`sha256:85596bb1ca3021a7f27479ecc9920fe738d675b87bdabe3dbbb8ddfb244fb81d`。这是未注册临时Edge上旧Compose栈的窄配置固化，不代表完成正式edge-app-v1发布/License激活，也不授权更新旧整栈镜像。
 
