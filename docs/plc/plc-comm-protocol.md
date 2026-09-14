@@ -5,9 +5,9 @@
 > 2026-06-26 边界：当前 SamSoar CSV 只证明 PLC 原工程把 `D30-D35` 输出到 `AO140-AO151`，没有证明 PLC 与变频器通讯或读取实际频率。DryController 不采集、不写入、不读回这条旧链路；edge 在线六频率目标走 `D5100-D5299` 事务，DryHMI edge-down direct 走 `D5550-D5599` 事务。PLC 需提供 D5100/D5550 请求/ACK/NAK/读回、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、状态/安全覆盖和报警码，用于 HMI/edge-api 替代人工设定频率；真实 VFD 实际频率/状态要等反馈线或通讯补齐并签收后再作为后续验收项。
 
 ## 1. 通讯参数
-- 协议：**Modbus RTU over TCP**（RTU 帧 + TCP 传输，带 CRC；**非**标准 Modbus TCP/MBAP）。2026-06-20 现场实测确认。
-- 站号：默认 1
-- 端口：**2022**（现场实测；非标准 502）
+- 协议：现场待确认。原 `Modbus RTU over TCP`（RTU 帧 + TCP、带 CRC）仅为未验证的历史配置假设；2026-09-14 人类确认从未实测，撤回原“2026-06-20 现场实测确认”陈述。
+- 站号：现场待确认；历史配置值为 1。
+- 端口：现场待确认。厂商 SamSoar2022 帮助文档 `Inst/Communication/EthernetConfig.html` 区分固定下载/监视端口 **2022**（监视站号1、单连接）与 Modbus TCP/IP 从站端口（默认 **2000**、可配置）；不得把下载监视端口当作已验证的采集端口。资料源为 [项目留存的厂商帮助文件](source-materials/vendor-help-not-included)。
 - 功能码：读 3（保持寄存器，D 字读点）、读 1（线圈，料位/限位等位元件）、读 4（输入寄存器）；写 6/16（控制写，本期按只读决策锁停、未启用）
 - 字节序：默认 Big Endian；32 位值字序需按具体点位签收；当前 SamSoar CSV 只证明湿度 `D45` 为 WORD
 
