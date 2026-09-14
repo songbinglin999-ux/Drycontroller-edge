@@ -56,7 +56,8 @@ LL6: {address: 6, function_code: 1, byte_order: big}  # X006
 # EDGE_HOST_ALIVE is written by edge to prove edge/daq-side communication
 # freshness only. It is intentionally not an ALLOWED_CONTROL_SOFTPOINTS entry.
 # PLC_LEGACY_HEARTBEAT_TOGGLE 对应集成商 M1001「0.5秒1/0.5秒0 心跳」。
-# 该点只作为上位机只读诊断心跳，兼容现场旧口径；当前心跳主用 D5290 镜像，此点为旧口径备用。
+# 该点只作为上位机只读诊断心跳；2026-09-14 实测M1001在5.176秒16次采样中跳变10次。
+# D5290同窗口始终为0，尚未验证现场心跳镜像；以下配置分配不等于现场实现已验收。
 # 地址依据官方《Instruction Manual of vendor PLC》Table 14.1.2：M 区 offset=30000，
 # 读 0x01 → M1001 = 31001；地址基址最终 e2e 单点核对。
 # PLC single-heartbeat overlay 已分配：PLC_HEARTBEAT=D5290,
