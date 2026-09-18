@@ -1,6 +1,6 @@
 # PLC 通讯协议与现场接入记录
 
-> **2026-09-18当前控制设计：** 以[I/O控制契约v2.0](io-and-control-contract.md)和根活动项PLC-EDGE-SINGLE-CONTROL-20260918为准。本文原D5100/D5550、PLC多来源owner/epoch及HMI直连接管要求属于旧设计，不再作为新方案强制目标；历史报文/地址证据仍按原验证边界保留。本轮不解除运行写门禁。新现场点表为人类确认的AI.csv，旧点数/用途不能覆盖新表与订正。
+> **2026-09-19当前控制设计：** 以[I/O控制契约v2.1](io-and-control-contract.md)和根活动项PLC-EDGE-SINGLE-CONTROL-20260918为准。Edge在线时为主控制仲裁入口，HMI2在Edge不可用时需要直连PLC读写的现场应急能力。本文原D5100/D5550、PLC多来源owner/epoch及HMI直连接管内容只作历史/候选证据，不自动恢复为已签收现场实现；本轮不解除运行写门禁。新现场点表为人类确认的AI.csv，旧点数/用途不能覆盖新表与订正。
 
 本文记录 PLC 接口要求、现场实测和 Edge 通讯配置。接口设计不等于现场已部署；当前原程序只读接入以第 9 节为准。
 
@@ -8,7 +8,7 @@
 
 > **当前配置入口（2026-09-14 验收）：** [dry-edge-tmp 通讯固化、验收与回退](#field-comm-current)。PLC `192.0.2.200:2000`，标准 Modbus TCP / 站号 `1`；Edge PLC 侧 `192.0.2.250/24`；仅以 `0.3` 秒间隔读取 M1001（FC01 / 31001），全部控制写关闭。主机重启、断网恢复、卡死告警及工艺数据仍未验收。
 
-> 2026-06-26 边界：当前 SamSoar CSV 只证明 PLC 原工程把 `D30-D35` 输出到 `AO140-AO151`，没有证明 PLC 与变频器通讯或读取实际频率。DryController 不采集、不写入、不读回这条旧链路；edge 在线六频率目标走 `D5100-D5299` 事务，DryHMI edge-down direct 走 `D5550-D5599` 事务。PLC 需提供 D5100/D5550 请求/ACK/NAK/读回、PLC 有效目标、PLC 输出命令/MV、PV/status invalid/not-wired 标记、状态/安全覆盖和报警码，用于 HMI/edge-api 替代人工设定频率；真实 VFD 实际频率/状态要等反馈线或通讯补齐并签收后再作为后续验收项。
+> 2026-06-26 历史边界：旧SamSoar CSV只证明PLC原工程把`D30-D35`输出到`AO140-AO151`，没有证明PLC与变频器通讯或读取实际频率。旧设计中的edge在线六频率目标`D5100-D5299`事务和DryHMI edge-down direct `D5550-D5599`事务可作为HMI2离线兜底工程候选，但不能直接覆盖2026-09-18 AI.csv新点表和人类订正。是否复用这些地址，必须重新给出请求/ACK/NAK/读回、PLC有效目标、PLC输出命令/MV、PV/status invalid/not-wired标记、状态/安全覆盖和报警码；真实VFD实际频率/状态要等反馈线或通讯补齐并签收后再作为后续验收项。
 
 ## 1. 通讯参数
 - **本次已实测参数（2026-09-14）：标准 Modbus TCP（MBAP帧、不带RTU CRC），IP `192.0.2.200`，端口 `2000`，站号 `1`。** 用户工程截图显示上述网口参数、Modbus TCP/IP从站勾选，子网掩码255.255.255.0、网关192.0.2.1。
@@ -24,7 +24,7 @@
 - 必填：`name`（唯一）、`address`、`function_code`（3/4）、`type`（float/int/int32/uint32/bool）
 - 可选：`byte_order`(big/little)、`scale`（工程值 = 原值 * scale）、`unit`、`range[min,max]`、`alarm_low`、`alarm_high`
 - 只读 I/O 点：对应当前 DryController 28 个 D 字读点 + 6 个料位/限位线圈，edge 只读不写；`D30-D35` 不进入 DryController 点表
-- 控制写入点：edge 六频率目标走 `D5100-D5299` 请求/ACK/读回事务；DryHMI direct 走 `D5550-D5599` 受控事务；请标明 `point_role=control_softpoint`
+- 控制写入点：Edge在线主路径和HMI2离线直连兜底均需提供请求/ACK/读回事务；旧`D5100-D5299`、`D5550-D5599`只作可复用候选，若采用请标明`point_role=control_softpoint`
 - 同步与仲裁点：参数同步、报警同步、状态同步、心跳、HMI/edge 控制权锁、HMI direct 授权状态、无扰切换状态，请标明 `point_role=sync|alarm|status|heartbeat|authority`
 - 唯一性：同一功能码下 `(address, function_code)` 不可重复
 
@@ -79,7 +79,7 @@
 - 状态同步：PLC 模式、本地/远程控制权、软点执行状态、最近 ACK/NAK 原因码需可读。
 - 无扰切换：edge 控制权切入/切出时，PLC 需保持当前安全输出或按约定斜坡，不允许突变。
 - 控制权锁：PLC 是最终执行仲裁点；edge 无心跳、PLC 本地模式、维护锁、联锁触发、HMI 接管时，PLC 拒绝 edge 软点并返回 NAK 原因。
-- HMI direct：DryHMI edge-down direct 是最终必做能力；必须经 PLC owner/epoch/direct-enable 授权后写 `D5550-D5599` DryHMI 目标缓冲区，不能绕过 D5100/PLC 输出提交形成并行输出链路；最终 e2e 前生产 disabled。
+- HMI2 direct：HMI2 edge-down direct 是最终必做能力；若复用旧`D5550-D5599`，必须经PLC授权/代次/direct-enable后写DryHMI目标缓冲区，不能绕过PLC输出提交形成并行输出链路；若不用旧D5550，则需定义等价点集。最终e2e前生产disabled。
 - epoch/代次：D5100 写控制软点时需携带当前 `AUTHORITY_EPOCH`；PLC 拒绝 stale epoch，避免 edge 恢复后用旧状态抢写。本项目现场内网不引入 token/签名租约。
 
 建议至少提供这些 authority 字段（名称可按 PLC 习惯调整，但语义需保留）：
