@@ -171,3 +171,19 @@ D5100/DryHMI direct 最小联调：
 持久文件SHA256：netplan `98527391de0537dede9bda838409cd3b594ac47a33d40bd38bcca898fb8e1714`；compose override `3ec8e3668704766189d343d2114464b012dd2dbba60e01dc4267563bca56577b`；tags `8cb6cfe58594546a92355701efbd24fbfb1672e0f92682a193e7bd374207a9a3`；address-map `c982b76f09d6377e046463ae850814ef9f33f69caf5f7a74a2104cb392dc8c2f`。
 
 验收边界：服务强制重建恢复已实测，主机断电/重启恢复仅完成持久配置校验，未实测；M1001卡死告警、真实网络中断恢复、全量工艺数据有效性、正式注册/发布及控制仍未验收。工艺量不在此次profile中发布。
+
+<a id="edge9-real-plc"></a>
+
+## 10. 原Edge接入真实PLC（2026-09-18）
+
+人类要求原Edge停用模拟器并连接真实PLC。经临时Edge实时FC01读取M1001确认，真实目标仍为`192.0.2.200:2000`、站号1、标准Modbus TCP/socket。
+
+- 原Edge：`100.100.0.9`，管理口`enp2s0` DHCP（本次`198.51.100.211/24`），新增辅助地址`192.0.2.249/24`。3次ARP冲突探测无响应，PLC响应MAC`02:00:00:00:00:01`。`/etc/netplan/60-drycontroller-plc.yaml`将原all-en匹配收窄至enp1s0保留DHCP，另以field-plc精确匹配enp2s0并保留DHCP/增加辅助地址；生成的两份networkd配置逐项检查通过。仅即时增加地址，未重置管理口或网关，未重启主机。
+- 在宿主`/opt/drycontroller-host/current/configs/`的默认`tags.yaml`和`modbus-address-map.yaml`安装本仓既有field-comm两文件原字节，仅有canonical `PLC_LEGACY_HEARTBEAT_TOGGLE`（FC01/31001，M1001）。项目`.env`只改PLC_HOST/PLC_PORT/MODBUS_FRAMER/PLC_SCAN_INTERVAL为`192.0.2.200/2000/socket/0.3`；runtime plc.yaml不存在。使用默认文件路径使API和DAQ一致，且不修改签名Compose或OTA镜像override。
+- 仅重建edge-api/edge-daq，精确镜像保持API`bec97bea…6c560`、DAQ`70244ebf…93f91b`；active sequence12/source9a10fbe、previous、journal及signed Compose/override前后摘要一致。`drycontroller-ipc-plc-simulator`已停止并设置restart=no；保留历史文件和镜像用于追溯，不得运行旧整栈Compose重新启用它。
+- 实测12:06:01–12:06:42北京时间抓包：单连接、双方SYN及TCP2000验证、139请求/139响应，全部FC01/31001/unit1，值含0/1，窗口内写请求0。8秒MQTT收到26条good心跳、15次变化，末点龄0.89秒；API `/data/tags`和默认`/data/latest`仅含该点、missing为空。12:10复核API/DAQ healthy，MQTT/Influx连接正常、缓冲0。临时Edge原通讯仍healthy，未改其配置。
+- 实际容器导入配置验证：自动heartbeat写配置为空、可写索引为空、D5100 writer=false。API为startup_fail_closed/MANUAL、auto_control_enabled=false；静态六个频率标签名称不代表可写授权。未发任何PLC控制写请求，未复用历史M/Y操作授权。
+
+独立审查通过的现场脚本SHA256为`2138c989590769b549bc33426365a892b431c9c226ad44ba6c5f93366010fd32`。原配置（包含敏感.env）仅备份在原Edge root-only `/var/lib/drycontroller/edge9-plc-cutover-20260918`；非秘密验收数据和抓包归档于根仓`docs/workspace/archive/edge9-plc-20260918/`。失败处理为停止采集/API/模拟器并撤辅助地址，不自动恢复模拟数据发布；人工恢复必须先复核真实PLC零写边界。
+
+本次仅验收真实PLC只读通讯心跳，不代表完整工艺点、M1001卡死告警、控制、HMI界面或物理重启验收。旧模拟历史未删除，显式查询旧位号仍可能读到其历史quality=good，必须结合时间戳与freshness判断，不能解释为新鲜现场数据。
