@@ -1,5 +1,7 @@
 # 🔌 Modbus 映射与 PLC 集成说明（Modbus Mapping & Integration）
 
+> **2026-09-18当前控制设计：** 以[I/O控制契约v2.0](io-and-control-contract.md)和根活动项PLC-EDGE-SINGLE-CONTROL-20260918为准。本文原D5100/D5550、PLC多来源owner/epoch及HMI直连接管要求属于旧设计，不再作为新方案强制目标；历史报文/地址证据仍按原验证边界保留。本轮不解除运行写门禁。新现场点表为人类确认的AI.csv，旧点数/用途不能覆盖新表与订正。
+
 > 版本：v1.0
 > 关联服务：`edge-daq`
 > 关联配置：`configs/tags.yaml`
