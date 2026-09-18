@@ -1,0 +1,16 @@
+# Apply only after field network review; requires docker-compose.field-comm.yml.
+# Still read-only until configs/modbus-proxy.yaml is commissioned.
+services:
+  edge-api:
+    environment:
+      HMI_PROXY_ENABLED: "true"
+  edge-daq:
+    environment:
+      HMI_PROXY_ENABLED: "true"
+      HMI_PROXY_CONFIG: /app/configs/modbus-proxy.yaml
+      HMI_PROXY_CONTROL_API_KEY_FILE: /run/secrets/hmi-proxy-control-key
+      API_KEY_HEADER: ${API_KEY_HEADER:-X-API-Key}
+    ports:
+      - "${HMI_PROXY_BIND_IP:?set verified field Edge interface}:2000:2000"
+    volumes:
+      - ${HMI_PROXY_CONTROL_KEY_PATH:?set control-scope key file}:/run/secrets/hmi-proxy-control-key:ro

@@ -848,3 +848,85 @@ async def test_control_state_active_target_mismatch_pauses_auto(monkeypatch):
     assert dispatched["success"] is False
     assert "active_targets_mismatch" in dispatched["blocked_by"]
     assert dispatched["data"]["mode"] == AUTO_PAUSED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['success', 'unknown', 'exception'])
+async def test_vendor_hmi_takeover_waits_for_inflight_and_keeps_manual(monkeypatch, outcome):
+    async def audit(**kwargs):
+        pass
+    monkeypatch.setattr('app.services.control_state.write_audit', audit)
+    monkeypatch.setattr('app.services.control_state.build_recommendations', _actionable_auto_recommendation)
+    started, release = asyncio.Event(), asyncio.Event()
+    class InflightCommand(DummyCommand):
+        async def send_set(self, **kwargs):
+            started.set()
+            await release.wait()
+            if outcome == 'exception':
+                raise RuntimeError('PLC disconnected')
+            if outcome == 'unknown':
+                return {'success': False, 'error': 'ack_timeout'}
+            return await super().send_set(**kwargs)
+    service = ControlStateService(realtime_service=DummyRealtimeFull(), command_service=InflightCommand(),
+                                  cooldown_sec=0, max_delta_hz=10)
+    assert (await service.authorize_auto(line='L1', actor='operator'))['success']
+    automatic = asyncio.create_task(service.dispatch_auto(line='L1', actor='algorithm'))
+    await asyncio.wait_for(started.wait(), 1)
+    manual = asyncio.create_task(service.takeover_for_hmi(line='L1', peer='192.0.2.100'))
+    await asyncio.sleep(0)
+    assert service._mode == 'MANUAL' and not manual.done()
+    release.set()
+    result = await manual
+    await automatic
+    assert result['success'] is (outcome == 'success')
+    assert service._mode == 'MANUAL'
+    assert service._last_auto_action is None
+
+
+@pytest.mark.asyncio
+async def test_vendor_hmi_revokes_auto_before_it_reaches_command_service(monkeypatch):
+    async def audit(**kwargs):
+        pass
+    monkeypatch.setattr('app.services.control_state.write_audit', audit)
+    monkeypatch.setattr('app.services.control_state.build_recommendations', _actionable_auto_recommendation)
+    command = DummyCommand()
+    service = ControlStateService(realtime_service=DummyRealtimeFull(), command_service=command)
+    assert (await service.authorize_auto(line='L1', actor='operator'))['success']
+    started, release = asyncio.Event(), asyncio.Event()
+    original = service._safe_snapshot
+    async def held_snapshot(**kwargs):
+        started.set()
+        await release.wait()
+        return await original(**kwargs)
+    monkeypatch.setattr(service, '_safe_snapshot', held_snapshot)
+    automatic = asyncio.create_task(service.dispatch_auto(line='L1', actor='algorithm'))
+    await started.wait()
+    manual = asyncio.create_task(service.takeover_for_hmi(line='L1', peer='192.0.2.100'))
+    await asyncio.sleep(0)
+    release.set()
+    assert (await automatic)['error'] == 'manual_intervention'
+    assert (await manual)['success']
+    assert command.calls == [] and service._mode == 'MANUAL'
+
+
+@pytest.mark.asyncio
+async def test_vendor_hmi_takeover_timeout_never_claims_permission(monkeypatch):
+    async def audit(**kwargs):
+        pass
+    monkeypatch.setattr('app.services.control_state.write_audit', audit)
+    service = ControlStateService(realtime_service=DummyRealtimeFull(), command_service=DummyCommand())
+    service._mode = 'AUTO'
+    service._auto_idle.clear()
+    result = await service.takeover_for_hmi(line='L1', peer='192.0.2.100', timeout_sec=0.01)
+    assert not result['success'] and service._mode == 'MANUAL'
+
+
+@pytest.mark.asyncio
+async def test_proxy_mode_explicitly_rejects_uncommissioned_auto(monkeypatch):
+    monkeypatch.setenv('HMI_PROXY_ENABLED', 'true')
+    service = ControlStateService(realtime_service=DummyRealtimeFull(), command_service=DummyCommand())
+    assert (await service.authorize_auto(line='L1', actor='operator'))['error'] == 'proxy_auto_not_commissioned'
+    from app.services.control_command import ControlCommandService
+    command = ControlCommandService()
+    assert not command.transport_status()['ready']
+    assert (await command.send_set(line='L1', tag='VFM1_FREQ_SP', value=20))['error'] == 'legacy_control_disabled_in_proxy_mode'

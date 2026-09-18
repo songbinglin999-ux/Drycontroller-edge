@@ -205,7 +205,8 @@ class ControlCommandService:
 
     def transport_status(self) -> dict:
         return {
-            "ready": bool(mqtt_manager.connected and self._signature_secret),
+            "ready": bool(mqtt_manager.connected and self._signature_secret and os.getenv("HMI_PROXY_ENABLED", "false").lower() != "true"),
+            "proxy_mode": os.getenv("HMI_PROXY_ENABLED", "false").lower() == "true",
             "mqtt_connected": bool(mqtt_manager.connected),
             "signature_configured": bool(self._signature_secret),
             "ack_pattern": self._ack_pattern,
@@ -225,6 +226,8 @@ class ControlCommandService:
         """
         下发单路频率控制指令。默认等待 ACK（闭环）。
         """
+        if os.getenv("HMI_PROXY_ENABLED", "false").lower() == "true":
+            return {"success": False, "error": "legacy_control_disabled_in_proxy_mode"}
         final_msg_id: Optional[str] = msg_id
         request_mode: Optional[int] = None
         channel: Optional[int] = None

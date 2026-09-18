@@ -60,6 +60,7 @@ from daq.plc_reader import PLCReader  # noqa: E402
 from daq.publisher import DataPublisher  # noqa: E402
 from daq.simulator import PLCSimulator  # noqa: E402
 from daq.control import ControlSubscriber  # noqa: E402
+from daq.modbus_proxy import ModbusProxy, ManualTakeover, load_proxy_config, validate_proxy_runtime  # noqa: E402
 
 
 def _resolved_register_address(value) -> int | None:
@@ -158,6 +159,7 @@ class DAQService:
         self.simulator = None
         self.config = None
         self.control_subscriber = None
+        self.hmi_proxy = None
         # 现场定位关键：记录当前 PLC 配置（用于 /ready 返回）
         self.plc_host: str | None = None
         self.plc_port: int | None = None
@@ -282,6 +284,11 @@ class DAQService:
         self.plc_connect_timeout = plc_connect_timeout
         self.use_simulator = use_simulator
         
+        proxy_config = load_proxy_config()
+        if proxy_config is not None:
+            validate_proxy_runtime(self.config, simulator=use_simulator,
+                                   framer=os.getenv("MODBUS_FRAMER", "rtu"))
+
         # 初始化数据发布器（连接 MQTT 和 InfluxDB）
         self.publisher = DataPublisher()
         await self.publisher.connect()
@@ -314,13 +321,25 @@ class DAQService:
                 heartbeat_timeout_cycles=heartbeat_timeout_cycles,
                 heartbeat_state=self,
             )
-            # 启动控制订阅
-            self.control_subscriber = ControlSubscriber(
-                modbus_client=self.modbus_client,
-                config=self.config,
-                line_id=self.publisher.line_id,
-            )
-            await self.control_subscriber.start()
+            if proxy_config is not None:
+                self.hmi_proxy = ModbusProxy(
+                    proxy_config, plc_host=plc_host, plc_port=plc_port, unit=plc_slave_id,
+                    takeover=ManualTakeover(
+                        "http://edge-api:8000/api/v1/control/vendor-hmi/takeover",
+                        os.getenv("HMI_PROXY_CONTROL_API_KEY_FILE", "/run/secrets/hmi-proxy-control-key"),
+                        self.publisher.line_id, float(proxy_config.get("response_timeout_sec", 2.0)),
+                    ),
+                    write_permitted=lambda: not self.control_suspended,
+                )
+                await self.hmi_proxy.start()
+            else:
+                # Proxy mode has exactly one physical writer; never subscribe the old command queue.
+                self.control_subscriber = ControlSubscriber(
+                    modbus_client=self.modbus_client,
+                    config=self.config,
+                    line_id=self.publisher.line_id,
+                )
+                await self.control_subscriber.start()
         
         # 启动数据采集循环
         self.running = True
@@ -346,6 +365,10 @@ class DAQService:
         
         self.running = False
         
+        if self.hmi_proxy:
+            await self.hmi_proxy.stop()
+            self.hmi_proxy = None
+
         # 停止采集循环
         if self.plc_reader:
             await self.plc_reader.stop()
@@ -428,6 +451,8 @@ class DAQService:
             logger.info("health_server_stopped")
 
     def _control_status(self):
+        if self.hmi_proxy:
+            return self.hmi_proxy.get_status()
         if not self.control_subscriber:
             return {
                 "ready": False,

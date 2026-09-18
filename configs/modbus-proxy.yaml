@@ -1,0 +1,17 @@
+# Address-preserving proxy; HMI_PROXY_ENABLED defaults false.
+# This is an uncommissioned template, not a grant to write the field PLC.
+listen_host: 0.0.0.0  # Container only; publish to one explicit field interface.
+listen_port: 2000
+allowed_client_ips: [192.0.2.100]
+max_clients: 2
+response_timeout_sec: 2.0
+client_idle_timeout_sec: 30.0
+write_enabled: false
+source_network_verified: false
+write_journal: /data/edge-daq/hmi-proxy-write.json
+# Raw zero-based PDU addresses, not PLC labels or 4xxxx notation.
+# Each entry: {area: coil|holding, address: <verified integer>, min: ..., max: ...,
+#              repeat_safe: true, evidence: <PLC/HMI engineering signoff>}
+# Include both ON/OFF values only after button and stop semantics are verified.
+# FC15/16 must match every address; holes and out-of-range values reject the whole request.
+write_rules: []

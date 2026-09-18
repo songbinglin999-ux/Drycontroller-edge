@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -62,6 +63,10 @@ class ControlStateService:
         self._last_command_result: Optional[dict] = None
         self._last_auto_action: Optional[dict] = None
         self._in_flight = False
+        self._mode_generation = 0
+        self._auto_idle = asyncio.Event()
+        self._auto_idle.set()
+        self._auto_outcome_known = True
         self._last_auto_by_softpoint: Dict[str, Tuple[float, float]] = {}
         self._status_refresh_tasks: Dict[str, asyncio.Task] = {}
 
@@ -87,6 +92,9 @@ class ControlStateService:
         reason: Optional[str] = None,
         lookback: str = "5m",
     ) -> dict:
+        if os.getenv("HMI_PROXY_ENABLED", "false").lower() == "true":
+            return {"success": False, "error": "proxy_auto_not_commissioned"}
+        generation = self._mode_generation
         line_id = line or "L1"
         snapshot, snapshot_error = await self._safe_control_gate_snapshot(line_id=line_id, lookback=lookback)
         transport = self._transport_status()
@@ -117,6 +125,8 @@ class ControlStateService:
             }
 
         async with self._lock:
+            if generation != self._mode_generation:
+                return {"success": False, "error": "manual_intervention"}
             old_mode = self._mode
             self._mode = "AUTO"
             self._pause_reason = None
@@ -149,6 +159,7 @@ class ControlStateService:
     ) -> dict:
         line_id = line or "L1"
         async with self._lock:
+            self._mode_generation += 1
             old_mode = self._mode
             self._mode = "MANUAL"
             self._pause_reason = None
@@ -183,6 +194,7 @@ class ControlStateService:
     ) -> dict:
         line_id = line or "L1"
         async with self._lock:
+            self._mode_generation += 1
             old_mode = self._mode
             if old_mode in {"AUTO", AUTO_PAUSED}:
                 self._mode = "MANUAL"
@@ -209,6 +221,17 @@ class ControlStateService:
             },
         )
         return {"previous_mode": old_mode, "current_mode": self._mode}
+
+    async def takeover_for_hmi(self, *, line: Optional[str], peer: str, timeout_sec: float = 1.0) -> dict:
+        await self.switch_manual(line=line, actor=f"vendor-hmi:{peer}", reason="vendor_hmi_control_write")
+        generation = self._mode_generation
+        try:
+            await asyncio.wait_for(self._auto_idle.wait(), timeout_sec)
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "auto_command_in_flight", "mode": "MANUAL"}
+        if not self._auto_outcome_known or generation != self._mode_generation:
+            return {"success": False, "error": "auto_outcome_unknown", "mode": "MANUAL"}
+        return {"success": True, "mode": "MANUAL", "generation": generation}
 
     async def record_command_result(self, *, result: dict, command_scope: str) -> None:
         async with self._lock:
@@ -241,9 +264,13 @@ class ControlStateService:
                     "data": self._status_payload(line_id=line_id, transport=self._transport_status()),
                 }
             self._in_flight = True
+            self._auto_idle.clear()
+            generation = self._mode_generation
 
         try:
             snapshot, snapshot_error = await self._safe_snapshot(line_id=line_id, lookback=lookback)
+            if generation != self._mode_generation:
+                return {"success": False, "error": "manual_intervention"}
             transport = self._transport_status()
             blocks = self._gate_blocks(snapshot, transport) if snapshot else ["DATA_MISSING_OR_STALE"]
             if snapshot_error:
@@ -253,6 +280,7 @@ class ControlStateService:
 
             if blocks:
                 await self._pause_auto(
+                    expected_generation=generation,
                     reason=blocks[0],
                     actor=actor,
                     detail={"blocked_by": blocks, "authority_snapshot": self._authority_snapshot},
@@ -276,6 +304,7 @@ class ControlStateService:
             validation_error = action_validation_error(action)
             if validation_error:
                 await self._pause_auto(
+                    expected_generation=generation,
                     reason=validation_error,
                     actor=actor,
                     detail={"recommendation": recommendation.model_dump(mode="json"), "action": action.model_dump(mode="json")},
@@ -290,6 +319,7 @@ class ControlStateService:
             rate_block = self._rate_block(action)
             if rate_block:
                 await self._pause_auto(
+                    expected_generation=generation,
                     reason=rate_block,
                     actor=actor,
                     detail={"recommendation_id": recommendation.id, "action": action.model_dump(mode="json")},
@@ -301,6 +331,9 @@ class ControlStateService:
                     "data": self._status_payload(line_id=line_id, transport=transport),
                 }
 
+            if generation != self._mode_generation:
+                return {"success": False, "error": "manual_intervention"}
+            self._auto_outcome_known = False
             result = await self._command.send_set(
                 line=line_id,
                 tag=action.target_softpoint,
@@ -309,11 +342,15 @@ class ControlStateService:
                 wait_ack=True,
                 timeout_sec=timeout_sec,
             )
+            self._auto_outcome_known = result.get("success") is True
+            if generation != self._mode_generation:
+                return {"success": False, "error": "manual_intervention", "command_result": result}
             await self.record_command_result(result=result, command_scope="auto")
             mismatch = _active_target_mismatch(result, action)
             if result.get("success") is not True or mismatch:
                 reason = mismatch or result.get("error") or result.get("status") or "auto_command_failed"
                 await self._pause_auto(
+                    expected_generation=generation,
                     reason=str(reason),
                     actor=actor,
                     detail={
@@ -355,6 +392,7 @@ class ControlStateService:
         except Exception as exc:  # noqa: BLE001 - AUTO must fail closed on ordinary dispatch faults.
             reason = f"AUTO_DISPATCH_EXCEPTION:{type(exc).__name__}"
             await self._pause_auto(
+                expected_generation=generation,
                 reason=reason,
                 actor=actor,
                 detail={"error": str(exc)},
@@ -368,9 +406,12 @@ class ControlStateService:
         finally:
             async with self._lock:
                 self._in_flight = False
+                self._auto_idle.set()
 
-    async def _pause_auto(self, *, reason: str, actor: str, detail: Optional[dict] = None) -> None:
+    async def _pause_auto(self, *, reason: str, actor: str, detail: Optional[dict] = None, expected_generation: Optional[int] = None) -> None:
         async with self._lock:
+            if expected_generation is not None and expected_generation != self._mode_generation:
+                return
             old_mode = self._mode
             self._mode = AUTO_PAUSED
             self._pause_reason = reason

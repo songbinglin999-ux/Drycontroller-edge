@@ -328,3 +328,41 @@ async def test_simulator_mode_starts_control_subscriber(tmp_path, monkeypatch):
     assert started["modbus_client"] is svc.simulator
     assert started["line_id"] == "L1"
     assert started["started"] is True
+
+
+@pytest.mark.asyncio
+async def test_proxy_runtime_never_starts_legacy_subscriber(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    daq_main = importlib.import_module('daq.main')
+    monkeypatch.setenv('USE_SIMULATOR', 'false')
+    monkeypatch.setenv('MODBUS_FRAMER', 'socket')
+    monkeypatch.setenv('CONTROL_ENABLE_D5100_WRITER', 'false')
+    monkeypatch.setattr(daq_main, 'load_proxy_config', lambda: {})
+    publisher = ReadyPublisher()
+    publisher.connect = AsyncMock()
+    publisher.disconnect = AsyncMock()
+    publisher.flush_buffers = AsyncMock()
+    monkeypatch.setattr(daq_main, 'DataPublisher', lambda: publisher)
+    client = FakeModbus()
+    client.connect = AsyncMock()
+    client.disconnect = AsyncMock()
+    monkeypatch.setattr(daq_main, 'ModbusClient', lambda **kwargs: client)
+    reader = Mock(start=AsyncMock(), stop=AsyncMock())
+    monkeypatch.setattr(daq_main, 'PLCReader', lambda *args, **kwargs: reader)
+    proxy = Mock(start=AsyncMock(), stop=AsyncMock())
+    proxy.get_status.return_value = {'ready': True, 'mode': 'modbus_tcp_proxy'}
+    monkeypatch.setattr(daq_main, 'ModbusProxy', lambda *args, **kwargs: proxy)
+    subscriber = Mock(side_effect=AssertionError('legacy physical writer must not start'))
+    monkeypatch.setattr(daq_main, 'ControlSubscriber', subscriber)
+    svc = daq_main.DAQService()
+    async def load_config():
+        svc.config = {'tags': {}}
+    monkeypatch.setattr(svc, 'load_config', load_config)
+    monkeypatch.setattr(svc, '_start_health_server', AsyncMock())
+    await svc.start()
+    assert svc.control_subscriber is None
+    assert svc._control_status()['mode'] == 'modbus_tcp_proxy'
+    proxy.start.assert_awaited_once()
+    await svc.stop()
+    proxy.stop.assert_awaited_once()
+    client.disconnect.assert_awaited_once()

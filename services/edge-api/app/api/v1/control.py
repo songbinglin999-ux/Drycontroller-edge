@@ -1,5 +1,7 @@
 """Control advisory recommendation API."""
 
+import os
+
 from typing import Optional
 
 import structlog
@@ -151,3 +153,29 @@ async def dispatch_auto_control(
         lookback=body.lookback,
         timeout_sec=body.timeout_sec,
     )
+
+
+class VendorHmiTakeoverRequest(BaseModel):
+    line: Optional[str] = None
+    peer: str = Field(..., max_length=64)
+    function_code: int
+    address: int = Field(..., ge=0, le=65535)
+    values: list[int] = Field(..., min_length=1, max_length=1968)
+
+
+@router.post("/vendor-hmi/takeover")
+async def vendor_hmi_takeover(
+    req: VendorHmiTakeoverRequest,
+    api_key: str = Depends(require_control_api_key),
+    state_service: ControlStateService = Depends(get_control_state_service),
+):
+    if os.getenv("HMI_PROXY_ENABLED", "false").lower() != "true":
+        raise HTTPException(status_code=409, detail="proxy_mode_disabled")
+    require_license_capability("production-control")
+    if req.function_code not in {5, 6, 15, 16}:
+        raise HTTPException(status_code=400, detail="not_a_control_write")
+    result = await state_service.takeover_for_hmi(line=req.line, peer=req.peer)
+    logger.info("vendor_hmi_takeover", actor=api_key_actor(api_key, role="control"),
+                peer=req.peer, function_code=req.function_code, address=req.address,
+                values=req.values, result=result)
+    return result
