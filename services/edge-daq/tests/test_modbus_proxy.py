@@ -132,6 +132,30 @@ async def test_writes_take_manual_then_forward_unmodified(tmp_path, pdu):
         assert not proxy.journal.locked and not proxy.journal.path.exists()
 
 
+async def test_write_range_allows_full_d_area_using_plc_offset(tmp_path):
+    async with running(
+        tmp_path,
+        write_rules=[],
+        write_ranges=[{
+            "area": "holding", "start_address": 40000, "end_address": 48191,
+            "min": 0, "max": 65535, "repeat_safe": True,
+            "evidence": "human approved full dedicated HMI D write window 2026-09-19",
+        }],
+    ) as (plc, proxy, r, w, calls):
+        assert await exchange(r, w, b'\x06' + struct.pack('>HH', 40000, 1)) == b'\x06' + struct.pack('>HH', 40000, 1)
+        assert await exchange(r, w, b'\x06' + struct.pack('>HH', 41000, 1), tid=18) == b'\x06' + struct.pack('>HH', 41000, 1)
+        assert await exchange(r, w, b'\x06' + struct.pack('>HH', 48048, 1), tid=19) == b'\x06' + struct.pack('>HH', 48048, 1)
+        assert await exchange(r, w, b'\x06' + struct.pack('>HH', 1000, 1), tid=20) == b'\x86\x02'
+        assert await exchange(r, w, b'\x06' + struct.pack('>HH', 39999, 1), tid=21) == b'\x86\x02'
+        assert await exchange(r, w, b'\x06' + struct.pack('>HH', 48192, 1), tid=22) == b'\x86\x02'
+        assert await exchange(r, w, b'\x10' + struct.pack('>HHBHH', 48190, 2, 4, 1, 1),
+                              tid=23) == b'\x10' + struct.pack('>HH', 48190, 2)
+        assert await exchange(r, w, b'\x10' + struct.pack('>HHBHH', 48191, 2, 4, 1, 1),
+                              tid=24) == b'\x90\x02'
+        assert len(plc.requests) == 4
+        assert [call["address"] for call in calls] == [40000, 41000, 48048, 48190]
+
+
 @pytest.mark.parametrize('pdu,code', [
     (b'\x06' + struct.pack('>HH', 32, 2), 2),
     (b'\x06' + struct.pack('>HH', 30, 501), 3),
@@ -223,6 +247,14 @@ async def test_disk_failure_prevents_wire_write(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('extra', [
     {'source_network_verified': False}, {'write_rules': []}, {'allowed_client_ips': []},
+    {'write_rules': [], 'write_ranges': [{'area': 'holding', 'start_address': 2, 'end_address': 1,
+                                          'min': 0, 'max': 1, 'repeat_safe': True, 'evidence': 'bad'}]},
+    {'write_ranges': [{'area': 'holding', 'start_address': 30, 'end_address': 30,
+                       'min': 0, 'max': 1, 'repeat_safe': True, 'evidence': 'overlap'}]},
+    {'write_rules': [{"area": "holding", "address": 30, "min": 0, "max": 1,
+                      "repeat_safe": True, "evidence": "overlap"},
+                     {"area": "holding", "address": 30, "min": 0, "max": 1,
+                      "repeat_safe": True, "evidence": "overlap"}]},
 ])
 def test_uncommissioned_config_rejected(tmp_path, extra):
     with pytest.raises(ValueError):

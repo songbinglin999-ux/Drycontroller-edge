@@ -33,9 +33,9 @@
 
 ## 配置与发布边界
 
-配置模板：[`configs/modbus-proxy.yaml`](../../configs/modbus-proxy.yaml)。`write_enabled: false`、空`write_rules`是刻意的未签收状态。`source_network_verified`不能代替实际网络配置：仅专用屏IP不构成密码学身份，现场需绑定指定网卡地址并限制可达来源，检修/其他设备不能伪装来源访问代理。
+配置模板：[`configs/modbus-proxy.yaml`](../../configs/modbus-proxy.yaml)。2026-09-19现场调试按人类明确要求启用专用HMI全D区写入窗口：`write_enabled: true`，`write_ranges`开放holding地址`40000–48191`（即D0–D8191，沿用项目现有D区地址偏移D0→40000），用于原vendor屏全D写入调试。`source_network_verified`不能代替实际网络配置：仅专用屏IP不构成密码学身份，现场需绑定指定网卡地址并限制可达来源，检修/其他设备不能伪装来源访问代理。
 
-写规则使用**报文原始0基地址**，区分`coil`与`holding`；每项明确`min/max`、`repeat_safe: true`和工程签收`evidence`。批量写每个地址都须匹配，跨孔洞或任一越界则整次拒绝，不部分写入。只有核定的人工作业点可列入。
+写规则使用**报文原始地址**，区分`coil`与`holding`；逐点`write_rules`或连续`write_ranges`均须明确`min/max`、`repeat_safe: true`和工程签收`evidence`。批量写每个地址都须匹配，跨边界或任一越界则整次拒绝，不部分写入。
 
 `HMI_PROXY_ENABLED=true`必须同时配置在edge-api与edge-daq。DAQ通过内部`http://edge-api:8000/api/v1/control/vendor-hmi/takeover`，使用只读挂载凭证文件`HMI_PROXY_CONTROL_API_KEY_FILE`；该凭证须属于API现有CONTROL_API_KEYS，禁止把密钥写进版本库或屏工程。API未启代理/不可达/凭证失效/License不允许时不发送PLC写。
 

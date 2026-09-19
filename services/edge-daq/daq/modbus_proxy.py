@@ -176,6 +176,20 @@ class ModbusProxy:
                     or (area, address) in self.rules):
                 raise ValueError("write rule requires unique raw address, range and repeat-safe evidence")
             self.rules[area, address] = (lo, hi)
+        for rule in config.get("write_ranges", []):
+            area = rule["area"]
+            start = rule["start_address"]
+            end = rule["end_address"]
+            lo, hi = rule["min"], rule["max"]
+            if (area not in {"coil", "holding"} or type(start) is not int or type(end) is not int
+                    or not 0 <= start <= end <= 65535 or type(lo) is not int or type(hi) is not int
+                    or not 0 <= lo <= hi <= (1 if area == "coil" else 65535)
+                    or rule.get("repeat_safe") is not True or not rule.get("evidence")):
+                raise ValueError("write range requires raw address span, range and repeat-safe evidence")
+            for address in range(start, end + 1):
+                if (area, address) in self.rules:
+                    raise ValueError("write range overlaps an existing rule")
+                self.rules[area, address] = (lo, hi)
         if self.write_enabled and (config.get("source_network_verified") is not True or not self.rules):
             raise ValueError("writes require commissioned rules and verified source network")
         self.journal = WriteJournal(Path(config.get("write_journal", "/data/edge-daq/hmi-proxy-write.json")))
