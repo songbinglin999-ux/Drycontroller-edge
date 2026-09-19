@@ -39,16 +39,30 @@ ALLOWED_CONTROL_SOFTPOINTS = {
     "VFM1_FREQ_SP",
     "VFM2_FREQ_SP",
     "VFM3_FREQ_SP",
-    "VF1_FREQ_SP",
-    "VF2_FREQ_SP",
     "VF3_FREQ_SP",
+    "M141_RUN",
+    "M143_RUN",
+    "M144_RUN",
+    "M145_RUN",
+    "M146_RUN",
+    "M151_RUN",
+    "M154_RUN",
+    "M155_RUN",
+    "M156_RUN",
+    "M157_RUN",
+    "M163_RUN",
+    "M164_RUN",
+    "M165_RUN",
+    "M166_RUN",
+    "M167_RUN",
+    "M170_RUN",
+    "M171_RUN",
+    "M173_RUN",
 }
 FREQUENCY_CHANNELS = {
     "VFM1_FREQ_SP": 1,
     "VFM2_FREQ_SP": 2,
     "VFM3_FREQ_SP": 3,
-    "VF1_FREQ_SP": 4,
-    "VF2_FREQ_SP": 5,
     "VF3_FREQ_SP": 6,
 }
 FREQUENCY_MIN_HZ = 0
@@ -78,7 +92,7 @@ def _coerce_int_field(value: Any, field_name: str) -> int:
 
 def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """
-    控制写入只接受 modbus-address-map.yaml 中签收的 6 个频率软点。
+    控制写入只接受 modbus-address-map.yaml 中签收的频率与远程 M 软点。
     52 个 tags.yaml I/O 点均为只读，不再从 control_enabled 推导写点。
     """
     index = {}
@@ -101,6 +115,10 @@ def _build_tag_index(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 "byte_order": entry.get("byte_order", "big"),
                 "range": entry.get("range"),
                 "unit": entry.get("unit", ""),
+                "function_code": entry.get("function_code"),
+                "requires_edge_enable": bool(entry.get("requires_edge_enable")),
+                "enable_address": entry.get("enable_address"),
+                "enable_function_code": entry.get("enable_function_code"),
             }
     return index
 
@@ -471,6 +489,12 @@ class ControlSubscriber:
             return self._reject(msg_id, tag_name, value, "address_not_configured")
         scale = float(scale_raw) or 1.0
 
+        if tag_type in ("bool", "boolean"):
+            if value not in (0, 1):
+                return self._reject(msg_id, tag_name, value, "value_out_of_range", {"range": [0, 1]})
+            if int(tag_config.get("function_code") or 5) != 5:
+                return self._reject(msg_id, tag_name, value, "unsupported_bool_function_code")
+
         # 工程值 -> 寄存器值转换
         reg_value = value
         if scale not in (0, 1) and isinstance(value, (int, float)):
@@ -478,12 +502,25 @@ class ControlSubscriber:
 
         async def _do_write():
             try:
+                if tag_config.get("requires_edge_enable"):
+                    enable_address = tag_config.get("enable_address")
+                    if not isinstance(enable_address, int) or isinstance(enable_address, bool):
+                        self._ack(msg_id, tag_name, "failed", value, reason="enable_address_not_configured")
+                        return
+                    ok_enable = await self.modbus_client.write_coil(enable_address, True)
+                    if not ok_enable:
+                        self._ack(msg_id, tag_name, "failed", value, reason="edge_enable_write_failed")
+                        return
+
                 if tag_type == "float":
                     ok = await self.modbus_client.write_float(address, float(reg_value), byte_order=byte_order)
                     label = "float"
                 elif tag_type in ("int32", "uint32"):
                     ok = await self.modbus_client.write_int32(address, int(reg_value), byte_order=byte_order)
                     label = "int32"
+                elif tag_type in ("bool", "boolean"):
+                    ok = await self.modbus_client.write_coil(address, bool(int(reg_value)))
+                    label = "coil"
                 else:
                     ok = await self.modbus_client.write_register(address, int(reg_value))
                     label = "int"

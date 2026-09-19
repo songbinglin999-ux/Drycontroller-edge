@@ -67,6 +67,30 @@ PLC_HEARTBEAT: {address: 45290, function_code: 3, scale: 1, byte_order: big, typ
 EDGE_HOST_ALIVE: {address: 45291, function_code: 6, scale: 1, byte_order: big, writable: true, type: int, diagnostic: heartbeat, control_softpoint: false}
 PLC_LEGACY_HEARTBEAT_TOGGLE: {address: 31001, function_code: 1, byte_order: big, type: bool, diagnostic: heartbeat, legacy_device: M1001, control_softpoint: false}
 
+# --- remote output control points (M1000 + M140 onwards) ---
+# M1000 is the field program's upper-computer control enable. It is written
+# before every Edge remote output command and is not exposed as an operator
+# softpoint. M1001 remains read-only heartbeat above.
+EDGE_REMOTE_CONTROL_ENABLE: {address: 31000, function_code: 5, byte_order: big, writable: true, type: bool, diagnostic: authority, legacy_device: M1000, control_softpoint: false}
+M141_RUN: {address: 30141, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M141, evidence: pending}
+M143_RUN: {address: 30143, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M143, evidence: isolated_readback_20260916}
+M144_RUN: {address: 30144, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M144, evidence: isolated_readback_20260916}
+M145_RUN: {address: 30145, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M145, evidence: isolated_readback_20260916}
+M146_RUN: {address: 30146, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M146, evidence: isolated_readback_20260916}
+M151_RUN: {address: 30151, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M151, evidence: isolated_readback_20260916}
+M154_RUN: {address: 30154, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M154, evidence: isolated_readback_20260916}
+M155_RUN: {address: 30155, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M155, evidence: isolated_readback_20260916}
+M156_RUN: {address: 30156, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M156, evidence: isolated_readback_20260916}
+M157_RUN: {address: 30157, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M157, evidence: isolated_readback_20260916}
+M163_RUN: {address: 30163, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M163, evidence: isolated_readback_20260916}
+M164_RUN: {address: 30164, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M164, evidence: isolated_readback_20260916}
+M165_RUN: {address: 30165, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M165, evidence: isolated_readback_20260916}
+M166_RUN: {address: 30166, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M166, evidence: isolated_readback_20260916}
+M167_RUN: {address: 30167, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M167, evidence: isolated_readback_20260916}
+M170_RUN: {address: 30170, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M170, evidence: isolated_readback_20260916}
+M171_RUN: {address: 30171, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M171, evidence: isolated_readback_20260916}
+M173_RUN: {address: 30173, function_code: 5, byte_order: big, writable: true, type: bool, range: [0, 1], unit: "", control_softpoint: true, write_path: M1000_REMOTE_OUTPUT, requires_edge_enable: true, enable_address: 31000, legacy_device: M173, evidence: isolated_readback_20260916}
+
 # --- authority status points (read-only) ---
 # These are PLC-owned state fields. They let edge-api/HMI fail closed when
 # control ownership moves away from edge, but they are not control softpoints.
@@ -82,7 +106,7 @@ HMI_DIRECT_ENABLE: {address: 45571, function_code: 3, scale: 1, byte_order: big,
 # 控制写入按 2026-06-20「上位机降级全只读」决策锁停，本期不启用；启用后也只走
 # D5100-D5299 单路事务：写 D5101-D5104 与 D5110 单个频率值，最后写 D5100 请求序号，
 # D5104 选通道 1..6；PLC ACK 后更新 D5210-D5215 对应目标，并由 D5220-D5225 发布输出 MV。
-# D30-D35 属于 PLC 原工程频率命令/MV 链路，DryController 不采集、不写入；M1000/M140-M173 同样不作 edge/HMI 写点。
+# D30-D35 属于 PLC 原工程频率命令/MV 链路，DryController 不采集、不写入；M1000/M140-M173 仅通过上方远程软点白名单进入。
 # 禁止绕过 D5100 对 D5110 或 D5111-D5115 保留位、D30-D35 做单 tag 直写。
 # scale 仍 TBD：频率是整数 Hz 还是 ×10、量程需集成商/真机确认；地址基址（offset 40000 是否即协议地址）最终 e2e 单点核对。
 VFM1_ACTIVE_FREQ_TARGET: {address: 45210, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
@@ -92,11 +116,9 @@ VF1_ACTIVE_FREQ_TARGET: {address: 45213, function_code: 3, scale: TBD, byte_orde
 VF2_ACTIVE_FREQ_TARGET: {address: 45214, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
 VF3_ACTIVE_FREQ_TARGET: {address: 45215, function_code: 3, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: false}
 
-# --- 6 路频率事务写入软点（无直接 Modbus 地址）---
+# --- 4 路频率事务写入软点（无直接 Modbus 地址）---
 # *_FREQ_SP 是 edge/HMI 的产品软点名，只能经 D5100/D5550 事务写入；保留在 map 中是为了防止被误配为直写点。
 VFM1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
 VFM2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
 VFM3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
-VF1_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
-VF2_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}
 VF3_FREQ_SP: {address: TBD, function_code: 6, scale: TBD, byte_order: big, writable: false, type: int, range: [0.0, 50.0], unit: Hz, control_softpoint: true, write_path: D5100_TRANSACTION}

@@ -418,7 +418,7 @@ async def test_orchestrator_rejects_manual_softpoint_without_plc_authority_state
 
     sent = await orchestrator.send_manual_setpoint(
         line="L1",
-        target_softpoint="VF1_FREQ_SP",
+        target_softpoint="VF3_FREQ_SP",
         value=25.0,
         actor="operator:test",
         operator_id="operator-a",
@@ -447,7 +447,7 @@ async def test_orchestrator_rejects_manual_softpoint_without_transition_state(mo
 
     sent = await orchestrator.send_manual_setpoint(
         line="L1",
-        target_softpoint="VF1_FREQ_SP",
+        target_softpoint="VF3_FREQ_SP",
         value=25.0,
         actor="operator:test",
         operator_id="operator-a",

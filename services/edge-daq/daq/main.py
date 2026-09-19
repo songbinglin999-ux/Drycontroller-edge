@@ -200,7 +200,7 @@ class DAQService:
             self.config = yaml.safe_load(f)
 
         # 中间层：寄存器地址（位号→地址）与控制写软点从 configs/modbus-address-map.yaml 取，
-        # 不内嵌在只读 tags.yaml 里。带 writable 的条目即 6 个频率控制软点。
+        # 不内嵌在只读 tags.yaml 里。频率软点走事务，远程 M 点走白名单线圈写。
         address_map_path = Path(os.getenv("MODBUS_ADDRESS_MAP", "/app/configs/modbus-address-map.yaml"))
         address_map = {}
         if address_map_path.exists():

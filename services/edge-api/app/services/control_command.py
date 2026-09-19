@@ -26,7 +26,7 @@ import structlog
 
 from app.core.mqtt_client import mqtt_manager
 from app.services.control_history import write_control_history
-from app.services.control_core.models import ALLOWED_CONTROL_SOFTPOINTS
+from app.services.control_core.models import ALLOWED_CONTROL_SOFTPOINTS, FREQUENCY_CONTROL_SOFTPOINTS
 
 logger = structlog.get_logger(__name__)
 
@@ -34,8 +34,6 @@ FREQUENCY_CHANNELS = {
     "VFM1_FREQ_SP": 1,
     "VFM2_FREQ_SP": 2,
     "VFM3_FREQ_SP": 3,
-    "VF1_FREQ_SP": 4,
-    "VF2_FREQ_SP": 5,
     "VF3_FREQ_SP": 6,
 }
 SINGLE_FREQUENCY_COMMAND_TYPE = "single_frequency_set"
@@ -178,7 +176,7 @@ class ControlCommandService:
     def _validate_tag(self, tag: str, value: Any) -> Tuple[bool, str]:
         """
         控制安全校验（API侧先拦截，减少无效下发）：
-        - 只允许 ALLOWED_CONTROL_SOFTPOINTS 中的 6 个频率软点
+        - 只允许 ALLOWED_CONTROL_SOFTPOINTS 中已签收的控制软点
         - value 必须可转为数值并落在签收范围内
         """
         softpoint_range = ALLOWED_CONTROL_SOFTPOINTS.get(tag)
@@ -257,7 +255,8 @@ class ControlCommandService:
                 return {"success": False, "error": history_error}
 
             channel = FREQUENCY_CHANNELS.get(tag)
-            if channel is None:
+            command_type = SINGLE_FREQUENCY_COMMAND_TYPE if tag in FREQUENCY_CONTROL_SOFTPOINTS else ""
+            if tag in FREQUENCY_CONTROL_SOFTPOINTS and channel is None:
                 history_error = "softpoint_not_allowed"
                 return {"success": False, "error": history_error}
 
@@ -272,20 +271,19 @@ class ControlCommandService:
                 msg_ts,
                 tag,
                 value,
-                command_type=SINGLE_FREQUENCY_COMMAND_TYPE,
+                command_type=command_type,
                 mode=request_mode,
                 channel=channel,
             )
             payload = {
                 "id": final_msg_id,
                 "ts": msg_ts,
-                "type": SINGLE_FREQUENCY_COMMAND_TYPE,
                 "tag": tag,
-                "channel": channel,
                 "value": value,
-                "mode": request_mode,
                 "sig": sig,
             }
+            if command_type == SINGLE_FREQUENCY_COMMAND_TYPE:
+                payload.update({"type": command_type, "channel": channel, "mode": request_mode})
             topic = self._topic_for_line(line)
 
             # 注册 future（可选等待 ack）
@@ -457,7 +455,7 @@ class ControlCommandService:
         """
         软件急停暂不可用。
 
-        只开放六个频率设定软点的普通写入；52 个 I/O 点保持只读。
+        软件急停仍未签收；频率事务和远程 M 软点都不能替代急停。
         真实 /control/estop 必须等软点、authority、ACK/NAK
         和真实 PLC e2e 签收后再实现。
         """

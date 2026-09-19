@@ -36,6 +36,11 @@ class FakeModbus:
         self.calls.append(("int32", address, value, byte_order))
         return True
 
+    async def write_coil(self, address, value, retries=2):
+        self.writes += 1
+        self.calls.append(("coil", address, value))
+        return True
+
 
 class FakeMQTTMsg:
     def __init__(self, payload: bytes):
@@ -93,6 +98,34 @@ def _address_map_softpoint(address: object, scale: object = 1.0, *, tag: str = C
                 "range": [0.0, 50.0],
                 "unit": "Hz",
             }
+        }
+    }
+
+
+def _address_map_remote_run_softpoint():
+    return {
+        "modbus_address_map": {
+            "EDGE_REMOTE_CONTROL_ENABLE": {
+                "address": 31000,
+                "function_code": 5,
+                "scale": 1,
+                "byte_order": "big",
+                "writable": True,
+                "type": "bool",
+                "range": [0, 1],
+            },
+            "M143_RUN": {
+                "address": 30143,
+                "function_code": 5,
+                "scale": 1,
+                "byte_order": "big",
+                "writable": True,
+                "type": "bool",
+                "range": [0, 1],
+                "requires_edge_enable": True,
+                "enable_address": 31000,
+                "enable_function_code": 5,
+            },
         }
     }
 
@@ -173,6 +206,25 @@ def test_heartbeat_entries_are_not_control_softpoints():
     index = _build_tag_index(cfg)
 
     assert set(index) == {CONTROL_TAG}
+
+
+@pytest.mark.asyncio
+async def test_remote_run_softpoint_sets_edge_enable_before_output_coil(monkeypatch):
+    cs, modbus = _mk_sub(
+        monkeypatch,
+        require_sig=False,
+        secret=None,
+        config=_address_map_remote_run_softpoint(),
+    )
+
+    cs._on_message(None, None, FakeMQTTMsg(json.dumps({"tag": "M143_RUN", "value": 1, "id": "run-143"}).encode()))
+    await asyncio.sleep(0)
+
+    assert modbus.calls == [("coil", 31000, True), ("coil", 30143, True)]
+    ack = _last_ack(cs)
+    assert ack["id"] == "run-143"
+    assert ack["tag"] == "M143_RUN"
+    assert ack["status"] == "success"
 
 
 def test_single_frequency_transaction_command_is_disabled_by_default(monkeypatch):

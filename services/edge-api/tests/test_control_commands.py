@@ -36,6 +36,9 @@ def test_control_command_service_accepts_allowed_control_softpoints():
     assert svc._validate_tag("VFM1_FREQ_SP", 20.5) == (False, "value_not_integer")
     assert svc._validate_tag("VFM1_FREQ_SP", "20") == (False, "value_not_numeric")
     assert svc._validate_tag("VFM1_FREQ_SP", True) == (False, "value_not_numeric")
+    assert svc._validate_tag("VF1_FREQ_SP", 20.0) == (False, "softpoint_not_allowed")
+    assert svc._validate_tag("M143_RUN", 1.0) == (True, "ok")
+    assert svc._validate_tag("M143_RUN", 2.0) == (False, "value_out_of_range")
     assert svc._validate_tag("M1", 1.0) == (False, "softpoint_not_allowed")
 
 
@@ -105,6 +108,50 @@ async def test_control_send_set_waits_ack_and_validates_signature(monkeypatch):
         mode=2,
         channel=1,
     )
+
+
+@pytest.mark.asyncio
+async def test_control_send_set_publishes_remote_run_softpoint_without_frequency_fields(monkeypatch):
+    from app.services.control_command import ControlCommandService, _hmac_sig
+
+    monkeypatch.setenv("CONTROL_SIGNATURE_SECRET", "secret-1")
+    monkeypatch.setattr(
+        "app.services.control_command.write_control_history",
+        _noop_write_control_history,
+    )
+
+    published = {}
+
+    class DummyMQTT:
+        connected = True
+
+        def subscribe(self, topic: str, qos: int = 1):
+            return None
+
+        def register_callback(self, pattern: str, cb):
+            return cb
+
+        def publish(self, topic: str, payload: dict, qos: int = 1):
+            published["topic"] = topic
+            published["payload"] = payload
+            published["qos"] = qos
+
+    monkeypatch.setattr("app.services.control_command.mqtt_manager", DummyMQTT())
+
+    svc = ControlCommandService()
+
+    resp = await svc.send_set(line="L1", tag="M143_RUN", value=1, wait_ack=False, timeout_sec=1.0)
+    assert resp["success"] is True
+    assert resp["status"] == "accepted"
+
+    payload = published["payload"]
+    assert published["topic"] == "control/L1/tags"
+    assert payload["tag"] == "M143_RUN"
+    assert payload["value"] == 1
+    assert "type" not in payload
+    assert "mode" not in payload
+    assert "channel" not in payload
+    assert payload["sig"] == _hmac_sig("secret-1", payload["id"], payload["ts"], "M143_RUN", 1)
 
 
 @pytest.mark.asyncio

@@ -54,21 +54,45 @@ CONTROL_STATE_TAGS = [
     "AUTH_TRANSITION_STATE",
     "HMI_DIRECT_ENABLE",
 ]
-# DryController only replaces manual writes to the six frequency setpoints.
-# Product mode is MANUAL/AUTO/AUTO_PAUSED; PLC authority owner/epoch are
-# required before edge-api can ask edge-daq to issue a D5100 write.
+# DryController writes only signed softpoints. Remote M softpoints use the
+# field program's M1000/M140+ path; frequency softpoints remain bounded
+# setpoints and are limited to the four field-confirmed manual frequency lanes.
 SNAPSHOT_TAGS = PROCESS_TAGS + ACTIVE_TARGET_TAGS + CONTROL_STATE_TAGS
 REQUIRED_CONTROL_STATE_TAGS = ["AUTHORITY_OWNER", "AUTHORITY_EPOCH", "AUTH_TRANSITION_STATE", "HMI_DIRECT_ENABLE"]
 REQUIRED_SNAPSHOT_TAGS = PROCESS_TAGS + REQUIRED_CONTROL_STATE_TAGS
 CONTROL_BASIS_BLOCK = "CONTROL_BASIS_INSUFFICIENT"
 
-ALLOWED_CONTROL_SOFTPOINTS = {
+FREQUENCY_CONTROL_SOFTPOINTS = {
     "VFM1_FREQ_SP": (0.0, 50.0, "Hz"),
     "VFM2_FREQ_SP": (0.0, 50.0, "Hz"),
     "VFM3_FREQ_SP": (0.0, 50.0, "Hz"),
-    "VF1_FREQ_SP": (0.0, 50.0, "Hz"),
-    "VF2_FREQ_SP": (0.0, 50.0, "Hz"),
     "VF3_FREQ_SP": (0.0, 50.0, "Hz"),
+}
+
+REMOTE_OUTPUT_CONTROL_SOFTPOINTS = {
+    "M141_RUN": (0.0, 1.0, ""),
+    "M143_RUN": (0.0, 1.0, ""),
+    "M144_RUN": (0.0, 1.0, ""),
+    "M145_RUN": (0.0, 1.0, ""),
+    "M146_RUN": (0.0, 1.0, ""),
+    "M151_RUN": (0.0, 1.0, ""),
+    "M154_RUN": (0.0, 1.0, ""),
+    "M155_RUN": (0.0, 1.0, ""),
+    "M156_RUN": (0.0, 1.0, ""),
+    "M157_RUN": (0.0, 1.0, ""),
+    "M163_RUN": (0.0, 1.0, ""),
+    "M164_RUN": (0.0, 1.0, ""),
+    "M165_RUN": (0.0, 1.0, ""),
+    "M166_RUN": (0.0, 1.0, ""),
+    "M167_RUN": (0.0, 1.0, ""),
+    "M170_RUN": (0.0, 1.0, ""),
+    "M171_RUN": (0.0, 1.0, ""),
+    "M173_RUN": (0.0, 1.0, ""),
+}
+
+ALLOWED_CONTROL_SOFTPOINTS = {
+    **FREQUENCY_CONTROL_SOFTPOINTS,
+    **REMOTE_OUTPUT_CONTROL_SOFTPOINTS,
 }
 
 BOILER_MONITOR_ONLY_TAGS = {"TT1_T", "TT2_T", "LL5", "LL6", "M15_I", "M16_I"}

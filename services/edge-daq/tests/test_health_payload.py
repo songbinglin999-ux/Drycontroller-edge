@@ -123,8 +123,6 @@ def test_real_modbus_map_enables_v0_heartbeat_and_keeps_v1_sp_fail_closed():
         "VFM1_FREQ_SP",
         "VFM2_FREQ_SP",
         "VFM3_FREQ_SP",
-        "VF1_FREQ_SP",
-        "VF2_FREQ_SP",
         "VF3_FREQ_SP",
     ):
         assert address_map[tag]["address"] == "TBD"

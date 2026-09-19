@@ -8,6 +8,7 @@ from app.services.control_core.models import (
     BOILER_MONITOR_ONLY_TAGS,
     ControlRecommendation,
     ProcessSnapshot,
+    REMOTE_OUTPUT_CONTROL_SOFTPOINTS,
     SuggestedAction,
 )
 
@@ -92,15 +93,15 @@ def action_blocks(action: SuggestedAction) -> List[str]:
         return []
     if not action.target_softpoint:
         return ["EXECUTABLE_ACTION_MISSING_TARGET"]
+    if action.target_softpoint not in ALLOWED_CONTROL_SOFTPOINTS:
+        if action.target_softpoint.startswith("M"):
+            return ["MOTOR_FEEDBACK_WRITE_FORBIDDEN"]
+        return ["SOFTPOINT_NOT_ALLOWED"]
     if action.target_softpoint in BOILER_MONITOR_ONLY_TAGS:
         return ["BOILER_CONTROL_FORBIDDEN"]
-    if action.target_softpoint.startswith("M"):
-        return ["MOTOR_FEEDBACK_WRITE_FORBIDDEN"]
-    if action.target_softpoint not in ALLOWED_CONTROL_SOFTPOINTS:
-        return ["SOFTPOINT_NOT_ALLOWED"]
     if action.suggested_value is None:
         return ["SUGGESTED_VALUE_MISSING"]
-    if action.current_value is None:
+    if action.current_value is None and action.target_softpoint not in REMOTE_OUTPUT_CONTROL_SOFTPOINTS:
         return ["EXECUTABLE_ACTION_MISSING_CURRENT_VALUE"]
     lo, hi, _unit = ALLOWED_CONTROL_SOFTPOINTS[action.target_softpoint]
     if action.suggested_value < lo or action.suggested_value > hi:

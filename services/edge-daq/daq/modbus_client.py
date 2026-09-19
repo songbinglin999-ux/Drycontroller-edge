@@ -323,6 +323,56 @@ class ModbusClient:
 
         return False
 
+    async def write_coil(self, address: int, value: bool, retries: int = 2):
+        """
+        写入单个线圈（FC05）。
+        """
+        attempt = 0
+        while attempt <= retries:
+            attempt += 1
+            backoff = min(0.2 * (2 ** (attempt - 1)), 2.0)
+
+            if not await self.ensure_connected():
+                logger.warning("modbus_not_connected")
+                await asyncio.sleep(backoff)
+                continue
+
+            try:
+                start = time.time()
+                result = await self.client.write_coil(
+                    address=address,
+                    value=bool(value),
+                    slave=self.slave_id,
+                )
+
+                if result.isError():
+                    logger.error(
+                        "modbus_write_coil_error",
+                        address=address,
+                        value=bool(value),
+                        error=str(result),
+                    )
+                    self._update_failure(str(result))
+                    MODBUS_WRITE_FAILURE.labels("coil").inc()
+                    continue
+
+                logger.debug("modbus_write_coil_success", address=address, value=bool(value))
+                self.last_success_ts = time.time()
+                MODBUS_WRITE_SUCCESS.labels("coil").inc()
+                MODBUS_LAST_LATENCY_MS.labels("write").set((time.time() - start) * 1000)
+                return True
+
+            except ModbusException as e:
+                logger.error("modbus_write_coil_exception", address=address, error=str(e))
+                self._update_failure(str(e))
+            except (asyncio.TimeoutError, AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+                logger.error("modbus_write_coil_unexpected_error", address=address, error=str(e))
+                self._update_failure(str(e))
+
+            await asyncio.sleep(backoff)
+
+        return False
+
     async def write_registers(self, address: int, values: list[int], retries: int = 2):
         """
         写多个寄存器（功能码 16）
