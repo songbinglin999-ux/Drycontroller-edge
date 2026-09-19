@@ -178,6 +178,7 @@ services:
       - API_KEY_HEADER=${API_KEY_HEADER:-X-API-Key}
       - CONTROL_API_KEYS=${CONTROL_API_KEYS}
       - ADMIN_API_KEYS=${ADMIN_API_KEYS}
+      - HMI_PROXY_ENABLED=${HMI_PROXY_ENABLED:-false}
       # License 只读闭环：成对激活只由宿主 root 事务管理器执行
       - LICENSE_FILE_PATH=${LICENSE_FILE_PATH:-/etc/drycontroller/license/license.json}
       - LICENSE_TRUST_POLICY_PATH=${LICENSE_TRUST_POLICY_PATH:-/etc/drycontroller/keys/license-trust/policy.json}
@@ -271,16 +272,22 @@ services:
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
       - LOG_LEVEL=${LOG_LEVEL}
       - HEALTH_PORT=8080
+      - API_KEY_HEADER=${API_KEY_HEADER:-X-API-Key}
+      - HMI_PROXY_ENABLED=${HMI_PROXY_ENABLED:-false}
+      - HMI_PROXY_CONFIG=/app/configs/modbus-proxy.yaml
+      - HMI_PROXY_CONTROL_API_KEY_FILE=/run/secrets/hmi-proxy-control-key
     volumes:
       - /var/log/drycontroller/edge-daq:/logs/edge-daq
       - /var/lib/drycontroller/edge-daq/data:/data/edge-daq
       - ./configs:/app/configs:ro
       # 运行时可变配置（只读）：例如 PLC 通讯参数（由 edge-api 落盘后重启生效）
       - /var/lib/drycontroller/configs-runtime:/app/configs-runtime:ro
+      - ${HMI_PROXY_CONTROL_KEY_PATH:-/dev/null}:/run/secrets/hmi-proxy-control-key:ro
     ports:
       # 仅用于本机健康探针与 OTA 校验（脚本默认通过 localhost 校验）
       # 注意：edge-monitor 默认占用 8080，因此这里默认用 8082
       - "127.0.0.1:${EDGE_DAQ_HEALTH_PORT:-8082}:8080"
+      - "${HMI_PROXY_BIND_IP:-127.0.0.1}:2000:2000"
     networks:
       - edge-network
     depends_on:
