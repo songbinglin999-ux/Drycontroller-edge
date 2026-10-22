@@ -171,7 +171,7 @@ Edge/API/DAQ不可用且排他执行许可、本地授权、持久日志和未�
 
 ### 6.1 数据与命令链
 
-- 通讯事实：现场PLC已证标准Modbus TCP / 192.0.2.200:2000 / unit1；不是历史RTU-over-TCP口径。
+- 通讯：标准Modbus TCP（示例 `192.0.2.200:2000` / unit 1），见 [通讯参数说明](../plc/plc-comm-protocol.md)。
 - 常驻只读：M1001 / FC01 / 31001已验证；其他工艺值/写点不能从通讯成功外推。
 - 命令：来源身份/权限 → 模式与白名单/范围/时序检查 → 既有可信签发/DAQ执行 → PLC接受或拒绝 → 输出/独立反馈。
 - 结果未知不自动重发，不把Modbus回显当设备运行；原始输出与VFD真实反馈分开。
@@ -186,7 +186,7 @@ PLC维护锁仍在PLC侧锁存、仅人工解除，网络/心跳恢复不解锁�
 
 ### 6.3 当前清单与接口缺口
 
-点位、用途订正和弃用状态只维护于[控制契约](../plc/io-and-control-contract.md)：19项启停用途/21个M候选，4个启动参数；17个M只有隔离置1→M/Y读回证据。没有生产控制验收点。
+点位、用途订正和弃用状态只维护于[I/O 点表](../plc/io-map.html)：19项启停用途/21个M候选，4个启动参数；17个M只有隔离置1→M/Y读回证据。没有生产控制验收点。
 
 D30–D35未确认为可直写SP，D5100–D5699旧整包不是新方案强制前提。最小启停/调频/参数接口须基于当前梯形图核定并保留保护、防重放、拒绝与读回语义；未签收期间锁写，不保留新旧并行生产路径。
 
@@ -239,7 +239,7 @@ D30–D35未确认为可直写SP，D5100–D5699旧整包不是新方案强制�
 ## 9. 后续实施顺序
 
 1. 取得专用屏型号/工程与当前PLC梯形图，核对屏→Edge协议、M/D赋值和保护路径。
-2. 按[控制契约](../plc/io-and-control-contract.md)选用/弃用清单核定Edge在线主路径和HMI2离线兜底路径的接口、地址、类型、倍率、范围和生效条件。
+2. 按[I/O 点表](../plc/io-map.html)选用/弃用清单核定Edge在线主路径和HMI2离线兜底路径的接口、地址、类型、倍率、范围和生效条件。
 3. Edge主控、HMI2直连兜底、停止、过期/重复请求、断线/重启、结果未知、应急回切及保护覆盖先隔离测试，再按批准窗口逐点现场验收。
 4. 仅把验收通过的点加入生产白名单；自动调节单独验收。专用屏必要功能迁至HMI2后，且HMI2在线主路径和离线兜底都验收后，方可撤屏。
 
@@ -292,7 +292,6 @@ D30–D35未确认为可直写SP，D5100–D5699旧整包不是新方案强制�
 v2 被采纳后须持续同步以下文档，避免团队按旧链路继续实现：
 
 - `docs/ops/remote-debug-dev.md`：已改为宿主机 Tailscale / Headscale 运维说明。
-- `docs/archive/ops/provisioning-bootstrap.md`：旧 Provisioning USB 路径已归档，当前激活流程以 OS Installer USB + host tailnet / activation service 为准。
 - `docs/architecture/data-flow.md`：已同步为 suggestion -> edge-api signed command -> edge-daq。
 - `docs/architecture/control-strategy.md`：已同步为 suggestion / command 双协议。
 - `docs/architecture/system-overview.md`：已同步 edge-daq command 消费、ai-ctrl-optimizer 不直写 PLC 与 edge-api 进程内 License admission。

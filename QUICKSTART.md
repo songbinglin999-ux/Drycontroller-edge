@@ -270,7 +270,7 @@ docker-compose restart postgres
 
 1. 📖 阅读完整文档：[README.md](README.md)
 2. 🏗️ 了解系统架构：[docs/architecture/system-overview.md](docs/architecture/system-overview.md)
-3. 🚢 学习生产部署：[docs/archive/ops/deployment-guide.md](docs/archive/ops/deployment-guide.md)
+3. 🚢 学习生产部署：[docs/ops/device-prep.md](docs/ops/device-prep.md)
 4. 🔧 配置 PLC 连接：修改 `configs/tags.yaml` 和 `.env` 中的 PLC 配置
 
 ## 获取帮助

@@ -2,7 +2,7 @@
 
 ## 背景
 
-2026-05-30 边缘机离线事故（见 `architecture-audit-2026-05-06.md` P2-N10）：
+2026-05-30 边缘机离线事故：
 手动 `sed` 给 `docker-compose.yml` 注入含 YAML anchor 的 ulimits 块时，`&` 转义陷阱
 导致 YAML 语法错误，`down` 后 `up` 失败，远程通道断联 >21h。
 

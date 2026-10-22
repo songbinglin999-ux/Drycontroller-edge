@@ -1,7 +1,7 @@
 # Known Issues — Drycontroller-edge
 
 本文件记录 edge 仓的细粒度技术债与已知问题（非上线阻塞项）。
-上线阻塞 / 架构级风险记入根 `architecture-audit-2026-05-06.md`，不在此处。
+上线阻塞 / 架构级风险请提交 GitHub Issue，不在此处。
 
 ---
 

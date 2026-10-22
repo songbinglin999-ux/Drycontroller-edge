@@ -3,7 +3,7 @@
 Audit item `FACTORY-DEVICE-PREP-20260903`. Turns a brand-new IPC running a
 stock Ubuntu Server 24.04 into an **unregistered, lane-ready** factory Edge
 device. Identity, License and Tailnet binding happen later, only on the
-factory lane (see the cloudserver repo's `docs/ops/factory-provisioning.md`).
+factory lane (the cloud-side factory lane belongs to the companion cloud server (separate project, not included in this repository)).
 
 ## OS install convention (the only worker skill required)
 
@@ -28,8 +28,8 @@ The wrapper assembles a **secret-free** bundle and pushes it to the device:
 | Bundle input | Source |
 |---|---|
 | exact repo tree | `git archive HEAD` of a **clean** edge checkout |
-| identity wheelhouse | built on the staging ECS (`dry-edge-v4`), cached locally per `requirements.txt` + HEAD |
-| tailscale `.deb` | pinned version + sha256 from cloudserver `infra/headscale/versions.lock.json` |
+| identity wheelhouse | built on a Linux build host (`edge-build-host`, configurable), cached locally per `requirements.txt` + HEAD |
+| tailscale `.deb` | pinned version + sha256 from a `versions.lock.json` you provide (`--versions-lock`) |
 | cloud identity **public** key | derived read-only inside the cloud-ops container, checked against the cloud-recorded fingerprint |
 | `public-config.json` | generated from flags (cloud URL, tailnet address, login server, lane NIC) |
 | operator SSH key | `--authorized-keys` (default `~/.ssh/id_ed25519.pub`) |

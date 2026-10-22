@@ -1,6 +1,6 @@
 # 数据库迁移（Alembic）— edge-api
 
-本文档说明 edge-api PostgreSQL schema 演进工具与流程。**核心流程与 cloudserver 一致**——完整版见 [`Drycontroller-cloudserver/docs/ops/db-migrations.md`](https://git.example.com/example-org/Drycontroller-cloudserver/src/branch/main/docs/ops/db-migrations.md)，本文档只记录 edge-api 的差异点。
+本文档说明 edge-api PostgreSQL schema 演进工具与流程。配套云端服务（不在本仓库）使用相同流程。
 
 > **当前阶段：Phase B 完整切换完成 2026-05-14。**
 > Alembic 接管 edge-api PostgreSQL schema：容器 entrypoint 跑 `alembic upgrade head` 再启 uvicorn。
@@ -43,4 +43,4 @@ config.set_main_option("sqlalchemy.url", settings.database_url)  # ← 小写 pr
 
 ## 对应关系
 
-详见顶层归档 [`p1-roadmap-2026-05-07.md`](../../../docs/workspace/archive/p1-roadmap-2026-05-07.md) **P1-5 / 5.7**。
+

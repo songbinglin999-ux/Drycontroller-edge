@@ -175,7 +175,7 @@ def test_registry_credential_refresh_binds_root_status_to_precommitted_audit(mon
                 if key != "secret"
             } | {
                 "status": "active",
-                "registry_host": "git.example.com",
+                "registry_host": "registry.example.com",
                 "updated_at": "2026-08-19T00:00:00+00:00",
             }
             return self.status_payload
@@ -194,7 +194,7 @@ def test_registry_credential_refresh_binds_root_status_to_precommitted_audit(mon
         "/api/v1/ops/registry-credentials/refresh",
         json={
             "credential_id": "cred-1",
-            "registry_host": "https://git.example.com/",
+            "registry_host": "https://registry.example.com/",
             "username": "robot$edge",
             "secret": "robot-secret",
             "secret_fingerprint": "fp-1",
@@ -206,7 +206,7 @@ def test_registry_credential_refresh_binds_root_status_to_precommitted_audit(mon
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["success"] is True
-    assert body["credential"]["registry_host"] == "git.example.com"
+    assert body["credential"]["registry_host"] == "registry.example.com"
     assert "secret" not in body["credential"]
     assert "robot-secret" not in json.dumps(body)
     assert observed["secret"] == "robot-secret"

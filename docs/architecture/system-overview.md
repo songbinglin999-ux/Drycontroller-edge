@@ -18,7 +18,7 @@
 
 - **安全联锁**：超温/硬件安全联锁在 PLC/硬件侧完成；边缘侧只做监测、告警、建议与受控下发。
 - **多机高可用**：本目标为单机；不讨论双机热备/集群。
-- **云端统一管控**：云端运维与资产管理不在本仓库范围（`Drycontroller-cloudserver` 另算）。
+- **云端统一管控**：云端运维与资产管理不在本仓库范围（配套云端服务为独立项目，不在本仓库）。
 
 ---
 
@@ -96,7 +96,7 @@ AI 服务、配置和 Edge API 产品接口已从活动仓删除；恢复任何 
 
 ### 3.2 未实现/需谨慎承诺
 
-非 PLC、非控制优化类的产品能力补齐总设计见：`Drycontroller-cloudserver/docs/ops/product-hardening-design.md`。
+非 PLC、非控制优化类的产品能力补齐总设计见：[product-hardening-design.md](../ops/product-hardening-design.md)。
 
 - **OTA 蓝绿发布**：当前 `edge-app-v1` 只支持精确两服务的候选健康验收和确定性回滚；不实现 HostRelease 或并行环境与流量切换意义上的蓝绿发布。
 - **数据级补偿（Influx 不可用时缓存补写）**：当前未形成统一的本地缓存补写机制。

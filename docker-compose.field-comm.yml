@@ -1,7 +1,9 @@
+# Read-only field communication profile (example values, RFC 5737 range).
+# Set PLC_HOST to your PLC address. No writable addresses or heartbeat writes.
 services:
   edge-daq:
     environment:
-      PLC_HOST: "192.0.2.200"
+      PLC_HOST: "${PLC_HOST:-192.0.2.200}"
       PLC_PORT: "2000"
       PLC_SLAVE_ID: "1"
       MODBUS_FRAMER: "socket"

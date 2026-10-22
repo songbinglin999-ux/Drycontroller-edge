@@ -258,12 +258,16 @@ async def _wait_for_port(port: int, proc: asyncio.subprocess.Process, timeout_se
     pytest.fail(f"fake PLC did not listen on port {port}")
 
 
+def _plc_sim_dir() -> Path:
+    """Optional external PLC simulator checkout (not part of this repository)."""
+    return Path(os.environ.get("PLC_SIM_DIR", "/nonexistent-plc-sim")).resolve()
+
+
 async def _start_fake_plc(port: int) -> asyncio.subprocess.Process:
-    workspace = Path(__file__).resolve().parents[4]
-    plc_repo = workspace / "Drycontroller-plc"
+    plc_repo = _plc_sim_dir()
     fake_plc = plc_repo / "simulator" / "fas66mt_fake_plc.py"
     if not fake_plc.exists():
-        pytest.skip("Drycontroller-plc fake PLC repo is not available")
+        pytest.skip("optional external PLC simulator (PLC_SIM_DIR) is not available")
 
     env = dict(os.environ)
     env["PYTHONPATH"] = str(plc_repo)
@@ -325,10 +329,9 @@ async def _read_until_nak(client: ModbusClient, seq: int, timeout_sec: float = 2
 
 
 def _load_plc_core() -> ModuleType:
-    workspace = Path(__file__).resolve().parents[4]
-    plc_repo = workspace / "Drycontroller-plc"
+    plc_repo = _plc_sim_dir()
     if not (plc_repo / "simulator" / "fas66mt_core.py").exists():
-        pytest.skip("Drycontroller-plc simulator core is not available")
+        pytest.skip("optional external PLC simulator core (PLC_SIM_DIR) is not available")
     if str(plc_repo) not in sys.path:
         sys.path.insert(0, str(plc_repo))
 

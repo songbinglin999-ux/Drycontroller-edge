@@ -21,8 +21,8 @@ TAILNET_ADDRESS="100.100.0.10"
 LOGIN_SERVER="https://headscale.example.com"
 AUTHORIZED_KEYS=""
 CACHE="${HOME}/.cache/drycontroller/device-prep"
-VERSIONS_LOCK="${EDGE_ROOT}/../Drycontroller-cloudserver/infra/headscale/versions.lock.json"
-ECS_ALIAS="dry-edge-v4"
+VERSIONS_LOCK="${DRYCONTROLLER_VERSIONS_LOCK:-${EDGE_ROOT}/../cloud/infra/headscale/versions.lock.json}"
+ECS_ALIAS="edge-build-host"
 CLOUD_OPS_CONTAINER="drycontroller-cloud-ops"
 SHUTDOWN_ARG=""
 
@@ -43,9 +43,9 @@ Options:
   --login-server URL      default https://headscale.example.com
   --authorized-keys FILE  default ~/.ssh/id_ed25519.pub (or id_rsa.pub)
   --cache DIR             bundle cache (default ~/.cache/drycontroller/device-prep)
-  --versions-lock FILE    cloudserver versions.lock.json pinning the tailscale deb
+  --versions-lock FILE    versions.lock.json pinning the tailscale deb (from your cloud project)
   --ecs ALIAS             Linux box used to build the wheelhouse and derive the
-                          cloud identity public key (default dry-edge-v4)
+                          cloud identity public key (default edge-build-host)
   --shutdown              power the device off after a PASS
 EOF
 }

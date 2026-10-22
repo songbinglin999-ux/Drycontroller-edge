@@ -8,12 +8,10 @@ edge 侧代码路径不变。
 
 作用范围：本模拟器只跑 34 个生产读点位的最小帧重放（D0-D21 / D40-D44 /
 D45-D46 / D53 + 6 个 LL 线圈），不实现 D5100-D5299 频率事务 ACK/NAK、
-D5290-D5293 心跳、D5400-D5415 owner/epoch 授权。需要验 edge 握手契约
-完整闭环（PLC_HEARTBEAT 翻转、EDGE_HOST_ALIVE 写入、D5100 单路频率
-请求 ACK/NAK、权限申请/被抢权 suspend）请用 Drycontroller-plc/
-simulator/fas66mt_fake_plc.py，端口/帧/站号一致可直接换。
+D5290-D5293 心跳、D5400-D5415 owner/epoch 授权。需要验 edge 握手契约完整闭环（心跳翻转、频率请求 ACK/NAK、权限申请）
+请使用实现了这些寄存器的 PLC 模拟器（不在本仓库）。
 
-点位来自集成商真实点表「数据点位表.csv」的 DryController 当前「读」点（D 字寄存器，0x03）：
+点位来自示例产线点表中的 DryController 当前「读」点（D 字寄存器，0x03）：
   电流 D0-D21 / 温度湿度 D40-D45 / 湿度状态 D53。
 D30-D35 属于 PLC 原工程/PLC 屏侧旧频率链路，不进入 DryController 采集或控制路径。
 Modbus 地址 = D_BASE + D 序号（PLC 偏移表：D0=40000）。

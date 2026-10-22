@@ -15,9 +15,7 @@ P1-8 Phase C: 当前所有 service 都通过 `os.getenv("MQTT_TOPIC_*", "<defaul
 
 **不在此文件**：实际的 publish/subscribe 调用、MQTT client 配置、ACL 规则。
 
-cloud-ops 不消费 MQTT，因此 cloud-ops 仓库不镜像本文件（P1-8 phase C
-decision，见 Drycontroller-cloudserver/docs/architecture/shared-schemas.md
-"哪些代码进 schema 包"段落更新）。
+cloud-ops 不消费 MQTT，因此配套云端服务不镜像本文件。
 """
 from __future__ import annotations
 

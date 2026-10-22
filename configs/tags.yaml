@@ -1,5 +1,5 @@
 # 全栈位号契约：canonical = 系统唯一编号 + 量纲后缀（_I 电流 / _FREQ 频率 / _T 温度 / _H 湿度）；
-# 料位/限位开关用系统编号 LL*（DI bool）。2026-06-20 对账自集成商真实点表，对照见 ../../plc-tag-mapping/。
+# 料位/限位开关用系统编号 LL*（DI bool）（示例产线点表）。
 # 地址/scale/字序/function_code 外置在 modbus-address-map.yaml。控制软点单列；DryController 不采集、不写入 D30-D35 旧频率链路。
 naming:
   format: "{SYSTEM_ID}_{KIND}"

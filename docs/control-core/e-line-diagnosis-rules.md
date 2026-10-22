@@ -3,7 +3,7 @@
 > 状态：v0.2 草案（2026-06-19 CST）
 > 范围：pre-AI 可解释诊断 / V1 AUTO 六频率目标建议；不做完整监督控制
 > 点位来源：`docs/plc/io-map.html` + `configs/tags.yaml` 当前真实 28D+6 只读 I/O 点；下文旧 52 点名仅作历史规则草案参考
-> 关联边界：`docs/plc/io-and-control-contract.md`、根 `architecture-audit-2026-05-06.md` E 线
+> 关联边界：`docs/plc/io-map.html`
 > 自适应治理：`docs/algorithm-governance/self-evolution-design.md`
 
 ---

@@ -4,18 +4,37 @@ FROM docker.io/library/rust:1.83.0-slim-bookworm@sha256:0f0dc99eb74e410d9420149c
 
 FROM docker.io/library/rust:1.83.0-alpine@sha256:4bebaa3d13e2933c751eaf4a2e38d0530807572ea101d9c61f20f51eb7174ee4 AS rust-musl-target
 
+# Cargo vendor tree for libflux, regenerated at build time instead of shipping a
+# tarball in git. Inputs are pinned: the flux source archive by sha256, and every
+# crate by the checksums in libflux/Cargo.lock (sha256 recorded in
+# cargo-vendor-v0.200.0.provenance.json -> flux_source.cargo_lock_sha256).
+FROM docker.io/library/rust:1.83.0-slim-bookworm@sha256:0f0dc99eb74e410d9420149cbb2b9be84abe00e8dbed6a4201a591a2c81844df AS flux-cargo-vendor
+
+ADD --checksum=sha256:ee9f2026f66945d84b0284048b10a4434d9a8cf3e9c9cb000c11629a32a3578f \
+    https://codeload.github.com/influxdata/flux/tar.gz/b03b6bce7c27b8accc0cd00b12e32439a8fe19c3 \
+    /tmp/flux.tar.gz
+
+RUN mkdir -p /src/flux \
+    && tar -xzf /tmp/flux.tar.gz -C /src/flux --strip-components=1 \
+    && echo '04184b5eaaf27711adbcef4023bf89183c6f5c249701bc10e94c6dea82230175  /src/flux/libflux/Cargo.lock' | sha256sum -c - \
+    && test "$(cargo --version)" = "cargo 1.83.0 (5ffbef321 2024-10-29)" \
+    && cd /src/flux/libflux \
+    && cargo vendor --locked --versioned-dirs /opt/cargo-vendor > /dev/null \
+    && test "$(find /opt/cargo-vendor -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 188 \
+    && grep -F '"package":"2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"' \
+        /opt/cargo-vendor/libc-0.2.177/.cargo-checksum.json
+
 FROM quay.io/influxdb/cross-builder@sha256:af550a559d42095b3cec8ccfdea614ac2364d924fc8e16813fc2a2e693477630 AS influxd-builder
 
 COPY --from=rust-host-toolchain /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-gnu /opt/rust-toolchain
 COPY --from=rust-musl-target /usr/local/rustup/toolchains/1.83.0-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl /opt/rust-toolchain/lib/rustlib/x86_64-unknown-linux-musl
-COPY infra/release-images/influxdb/cargo-vendor-v0.200.0.tar.gz /tmp/cargo-vendor.tar.gz
-COPY infra/release-images/influxdb/ui-oss-v2.9.0.tar.gz /tmp/influxdb-ui.tar.gz
+COPY --from=flux-cargo-vendor /opt/cargo-vendor /opt/cargo-vendor
+# InfluxDB UI build, fetched at build time; sha256/size from ui-oss-v2.9.0.provenance.json.
+ADD --checksum=sha256:9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e \
+    https://github.com/influxdata/ui/releases/download/OSS-v2.9.0/build.tar.gz \
+    /tmp/influxdb-ui.tar.gz
 
-RUN echo 'deabeee4a940f709b56556632c1fc56abdcd21a6f6b4c54f15308aa182ce8a4f  /tmp/cargo-vendor.tar.gz' | sha256sum -c - \
-    && echo '9cb2df818f1f5badc23e051f51eef7e8b143540233947606eadad309f395bb0e  /tmp/influxdb-ui.tar.gz' | sha256sum -c - \
-    && test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
-    && mkdir -p /opt/cargo-vendor \
-    && tar -xzf /tmp/cargo-vendor.tar.gz -C /opt/cargo-vendor \
+RUN test "$(wc -c < /tmp/influxdb-ui.tar.gz)" -eq 19844077 \
     && test "$(find /opt/cargo-vendor -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 188 \
     && grep -F '"package":"2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"' \
         /opt/cargo-vendor/libc-0.2.177/.cargo-checksum.json \

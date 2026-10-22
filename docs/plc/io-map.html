@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>产线 I/O 点表（真实点表对账版）— DryController</title>
+<title>产线 I/O 点表（示例点表）— DryController</title>
 <style>
   :root{--fg:#1f2733;--muted:#5b6675;--line:#e2e6ec;--accent:#2f6fb0;--th:#f0f3f7;--zebra:#fafbfc;--ok:#1e8a4c;--warn:#9a6b00}
   *{box-sizing:border-box} html{scroll-behavior:smooth}
@@ -48,9 +48,9 @@
 </head>
 <body>
 <header class="h">
-  <div class="t">产线 I/O 点表 · 真实点表对账版（V0 只读）</div>
+  <div class="t">产线 I/O 点表 · 示例点表（V0 只读）</div>
   <div class="m">
-    <b>来源</b>：SamSoar 当前导出 <code>1.csv</code> / <code>2.csv</code> / <code>3.csv</code>（2026-06-23）+ 系统唯一编号对账（<code>plc-tag-mapping/</code>）<br>
+    <b>来源</b>：示例产线点表（PLC 工程导出 + 系统唯一编号对账）<br>
     <b>位号约定</b>：canonical = 系统唯一编号 + 量纲后缀（<code>_I</code> 电流 / <code>_FREQ_SP</code> 频率目标 / <code>_T</code> 温度 / <code>_H</code> 湿度）；解决设备号电流/控制目标撞车。<br>
     <b>通讯</b>：Modbus RTU-over-TCP（端口 2022 / 站号 1）；读点地址 = 4x(40000+D序号)。<b>关联</b>：<code>edge configs/tags.yaml</code> / <code>modbus-address-map.yaml</code>。<br>
     <b>安全/控制/报警</b>：<a href="plc-safety-contract.html">安全契约</a> · <a href="plc-control-logic.html">控制逻辑</a> · <a href="plc-alarm-spec.html">报警规范</a>。<br>

@@ -1,50 +1,56 @@
-# 专用屏 Modbus TCP 代理接入
+# HMI Modbus TCP proxy / 专用屏 Modbus TCP 代理
 
-2026-09-19 · 对应根审计 `PLC-EDGE-SINGLE-CONTROL-20260918`。本地实现/隔离测试，不代表现场已部署或写入已签收。唯一点位依据仍为 [I/O契约](io-and-control-contract.md)。同日人类修正：本代理是专用屏经Edge的在线主路径，不是HMI2离线直连PLC兜底；HMI2兜底另按控制策略核定。
+An optional, address-preserving Modbus TCP proxy that lets an existing vendor
+HMI keep its original PLC project while all traffic flows through the Edge.
+**Disabled by default; writes are disabled by default.**
 
-## 给 PLC / 专用屏工程师
+可选的“同地址”Modbus TCP 代理：原有厂商 HMI 工程不改地址，只把目标 IP 改为 Edge。
+默认关闭，默认禁写。
 
 ```text
-专用屏 192.0.2.100
-  └─ 标准 Modbus TCP 客户端 → Edge现场IP:2000 / unit 1
-                                 └─ 标准 Modbus TCP → PLC 192.0.2.200:2000 / unit 1
+Vendor HMI 192.0.2.100
+  └─ Modbus TCP client → Edge field IP:2000 / unit 1
+                           └─ Modbus TCP → PLC 192.0.2.200:2000 / unit 1
 ```
+(All addresses are documentation-range examples.)
 
-1. 保留PLC当前IP、Modbus TCP服务端和原寄存器。通常改的是**专用屏工程中所连接PLC的目标IP**，改为Edge，不是把PLC自身IP改为Edge。
-2. 原Edge在9月18日的现场辅助地址为 `192.0.2.249`；`192.0.2.250`是另一台tmp辅助机。部署时重新核对目标主机/接口，正式监听验收通过前不要切屏。`192.0.2.249:2000`是待部署核定目标，不是已在线代理地址。
-3. 屏驱动必须为标准Modbus TCP/MBAP。原寄存器地址、数据类型、倍率、字节序不改；代理转发报文原始地址，不把“M140”自动换算成140，也不转换4xxxx显示地址。
-4. 提供屏的通讯设置和读写点导出：功能码、原始PDU地址、读数量、写值、按下/松开行为、宏/周期写、通讯超时和重试。逐项核对启动、停止、调频，以及写命令可重复执行是否安全；周期写不进入人工操作白名单。
-5. PLC急停、保护、联锁、顺控和本地/检修限制继续生效。D30–D35是否可直写、停止位是否保持等仍需当前PLC程序证明，点表注释本身不是写许可。
-6. 先验读取和断线显示，再在约定动力隔离窗口验写。现场切换后关闭专用屏原直写PLC路径，核验没有未授权上位写入绕过Edge；HMI2离线直连PLC是单独签收的应急能力，不与本代理在线写入并行。
+## Behaviour
 
-两块屏与自动算法的最新控制权规则见[控制策略§3](../architecture/control-strategy.md)：Edge在线时两屏同级，新的有效人工操作自动接管，无须原屏移交；Edge不可用且排他许可等签收条件成立时HMI2可进入应急直连PLC模式；同时操作、按钮收尾、失联与回切另有约束。**下述代理初版尚未实现完整三来源仲裁或HMI2直连兜底**，尤其不能把现有逐请求排队冒充“两屏重叠拒绝”、把Modbus写报文本身冒充真人操作。新增规则先作为后续实现/验收依据，不改变当前默认禁写状态。
+- Runs inside `edge-daq` (`HMI_PROXY_ENABLED=true` on **both** `edge-api` and
+  `edge-daq`). FC01/02/03/04 reads are forwarded on demand; FC05/06/15/16
+  writes are only forwarded when they match an explicit rule.
+- Standard MBAP on both sides; transaction id, unit, function code, length and
+  write echo are validated. PLC timeouts return gateway exception `0x0B`; no
+  cached or fake responses.
+- At most `max_clients` HMI connections and one upstream PLC request in flight.
+- A permitted write first switches the line to MANUAL via
+  `POST /api/v1/control/vendor-hmi/takeover` (control API key from
+  `HMI_PROXY_CONTROL_API_KEY_FILE` + `production-control` license gate).
+- Before a write, a journal entry is fsync'ed. Timeout / bad echo / disconnect
+  keeps the **unknown-result lock**: later writes are refused until an operator
+  verifies PLC state and clears the journal manually. There is no auto-unlock.
+- The proxy never retries writes. MBAP transaction ids are not idempotency keys.
 
-## 当前实现
+## Configuration
 
-- 运行于 `edge-daq`，不增加产品服务；代理默认关闭。支持FC01/02/03/04按需读取，FC05/06/15/16按逐地址写规则处理；不支持的功能码返回异常。
-- 两侧均标准Modbus TCP；报文地址、值与合法PLC响应保持。MBAP事务号、unit、响应功能码/长度和写回显均校验。读返回真实PLC响应；超时返回0x0B网关异常，不使用旧值或虚假成功。
-- 默认最多2个屏连接、一个代理上游PLC连接，单个请求串行，超时有界。DAQ既有只读采集另占其原连接；不是整个系统只有一个TCP连接。
-- 读取不改变模式。有效白名单写经控制API key与`production-control` License门禁后使Edge保持MANUAL；未发AUTO撤销，旧在途结果待确认，失败/未知拒绝本次写。模式由原Edge状态接口供HMI2消费。
-- 代理模式不启动旧MQTT控制订阅，拒绝与D5100 writer、周期PLC写、旧可写映射共存。两服务同时启用代理模式后，旧六SP/HMI2在线写接口及AUTO授权返回明确拒绝。新点位自动/HMI2在线控制和尚未实现的HMI2离线直连兜底需另行签收，本版不猜测地址或绕过旧门禁。
-- 写前在持久目录创建并fsync记录；响应正常或明确非法功能/地址/值拒绝（01/02/03）后清除。超时、断线、取消、回显错配和其他执行异常保留锁，后续写返回06忙/不可用；诊断读可继续。不能以重启或重复请求清锁。
-- MBAP事务号不能提供跨连接去重。只开放有工程证据证明可安全重复的写点；代理自身不重试，不承诺阻止屏内部重发。Modbus回显不代表设备已运行。
+Template: [`configs/modbus-proxy.yaml`](../../configs/modbus-proxy.yaml)
+(`write_enabled: false`, one narrow example range). To enable writes you must:
 
-此版写规则只实现原始值范围校验，不冒充旧控制链的变化率、冷却或工艺约束。开放每个写点前，须签收这些必要约束已由PLC保护覆盖；若PLC未覆盖，则该点保持禁写，先补相应Edge校验和测试。签收`repeat_safe`不替代保护验收。屏超时/重试应结合代理排队、模式交接与PLC响应的最坏等待时间核定，避免重复提交操作。
+1. set `write_enabled: true` **and** `source_network_verified: true`;
+2. list each address/range with `min`, `max`, `repeat_safe: true` and an
+   `evidence` reference to your engineering sign-off;
+3. bind the listener to one field interface (`HMI_PROXY_BIND_IP`) and firewall
+   it so only the HMI can reach it.
 
-## 配置与发布边界
+An allowed source IP is **not** an identity — Modbus TCP is unauthenticated and
+IPs can be spoofed on the same LAN. Network isolation is mandatory; see
+[SECURITY.md](../../SECURITY.md).
 
-配置模板：[`configs/modbus-proxy.yaml`](../../configs/modbus-proxy.yaml)。2026-09-19现场调试按人类明确要求启用专用HMI全D区写入窗口：`write_enabled: true`，`write_ranges`开放holding地址`40000–48191`（即D0–D8191，沿用项目现有D区地址偏移D0→40000），用于原vendor屏全D写入调试。`source_network_verified`不能代替实际网络配置：仅专用屏IP不构成密码学身份，现场需绑定指定网卡地址并限制可达来源，检修/其他设备不能伪装来源访问代理。
+## Acceptance
 
-写规则使用**报文原始地址**，区分`coil`与`holding`；逐点`write_rules`或连续`write_ranges`均须明确`min/max`、`repeat_safe: true`和工程签收`evidence`。批量写每个地址都须匹配，跨边界或任一越界则整次拒绝，不部分写入。
-
-`HMI_PROXY_ENABLED=true`必须同时配置在edge-api与edge-daq。DAQ通过内部`http://edge-api:8000/api/v1/control/vendor-hmi/takeover`，使用只读挂载凭证文件`HMI_PROXY_CONTROL_API_KEY_FILE`；该凭证须属于API现有CONTROL_API_KEYS，禁止把密钥写进版本库或屏工程。API未启代理/不可达/凭证失效/License不允许时不发送PLC写。
-
-[`docker-compose.hmi-proxy.yml`](../../docker-compose.hmi-proxy.yml)只是接入配置模板，需配合现场已验收的field-comm配置审核采用。它要求显式设置`HMI_PROXY_BIND_IP`和`HMI_PROXY_CONTROL_KEY_PATH`；绑定和防火墙属于主机维护，不能由应用OTA冒充完成。**不要在现场执行旧整栈Compose up**：原现场两服务发布、只读点表和基础设施保持原合同；将审核后的监听/挂载/environment纳入实际两服务部署配置，再经现有签名应用发布流程更新代码。
-
-持久锁文件默认`/data/edge-daq/hmi-proxy-write.json`，必须使用现有持久卷。解除未知结果锁前：停止接收屏操作、现场核对PLC状态及最后请求、确认无在途和无重试、由维护人员保存该记录并按批准窗口处理锁，随后重新验读。代码不提供自动解锁、API解锁或重放机制。磁盘失败同样拒绝写。
-
-## 验收
-
-本地测试必须覆盖真实回环TCP中的读写双向转发、分片/粘包、所有支持功能码、批量范围/非法值、来源与unit拒绝、超时/错响应、持久锁及重试拒绝；模式测试覆盖未发AUTO撤销、在途等待/未知拒绝、旧AUTO回执不覆盖MANUAL；API测试覆盖控制key和License拒绝。
-
-现场仍需验：屏真实驱动兼容、点位/宏/停止语义、异常显示、负载与连接数、来源网络限制、断线重启、动力隔离写与保护行为。未通过这些项目不得开放生产控制；自动调节、HMI2在线写入和HMI2离线直连PLC兜底另按已核定点位完成验收。
+Local tests cover real loopback TCP forwarding, fragmentation, all supported
+function codes, range/value rejection, source/unit rejection, timeouts,
+the persistent lock and API-key/license rejection
+(`services/edge-daq/tests/`, `services/edge-api/tests/test_vendor_hmi_takeover.py`).
+Field acceptance (driver compatibility, alarm display, power-isolated write
+tests, PLC protections) is the integrator's responsibility.

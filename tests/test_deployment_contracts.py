@@ -70,11 +70,11 @@ def test_edge_daq_binds_line_identity_and_persists_publish_buffer():
 def test_runtime_excludes_retired_services_and_product_surfaces():
     retired_services = {"license-service", "ai-softsensor", "ai-ctrl-optimizer"}
     retired_paths = {
-        ".gitea/workflows/edge-gate-c-build.yml",
-        ".gitea/workflows/edge-host-release.yml",
-        ".gitea/workflows/edge-release-handoff-recovery.yml",
-        ".gitea/workflows/edge-release-public-keys.yml",
-        ".gitea/workflows/edge-software-release.yml",
+        ".github/workflows/edge-gate-c-build.yml",
+        ".github/workflows/edge-host-release.yml",
+        ".github/workflows/edge-release-handoff-recovery.yml",
+        ".github/workflows/edge-release-public-keys.yml",
+        ".github/workflows/edge-software-release.yml",
         "configs/ai-config.yaml",
         "infra/autoinstall/user-data",
         "infra/autoinstall/post-install.sh",

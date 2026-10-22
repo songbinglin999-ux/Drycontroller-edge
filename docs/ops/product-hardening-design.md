@@ -1,9 +1,9 @@
 # 产品能力补齐设计（非 PLC / 非控制优化）
 
-本文档总入口位于 cloudserver：
+本文档的总入口位于配套云端服务项目（不在本仓库）。
 
 ```text
-Drycontroller-cloudserver/docs/ops/product-hardening-design.md
+
 ```
 
 本文件保留在 edge 仓库中，作为边端研发入口。边端需要实现的部分包括：

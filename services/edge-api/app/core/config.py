@@ -56,12 +56,11 @@ class Settings(BaseSettings):
     API_KEY_HEADER: str = "X-API-Key"
     CONTROL_API_KEYS: List[str] = []
     ADMIN_API_KEYS: List[str] = []
+    # Loopback-only by default. Set READONLY_WS_ALLOWLIST explicitly (CIDRs or
+    # exact hosts) for big-screen / LAN readers after network review.
     READONLY_WS_ALLOWLIST: List[str] = [
         "127.0.0.1/32",
         "::1/128",
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
     ]
     
     # 配置文件路径

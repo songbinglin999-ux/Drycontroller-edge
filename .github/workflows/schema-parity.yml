@@ -1,0 +1,23 @@
+name: schema-parity
+
+# Optional. Only meaningful if you run a companion cloud server that mirrors
+# common/schemas/cloud_to_edge.py. Set the repository variable
+# PEER_SCHEMA_RAW_BASE_URL (and optionally secret PEER_SCHEMA_TOKEN);
+# otherwise the check is skipped.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run schema parity check
+        env:
+          PEER_SCHEMA_RAW_BASE_URL: ${{ vars.PEER_SCHEMA_RAW_BASE_URL }}
+          PEER_SCHEMA_TOKEN: ${{ secrets.PEER_SCHEMA_TOKEN }}
+        run: bash scripts/check-shared-schemas-sync.sh

@@ -1,22 +1,119 @@
-# Drycontroller Edge
+# DryController Edge
 
-`Drycontroller-edge` is the edge IPC runtime for DryController. It runs the local
-industrial stack close to the PLC: data acquisition, control execution,
-in-process License verification, health monitoring, audit/outbox syncing, and
-application OTA execution.
+**English** · [中文](#中文简介)
 
-This repository is one of three independent DryController repos:
+An open-source **edge controller runtime for industrial dryer lines**. It runs on
+an industrial PC next to the PLC and provides data acquisition over Modbus TCP,
+a supervised control path, a local API and dashboards, health monitoring,
+TPM-bound device identity and licensing, and signed application OTA updates.
 
-| Repo | Role | Branch |
-|---|---|---|
-| `Drycontroller-edge` | Edge IPC runtime | `master` |
-| `Drycontroller-cloudserver` | Cloud Ops, Cloud Console, Headscale, activation tooling | `main` |
-| `Drycontroller-frontend` | Large-screen dashboard frontend | `main` |
+> Status: production-derived code released as a generic reference
+> implementation. Site-specific configuration has been replaced with examples.
+> Read [SECURITY.md](SECURITY.md) before connecting it to real equipment.
 
-The top-level workspace audit is the source of truth for cross-repo status:
-`../architecture-audit-2026-05-06.md`.
+## Features
 
-## Current State
+- **edge-daq** – Modbus TCP/RTU-over-TCP acquisition, MQTT publish, InfluxDB
+  writes, signed control-command execution, optional address-preserving HMI
+  proxy (writes off by default).
+- **edge-api** – FastAPI REST + WebSocket gateway, API-key/HMAC auth, MANUAL /
+  AUTO control orchestration, in-process license admission, audit/outbox.
+- **edge-monitor** – service health, Prometheus metrics, self-healing policy.
+- **device-identity** – TPM 2.0 (ECDSA P-256) device identity, factory
+  enrollment over an isolated link, 24h credential rotation.
+- **Licensing** – Ed25519-signed, device/TPM-bound licenses with atomic
+  trust-policy + license pair activation and crash-safe recovery.
+- **OTA** – cosign-signed two-image `edge-app-v1` releases, root-owned helper on
+  a UNIX socket, deterministic rollback, DB-migration gate.
+- **Tailnet ingress** – optional Tailscale/Headscale-only admin ingress through
+  a strict single-request proxy.
+- **ops-console** – small Svelte operations console.
+
+## Architecture
+
+```text
+            ┌──────────────── Edge IPC (Docker + systemd) ────────────────┐
+ PLC ◀─Modbus TCP─▶ edge-daq ──MQTT──▶ Mosquitto ◀── edge-api ◀── HMI / dashboard
+                     │                                  │  ▲
+                     └──▶ InfluxDB      PostgreSQL ◀────┘  │ REST / WS (API key, HMAC)
+                                                           │
+   edge-monitor ─▶ Prometheus / Alertmanager                │
+   device-identity (TPM) · license verifier · OTA helper (UDS, root) ─┘
+            └──────────────── optional tailnet ingress ─▶ companion cloud ┘
+```
+
+The companion cloud server (fleet management, activation, release registry) is a
+separate project and is **not** included; the edge runtime runs standalone.
+Shared cloud↔edge schemas are vendored in `common/schemas/`.
+
+## Quick start (simulator, no hardware)
+
+```bash
+cp env.example .env          # replace every change_me_* value
+docker compose -f docker-compose.yml -f docker-compose.sim.yml up -d --build \
+    postgres influxdb mosquitto modbus-sim edge-api edge-daq
+curl -fsS http://127.0.0.1:18080/ready   # host port of edge-api, see docker-compose.yml
+```
+
+`docker-compose.sim.yml` starts a Modbus slave simulator
+(`services/edge-daq/modbus_slave_sim.py`) with time-varying values for the
+example point map in `configs/`. For a real PLC start with the read-only
+`docker-compose.field-comm.yml` profile and `PLC_HOST=<your PLC>`; see
+[docs/plc/plc-comm-protocol.md](docs/plc/plc-comm-protocol.md).
+
+## Tests
+
+```bash
+python3.11 -m venv .venv && . .venv/bin/activate
+pip install -r requirements-test.txt
+python -m pytest -q services common tests infra scripts
+ruff check services/ common/ scripts/ --per-file-ignores "**/tests/**:E402"
+```
+
+CI (GitHub Actions, Python 3.11) runs the same suite: `.github/workflows/edge-tests.yml`.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `services/` | `edge-api`, `edge-daq`, `edge-monitor`, `device-identity` |
+| `common/` | shared logging, license verifier, schemas |
+| `infra/` | bootstrap/systemd units, OTA helper, mosquitto, Prometheus, release images |
+| `configs/` | example line profile (tags, address map, limits, HMI proxy) |
+| `scripts/` | release, device-prep and maintenance tooling |
+| `ops-console/` | Svelte operations console |
+| `docs/` | architecture, PLC integration, ops docs (mostly Chinese) |
+
+## Security
+
+Modbus TCP is unauthenticated. Isolate the PLC/HMI network and keep the HMI
+proxy writes disabled unless every address is signed off. See
+[SECURITY.md](SECURITY.md) for the threat model and how to report vulnerabilities.
+
+## License
+
+[MIT](LICENSE) © 2025-2026 songbinglin999-ux. Third-party components: [NOTICE](NOTICE).
+
+---
+
+## 中文简介
+
+DryController Edge 是一套面向**工业烘干产线**的开源边缘控制运行时，部署在 PLC 旁的工控机上：
+
+- 通过 Modbus TCP 采集 PLC 数据，经 MQTT / InfluxDB / PostgreSQL 落地；
+- 提供 MANUAL / AUTO 受控控制链路、REST/WebSocket API 和运维控制台；
+- 内置基于 TPM 的设备身份、设备绑定的签名 License、cosign 签名的 OTA 与确定性回滚；
+- 可选 Tailscale/Headscale 运维通道和厂商 HMI 同地址代理（默认禁写）。
+
+快速体验：见上方 *Quick start*（模拟器，无需硬件）。测试：Python 3.11 + `requirements-test.txt`。
+接入真实设备前请阅读 [SECURITY.md](SECURITY.md)。配套云端服务为独立项目，不在本仓库。
+详细中文文档见 `docs/` 与 [QUICKSTART.md](QUICKSTART.md)。
+
+---
+
+## Design notes
+
+### Current state
 
 The edge stack is in staging-ready shape for software validation, with these
 boundaries:
@@ -38,11 +135,10 @@ boundaries:
   handshake: client `hello` nonce, server HMAC proof, client `auth`, then
   `auth_ok`.
 - Local audit outbox is active for audit and control-command domains. Other
-  edge event classes remain backlog unless the top-level audit says otherwise.
-- The retired HostRelease/12-service OS Installer path has been removed. A new
-  OS/USB contract requires an explicit audit decision before implementation.
+  edge event classes remain backlog.
+- The retired HostRelease/12-service OS Installer path has been removed. 
 
-## Runtime Components
+### Runtime components
 
 | Component | Purpose |
 |---|---|
@@ -53,23 +149,23 @@ boundaries:
 | `drycontroller-ota-helper.service` | Root-owned, operation-ID-only `edge-app-v1` OTA boundary |
 | PostgreSQL, InfluxDB, Mosquitto | Local data and message infrastructure |
 
-## Quick Start
+### Local development notes
 
 Use this only for local development or staging simulation. The retired factory
 media path has been removed; this repository currently produces no deployable
 OS/USB media.
 
 ```bash
-cp env.example .env
+cp env.example .env   # replace every change_me_* value first
 docker compose up -d
 docker compose ps
-curl -fsS http://127.0.0.1:8000/ready
+curl -fsS http://127.0.0.1:18080/ready
 ```
 
 Open the API docs locally:
 
 ```bash
-open http://127.0.0.1:8000/docs
+open http://127.0.0.1:18080/docs
 ```
 
 If no PLC is available, run the simulator so MQTT/InfluxDB and the dashboard can
@@ -79,7 +175,7 @@ see live-looking points:
 python services/edge-daq/simulator.py
 ```
 
-## Configuration
+### Configuration
 
 Important runtime files and generated state:
 
@@ -125,7 +221,7 @@ repository variable and fails closed if the approved range changes any
 `services/edge-api/alembic/versions/` file. Database migrations remain an
 explicit SSH maintenance and backup operation.
 
-## API And WebSocket Notes
+### API and WebSocket notes
 
 Representative local endpoints:
 
@@ -143,14 +239,14 @@ WS   /api/ws/system
 ```
 
 Do not pass API tokens in WebSocket URLs. Clients must use the authenticated
-handshake implemented by `Drycontroller-frontend/packages/utils/src/websocket.ts`.
+handshake (see `services/edge-api/app/core/security.py`).
 
 Control V1 production mode is `MANUAL` / `AUTO`: `MANUAL` lets an operator set
 the six frequency targets through `POST /api/v1/control/manual/set`; `AUTO`
 uses `POST /api/v1/control/auto/dispatch` for a single authorized AUTO tick.
 Per-command confirmation endpoints are not the production AUTO workflow.
 
-## Factory Identity (RB-5A / RB-5B)
+### Factory identity (TPM)
 
 An administrator authorizes one Cloud batch. A root-only factory station then
 connects to exactly one unregistered IPC over the fixed isolated Ethernet tuple
@@ -188,38 +284,11 @@ permitted in that media.
 Tailnet key issuance and product integration are separate RB-7P/RB-7I work and
 are not an identity fallback.
 
-## Verification
-
-Use repo-local environments where available. Known-good commands from recent
-staging/security work include:
-
-```bash
-services/edge-api/.venv/bin/python -m pytest services/edge-api/tests -q
-bash -n infra/bootstrap/retrofit-edge-app-runtime.sh
-../scripts/agent-test-env.sh pytest services/device-identity/tests services/edge-api/tests -q
-```
-
-Run only the relevant subset for a scoped change, but use actual commands before
-claiming a path is verified.
-
-## Operational Docs
-
-| Doc | Purpose |
-|---|---|
-| `docs/ops/db-migrations.md` | Edge Alembic migration flow |
-| `docs/archive/ops/provisioning-bootstrap.md` | Retired Provisioning USB bootstrap boundary |
-| `CONTRIBUTING.md` | Git hooks and contribution rules |
-| `QUICKSTART.md` | Older quick-start notes; verify against current audit before relying on them |
-
-## Open Boundaries
-
-Current open work is tracked in the top-level audit, not in this README. As of
-the latest audit snapshot, important edge-adjacent items include:
+### Open work
 
 - Finish remaining outbox producers/drainers beyond audit and control-command.
 - Keep the signed `edge-app-v1` identity and deterministic rollback contract verified.
 - Keep the root OTA helper and its UDS unavailable to every container except `edge-api`.
-- Do not restore an OS/USB release path without a new explicit audit decision.
 
-Do not close or reinterpret those boundaries from this README; update
-`../architecture-audit-2026-05-06.md` when verified state changes.
+Operational docs: `docs/ops/db-migrations.md`, `docs/ops/device-prep.md`,
+`docs/ops/license-pair-activation.md`, `CONTRIBUTING.md`, `QUICKSTART.md`.

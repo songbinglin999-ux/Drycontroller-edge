@@ -35,7 +35,7 @@
 - 炉温
 - 成品人工含水率（人工录入）
 
-具体点位定义与命名规则参见：`docs/plc/io-and-control-contract.md` 与 `docs/plc/io-map.html`。
+具体点位定义与命名规则参见：`docs/plc/io-map.html`。
 
 ### 2.2 数据流描述
 

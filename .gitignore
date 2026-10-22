@@ -97,3 +97,10 @@ data/
 # System files
 Thumbs.db
 .DS_Store
+
+# macOS resource forks / tool caches
+._*
+.DS_Store
+.ruff_cache/
+.pytest_cache/
+logs/

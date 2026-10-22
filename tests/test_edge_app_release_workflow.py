@@ -53,7 +53,7 @@ def test_builder_emits_only_edge_app_v1_two_service_manifest(tmp_path: Path, mon
 
 
 def test_active_workflow_and_executor_do_not_reach_legacy_release_paths():
-    active = (ROOT / ".gitea/workflows/edge-app-release.yml").read_text()
+    active = (ROOT / ".github/workflows/edge-app-release.yml").read_text()
     script = (ROOT / "scripts/ci/build-edge-app-release.sh").read_text()
     helper = (ROOT / "infra/ota-helper/edge_app_ota_helper.py").read_text()
     rollback = (ROOT / "infra/ota-helper/rollback-edge-app").read_text()
@@ -65,8 +65,8 @@ def test_active_workflow_and_executor_do_not_reach_legacy_release_paths():
     assert "from edge_app_release import" in helper
     assert "from release_engine import" not in helper
     for retired in (
-        ".gitea/workflows/edge-software-release.yml",
-        ".gitea/workflows/edge-host-release.yml",
+        ".github/workflows/edge-software-release.yml",
+        ".github/workflows/edge-host-release.yml",
         "scripts/ci/build-software-release.sh",
         "scripts/ci/software_release_builder.py",
         "infra/host-release-runner/host_release_runner.py",

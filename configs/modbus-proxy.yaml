@@ -1,28 +1,27 @@
-# Address-preserving proxy for the dedicated field HMI.
-# Commissioned shortcut for 2026-09-19 field test: allow the vendor HMI to
-# write the full PLC D register area at the user's explicit request.
+# Address-preserving Modbus TCP proxy for a dedicated vendor HMI (example).
 #
-# Address values below are raw Modbus PDU addresses following the project PLC map:
-# D0 -> 40000, so D8191 -> 48191.
+# SAFE DEFAULT: writes are disabled. Reads are forwarded only when
+# HMI_PROXY_ENABLED=true is set on both edge-api and edge-daq.
+# See docs/plc/hmi-modbus-proxy.md and SECURITY.md before enabling writes.
+#
+# Address values are raw Modbus PDU addresses (example map: D0 -> 40000).
 listen_host: 0.0.0.0  # Container only; publish to one explicit field interface.
 listen_port: 2000
-allowed_client_ips: [192.0.2.100]
+allowed_client_ips: [192.0.2.100]  # example HMI address (documentation range)
 max_clients: 2
 response_timeout_sec: 2.0
 client_idle_timeout_sec: 30.0
-write_enabled: true
-source_network_verified: true
+write_enabled: false
+# Must be set to true only after the field network is isolated/firewalled.
+source_network_verified: false
 write_journal: /data/edge-daq/hmi-proxy-write.json
-# Dedicated HMI full-D compatibility window.
-# FC06/FC16 writes are permitted for D0-D8191 inclusive, full WORD range.
-# The proxy still switches Edge to MANUAL first and keeps the unknown-result
-# write journal lock on timeout/bad echo; reads remain pass-through.
 write_rules: []
+# Example of a narrow, signed-off range (inactive while write_enabled is false).
 write_ranges:
   - area: holding
-    start_address: 40000
-    end_address: 48191
+    start_address: 43000
+    end_address: 43003
     min: 0
-    max: 65535
+    max: 500
     repeat_safe: true
-    evidence: human_full_d_write_window_20260919
+    evidence: example-signoff-replace-me

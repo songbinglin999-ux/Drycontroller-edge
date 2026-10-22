@@ -1,6 +1,6 @@
 # 🔌 Modbus 映射与 PLC 集成说明（Modbus Mapping & Integration）
 
-> **2026-09-19当前控制设计：** 以[I/O控制契约v2.1](io-and-control-contract.md)和根活动项PLC-EDGE-SINGLE-CONTROL-20260918为准。Edge在线时为主控制仲裁入口，HMI2在Edge不可用时需要直连PLC读写的现场应急能力。本文原D5100/D5550、PLC多来源owner/epoch及HMI直连接管内容只作历史/候选证据，不自动恢复为已签收现场实现；本轮不解除运行写门禁。新现场点表为人类确认的AI.csv，旧点数/用途不能覆盖新表与订正。
+> 当前控制设计见 [控制策略](../architecture/control-strategy.md) 与 [HMI 代理](hmi-modbus-proxy.md)。写入默认关闭。
 
 > 版本：v1.0
 > 关联服务：`edge-daq`
@@ -10,7 +10,7 @@
 
 ## 1. 通信整体说明
 
-- 协议、端口和站号：2026-09-14从 `dry-edge-tmp` 实测 `192.0.2.200:2000`、站号1、标准Modbus TCP成功，连续3次FC03读取协议地址40000起2个寄存器均返回有效响应；只验证基本通讯，点表语义仍待核对。原RTU-over-TCP/2022历史假设和误标的早期实测陈述已撤回；网络前提和报文证据见 [通讯参数说明](plc-comm-protocol.md)。
+- 协议、端口和站号（示例）：标准 Modbus TCP，`192.0.2.200:2000`、站号 1。联调步骤见 [通讯参数说明](plc-comm-protocol.md)。
 - 通信模式：`edge-daq` 为 Modbus 客户端，PLC 为服务器
 - 功能码：
   - 读保持寄存器（功能码 3）——D 字读点（电流/温度/湿度/状态）
@@ -51,7 +51,7 @@
 
 建议每个点位包含以下字段：
 
-- `name`：逻辑 Tag 名（与 `io-and-control-contract.md` / `io-map.html` 对齐）
+- `name`：逻辑 Tag 名（与 `io-map.html` 对齐）
 - `address`：Modbus 寄存器地址（当前从 `configs/modbus-address-map.yaml` 回填，见下方“地址基准”说明）
 - `function_code`：读取功能码 `3/4`（默认 3）
 - `type`：`float` / `int` / `int32` / `uint32` / `bool` 等

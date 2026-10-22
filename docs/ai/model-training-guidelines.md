@@ -58,7 +58,7 @@
 ```text
 dataset/
   raw/
-    line1_2025-01-01_2025-01-31.csv
+    line1_20260101_20260131.csv
     ...
   processed/
     train.parquet

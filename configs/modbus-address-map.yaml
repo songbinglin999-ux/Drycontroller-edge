@@ -1,7 +1,7 @@
-# PLC Modbus 地址表。读点已按 2026-06-20 集成商真实点表 + 系统唯一编号对账回填真实地址。
+# PLC Modbus 地址表（示例产线配置 / example line profile）。
 #
-# 2026-09-14 实测192.0.2.200:2000、站号1、标准Modbus TCP连续3次FC03读取成功；点位语义待验收。
-# 历史RTU-over-TCP/2022实测陈述已撤回；网络前提和报文证据见 docs/plc/plc-comm-protocol.md。
+# 示例链路：标准 Modbus TCP，192.0.2.200:2000、站号 1（见 docs/plc/plc-comm-protocol.md）。
+# 部署前请按自己 PLC 的手册与点表核对全部地址。
 # D 字读点：地址 = 40000 + D 序号；电流/温度无符号16位×0.1、湿度 int32 低字在前（little）。
 # 料位/限位：X 线圈，function_code 1（0x01 读），地址 = X 偏移 0；bool。
 # 仍需现场最终核对：地址基准（D0=40000 vs 4x、X 线圈 0 vs 参考号）、int32 字序。
@@ -55,10 +55,10 @@ LL6: {address: 6, function_code: 1, byte_order: big}  # X006
 # burst window instead of relying on a single 5s sample.
 # EDGE_HOST_ALIVE is written by edge to prove edge/daq-side communication
 # freshness only. It is intentionally not an ALLOWED_CONTROL_SOFTPOINTS entry.
-# PLC_LEGACY_HEARTBEAT_TOGGLE 对应集成商 M1001「0.5秒1/0.5秒0 心跳」。
-# 该点只作为上位机只读诊断心跳；2026-09-14 实测M1001在5.176秒16次采样中跳变10次。
+# PLC_LEGACY_HEARTBEAT_TOGGLE 对应 PLC 侧 M1001「0.5秒1/0.5秒0 心跳」。
+# 该点只作为上位机只读诊断心跳。
 # D5290同窗口始终为0，尚未验证现场心跳镜像；以下配置分配不等于现场实现已验收。
-# 地址依据官方《Instruction Manual of vendor PLC》Table 14.1.2：M 区 offset=30000，
+# 地址依据 PLC 厂商 Modbus 地址偏移表（常见约定）：M 区 offset=30000，
 # 读 0x01 → M1001 = 31001；地址基址最终 e2e 单点核对。
 # PLC single-heartbeat overlay 已分配：PLC_HEARTBEAT=D5290,
 # EDGE_HOST_ALIVE=D5291。按本文件 D 字约定回填为 4x45290/4x45291；
@@ -100,7 +100,7 @@ AUTH_TRANSITION_STATE: {address: 45415, function_code: 3, scale: 1, byte_order: 
 HMI_DIRECT_ENABLE: {address: 45571, function_code: 3, scale: 1, byte_order: big, type: bool, diagnostic: authority, control_softpoint: false}
 
 # --- 6 路频率有效目标读回点（D5210-D5215，只读）---
-# 地址依据官方《Instruction Manual of vendor PLC》Table 14.1.2：D 区 offset=40000，
+# 地址依据 PLC 厂商 Modbus 地址偏移表（常见约定）：D 区 offset=40000，
 # 适用 D0~D8191，读 0x03 → Modbus 地址 = 40000 + D 编号；故 D5210-D5215 = 45210-45215。
 # 这 6 个点是 PLC 接受后的频率有效目标读回，必须用 *_ACTIVE_FREQ_TARGET 命名，不得冒充 *_FREQ_SP 写入软点。
 # 控制写入按 2026-06-20「上位机降级全只读」决策锁停，本期不启用；启用后也只走

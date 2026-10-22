@@ -1,0 +1,89 @@
+name: edge-app-release-v1
+
+# Manual, signed release of the edge-app-v1 bundle. The release job needs a
+# self-hosted runner with docker, cosign and trivy installed at the paths
+# pinned in scripts/ci/build-edge-app-release.sh, plus the secrets below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "edge-app-v1 semver"
+        required: true
+        type: string
+
+concurrency:
+  group: edge-app-release-v1
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements-test.txt
+      - run: |
+          PYTHONPATH=. pytest \
+            infra/ota-helper/tests/test_edge_app_release.py \
+            infra/ota-helper/tests/test_edge_app_ota_helper.py \
+            services/edge-api/tests/test_ota_ops_uds.py \
+            services/edge-api/tests/test_ota_outbox.py \
+            tests/test_edge_app_migration_gate.py \
+            tests/test_edge_app_release_workflow.py \
+            tests/test_license_v2_verifier.py
+
+  release:
+    needs: test
+    runs-on: self-hosted
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SOURCE_COMMIT: ${{ github.sha }}
+      EDGE_APP_APPROVED_DB_BASELINE_COMMIT: ${{ vars.EDGE_APP_APPROVED_DB_BASELINE_COMMIT }}
+      # Any OCI registry (e.g. ghcr.io/songbinglin999-ux or a Harbor instance).
+      HARBOR_HOST: ${{ secrets.HARBOR_HOST }}
+      HARBOR_PROJECT: ${{ secrets.HARBOR_PROJECT }}
+      HARBOR_USER: ${{ secrets.HARBOR_USER }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+      COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+      COSIGN_PUBLIC_KEY_SHA256: ${{ secrets.EDGE_APP_COSIGN_PUBLIC_KEY_SHA256 }}
+      CLOUD_OPS_RELEASE_API_URL: ${{ secrets.CLOUD_OPS_RELEASE_API_URL }}
+      CLOUD_OPS_RELEASE_API_KEY: ${{ secrets.CLOUD_OPS_RELEASE_API_KEY }}
+      TRIVY_CACHE_DIR: /tmp/dc-edge-app-release-trivy
+      TRIVY_DB_PACKAGE: /tmp/dc-edge-app-release-trivy-db.tar.gz
+      # Frozen Trivy DB snapshot you host yourself (tar.gz with db/trivy.db + db/metadata.json).
+      TRIVY_DB_PACKAGE_URL: ${{ vars.TRIVY_DB_PACKAGE_URL }}
+      TRIVY_DB_PACKAGE_SHA256: ${{ vars.TRIVY_DB_PACKAGE_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prime frozen Trivy database
+        run: |
+          set -euo pipefail
+          : "${TRIVY_DB_PACKAGE_URL:?set repository variable TRIVY_DB_PACKAGE_URL}"
+          : "${TRIVY_DB_PACKAGE_SHA256:?set repository variable TRIVY_DB_PACKAGE_SHA256}"
+          rm -rf -- "${TRIVY_CACHE_DIR}"
+          mkdir -p "${TRIVY_CACHE_DIR}"
+          curl -fsSL --retry 3 --retry-delay 2 -o "${TRIVY_DB_PACKAGE}" "${TRIVY_DB_PACKAGE_URL}"
+          echo "${TRIVY_DB_PACKAGE_SHA256}  ${TRIVY_DB_PACKAGE}" | sha256sum -c -
+          tar -xzf "${TRIVY_DB_PACKAGE}" -C "${TRIVY_CACHE_DIR}"
+          test -f "${TRIVY_CACHE_DIR}/db/trivy.db"
+          test -f "${TRIVY_CACHE_DIR}/db/metadata.json"
+      - run: bash scripts/ci/build-edge-app-release.sh
+      - name: Remove frozen Trivy state
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          rm -rf -- "${TRIVY_CACHE_DIR}"
+          rm -f -- "${TRIVY_DB_PACKAGE}"
+          test ! -e "${TRIVY_CACHE_DIR}"
+          test ! -e "${TRIVY_DB_PACKAGE}"

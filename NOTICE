@@ -1,0 +1,40 @@
+DryController Edge
+Copyright (c) 2025-2026 songbinglin999-ux
+Licensed under the MIT License (see LICENSE).
+
+This repository contains no vendored third-party source archives. The
+following third-party components are downloaded at build or run time (pinned
+by version and checksum where noted) and remain under their own licenses:
+
+Container images / build inputs
+- InfluxDB 2.x, Flux, InfluxDB UI, influx-cli (InfluxData)  - MIT
+  infra/release-images/influxdb/Dockerfile builds influxd from source; inputs
+  are fetched by sha256 (see *.provenance.json). The libflux Cargo vendor tree
+  is regenerated from flux's Cargo.lock; individual crates carry their own
+  licenses (mostly MIT and/or Apache-2.0).
+- dasel (Tom Wright)                                         - MIT
+- Rust toolchain images (rust-lang)                          - MIT / Apache-2.0
+- Go toolchain images (golang)                               - BSD-3-Clause
+- PostgreSQL                                                  - PostgreSQL License
+- Eclipse Mosquitto                                           - EPL-2.0 / EDL-1.0
+- Prometheus, Alertmanager                                    - Apache-2.0
+- Python base images                                          - PSF License
+
+Host / release tooling
+- Tailscale client (installed from pkgs.tailscale.com)        - BSD-3-Clause
+- Headscale (optional, companion cloud side)                  - BSD-3-Clause
+- Sigstore cosign                                             - Apache-2.0
+- Aqua Security Trivy                                         - Apache-2.0
+- tpm2-tools                                                  - BSD-3-Clause
+
+Python dependencies (requirements*.txt): FastAPI, Starlette, Uvicorn,
+Pydantic, SQLAlchemy, asyncpg, Alembic, influxdb-client, paho-mqtt (EPL-2.0 /
+EDL-1.0), pymodbus, cryptography, structlog, prometheus-client, psutil and
+others - each under its own license as published on PyPI.
+
+ops-console JavaScript dependencies (ops-console/package-lock.json): Svelte,
+Vite and others - each under its own license as published on npm.
+
+Trademarks (Modbus, Tailscale, InfluxDB, etc.) belong to their owners. Any PLC
+or HMI vendor names in the documentation are used only to describe
+interoperability.

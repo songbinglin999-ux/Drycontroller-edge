@@ -21,8 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 # 协议 schema 已移到仓库根 common/schemas/cloud_to_edge.py（P1-8 phase B），
-# 与 cloud-ops 仓库的同名文件保持 byte-identical 同步，CI hash 校验保障一致性。
-# 详见 Drycontroller-cloudserver/docs/architecture/shared-schemas.md。
+# 与配套云端服务的同名文件保持 byte-identical（可选校验：scripts/check-shared-schemas-sync.sh）。
 from common.schemas.cloud_to_edge import (
     ManualActionRequest,
     MonitorConfigUpdate,

@@ -1,17 +1,37 @@
-# SIMULATOR ONLY —— Modbus 从站模拟器联调 override，跑完即弃，不要提交进生产部署。
-# 用法（模拟器跑在 mac 宿主 0.0.0.0:2022）：
-#   .venv-test/bin/python services/edge-daq/modbus_slave_sim.py &
+# SIMULATOR PROFILE - run the full edge stack against a Modbus slave simulator
+# (no PLC hardware needed). Not for production.
+#
+#   cp env.example .env   # then replace every change_me_* value
 #   docker compose -f docker-compose.yml -f docker-compose.sim.yml up -d --build \
-#       postgres influxdb mosquitto edge-api edge-daq
-# 让 edge-daq 走真实 Modbus（USE_SIMULATOR=false）经 host.docker.internal 连宿主模拟器；
-# 直接用真实 tags.yaml / modbus-address-map.yaml（读点已回填真实地址），RTU-over-TCP。
+#       postgres influxdb mosquitto modbus-sim edge-api edge-daq
+#
+# The simulator (services/edge-daq/modbus_slave_sim.py) serves the read points of
+# configs/modbus-address-map.yaml with time-varying raw values, RTU-over-TCP,
+# port 2022, unit 1. It does not implement write/handshake registers.
 services:
+  modbus-sim:
+    image: docker.io/library/python:3.11-slim
+    container_name: modbus-sim
+    command: >
+      sh -c "pip install --no-cache-dir --disable-pip-version-check pymodbus==3.5.4 >/dev/null
+             && python /sim/modbus_slave_sim.py"
+    environment:
+      - MODBUS_SIM_HOST=0.0.0.0
+      - MODBUS_SIM_PORT=2022
+      - MODBUS_SIM_SLAVE=1
+      - MODBUS_SIM_INTERVAL=1.0
+    volumes:
+      - ./services/edge-daq/modbus_slave_sim.py:/sim/modbus_slave_sim.py:ro
+    networks:
+      - edge-network
+    restart: unless-stopped
+
   edge-daq:
     environment:
-      - PLC_HOST=host.docker.internal
+      - PLC_HOST=modbus-sim
       - PLC_PORT=2022
       - PLC_SLAVE_ID=1
       - MODBUS_FRAMER=rtu
       - USE_SIMULATOR=false
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      - modbus-sim

@@ -1,6 +1,6 @@
 # 🧱 PLC 接入与联调指南（PLC Integration Guide）
 
-> **2026-09-19当前控制设计：** 以[I/O控制契约v2.1](io-and-control-contract.md)和根活动项PLC-EDGE-SINGLE-CONTROL-20260918为准。Edge在线时为主控制仲裁入口，HMI2在Edge不可用时需要直连PLC读写的现场应急能力。本文原D5100/D5550、PLC多来源owner/epoch及HMI直连接管内容只作历史/候选证据，不自动恢复为已签收现场实现；本轮不解除运行写门禁。新现场点表为人类确认的AI.csv，旧点数/用途不能覆盖新表与订正。
+> 当前控制设计见 [控制策略](../architecture/control-strategy.md) 与 [HMI 代理](hmi-modbus-proxy.md)。写入默认关闭。
 
 > 版本：v1.0
 > 适用范围：现场首次接入 / 新 PLC 型号联调
@@ -33,7 +33,7 @@
   - 设定值与控制量
   - 状态位与报警位
 - 将地址规划结果同步到：
-  - `docs/plc/io-and-control-contract.md` / `docs/plc/io-map.html`
+  - `docs/plc/io-map.html`
   - `configs/tags.yaml`（位号语义）
   - `configs/modbus-address-map.yaml`（地址 / scale / byte_order）
 
